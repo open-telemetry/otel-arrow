@@ -69,6 +69,9 @@ pub struct MetricSet {
     pub name: String,
     /// Attributes.
     pub attributes: BTreeMap<String, AttributeValue>,
+    /// Attributes that identify the metric data point bucket.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub data_point_attributes: BTreeMap<String, AttributeValue>,
     /// Metric values keyed by field name.
     pub metrics: BTreeMap<String, MetricValue>,
 }
@@ -79,6 +82,9 @@ pub struct MetricDataPoint {
     /// Metric descriptor fields.
     #[serde(flatten)]
     pub metadata: MetricsField,
+    /// Attributes that identify this metric data point.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, AttributeValue>,
     /// Metric value.
     pub value: MetricValue,
 }
@@ -332,6 +338,9 @@ mod tests {
                             "instrument": "counter",
                             "temporality": "cumulative",
                             "value_type": "u64",
+                            "attributes": {
+                                "signal": { "String": "logs" }
+                            },
                             "value": 5
                         }
                     ]
@@ -349,6 +358,9 @@ mod tests {
                     "name": "engine",
                     "attributes": {
                         "node.id": { "String": "receiver" }
+                    },
+                    "data_point_attributes": {
+                        "signal": { "String": "logs" }
                     },
                     "metrics": {
                         "items": 5

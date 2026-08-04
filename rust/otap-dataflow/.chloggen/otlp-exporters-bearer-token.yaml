@@ -17,8 +17,6 @@ issues: [3356]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Binding is optional and additive: when a `bearer_token_provider` extension
-  (e.g. `azure_identity_auth`) is bound on the exporter node, a fresh OAuth
-  bearer token is injected on every outbound request and takes precedence over
-  any statically configured `authorization` header. Without a binding the
-  exporter keeps its default no-auth behavior.
+  When bound to the exporter node, a `bearer_token_provider` injects a fresh
+  OAuth token on each request and overrides a static `authorization` header.
+  Without a binding, the exporter keeps its default no-auth behavior.

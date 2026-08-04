@@ -75,6 +75,12 @@ groups:
               # ============================================================
               # OPTIONAL SETTINGS
               # ============================================================
+              # Log and span table name configuration
+              # - default_event_name: The Geneva table name for logs/spans (falls back to "Log"/"Span" if omitted)
+              logs:
+                default_event_name: "Log"
+              spans:
+                default_event_name: "Span"
               # NOTE: max_buffer_size is currently reserved for a future buffering/flush
               # implementation in the exporter. It is accepted by config parsing but not
               # currently used to change runtime behavior.
