@@ -538,30 +538,32 @@ impl<const N: usize> HistogramNN<N> {
         let mut biased_exp = get_biased_exponent(value);
         let mut significand = get_significand(value);
 
+        // Reject NaN and the infinities before anything else. NaN compares
+        // false against every bound, so the non-negative assertion below would
+        // fire on it and report the wrong problem.
+        if biased_exp == NAN_INF_BIASED {
+            return Err(Error::Extreme);
+        }
+
         let new_count = self.checked_add_count(incr).ok_or(Error::Overflow)?;
 
-        // Ignore the sign bit, means we use the absolute value.
-        debug_assert!(!value.is_sign_negative(), "value must be non-negative");
+        // Bucketing ignores the sign bit and uses the magnitude. Negative zero
+        // is the zero it compares equal to, not a negative value, so it is
+        // admitted: it arises from ordinary arithmetic and every tier counts
+        // it.
+        debug_assert!(value >= 0.0, "value must be non-negative");
 
-        // Handle 0, subnormal, NaN and Inf.
-        match biased_exp {
-            0 => {
-                if significand == 0 {
-                    // Zero case: update min, zero_count implicit in count.
-                    self.stats.min = 0.0;
-                    self.stats.count = new_count;
-                    return Ok(());
-                } else {
-                    // Round subnormal values to MIN_VALUE.
-                    biased_exp = 1;
-                    significand = 0;
-                }
+        // Zeros are counted but never bucketed, and subnormals round up to the
+        // smallest normal value.
+        if biased_exp == 0 {
+            if significand == 0 {
+                // Zero case: update min, zero_count implicit in count.
+                self.stats.min = 0.0;
+                self.stats.count = new_count;
+                return Ok(());
             }
-            NAN_INF_BIASED => {
-                // Inf and NaN cases.
-                return Err(Error::Extreme);
-            }
-            _ => {}
+            biased_exp = 1;
+            significand = 0;
         }
 
         let base2_exp = unbias_exponent(biased_exp);

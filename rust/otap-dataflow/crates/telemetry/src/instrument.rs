@@ -512,9 +512,27 @@ impl Debug for Mmsc {
 }
 
 impl Mmsc {
-    /// Records a single observation, updating min/max/sum/count.
+    /// Records a single non-negative observation, updating min/max/sum/count.
+    ///
+    /// Shares its input contract with the histogram tiers: negative, NaN, and
+    /// infinite values are invalid. In debug builds an invalid value trips a
+    /// debug assertion; in release builds a non-finite one is dropped so a
+    /// misbehaving call site cannot corrupt the aggregation.
     #[inline]
     pub fn record(&mut self, value: f64) {
+        // The tiers share one contract for invalid input, so that changing a
+        // field from `Mmsc` to a histogram tier does not change what a
+        // misbehaving call site does to the aggregation. A non-finite value is
+        // dropped rather than folded in: `sum` is an accumulator, so a single
+        // NaN or infinity would poison it for the rest of the interval and
+        // every value recorded after it would be lost.
+        if !value.is_finite() {
+            debug_assert!(
+                false,
+                "Mmsc::record called with a non-finite value: {value}"
+            );
+            return;
+        }
         debug_assert!(
             value >= 0.0,
             "Mmsc::record called with negative value: {value}"
@@ -862,9 +880,13 @@ impl<const N: usize> Debug for Histogram<N> {
 impl<const N: usize> Histogram<N> {
     /// Records a single non-negative observation.
     ///
-    /// Negative, NaN, and infinite values are invalid. In debug builds an
-    /// invalid value trips a debug assertion; in release builds it is dropped
-    /// so a misbehaving call site cannot corrupt the aggregation.
+    /// Shares its input contract with [`Mmsc`]: negative, NaN, and infinite
+    /// values are invalid. In debug builds an invalid value trips a debug
+    /// assertion; in release builds a non-finite one is dropped so a
+    /// misbehaving call site cannot corrupt the aggregation. A negative value
+    /// is counted in the bucket for its magnitude, while the extremes and the
+    /// sum keep its sign, which is why the OTLP bridge withholds the sum of a
+    /// population whose minimum is negative.
     #[inline]
     pub fn record(&mut self, value: f64) {
         check_hist_update(self.0.update(value), "Histogram::record rejected value");
@@ -942,6 +964,108 @@ mod tests {
             histogram.record(value);
         }
         histogram.get()
+    }
+
+    /// Scenario: A non-finite value is offered to each of the three tiers in a
+    /// build with debug assertions on.
+    /// Guarantees: Every tier rejects it loudly, so a call site recording NaN
+    /// or an infinity is caught in development rather than silently producing
+    /// a poisoned or truncated aggregation in production.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn every_tier_asserts_on_a_non_finite_value() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for tier in ["basic", "normal", "detailed"] {
+                let result = std::panic::catch_unwind(|| match tier {
+                    "basic" => Mmsc::default().record(value),
+                    "normal" => HistogramNormal::default().record(value),
+                    _ => HistogramDetailed::default().record(value),
+                });
+                assert!(
+                    result.is_err(),
+                    "the {tier} tier accepted {value} without asserting"
+                );
+            }
+        }
+    }
+
+    /// Scenario: A negative value is offered to each of the three tiers in a
+    /// build with debug assertions on.
+    /// Guarantees: Every tier rejects it loudly. The tiers are documented as
+    /// differing only in size and resolution, so they must agree on what
+    /// counts as a valid observation.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn every_tier_asserts_on_a_negative_value() {
+        for tier in ["basic", "normal", "detailed"] {
+            let result = std::panic::catch_unwind(|| match tier {
+                "basic" => Mmsc::default().record(-1.0),
+                "normal" => HistogramNormal::default().record(-1.0),
+                _ => HistogramDetailed::default().record(-1.0),
+            });
+            assert!(
+                result.is_err(),
+                "the {tier} tier accepted -1.0 without asserting"
+            );
+        }
+    }
+
+    /// Scenario: NaN and both infinities are recorded into each tier in a
+    /// build with debug assertions off, which is how a released binary runs.
+    /// Guarantees: All three drop the value and leave the aggregation
+    /// untouched, so one bad call site cannot poison a sum for the rest of the
+    /// reporting interval, and a field can be moved between tiers without
+    /// changing what happens to invalid input.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn every_tier_drops_a_non_finite_value_in_release() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut mmsc = Mmsc::default();
+            mmsc.record(1.0);
+            mmsc.record(value);
+            assert_eq!(
+                (mmsc.count, mmsc.sum, mmsc.min, mmsc.max),
+                (1, 1.0, 1.0, 1.0)
+            );
+
+            let mut normal = HistogramNormal::default();
+            normal.record(1.0);
+            normal.record(value);
+            assert_eq!(normal.get().summary(), (1, 1.0, 1.0, 1.0));
+
+            let mut detailed = HistogramDetailed::default();
+            detailed.record(1.0);
+            detailed.record(value);
+            assert_eq!(detailed.get().summary(), (1, 1.0, 1.0, 1.0));
+        }
+    }
+
+    /// Scenario: Negative zero is recorded into each tier.
+    /// Guarantees: It is treated as the ordinary zero it compares equal to,
+    /// counted by every tier and lowering the minimum to zero, rather than
+    /// being taken for a negative value and dropped.
+    #[test]
+    fn every_tier_accepts_negative_zero_as_zero() {
+        let mut mmsc = Mmsc::default();
+        mmsc.record(-0.0);
+        assert_eq!(mmsc.count, 1);
+        assert_eq!(mmsc.sum, 0.0);
+        assert_eq!(mmsc.min, 0.0);
+
+        for summary in [
+            {
+                let mut h = HistogramNormal::default();
+                h.record(-0.0);
+                h.get().summary()
+            },
+            {
+                let mut h = HistogramDetailed::default();
+                h.record(-0.0);
+                h.get().summary()
+            },
+        ] {
+            assert_eq!(summary, (1, 0.0, 0.0, 0.0));
+        }
     }
 
     #[test]

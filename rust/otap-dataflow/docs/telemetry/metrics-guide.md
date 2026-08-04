@@ -81,6 +81,12 @@ detailed information about quantiles will be used or is useful for
 observability. Histogram resolution is not currently configurable, see
 the implementation gaps.
 
+All distribution instruments accept the same observations, so a field can
+move between them without changing what a caller may record. Values must be
+non-negative and finite. A negative, NaN, or infinite value trips a debug
+assertion; in a release build a non-finite one is dropped, so a stray NaN
+cannot poison a sum for the rest of the reporting interval.
+
 ### Recording semantics and export temporality
 
 Instrument types describe how component code records measurements, independently
