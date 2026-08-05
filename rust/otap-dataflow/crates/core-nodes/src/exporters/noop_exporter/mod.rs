@@ -26,6 +26,7 @@ pub struct NoopExporter;
 
 /// Declare the Noop Exporter as a local exporter factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: NOOP_EXPORTER_URN,
