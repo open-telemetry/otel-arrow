@@ -1,428 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785888545368,
+  "lastUpdate": 1785889578988,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "29139614+renovate[bot]@users.noreply.github.com",
-            "name": "renovate[bot]",
-            "username": "renovate[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "5caaadc82e51c76d5b7fb2bfc60092a4095841ea",
-          "message": "chore(deps): update all patch versions (#3474)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [arc-swap](https://redirect.github.com/vorner/arc-swap) |\nworkspace.dependencies | patch | `1.9.1` → `1.9.2` |\n| [arrayvec](https://redirect.github.com/bluss/arrayvec) |\nworkspace.dependencies | patch | `0.7.7` → `0.7.8` |\n| [byte-unit](https://magiclen.org/byte-unit)\n([source](https://redirect.github.com/magiclen/byte-unit)) |\nworkspace.dependencies | patch | `5.2.3` → `5.2.5` |\n| [bytemuck](https://redirect.github.com/Lokathor/bytemuck) |\nworkspace.dependencies | patch | `1.25.0` → `1.25.1` |\n| [bytes](https://redirect.github.com/tokio-rs/bytes) |\nworkspace.dependencies | patch | `1.12.0` → `1.12.1` |\n| [clap_complete](https://redirect.github.com/clap-rs/clap) |\nworkspace.dependencies | patch | `4.6.5` → `4.6.7` |\n| [http-body-util](https://redirect.github.com/hyperium/http-body) |\nworkspace.dependencies | patch | `0.1.3` → `0.1.4` |\n| [memchr](https://redirect.github.com/BurntSushi/memchr) |\nworkspace.dependencies | patch | `2.8.2` → `2.8.3` |\n| [pest](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.8.6` → `2.8.7` |\n| [pest_derive](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.8.6` → `2.8.7` |\n| [rand](https://rust-random.github.io/book)\n([source](https://redirect.github.com/rust-random/rand)) |\nworkspace.dependencies | patch | `0.10.1` → `0.10.2` |\n| [rustls](https://redirect.github.com/rustls/rustls) |\nworkspace.dependencies | patch | `0.23.41` → `0.23.42` |\n| [socket2](https://redirect.github.com/rust-lang/socket2) |\nworkspace.dependencies | patch | `0.6.4` → `0.6.5` |\n| [sysinfo](https://redirect.github.com/GuillaumeGomez/sysinfo) |\nworkspace.dependencies | patch | `0.39.5` → `0.39.6` |\n| [time](https://time-rs.github.io)\n([source](https://redirect.github.com/time-rs/time)) |\nworkspace.dependencies | patch | `>=0.3.47, <0.3.52` → `>=0.3.47,\n<0.3.54` |\n| [toml](https://redirect.github.com/toml-rs/toml) |\nworkspace.dependencies | patch | `1.1.2+spec-1.1.0` → `1.1.3` |\n| [uuid](https://redirect.github.com/uuid-rs/uuid) |\nworkspace.dependencies | patch | `1.23.3` → `1.23.5` |\n| [xxhash-rust](https://redirect.github.com/DoumanAsh/xxhash-rust) |\nworkspace.dependencies | patch | `0.8.15` → `0.8.16` |\n\n---\n\n> [!WARNING]\n> Some dependencies could not be looked up. Check the [Dependency\nDashboard](../issues/417) for more information.\n\n---\n\n### Release Notes\n\n<details>\n<summary>vorner/arc-swap (arc-swap)</summary>\n\n###\n[`v1.9.2`](https://redirect.github.com/vorner/arc-swap/blob/HEAD/CHANGELOG.md#192)\n\n- Document RefCnt must not panic\n([#&#8203;208](https://redirect.github.com/vorner/arc-swap/issues/208)).\n\n</details>\n\n<details>\n<summary>bluss/arrayvec (arrayvec)</summary>\n\n###\n[`v0.7.8`](https://redirect.github.com/bluss/arrayvec/blob/HEAD/CHANGELOG.md#078)\n\n[Compare\nSource](https://redirect.github.com/bluss/arrayvec/compare/0.7.7...0.7.8)\n\n- Fix tests on 32-bit architectures by skipping them by\n[@&#8203;decathorpe](https://redirect.github.com/decathorpe)\n[#&#8203;312](https://redirect.github.com/bluss/arrayvec/pull/312).\n\n</details>\n\n<details>\n<summary>magiclen/byte-unit (byte-unit)</summary>\n\n###\n[`v5.2.5`](https://redirect.github.com/magiclen/byte-unit/compare/v5.2.4...v5.2.5)\n\n[Compare\nSource](https://redirect.github.com/magiclen/byte-unit/compare/v5.2.4...v5.2.5)\n\n###\n[`v5.2.4`](https://redirect.github.com/magiclen/byte-unit/compare/v5.2.3...v5.2.4)\n\n[Compare\nSource](https://redirect.github.com/magiclen/byte-unit/compare/v5.2.3...v5.2.4)\n\n</details>\n\n<details>\n<summary>Lokathor/bytemuck (bytemuck)</summary>\n\n###\n[`v1.25.1`](https://redirect.github.com/Lokathor/bytemuck/blob/HEAD/changelog.md#1251)\n\n[Compare\nSource](https://redirect.github.com/Lokathor/bytemuck/compare/v1.25.0...v1.25.1)\n\n- [Don't impl core::error::Error on\nspirv](https://redirect.github.com/Lokathor/bytemuck/pull/348), which\nwas causing a build error on that target.\n- Added a reminder on `try_cast_slice` that empty slices must still be\naligned.\n\n</details>\n\n<details>\n<summary>tokio-rs/bytes (bytes)</summary>\n\n###\n[`v1.12.1`](https://redirect.github.com/tokio-rs/bytes/blob/HEAD/CHANGELOG.md#1121-July-8th-2026)\n\n[Compare\nSource](https://redirect.github.com/tokio-rs/bytes/compare/v1.12.0...v1.12.1)\n\n##### Fixed\n\n- Properly handle when `Box::new` panics\n([#&#8203;837](https://redirect.github.com/tokio-rs/bytes/issues/837))\n\n</details>\n\n<details>\n<summary>clap-rs/clap (clap_complete)</summary>\n\n###\n[`v4.6.7`](https://redirect.github.com/clap-rs/clap/compare/clap_complete-v4.6.6...clap_complete-v4.6.7)\n\n[Compare\nSource](https://redirect.github.com/clap-rs/clap/compare/clap_complete-v4.6.6...clap_complete-v4.6.7)\n\n###\n[`v4.6.6`](https://redirect.github.com/clap-rs/clap/compare/clap_complete-v4.6.5...clap_complete-v4.6.6)\n\n[Compare\nSource](https://redirect.github.com/clap-rs/clap/compare/clap_complete-v4.6.5...clap_complete-v4.6.6)\n\n</details>\n\n<details>\n<summary>hyperium/http-body (http-body-util)</summary>\n\n###\n[`v0.1.4`](https://redirect.github.com/hyperium/http-body/releases/tag/http-body-util-v0.1.4)\n\n[Compare\nSource](https://redirect.github.com/hyperium/http-body/compare/http-body-util-v0.1.3...http-body-util-v0.1.4)\n\n#### What's Changed\n\n- Add `Fused` body combinator that always returns `None` once completed.\n- Add `BodyExt::into_stream()` to convert a body into a `Stream`.\n- Add `Full::into_inner()` to get the full `Buf`.\n- Add `InspectFrame` and `InspectErr` combinators.\n\n</details>\n\n<details>\n<summary>BurntSushi/memchr (memchr)</summary>\n\n###\n[`v2.8.3`](https://redirect.github.com/BurntSushi/memchr/compare/2.8.2...2.8.3)\n\n[Compare\nSource](https://redirect.github.com/BurntSushi/memchr/compare/2.8.2...2.8.3)\n\n</details>\n\n<details>\n<summary>pest-parser/pest (pest)</summary>\n\n###\n[`v2.8.7`](https://redirect.github.com/pest-parser/pest/releases/tag/v2.8.7)\n\n[Compare\nSource](https://redirect.github.com/pest-parser/pest/compare/v2.8.6...v2.8.7)\n\n##### What's Changed\n\n- Keep `grammar.rs` in tree by\n[@&#8203;konstin](https://redirect.github.com/konstin) in\n[#&#8203;1159](https://redirect.github.com/pest-parser/pest/pull/1159)\n- fix(test): make miette\\_error test independent of terminal by\n[@&#8203;MasterOfFeelingFish](https://redirect.github.com/MasterOfFeelingFish)\nin\n[#&#8203;1164](https://redirect.github.com/pest-parser/pest/pull/1164)\n- docs: add Panics sections to line\\_col() and PrattParser::parse() by\n[@&#8203;MasterOfFeelingFish](https://redirect.github.com/MasterOfFeelingFish)\nin\n[#&#8203;1167](https://redirect.github.com/pest-parser/pest/pull/1167)\n- Document panics in public API by\n[@&#8203;syu-toutousai](https://redirect.github.com/syu-toutousai) in\n[#&#8203;1174](https://redirect.github.com/pest-parser/pest/pull/1174)\n- Reject unescaped quote inside char literal in meta grammar by\n[@&#8203;chatman-media](https://redirect.github.com/chatman-media) in\n[#&#8203;1175](https://redirect.github.com/pest-parser/pest/pull/1175)\n\n##### New Contributors\n\n- [@&#8203;konstin](https://redirect.github.com/konstin) made their\nfirst contribution in\n[#&#8203;1159](https://redirect.github.com/pest-parser/pest/pull/1159)\n-\n[@&#8203;MasterOfFeelingFish](https://redirect.github.com/MasterOfFeelingFish)\nmade their first contribution in\n[#&#8203;1164](https://redirect.github.com/pest-parser/pest/pull/1164)\n- [@&#8203;syu-toutousai](https://redirect.github.com/syu-toutousai)\nmade their first contribution in\n[#&#8203;1174](https://redirect.github.com/pest-parser/pest/pull/1174)\n- [@&#8203;chatman-media](https://redirect.github.com/chatman-media)\nmade their first contribution in\n[#&#8203;1175](https://redirect.github.com/pest-parser/pest/pull/1175)\n\n**Full Changelog**:\n<https://github.com/pest-parser/pest/compare/v2.8.6...v2.8.7>\n\n##### Warning: Semantic Versioning\n\nNote that the node tag feature in 2.6.0 was a technically\nsemver-breaking change even though it is a backwards-compatible /\nnon-breaking change in the meta-grammar. There may be similar\nnon-breaking changes to the meta-grammar between minor versions in the\nfuture. These non-breaking changes, however, may translate into\nsemver-breaking changes due to the additional variants propagated from\nthe generated `Rule` enum.\n\nThis new feature caused issues in some Cargo version resolution\nsituations where Cargo mixed different versions of pest dependencies.\nFor this reason, these \"grammar non-breaking but semver-breaking\"\nchanges are now available only under the \"grammar-extras\" feature flag.\nIf you would like to use node tags (or other future grammar features),\nyou can do so by enabling this flag on the pest\\_derive crate in your\nCargo.toml:\n\n```\n...\npest_derive = { version = \"2.8\", features = [\"grammar-extras\"] }\n```\n\n</details>\n\n<details>\n<summary>rust-random/rand (rand)</summary>\n\n###\n[`v0.10.2`](https://redirect.github.com/rust-random/rand/blob/HEAD/CHANGELOG.md#0102--2026-07-02)\n\n[Compare\nSource](https://redirect.github.com/rust-random/rand/compare/0.10.1...0.10.2)\n\n##### Fixes\n\n- Fix possible memory safety violation due to deserialization of\n`UniformChar` from bad source ([#&#8203;1790])\n\n##### Changes\n\n- Document required output order of fn `partial_shuffle` and apply\n`#[must_use]` ([#&#8203;1769])\n- Avoid usage of `unsafe` in contexts where non-local memory corruption\ncould invalidate contract ([#&#8203;1791])\n\n[#&#8203;1769]: https://redirect.github.com/rust-random/rand/pull/1769\n\n[#&#8203;1790]: https://redirect.github.com/rust-random/rand/pull/1790\n\n[#&#8203;1791]: https://redirect.github.com/rust-random/rand/pull/1791\n\n</details>\n\n<details>\n<summary>rust-lang/socket2 (socket2)</summary>\n\n###\n[`v0.6.5`](https://redirect.github.com/rust-lang/socket2/blob/HEAD/CHANGELOG.md#065)\n\n- Add support for Emscripten (wasm32)\n\n([#&#8203;660](https://redirect.github.com/rust-lang/socket2/pull/660)).\n- Add support for NuttX\n\n([#&#8203;663](https://redirect.github.com/rust-lang/socket2/pull/663)).\n- Enable `Socket::(set_)tos_v4` on illumos\n\n([#&#8203;662](https://redirect.github.com/rust-lang/socket2/pull/662)).\n\n</details>\n\n<details>\n<summary>GuillaumeGomez/sysinfo (sysinfo)</summary>\n\n###\n[`v0.39.6`](https://redirect.github.com/GuillaumeGomez/sysinfo/blob/HEAD/CHANGELOG.md#0396)\n\n[Compare\nSource](https://redirect.github.com/GuillaumeGomez/sysinfo/compare/v0.39.5...v0.39.6)\n\n- NetBSD: Add support for disk I/O usage.\n- NetBSD: Improve retrieval of disk information.\n\n</details>\n\n<details>\n<summary>time-rs/time (time)</summary>\n\n###\n[`v0.3.53`](https://redirect.github.com/time-rs/time/blob/HEAD/CHANGELOG.md#0353-2026-07-01)\n\n[Compare\nSource](https://redirect.github.com/time-rs/time/compare/v0.3.52...v0.3.53)\n\nThere are no publicly-facing changes in this release. It solely works\naround the `cookie` crate\nrelying on an implementation detail of `time` that was never part of the\npublic API (and thus\nsubject to semver guarantees). The internal API has been reverted to the\nextent necessary for\n`cookie` to compile. This measure is temporary; the internal change will\nbe re-applied in an\nyet-to-be-determined future release.\n\n###\n[`v0.3.52`](https://redirect.github.com/time-rs/time/blob/HEAD/CHANGELOG.md#0352-2026-06-30)\n\n[Compare\nSource](https://redirect.github.com/time-rs/time/compare/v0.3.51...v0.3.52)\n\n##### Fixed\n\n- Subsecond values in the `time!` macro are parsed using the textual\nrepresentation, ensuring\naccuracy. Previously, they were parsed using the floating point\nrepresentation, which could result\n  in a loss of precision and even invalid values.\n- The `date!` macro could previously create an invalid value that would\nthen panic at compile time.\n  The macro now emits a proper error instead.\n- When parsing an invalid format description, an edge case would\ninadvertently panic. This now\n  returns an error as intended.\n\n##### Added\n\n- Support default values when parsing\n\n###\n[`v0.3.51`](https://redirect.github.com/time-rs/time/blob/HEAD/CHANGELOG.md#0351-2026-06-22)\n\n[Compare\nSource](https://redirect.github.com/time-rs/time/compare/v0.3.50...v0.3.51)\n\n##### Fixed\n\n- `time` compiles with `macros` enabled. This version is otherwise\nidentical to v0.3.50.\n\n###\n[`v0.3.50`](https://redirect.github.com/time-rs/time/blob/HEAD/CHANGELOG.md#0351-2026-06-22)\n\n[Compare\nSource](https://redirect.github.com/time-rs/time/compare/v0.3.49...v0.3.50)\n\n##### Fixed\n\n- `time` compiles with `macros` enabled. This version is otherwise\nidentical to v0.3.50.\n\n###\n[`v0.3.49`](https://redirect.github.com/time-rs/time/blob/HEAD/CHANGELOG.md#0349-2026-06-13)\n\n[Compare\nSource](https://redirect.github.com/time-rs/time/compare/v0.3.48...v0.3.49)\n\n##### Fixed\n\n- Due to a long-standing bug in the Rust compiler, v0.3.48 caused a\nnumber of crates to stop\n  compiling. A patch has been added that avoids triggering the bug.\n\n###\n[`v0.3.48`](https://redirect.github.com/time-rs/time/blob/HEAD/CHANGELOG.md#0348-2026-06-12-YANKED)\n\n[Compare\nSource](https://redirect.github.com/time-rs/time/compare/v0.3.47...v0.3.48)\n\n##### Security\n\n- The number of digits parsed by `[subsecond digits:1+]` is capped at 32\nto avoid parsing unbounded\n  user input. Digits after the 9<sup>th</sup> have no semantic meaning.\n- Explicitly specify `#[repr]` for `Weekday`. The value of the variants\nis relied upon in multiple\nlocations for soundness. The practical effect of this change is nothing,\nas Rust has always mapped\n  C-like `enum`s to 0..N in memory.\n\n##### Compatibility\n\n- Non-UTF-8 formatting and parsing is deprecated without replacement. It\nis recommended to only\n  format and parse valid UTF-8.\n- `format_description::parse` is deprecated. It is recommended to use\n`format_description::parse_borrowed::<3>` or\n`format_description::parse_owned::<3>`.\n\n##### Added\n\n- All types in the `unit` module have a generic parameter, though this\nis currently not used for\n  much. Usage will be expanded in the future.\n- Comparisons between types in the `unit` module and the generic `Unit`\ntype are permitted.\n- Support for `rand` 0.10\n- Version 3 format descriptions\n- Only UTF-8 is supported. As a side effect of this, `[ignore]` requires\nthat the remaining input\n    not begin mid-codepoint.\n- Representation is deliberately opaque to allow for arbitrary changes\ngoing forward.\n- `format:false` is supported on `[optional]` components. This is not\npossible in version 1 and\n    version 2 format descriptions due to API compatibility.\n- The `time::serde::format_description!` macro uses a new, clearer\nsyntax for version 3.\n- `time::serde::format_description!(mod foo [Date] =\n\"[year]-[month]-[day]\");`\n- Unlike version 1 and version 2 format descriptions, the type is not\nautomatically brought into\n      scope. You must import it yourself.\n- Nonsensical combinations of modifiers are rejected. For example, you\ncannot specify\n    case-sensitivity when parsing a numerical month.\n  - `[year]` defaults to `range:standard`\n  - Components and modifiers are case sensitive (and always lowercase).\n\n##### Changed\n\n- The `convert` module has been renamed to `unit`.\n\n##### Fixed\n\n- Macro hygiene has been improved by specifying re-exports.\n- Fix handling of `T` in ISO 8601\n- Support parsing the full range of UTC offset hours\n- Version 1 nested format descriptions may now start with a component.\nPreviously, a lexer bug\n  unintentionally prohibited this.\n- Error when ISO week date overflows the max year. This would previously\npanic.\n- Error when padding is specified in `strftime` format descriptions but\nthe component is not. This\n  would previously panic.\n\n##### Performance\n\nHuge performance gains across multiple areas, including:\n\n- optimizing equality checks for `Duration`\n- optimizing `Display` impls for all major types\n- optimizing the formatting of components and well-known formats\n- precomputing metadata when formatting, reducing allocations\n- adding fast path for typical RFC 2822 usage\n- optimizing `strftime` parsing\n- refactoring format description parsing\n\nDepending on the area, gains range from 3× to even 11×.\n\n</details>\n\n<details>\n<summary>toml-rs/toml (toml)</summary>\n\n###\n[`v1.1.3`](https://redirect.github.com/toml-rs/toml/compare/toml-v1.1.2...toml-v1.1.3)\n\n[Compare\nSource](https://redirect.github.com/toml-rs/toml/compare/toml-v1.1.2...toml-v1.1.3)\n\n</details>\n\n<details>\n<summary>uuid-rs/uuid (uuid)</summary>\n\n###\n[`v1.23.5`](https://redirect.github.com/uuid-rs/uuid/releases/tag/v1.23.5)\n\n[Compare\nSource](https://redirect.github.com/uuid-rs/uuid/compare/v1.23.4...v1.23.5)\n\n#### What's Changed\n\n- doc: Fix broken link by\n[@&#8203;frostyplanet](https://redirect.github.com/frostyplanet) in\n[#&#8203;891](https://redirect.github.com/uuid-rs/uuid/pull/891)\n- perf: Optimize UUID hex parsing and formatting by\n[@&#8203;geeknoid](https://redirect.github.com/geeknoid) in\n[#&#8203;894](https://redirect.github.com/uuid-rs/uuid/pull/894)\n- Prepare for 1.23.5 release by\n[@&#8203;KodrAus](https://redirect.github.com/KodrAus) in\n[#&#8203;895](https://redirect.github.com/uuid-rs/uuid/pull/895)\n\n#### New Contributors\n\n- [@&#8203;geeknoid](https://redirect.github.com/geeknoid) made their\nfirst contribution in\n[#&#8203;894](https://redirect.github.com/uuid-rs/uuid/pull/894)\n\n**Full Changelog**:\n<https://github.com/uuid-rs/uuid/compare/v1.23.4...v1.23.5>\n\n###\n[`v1.23.4`](https://redirect.github.com/uuid-rs/uuid/releases/tag/v1.23.4)\n\n[Compare\nSource](https://redirect.github.com/uuid-rs/uuid/compare/v1.23.3...v1.23.4)\n\n#### What's Changed\n\n- Fix up name of fuzz script in readme by\n[@&#8203;KodrAus](https://redirect.github.com/KodrAus) in\n[#&#8203;888](https://redirect.github.com/uuid-rs/uuid/pull/888)\n- document fixes by\n[@&#8203;frostyplanet](https://redirect.github.com/frostyplanet) in\n[#&#8203;889](https://redirect.github.com/uuid-rs/uuid/pull/889)\n- Prepare for 1.23.4 release by\n[@&#8203;KodrAus](https://redirect.github.com/KodrAus) in\n[#&#8203;890](https://redirect.github.com/uuid-rs/uuid/pull/890)\n\n#### New Contributors\n\n- [@&#8203;frostyplanet](https://redirect.github.com/frostyplanet) made\ntheir first contribution in\n[#&#8203;889](https://redirect.github.com/uuid-rs/uuid/pull/889)\n\n**Full Changelog**:\n<https://github.com/uuid-rs/uuid/compare/v1.23.3...v1.23.4>\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am every weekday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yNTkuMiIsInVwZGF0ZWRJblZlciI6IjQzLjI1OS4yIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
-          "timestamp": "2026-07-14T15:43:18Z",
-          "tree_id": "c228cba95ae7a3d4f7b5868645d990f1c4410d44",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/5caaadc82e51c76d5b7fb2bfc60092a4095841ea"
-        },
-        "date": 1784075172913,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 10.000800132751465,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 35.76409413549252,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 36.20246386892341,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.8640625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.25390625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99957.10497465334,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 89960.59475637054,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.006982,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 1206768.5720172683,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1138827.6715465034,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 13.414413002553111,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 5.025599956512451,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.64771126978347,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.32519159456118,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.3625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.62109375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99990.39092343225,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94965.27383718424,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001922,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2777536.270428457,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2926320.0207892256,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 29.24791513991186,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 5,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.18460819156257,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.65835162269438,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 19.198046875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 19.55078125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99990.90082802466,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94991.35578662342,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.00182,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 1222463.8038993496,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2927111.854761624,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 12.86921103268952,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 5.230818271636963,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 30.930926718664843,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 31.941454067835895,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 28.577734375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 29.86328125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99982.66161940474,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94752.7500931413,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001868,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 739576.9248720936,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1126808.9421956395,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 7.805334664641339,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 5.263157844543457,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.61694255386263,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.02892613283674,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 19.38046875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 19.94921875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94966.90878063538,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 89968.65042375983,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.006969,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 3028309.9938682113,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1149526.7292336598,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 33.6596134276175,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 5,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.76187472869296,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.13207616991751,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 19.883203125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 20.28515625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99990.62087976148,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94991.08983577341,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001876,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 3091437.2839243836,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2942042.064810854,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 32.54449748149069,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -41998,6 +41578,426 @@ window.BENCHMARK_DATA = {
           {
             "name": "egress_bytes_per_log",
             "value": 30.414251219270852,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "850017b48e16ab3fb083a36210ddde0616500773",
+          "message": "chore(deps): update rust crate time to >=0.3.47, <0.3.56 (#3601)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [time](https://time-rs.github.io)\n([source](https://redirect.github.com/time-rs/time)) |\nworkspace.dependencies | patch | `>=0.3.47, <0.3.55` → `>=0.3.47,\n<0.3.56` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>time-rs/time (time)</summary>\n\n###\n[`v0.3.55`](https://redirect.github.com/time-rs/time/blob/HEAD/CHANGELOG.md#0355-2026-08-01)\n\n[Compare\nSource](https://redirect.github.com/time-rs/time/compare/v0.3.54...v0.3.55)\n\n##### Fixed\n\n- Avoid underflow in `DateIter::nth`, ensuring correct behavior.\n- Avoid overflow when deserializing timestamps.\n- Handle out-of-bounds data when deserializing.\n- Don't assume that the format being deserialized was generated by the\nserializer; this previously\nled to some valid values being parsed incorrectly and others being\nrejected.\n- No longer silence errors when deserializing `UtcOffset`.\n- `OffsetDateTime::from_unix_timestamp_nanos` and\n`UtcDateTime::from_unix_timestamp_nanos` correctly\nreturn `None` for all out-of-range values, rather than unexpectedly\npanicking in some situations.\n- `OffsetDateTime::checked_to_offset` and\n`UtcDateTime::checked_to_offset` correctly return `None`\nfor all out-of-range values, rather than unexpectedly panicking in some\nsituations.\n\n###\n[`v0.3.54`](https://redirect.github.com/time-rs/time/blob/HEAD/CHANGELOG.md#0354-2026-07-20)\n\n[Compare\nSource](https://redirect.github.com/time-rs/time/compare/v0.3.53...v0.3.54)\n\n##### Added\n\n- `PrimitiveDateTime` has been renamed to `PlainDateTime`.\n- `Duration` has been renamed to `SignedDuration`.\n- Iteration is now possible over `Date`, `Month`, and `Weekday`.\nRelevant iterator methods have been\n  overridden to ensure maximum performance.\n\nFor both `PlainDateTime` and `SignedDuration`, a non-deprecated type\nalias has been added for\nbackwards compatibility. The new names should be preferred.\n\n##### Changed\n\n- The associated metadata type (for `powerfmt` implementations) for\nvarious types has been changed\nto `()` and made public. This guarantees that no additional metadata\nwill be present.\n\n##### Performance\n\n- More gains when parsing RFC 2822.\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yODAuMCIsInVwZGF0ZWRJblZlciI6IjQ0LjMuMiIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-08-04T21:58:32Z",
+          "tree_id": "f333bd12b2b91c123241a9bd5be277df91b0a843",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/850017b48e16ab3fb083a36210ddde0616500773"
+        },
+        "date": 1785889565123,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.1886315792798996,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 31.53540418437667,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 33.21349250076523,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 29.437109375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 29.8515625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94991.1563233463,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 95170.3396413794,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001862,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 796879.988302667,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1147643.2014178822,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 8.373196852143934,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 65.37713743536005,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.72960359941045,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 21.22421875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 21.59375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94991.75471569067,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94991.75471569067,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001736,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 1272994.538626372,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3002029.7095439485,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 13.40110562686658,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.98548397788652,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.1762401847575,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 20.103515625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.39453125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94990.04504327946,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94990.04504327946,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.002096,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3221171.334838636,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3033345.5870361114,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 33.91062014310029,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.77396676575175,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.06196451885415,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.9390625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.3671875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94975.02011184843,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94975.02011184843,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001891,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3130161.2730588163,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1166067.5901209381,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 32.957732142331174,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 36.72850741279979,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 36.99030661478599,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.757421875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.15625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94983.19980653792,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94983.19980653792,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001853,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 1264554.0071635556,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1156251.3661728376,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 13.313449217748015,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.026947367936372757,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.94876006749696,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.10767899899591,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.2546875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.53515625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94991.05659202187,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94965.45900203496,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001883,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2896872.706612182,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3004248.9112820555,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 30.504488021798604,
             "unit": "bytes/log",
             "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Egress Bytes Per Log"
           }
