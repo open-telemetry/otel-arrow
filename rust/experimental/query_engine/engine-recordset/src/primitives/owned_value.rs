@@ -178,7 +178,7 @@ pub(crate) fn try_convert_value(
             .convert_to_timespan()
             .map(|v| OwnedValue::TimeSpan(TimeSpanValueStorage::new(v))),
         ValueType::String => Some(OwnedValue::String(StringValueStorage::new(
-            value.to_string(),
+            value.convert_to_string().into(),
         ))),
         _ => None,
     }

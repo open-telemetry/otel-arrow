@@ -147,7 +147,16 @@ once_cell = "1.20.2"
 # this dependency, as it means moving the derive macros used in our
 # tests upstream. This is currently used by experimental logs
 # exporters, hence the "logs" feature.
-opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs"]}
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
+
+# Detector-only use: opentelemetry_sdk provides the `Resource` type and `ResourceDetector` trait;
+# opentelemetry provides the `Key`/`Value` types those resources hold. Both use
+# `default-features = false` to drop trace/metrics/logs. Two caveats keep this from being fully slim
+# today: opentelemetry_sdk 0.32.1 predates the slimming in opentelemetry-rust #3593 (unreleased), and
+# the contrib resource-detectors crate still enables opentelemetry's default features, so they are
+# pulled in transitively until fixed upstream.
+opentelemetry = { version = "0.32.0", default-features = false }
+opentelemetry_sdk = { version = "0.32.1", default-features = false }
 
 parking_lot = "0.12.5"
 paste = "1"
@@ -190,6 +199,7 @@ ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 zstd = "0.13"
 sysinfo = "0.39"
+temp-env = "0.3.6"
 tempfile = "3"
 thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
@@ -220,11 +230,11 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "b5978df35f07e1b3fca2fbead224d1011de1231d" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "b5978df35f07e1b3fca2fbead224d1011de1231d" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "b5978df35f07e1b3fca2fbead224d1011de1231d" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "b5978df35f07e1b3fca2fbead224d1011de1231d" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "b5978df35f07e1b3fca2fbead224d1011de1231d" } # v0.24.2
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "885d083428d047c3074a5393b08fda71a0b6c4ef" } # v0.24.2
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "885d083428d047c3074a5393b08fda71a0b6c4ef" } # v0.24.2
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "885d083428d047c3074a5393b08fda71a0b6c4ef" } # v0.24.2
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "885d083428d047c3074a5393b08fda71a0b6c4ef" } # v0.24.2
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "885d083428d047c3074a5393b08fda71a0b6c4ef" } # v0.24.2
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
@@ -237,15 +247,15 @@ cpu-time = "1.0.0"
 one_collect = "0.1.34811"
 
 # TODO: un-pin these dependencies as soon as Arc support is available in a released version: https://github.com/open-telemetry/otel-arrow/issues/3551
-azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00", default-features = false }
-azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00", default-features = false }
+azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "606bf947308148c86b1545964af6f4d0f8baf209", default-features = false }
+azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "606bf947308148c86b1545964af6f4d0f8baf209", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
 # TLS remains enabled through rustls-no-provider, with the provider installed at startup via crypto-* features.
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
-time = ">=0.3.47, <0.3.55"
+time = ">=0.3.47, <0.3.56"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
@@ -272,7 +282,10 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "16f987e29a0e91ea5dfe806121ddec5b929f8e06", default-features = false, features = ["tls-rustls"] }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "98aa6dc8717b372ab34ebe3247262379d4e33799", default-features = false, features = ["tls-rustls"] }
+# Pinned to a rev containing upstream resource detector work. Swap to a published version once
+# contrib cuts one.
+opentelemetry-resource-detectors = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "4f5296b92b2a8e50d2078e011fa04371b69a5cf6" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }

@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: query-engine
+note: Fix panics parsing OPL empty query and escape sequences
+issues: [3658]
