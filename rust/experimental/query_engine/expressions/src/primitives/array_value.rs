@@ -25,7 +25,7 @@ pub trait ArrayValue: Debug {
     fn get_item_range(&self, range: ArrayRange, item_callback: &mut dyn IndexValueCallback)
     -> bool;
 
-    fn to_string(&self, action: &mut dyn FnMut(&str)) {
+    fn to_string(&self) -> ValueString<'_> {
         let mut values = Vec::new();
 
         self.get_items(&mut IndexValueClosureCallback::new(|_, value| {
@@ -33,7 +33,7 @@ pub trait ArrayValue: Debug {
             true
         }));
 
-        (action)(serde_json::Value::Array(values).to_string().as_str())
+        ValueString::Owned(serde_json::Value::Array(values).to_string())
     }
 }
 

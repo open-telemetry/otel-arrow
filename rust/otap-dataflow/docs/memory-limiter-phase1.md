@@ -277,7 +277,10 @@ stateDiagram-v2
   when the threshold is crossed.
 - **Recovery from Soft** requires usage to drop below
   `soft_limit - hysteresis` before returning to `Normal`. This prevents
-  oscillation when usage hovers near the soft threshold.
+  oscillation when usage hovers near the soft threshold. When `hysteresis` is
+  omitted it defaults to `min(hard_limit - soft_limit, soft_limit / 10)`, a
+  narrow band so recovery happens once usage falls modestly below `soft_limit`
+  rather than only after it collapses toward zero.
 - **Recovery from Hard** requires usage to drop below `soft_limit`
   before returning to `Soft`.
 - Phase 1 does **not** implement cooldown timers. Those are planned for a

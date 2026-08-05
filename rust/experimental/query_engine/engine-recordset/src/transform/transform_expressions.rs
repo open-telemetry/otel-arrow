@@ -345,110 +345,111 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
         TransformExpression::ReduceMap(r) => {
             execute_map_reduce_transform_expression(execution_context, r)
         }
-        TransformExpression::RemoveMapKeys(r) => {
-            match r {
-                RemoveMapKeysTransformExpression::Remove(m) => {
-                    let target = m.get_target();
+        TransformExpression::RemoveMapKeys(r) => match r {
+            RemoveMapKeysTransformExpression::Remove(m) => {
+                let target = m.get_target();
 
-                    let map_keys = resolve_map_keys(execution_context, target, m)?;
+                let map_keys = resolve_map_keys(execution_context, target, m)?;
 
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Verbose,
-                        r,
-                        || format!("Resolved map keys: {map_keys}"),
-                    );
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    r,
+                    || format!("Resolved map keys: {map_keys}"),
+                );
 
-                    let target = execute_mutable_value_expression(execution_context, target)?;
+                let target = execute_mutable_value_expression(execution_context, target)?;
 
-                    match resolve_map_destination(target) {
-                        Some(mut target_map) => {
-                            for key in map_keys.keys {
-                                key.to_value().convert_to_string(&mut |k| {
-                                match target_map.remove(k) {
-                                    ValueMutRemoveResult::NotFound => {
-                                        execution_context.add_diagnostic_if_enabled(
-                                            RecordSetEngineDiagnosticLevel::Info,
-                                            r,
-                                            || format!("Map key {key} could not be found on target map"),
-                                        );
-                                    }
-                                    ValueMutRemoveResult::Removed(old) => {
-                                        execution_context.add_diagnostic_if_enabled(
-                                            RecordSetEngineDiagnosticLevel::Verbose,
-                                            r,
-                                            || format!(
+                match resolve_map_destination(target) {
+                    Some(mut target_map) => {
+                        for key in map_keys.keys {
+                            match target_map.remove(key.to_value().convert_to_string().as_ref()) {
+                                ValueMutRemoveResult::NotFound => {
+                                    execution_context.add_diagnostic_if_enabled(
+                                        RecordSetEngineDiagnosticLevel::Info,
+                                        r,
+                                        || {
+                                            format!(
+                                                "Map key {key} could not be found on target map"
+                                            )
+                                        },
+                                    );
+                                }
+                                ValueMutRemoveResult::Removed(old) => {
+                                    execution_context.add_diagnostic_if_enabled(
+                                        RecordSetEngineDiagnosticLevel::Verbose,
+                                        r,
+                                        || {
+                                            format!(
                                                 "Removed map key {key} on target with value: {}",
                                                 ResolvedValue::Computed(old)
-                                            ),
-                                        );
-                                    }
+                                            )
+                                        },
+                                    );
                                 }
-                            });
                             }
                         }
-                        None => {
-                            execution_context.add_diagnostic_if_enabled(
-                                RecordSetEngineDiagnosticLevel::Warn,
-                                r,
-                                || "Destination map could not be resolved".into(),
-                            );
-                        }
                     }
-
-                    Ok(())
-                }
-                RemoveMapKeysTransformExpression::Retain(m) => {
-                    let target = m.get_target();
-
-                    let map_keys = resolve_map_keys(execution_context, target, m)?;
-
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Verbose,
-                        r,
-                        || format!("Resolved map keys: {map_keys}"),
-                    );
-
-                    let target = execute_mutable_value_expression(execution_context, target)?;
-
-                    match resolve_map_destination(target) {
-                        Some(mut target_map) => {
-                            let mut key_map: HashSet<Box<str>> = HashSet::new();
-                            for key in map_keys.keys {
-                                key.to_value().convert_to_string(&mut |s| {
-                                    key_map.insert(s.into());
-                                });
-                            }
-                            target_map.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
-                                if key_map.contains(k) {
-                                    return true;
-                                }
-
-                                execution_context.add_diagnostic_if_enabled(
-                                    RecordSetEngineDiagnosticLevel::Verbose,
-                                    r,
-                                    || {
-                                        format!(
-                                            "Removing map key '{k}' from target with value: {}",
-                                            ResolvedValue::Value(v.to_value()),
-                                        )
-                                    },
-                                );
-                                false
-                            }));
-                        }
-                        None => {
-                            execution_context.add_diagnostic_if_enabled(
-                                RecordSetEngineDiagnosticLevel::Warn,
-                                r,
-                                || "Destination map could not be resolved".into(),
-                            );
-                        }
+                    None => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            r,
+                            || "Destination map could not be resolved".into(),
+                        );
                     }
-
-                    Ok(())
                 }
+
+                Ok(())
             }
-        }
+            RemoveMapKeysTransformExpression::Retain(m) => {
+                let target = m.get_target();
+
+                let map_keys = resolve_map_keys(execution_context, target, m)?;
+
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    r,
+                    || format!("Resolved map keys: {map_keys}"),
+                );
+
+                let target = execute_mutable_value_expression(execution_context, target)?;
+
+                match resolve_map_destination(target) {
+                    Some(mut target_map) => {
+                        let mut key_map: HashSet<Box<str>> = HashSet::new();
+                        for key in map_keys.keys {
+                            let s: String = key.to_value().convert_to_string().into();
+                            key_map.insert(s.into());
+                        }
+                        target_map.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
+                            if key_map.contains(k) {
+                                return true;
+                            }
+
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Verbose,
+                                r,
+                                || {
+                                    format!(
+                                        "Removing map key '{k}' from target with value: {}",
+                                        ResolvedValue::Value(v.to_value()),
+                                    )
+                                },
+                            );
+                            false
+                        }));
+                    }
+                    None => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            r,
+                            || "Destination map could not be resolved".into(),
+                        );
+                    }
+                }
+
+                Ok(())
+            }
+        },
         TransformExpression::RenameMapKeys(r) => {
             execute_rename_map_keys_transform_expression(execution_context, r)
         }
