@@ -965,6 +965,7 @@ impl PartitionerStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rdkafka::config::RDKafkaLogLevel;
 
     // ---- SignalConfig ----
 
@@ -1147,6 +1148,10 @@ mod tests {
         assert!(KafkaExporterConfig::try_from(builder).is_ok());
     }
 
+    /// Scenario (section 8, timeout limits): a config sets `timeout_ms` to `0`.
+    /// Guarantees: validation rejects `0` (which maps to librdkafka's infinite
+    /// `message.timeout.ms`), so an infinite delivery timeout can never block
+    /// the exporter's bounded shutdown; the error names `timeout_ms`.
     #[test]
     fn test_try_from_zero_timeout_fails() {
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
@@ -1156,6 +1161,11 @@ mod tests {
         assert!(err.contains("timeout_ms"));
     }
 
+    /// Scenario (section 8, timeout limits): a config sets `timeout_ms` just
+    /// above `MAX_TIMEOUT_MS`.
+    /// Guarantees: validation rejects any value greater than the 30s ceiling,
+    /// so an unreasonably large delivery timeout cannot delay shutdown; the
+    /// error names `timeout_ms`.
     #[test]
     fn test_try_from_excessive_timeout_fails() {
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
@@ -1165,6 +1175,10 @@ mod tests {
         assert!(err.contains("timeout_ms"));
     }
 
+    /// Scenario (section 8, timeout limits): a config sets `timeout_ms` exactly
+    /// to `MAX_TIMEOUT_MS`.
+    /// Guarantees: the inclusive upper bound is accepted, so the documented
+    /// maximum is usable (the bound is `<=`, not `<`).
     #[test]
     fn test_try_from_max_timeout_succeeds() {
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
@@ -1173,9 +1187,13 @@ mod tests {
         assert!(KafkaExporterConfig::try_from(builder).is_ok());
     }
 
+    /// Scenario (section 8, timeout limits): a config omits `timeout_ms` and
+    /// takes the serde default.
+    /// Guarantees: the default (5000 ms) is within the valid range and is
+    /// applied, so an unconfigured exporter has a bounded, valid delivery
+    /// timeout.
     #[test]
     fn test_try_from_default_timeout_succeeds() {
-        // The serde default (5000) must remain valid.
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
             .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto));
         let config = KafkaExporterConfig::try_from(builder).unwrap();
@@ -1676,6 +1694,11 @@ mod tests {
 
     // ---- overridden_producer_config_keys ----
 
+    /// Scenario (section 8, escape-hatch precedence): `producer_config` mixes
+    /// keys managed by first-class fields with an unmanaged custom key.
+    /// Guarantees: `overridden_producer_config_keys` reports exactly the managed
+    /// keys (the operator-warning surface) and ignores unmanaged keys, so the
+    /// exporter warns only about settings a first-class field will overwrite.
     #[test]
     fn overridden_keys_detects_conflicts() {
         let overrides = HashMap::from([
@@ -1695,6 +1718,11 @@ mod tests {
         assert_eq!(conflicts, vec!["bootstrap.servers", "linger.ms"]);
     }
 
+    /// Scenario (section 8, escape-hatch precedence): `producer_config` contains
+    /// only keys with no first-class-field counterpart.
+    /// Guarantees: `overridden_producer_config_keys` is empty, so purely
+    /// advanced tuning knobs pass through the escape hatch without triggering a
+    /// spurious override warning.
     #[test]
     fn overridden_keys_empty_when_no_conflicts() {
         let custom = HashMap::from([("custom.setting".into(), "value".into())]);
@@ -1710,8 +1738,8 @@ mod tests {
 
     // ---- Security: allow.auto.create.topics (default-deny) ----
 
-    /// Scenario: build the librdkafka client config from a default exporter
-    /// config.
+    /// Scenario (section 8, escape-hatch precedence): build the librdkafka
+    /// client config from a default exporter config.
     /// Guarantees: `allow.auto.create.topics` is explicitly set to `false` by
     /// default, so a client-controlled routing header cannot rely on the broker
     /// auto-creating arbitrary topics.
@@ -1725,7 +1753,8 @@ mod tests {
         assert_eq!(client.get("allow.auto.create.topics"), Some("false"));
     }
 
-    /// Scenario: an operator explicitly opts in to broker auto-creation.
+    /// Scenario (section 8, escape-hatch precedence): an operator explicitly
+    /// opts in to broker auto-creation.
     /// Guarantees: `with_allow_auto_create_topics(true)` sets
     /// `allow.auto.create.topics` to `true` in the built client config.
     #[test]
@@ -1739,8 +1768,8 @@ mod tests {
         assert_eq!(client.get("allow.auto.create.topics"), Some("true"));
     }
 
-    /// Scenario: a `producer_config` passthrough tries to set
-    /// `allow.auto.create.topics`.
+    /// Scenario (section 8, escape-hatch precedence): a `producer_config`
+    /// passthrough tries to set `allow.auto.create.topics`.
     /// Guarantees: the key is a managed key -- the first-class field wins in the
     /// built config, and the conflict is reported by
     /// `overridden_producer_config_keys` so the operator is warned.
@@ -1764,6 +1793,146 @@ mod tests {
                 .overridden_producer_config_keys()
                 .contains(&"allow.auto.create.topics"),
             "auto-create should be a managed key so the override is reported"
+        );
+    }
+
+    // ---- Configuration & packaging: timeout mapping and escape-hatch precedence ----
+
+    /// Scenario (section 8, timeout limits): a validated `timeout_ms` is turned
+    /// into an rdkafka client config.
+    /// Guarantees: `timeout_ms` maps to librdkafka's `message.timeout.ms` with
+    /// the exact configured value, so the per-delivery deadline the exporter
+    /// relies on for bounded shutdown is actually applied to the producer.
+    #[test]
+    fn build_client_config_maps_timeout_to_message_timeout_ms() {
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_timeout_ms(1234)
+            .try_into()
+            .unwrap();
+        let client = config.build_client_config();
+        assert_eq!(client.get("message.timeout.ms"), Some("1234"));
+    }
+
+    /// Scenario (section 8, escape-hatch precedence): `producer_config` supplies
+    /// values for keys that also have first-class fields, alongside the
+    /// first-class fields themselves.
+    /// Guarantees: `producer_config` is applied first and every managed
+    /// first-class field overrides the conflicting passthrough in the built
+    /// client config, so an operator cannot accidentally (or maliciously)
+    /// subvert a managed setting through the escape hatch.
+    #[test]
+    fn first_class_fields_override_producer_config_passthrough() {
+        let overrides = HashMap::from([
+            ("bootstrap.servers".to_string(), "evil:9999".to_string()),
+            ("client.id".to_string(), "evil-client".to_string()),
+            ("message.timeout.ms".to_string(), "0".to_string()),
+            ("compression.type".to_string(), "gzip".to_string()),
+            ("request.required.acks".to_string(), "0".to_string()),
+            ("linger.ms".to_string(), "99999".to_string()),
+            ("partitioner".to_string(), "murmur2".to_string()),
+        ]);
+        let config: KafkaExporterConfig =
+            KafkaExporterConfigBuilder::new("real-broker:9092", "real-client")
+                .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+                .with_timeout_ms(2000)
+                .with_compression(CompressionType::Zstd)
+                .with_required_acks(RequiredAcks::All)
+                .with_linger_ms(5)
+                .with_partitioning_strategy(PartitionerStrategy::ConsistentRandom)
+                .with_producer_config(overrides)
+                .try_into()
+                .unwrap();
+
+        let client = config.build_client_config();
+        // Each first-class field wins over the conflicting passthrough value.
+        assert_eq!(client.get("bootstrap.servers"), Some("real-broker:9092"));
+        assert_eq!(client.get("client.id"), Some("real-client"));
+        assert_eq!(client.get("message.timeout.ms"), Some("2000"));
+        assert_eq!(client.get("compression.type"), Some("zstd"));
+        assert_eq!(client.get("request.required.acks"), Some("-1"));
+        assert_eq!(client.get("linger.ms"), Some("5"));
+        assert_eq!(client.get("partitioner"), Some("consistent_random"));
+
+        // The conflicts are also reported so the exporter can warn the operator.
+        let mut conflicts = config.overridden_producer_config_keys();
+        conflicts.sort_unstable();
+        assert_eq!(
+            conflicts,
+            vec![
+                "bootstrap.servers",
+                "client.id",
+                "compression.type",
+                "linger.ms",
+                "message.timeout.ms",
+                "partitioner",
+                "request.required.acks",
+            ]
+        );
+    }
+
+    /// Scenario (section 8, escape-hatch precedence): `producer_config` sets a
+    /// tuning knob that is not managed by any first-class field.
+    /// Guarantees: an unmanaged passthrough key survives unchanged into the
+    /// built client config (the escape hatch remains usable for advanced
+    /// librdkafka knobs) and is not flagged as an overridden key.
+    #[test]
+    fn unmanaged_producer_config_passes_through() {
+        let overrides = HashMap::from([(
+            "queue.buffering.max.messages".to_string(),
+            "100000".to_string(),
+        )]);
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_producer_config(overrides)
+            .try_into()
+            .unwrap();
+
+        let client = config.build_client_config();
+        assert_eq!(client.get("queue.buffering.max.messages"), Some("100000"));
+        assert!(config.overridden_producer_config_keys().is_empty());
+    }
+
+    /// Scenario (section 8, escape-hatch precedence): both `producer_config` and
+    /// the first-class `debug` field try to set librdkafka's `debug` contexts.
+    /// Guarantees: the first-class `debug` field is applied last and overrides
+    /// the `producer_config` passthrough, so debug logging is driven by the
+    /// managed field rather than the escape hatch.
+    #[test]
+    fn debug_field_overrides_producer_config_debug() {
+        let overrides = HashMap::from([("debug".to_string(), "broker".to_string())]);
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_producer_config(overrides)
+            .with_debug(vec![DebugContext::Security])
+            .try_into()
+            .unwrap();
+
+        let client = config.build_client_config();
+        assert_eq!(
+            client.get("debug"),
+            Some("security"),
+            "the first-class debug field is applied last and wins"
+        );
+    }
+
+    /// Scenario (section 8, escape-hatch precedence): the first-class
+    /// `log_level` field is configured.
+    /// Guarantees: `build_client_config` applies the configured log level to the
+    /// rdkafka client (a first-class-only setting with no `producer_config`
+    /// string equivalent), so operator-selected verbosity takes effect.
+    #[test]
+    fn log_level_first_class_is_applied() {
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_log_level(LogLevel::Debug)
+            .try_into()
+            .unwrap();
+        let client = config.build_client_config();
+        // RDKafkaLogLevel does not implement PartialEq, so compare via Debug.
+        assert_eq!(
+            format!("{:?}", client.log_level),
+            format!("{:?}", RDKafkaLogLevel::Debug)
         );
     }
 
