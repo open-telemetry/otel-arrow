@@ -16,4 +16,4 @@ mod models;
 pub mod bearer_token_authorizer;
 pub mod bearer_token_provider;
 
-pub use models::{AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason};
+pub use models::{AuthorizedIdentity, AuthzDecision, BearerToken, ClaimValue, DenyReason};

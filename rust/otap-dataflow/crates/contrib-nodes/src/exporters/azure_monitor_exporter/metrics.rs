@@ -16,7 +16,7 @@ pub use otap_df_telemetry::common_attributes::{
     SignalRegistrationAttributes as ExportSignalAttributes,
 };
 use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc, MmscSnapshot};
+use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -196,7 +196,7 @@ impl AzureMonitorExporterMetricsTracker {
 
     #[inline]
     #[must_use]
-    pub(super) fn batch_size(&self) -> MmscSnapshot {
+    pub(super) fn batch_size(&self) -> Mmsc {
         self.operational_metrics.batch_size.get()
     }
 
