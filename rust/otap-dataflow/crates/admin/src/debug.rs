@@ -10,20 +10,25 @@
 //!   shutdown responsive.
 
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::get;
+use pprof::protos::Message;
+use serde::Deserialize;
 
 #[cfg(all(feature = "jemalloc-pprof", not(windows)))]
 use axum::{body::Body, http::header};
 #[cfg(all(feature = "jemalloc-pprof", not(windows)))]
 use std::panic::AssertUnwindSafe;
+use std::time::Duration;
 
 use crate::AppState;
 
 pub(crate) fn routes() -> Router<AppState> {
-    Router::new().route("/debug/pprof/heap", get(get_heap_profile))
+    Router::new()
+    .route("/debug/pprof/heap", get(get_heap_profile))
+    .route("/debug/pprof/profile", get(get_cpu_profile))
 }
 
 async fn get_heap_profile(State(state): State<AppState>) -> Result<Response, (StatusCode, String)> {
@@ -114,4 +119,68 @@ async fn get_heap_profile(State(state): State<AppState>) -> Result<Response, (St
             "Heap profiling is not available in this build".into(),
         ))
     }
+}
+
+/// Querystring parameters for /profile endpoint
+#[derive(Deserialize)]
+struct CpuProfileParams {
+    /// How long (in seconds) to sample CPU. If the parameter is not specified, the default will
+    /// be 30 seconds
+    seconds: Option<u16>,
+
+    /// profile sampling frequency. Default = 100 (sample each 10ms)
+    frequency: Option<u16>,
+}
+
+async fn get_cpu_profile(
+    State(_state): State<AppState>,
+    Query(params): Query<CpuProfileParams>,
+) -> Result<Response, (StatusCode, String)> {
+    // start profile
+    let profile_builder =
+        pprof::ProfilerGuardBuilder::default().frequency(params.frequency.unwrap_or(100) as i32);
+    let guard = profile_builder.build().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not build profiler: {e}"),
+        )
+    })?;
+
+    // sleep for profile duration
+    let profile_time = Duration::from_secs(params.seconds.unwrap_or(30) as u64);
+    tokio::time::sleep(profile_time).await;
+
+    // finish profiling
+    let report = guard.report().build().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not build profile report: {e}"),
+        )
+    })?;
+
+    // encode profile as proto-encoded pprof
+    let pprof = match report.pprof() {
+        Ok(pprof) => pprof.encode_to_vec(),
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not proto-encode profile report: {e}"),
+            ));
+        }
+    };
+
+    // return response
+    let body = Body::from(pprof);
+    let resp = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .body(body)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not dump profile pprof: {e}"),
+            )
+        })?;
+
+    Ok(resp)
 }
