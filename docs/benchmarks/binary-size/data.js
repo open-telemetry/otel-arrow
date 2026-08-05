@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785890606659,
+  "lastUpdate": 1785971502104,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -6759,6 +6759,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 99.03,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mateenali66@gmail.com",
+            "name": "Mateen Anjum",
+            "username": "mateenali66"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4c14a8e2a1bf644784a2e65040fd7c479757a7d5",
+          "message": "chore(ci): track df_engine .text size and per-crate bloat on merges to main (#3586)\n\n# Change Summary\n\nadds the missing pieces from #2673 to the binary size workflow: a\npush-to-main trigger so metrics land per merge (was daily cron only),\nand a native cargo-bloat job on amd64 + arm64 that builds with symbols\nand records the `.text` section size plus the top 10 crate contributions\nper arch (tracked separately per arch, as preferred in the issue\ndiscussion). the docker job is untouched, it keeps measuring the shipped\nstripped size.\n\nalso fixed the summary merge: `jq -s 'map(.[0])'` only kept the first\nentry of each report file, which would have dropped the new multi-entry\nbloat reports. switched to `add`, and the results table now prints every\nmetric.\n\none thing to watch: the 110% alert threshold now also applies to the\nper-crate series. crate attribution can shift when inlining changes, so\nif that alerts too often the crate series could move to a separate\nbenchmark step with a higher threshold.\n\n## What issue does this PR close?\n\n* Closes #2673\n\n## How are these changes tested?\n\nran the full workflow end to end via workflow_dispatch on my fork (both\narches, docker + bloat jobs + summary):\nhttps://github.com/mateenali66/otel-arrow/actions/runs/30155340424.\ncargo-bloat's json schema (`file-size`, `text-section-size`, `crates[]`)\nand the jq transform were also verified locally against captured output.\n\n## Are there any user-facing changes?\n\nno, CI only.\n\n### Changelog\n\n* [ ] Added a `.chloggen/*.yaml` entry\n* [x] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.\n\n---------\n\nSigned-off-by: Mateen Anjum <mateenali66@gmail.com>",
+          "timestamp": "2026-08-05T22:05:04Z",
+          "tree_id": "c64bd0427556d8af2960ee11dccd6d0677cab1fb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/4c14a8e2a1bf644784a2e65040fd7c479757a7d5"
+        },
+        "date": 1785971487260,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 80.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.9,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 67.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.16,
             "unit": "MB"
           }
         ]
