@@ -127,6 +127,14 @@ pub enum MetricValue {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DistributionSummary {
     /// Minimum observed value.
+    ///
+    /// Defaulted because the admin serializer omits it, along with `max` and
+    /// `sum`, for a distribution that observed nothing: they carry no meaning
+    /// without an observation, and reporting them would invite a consumer to
+    /// read a zero as a measurement. `count` needs no default, since it is
+    /// written for every distribution including the empty one; a payload
+    /// missing it is malformed, and failing to parse says so rather than
+    /// quietly producing an empty distribution.
     #[serde(default)]
     pub min: f64,
     /// Maximum observed value.

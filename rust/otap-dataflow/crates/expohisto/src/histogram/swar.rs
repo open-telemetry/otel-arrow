@@ -35,7 +35,7 @@ fn step_u16_u32(w: u64) -> u64 {
     (w & 0x0000_FFFF_0000_FFFF) + ((w >> 16) & 0x0000_FFFF_0000_FFFF)
 }
 
-/// U32 to U64: sum pair of 32-bit lanes.
+/// U32 to U64: sum the pair of 32-bit lanes.
 #[inline(always)]
 fn step_u32_u64(w: u64) -> u64 {
     (w & 0x0000_0000_FFFF_FFFF) + (w >> 32)

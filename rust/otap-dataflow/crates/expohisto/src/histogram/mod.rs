@@ -158,7 +158,7 @@ pub struct HistogramNN<const N: usize> {
     word_end: i32,
 
     // This field omits zero_count; it is implied by the difference
-    // between Stats.count and sum of data counts.
+    // between Stats.count and the sum of the data counts.
     stats: Stats,
 
     data: [u64; N],
@@ -392,11 +392,13 @@ impl<const N: usize> HistogramNN<N> {
         Ok(())
     }
 
-    /// Fewest words a histogram may hold. This ensures MIN_SCALE
-    /// covers the full range at u64 width.
+    /// The fewest words a histogram may hold, which is what lets `MIN_SCALE`
+    /// cover the whole value range at u64 width.
     pub const MIN_WORDS: usize = 2;
 
-    /// Most words a histogram may hold. This is for sanity.
+    /// The most words a histogram may hold, enforced as a compile-time bound
+    /// so that an implausible pool size fails to build rather than reserving
+    /// the space.
     pub const MAX_WORDS: usize = 250;
 
     /// Compile-time bounds check on `N`, forced by `new`. A violation
