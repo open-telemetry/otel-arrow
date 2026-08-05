@@ -61,6 +61,11 @@ rest of the run: human-readable engine diagnostics and the output of any
 `pretty` console exporter are routed to stderr instead, so they cannot corrupt
 it.
 
+That claim is made when each exporter is created, and pipelines are built
+concurrently. A `pretty` exporter that emits during the startup window, before
+any `record_json` exporter has been created, can still reach stdout. Configure
+one console output format per process when stdout must be machine readable.
+
 The integrity guarantee covers output submitted through this writer only. It
 excludes writers that bypass it: raw file descriptors, inherited child
 processes, the debug processor's console fallback, last-resort messages emitted

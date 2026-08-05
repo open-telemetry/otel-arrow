@@ -248,11 +248,13 @@ impl Exporter<OtapPdata> for ConsoleExporter {
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        let output = self.output_handle();
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
+                    // Resolved per payload: another pipeline can claim stdout for
+                    // records after this exporter has already started.
+                    let output = self.output_handle();
                     self.export(data.payload_ref(), &output).await;
                     effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }
@@ -1235,20 +1237,22 @@ mod tests {
             });
     }
 
-    /// Scenario: a pretty exporter and a record JSON exporter run in the same process.
-    /// Guarantees: record JSON keeps stdout while pretty output moves to the diagnostics
-    /// stream, so a co-configured pretty exporter cannot make stdout unparseable.
+    /// Scenario: a pretty exporter already exists when another exporter claims stdout
+    /// for machine-readable records.
+    /// Guarantees: the pretty exporter re-resolves its stream and moves to stderr, so a
+    /// stream cached at construction cannot keep prose on a structured stdout.
     #[test]
     fn pretty_output_steps_aside_once_stdout_carries_records() {
-        // The latch is process-wide and monotonic, matching a record JSON exporter
-        // having been created anywhere in this process.
-        OutputService::mark_structured_stdout();
-
+        // Built before the claim: a construction-time binding would keep stdout.
         let pretty = ConsoleExporter::new(ConsoleExporterConfig::default());
         let records = ConsoleExporter::new(ConsoleExporterConfig {
             format: ConsoleOutputFormat::RecordJson,
             ..ConsoleExporterConfig::default()
         });
+
+        // The latch is process-wide and monotonic, matching a record JSON exporter
+        // having been created anywhere in this process.
+        OutputService::mark_structured_stdout();
 
         assert_eq!(pretty.output_handle().stream_id(), StreamId::Stderr);
         assert_eq!(records.output_handle().stream_id(), StreamId::Stdout);

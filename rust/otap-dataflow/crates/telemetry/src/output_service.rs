@@ -796,16 +796,38 @@ fn flush_sink(id: StreamId, sink: &mut dyn OutputSink, shared: &StreamShared) ->
 fn report_failure(id: StreamId, shared: &StreamShared, error: &io::Error) {
     let _ = shared.write_errors.fetch_add(1, Ordering::Relaxed);
     shared.unavailable.store(true, Ordering::Release);
-    if id == StreamId::Stdout {
+    match id {
         // The self-tracing layer routes errors to stderr, so this cannot
         // recurse into the stream that just failed.
-        otel_error!(
+        StreamId::Stdout => otel_error!(
             "output_service.write_failed",
             stream = id.as_str(),
             error = ?error,
             message = "Console writer stopped after a write or flush error"
-        );
+        ),
+        // Diagnostics normally go to stderr, which is the stream that just died.
+        StreamId::Stderr => report_dead_stderr_on_stdout(error),
     }
+}
+
+/// Last-resort notice that the stderr writer stopped, emitted on stdout.
+///
+/// Skipped when stdout carries records, because a prose line there would break
+/// the guarantee this service exists to provide. The failure stays visible in
+/// `write_errors` and in [`ShutdownOutcome::writer_failed`].
+fn report_dead_stderr_on_stdout(error: &io::Error) {
+    if OutputService::structured_stdout() {
+        return;
+    }
+    let stdout = OutputService::stdout();
+    // Without a running service the failed stream is a caller-owned one, so the
+    // process stdout is not ours to write to.
+    if stdout.is_direct() {
+        return;
+    }
+    let _ = stdout.try_submit(Frame::line(&format!(
+        "otap: stderr console writer stopped after a write or flush error: {error}"
+    )));
 }
 
 /// The process-wide streams held by [`SERVICE`].
@@ -1203,7 +1225,8 @@ mod tests {
     #[tokio::test]
     async fn write_error_makes_the_stream_unavailable() {
         // Uses the stderr stream so the failure report cannot reach the stream
-        // under test; stdout failures are reported through otel_error! to stderr.
+        // under test: a dead stderr writer is reported on stdout, and a dead
+        // stdout writer is reported through otel_error! to stderr.
         let sink = TestSink::new().failing_after(1);
         let mut stream =
             OutputStream::start(StreamId::Stderr, 4, true, Box::new(sink.clone())).expect("spawn");
