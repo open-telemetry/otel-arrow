@@ -7480,6 +7480,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "otap-df-expohisto"
+version = "0.50.0"
+dependencies = [
+ "criterion",
+]
+
+[[package]]
 name = "otap-df-otap"
 version = "0.50.0"
 dependencies = [
@@ -7735,11 +7742,13 @@ version = "0.50.0"
 dependencies = [
  "bytes",
  "chrono",
+ "criterion",
  "flume",
  "opentelemetry",
  "opentelemetry-resource-detectors",
  "opentelemetry_sdk",
  "otap-df-config",
+ "otap-df-expohisto",
  "otap-df-pdata",
  "otap-df-pdata-views",
  "otap-df-telemetry-macros",
