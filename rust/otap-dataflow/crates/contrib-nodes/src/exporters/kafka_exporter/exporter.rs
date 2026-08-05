@@ -38,7 +38,6 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer as PdataProducer;
-use otap_df_telemetry::metrics::MetricSet;
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::FromClientConfigAndContext;
 use rdkafka::message::{Header, OwnedHeaders};
@@ -155,7 +154,7 @@ pub struct KafkaExporter {
     #[cfg(not(feature = "aws"))]
     producer: ExporterFutureProducer<DefaultClientContext>,
     pdata_producer: PdataProducer,
-    metrics: MetricSet<KafkaExporterMetrics>,
+    metrics: KafkaExporterMetrics,
 }
 
 /// Factory registration for the Kafka exporter.
@@ -232,7 +231,7 @@ impl KafkaExporter {
             config,
             producer,
             pdata_producer: PdataProducer::default(),
-            metrics: pipeline_ctx.register_metrics::<KafkaExporterMetrics>(),
+            metrics: KafkaExporterMetrics::register(&pipeline_ctx),
         })
     }
 
@@ -532,7 +531,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     mut metrics_reporter,
                 }) => {
                     // Flush exporter metrics into the telemetry registry.
-                    _ = metrics_reporter.report(&mut self.metrics);
+                    _ = self.metrics.report(&mut metrics_reporter);
                 }
                 Message::Control(NodeControlMsg::Ack(_ack)) => {
                     // Track ack receipt without spamming logs
@@ -556,7 +555,10 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     self.drain_and_flush(deadline, &effect_handler).await;
 
                     effect_handler.info("Kafka exporter stopped").await;
-                    return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
+                    return Ok(TerminalState::new(
+                        deadline,
+                        self.metrics.terminal_snapshots(),
+                    ));
                 }
                 Message::Control(_) => {
                     // Ignore other control messages
