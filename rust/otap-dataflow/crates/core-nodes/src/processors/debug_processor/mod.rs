@@ -890,7 +890,6 @@ mod tests {
                         for (field, value) in iter {
                             if field.name == "consumed.events" {
                                 if let otap_df_telemetry::metrics::MetricValue::U64(c) = value {
-<<<<<<< HEAD
                                     expected_log_events = *c;
                                 }
                             }
