@@ -474,8 +474,11 @@ impl<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.active_instances > 0
-            || !state.runtime_instances.is_empty()
+            || state.runtime_instances.values().any(|instance| {
+                matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+            })
             || !state.active_rollouts.is_empty()
+            || !state.active_shutdowns.is_empty()
             || state.active_engine_operation.is_some()
     }
 
