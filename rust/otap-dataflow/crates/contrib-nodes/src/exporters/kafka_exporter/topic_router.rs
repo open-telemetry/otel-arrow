@@ -609,13 +609,18 @@ mod tests {
         let config = make_signal_config("fallback", Some("x-topic"));
         let allowed = compile(&["tenant_.*"]);
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "tenant_a_logs")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
 
         let topic = TopicRouter::resolve(&config, Some(&allowed), &ctx, &mut metrics)
             .expect("allowed topic");
         assert_eq!(&*topic, "tenant_a_logs");
-        assert_eq!(metrics.topic_from_header.get(), 1);
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
+        assert_eq!(
+            metrics.operational_metrics.topic_from_static_config.get(),
+            0
+        );
     }
 
     /// Scenario: patterns are compiled exactly as the operator provides them,
@@ -624,25 +629,28 @@ mod tests {
     fn test_regex_allowlist_matches_pattern_as_provided() {
         let config = make_signal_config("fallback", Some("x-topic"));
 
-
         let allowed = compile(&["tenant_.*"]);
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "x-tenant_evil")]);
-        let mut metrics = KafkaExporterMetrics::default();
-        let topic = TopicRouter::resolve(&config, Some(allowed), &ctx, &mut metrics)
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
+        let topic = TopicRouter::resolve(&config, Some(&allowed), &ctx, &mut metrics)
             .expect("unanchored pattern matches substring");
         assert_eq!(&*topic, "x-tenant_evil");
-        assert_eq!(metrics.topic_from_header.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
 
         // regex should block topic
         let allowed_2 = compile(&["^tenant_.*$"]);
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "x-tenant_evil")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
         let result = TopicRouter::resolve(&config, Some(&allowed_2), &ctx, &mut metrics);
         assert!(matches!(
             result,
             Err(KafkaExporterError::DisallowedHeaderTopic { .. })
         ));
-        assert_eq!(metrics.topic_from_header.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 
     /// Scenario: a syntactically valid header-supplied topic that matches
@@ -656,15 +664,20 @@ mod tests {
         let config = make_signal_config("fallback", Some("x-topic"));
         let allowed = compile(&["tenant_.*"]);
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "evil-topic")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
 
         let result = TopicRouter::resolve(&config, Some(&allowed), &ctx, &mut metrics);
         assert!(matches!(
             result,
             Err(KafkaExporterError::DisallowedHeaderTopic { .. })
         ));
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
-        assert_eq!(metrics.topic_from_header.get(), 0);
+        assert_eq!(
+            metrics.operational_metrics.topic_from_static_config.get(),
+            0
+        );
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 
     /// Scenario: a header-supplied topic that exactly matches the exact-match
@@ -676,11 +689,13 @@ mod tests {
         let config = make_signal_config("fallback", Some("x-topic"))
             .with_allowed_topics(["approved-a", "approved-b"]);
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "approved-b")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
 
         let topic = TopicRouter::resolve(&config, None, &ctx, &mut metrics).expect("allowed topic");
         assert_eq!(&*topic, "approved-b");
-        assert_eq!(metrics.topic_from_header.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
     }
 
     /// Scenario: a header topic matches an entry in the exact allowlist while a
@@ -691,7 +706,9 @@ mod tests {
         let config =
             make_signal_config("fallback", Some("x-topic")).with_allowed_topics(["special-topic"]);
         let allowed = compile(&["tenant_.*"]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
 
         // Matches exact allowlist (not the regex).
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "special-topic")]);
@@ -721,11 +738,13 @@ mod tests {
     fn test_no_constraint_allows_any_valid_header_topic() {
         let config = make_signal_config("fallback", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "anything-valid")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
 
         let topic = TopicRouter::resolve(&config, None, &ctx, &mut metrics).expect("valid topic");
         assert_eq!(&*topic, "anything-valid");
-        assert_eq!(metrics.topic_from_header.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
     }
 
     /// Scenario: an allowlist is configured, but the request uses the static
@@ -739,12 +758,17 @@ mod tests {
         let config = make_signal_config("fallback", Some("x-topic"));
         let allowed = compile(&["tenant_.*"]);
         let ctx = Context::default();
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
 
         let topic = TopicRouter::resolve(&config, Some(&allowed), &ctx, &mut metrics)
             .expect("static topic");
         assert_eq!(&*topic, "fallback");
-        assert_eq!(metrics.topic_from_static_config.get(), 1);
-        assert_eq!(metrics.topic_from_header.get(), 0);
+        assert_eq!(
+            metrics.operational_metrics.topic_from_static_config.get(),
+            1
+        );
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 }

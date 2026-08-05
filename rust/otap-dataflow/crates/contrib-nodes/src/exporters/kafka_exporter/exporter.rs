@@ -2076,7 +2076,7 @@ pub mod test_support {
         /// with zero `logs.failed` (ACK-side accounting on success).
         #[tokio::test]
         async fn delivery_success_increments_exported() {
-            use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
             let topic = "it-delivery-exported";
             const N: usize = 5;
             with_cluster(
@@ -2102,15 +2102,14 @@ pub mod test_support {
 
                     exporter.shutdown(Duration::from_secs(5)).await;
                     let ts = exporter.await_terminal_state().await;
-                    let mut m = FoldedMetrics::new();
-                    m.fold_all(ts.metrics());
+                    let snaps = ts.metrics();
                     assert_eq!(
-                        m.value("logs_exported"),
+                        kafka_exports(snaps, "logs", "success"),
                         N as u64,
-                        "every delivered batch should increment logs.exported"
+                        "every delivered batch should increment the logs success bucket"
                     );
                     assert_eq!(
-                        m.value("logs_failed"),
+                        kafka_exports(snaps, "logs", "failure"),
                         0,
                         "no batch should be counted as failed on the success path"
                     );
@@ -2126,7 +2125,7 @@ pub mod test_support {
         /// reflects the delivery-callback failure.
         #[tokio::test]
         async fn produce_failure_increments_failed() {
-            use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
             use rdkafka::types::RDKafkaRespErr;
             let topic = "it-delivery-failed";
             with_cluster(
@@ -2158,15 +2157,14 @@ pub mod test_support {
 
                     exporter.shutdown(Duration::from_secs(5)).await;
                     let ts = exporter.await_terminal_state().await;
-                    let mut m = FoldedMetrics::new();
-                    m.fold_all(ts.metrics());
+                    let snaps = ts.metrics();
                     assert_eq!(
-                        m.value("logs_failed"),
+                        kafka_exports(snaps, "logs", "failure"),
                         1,
                         "a broker-rejected produce should count as one failed batch"
                     );
                     assert_eq!(
-                        m.value("logs_exported"),
+                        kafka_exports(snaps, "logs", "success"),
                         0,
                         "a rejected produce must not be counted as exported"
                     );
@@ -2477,7 +2475,7 @@ pub mod test_support {
         /// is created here.
         #[tokio::test]
         async fn produce_failure_is_bounded_and_not_persisted_on_mock() {
-            use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
             use rdkafka::types::RDKafkaRespErr;
             let topic = "it-delivery-persist";
             with_cluster(
@@ -2511,10 +2509,13 @@ pub mod test_support {
                     exporter.shutdown(Duration::from_secs(3)).await;
                     let ts = exporter.await_terminal_state().await;
 
-                    let mut m = FoldedMetrics::new();
-                    m.fold_all(ts.metrics());
-                    assert_eq!(m.value("logs_failed"), 1, "one bounded failed batch");
-                    assert_eq!(m.value("logs_exported"), 0);
+                    let snaps = ts.metrics();
+                    assert_eq!(
+                        kafka_exports(snaps, "logs", "failure"),
+                        1,
+                        "one bounded failed batch"
+                    );
+                    assert_eq!(kafka_exports(snaps, "logs", "success"), 0);
 
                     // On the mock a rejected produce is not persisted, so no
                     // duplicate exists on the partition.
@@ -2886,7 +2887,7 @@ pub mod test_support {
         /// failed batch -- retry exhaustion / drop-at-source behavior.
         #[tokio::test]
         async fn permanent_nack_is_not_retried() {
-            use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
             let static_topic = "it-retry-drop-static";
             let disallowed = "evil-destination";
             with_cluster(
@@ -2926,15 +2927,14 @@ pub mod test_support {
 
                     exporter.shutdown(Duration::from_secs(1)).await;
                     let ts = exporter.await_terminal_state().await;
-                    let mut m = FoldedMetrics::new();
-                    m.fold_all(ts.metrics());
+                    let snaps = ts.metrics();
                     assert_eq!(
-                        m.value("logs_failed"),
+                        kafka_exports(snaps, "logs", "failure"),
                         1,
                         "the dropped batch should count as exactly one failed batch"
                     );
                     assert_eq!(
-                        m.value("logs_exported"),
+                        kafka_exports(snaps, "logs", "success"),
                         0,
                         "a permanently-nacked batch is never exported"
                     );
@@ -3008,6 +3008,483 @@ pub mod test_support {
 
                     exporter.shutdown(Duration::from_secs(1)).await;
                     exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        // ---- Kafka integration: encodings (section 6) ----
+
+        /// Scenario: export a traces batch configured for OTAP encoding.
+        /// Guarantees: the traces record carries the OTAP message-format header
+        /// and its payload decodes as a `BatchArrowRecords` protobuf message, so
+        /// OTAP encoding is validated for traces (not just logs).
+        #[tokio::test]
+        async fn exports_traces_otap_sets_otap_format_header() {
+            use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+
+            let topic = "it-traces-otap";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_traces(SignalConfig::new(topic.into(), MessageFormat::OtapProto))
+                            .try_into()
+                            .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let (pdata, _payload) = traces_pdata();
+                    exporter.send_pdata(pdata).await.expect("send pdata");
+
+                    let msg = consumer.recv().await;
+                    let _ = msg.assert_topic(topic).assert_format_otap();
+                    let decoded =
+                        BatchArrowRecords::decode(msg.payload.as_deref().expect("payload"));
+                    assert!(
+                        decoded.is_ok(),
+                        "OTAP traces payload should decode as BatchArrowRecords"
+                    );
+
+                    exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: export a metrics batch configured for OTAP encoding.
+        /// Guarantees: the metrics record carries the OTAP message-format header
+        /// and its payload decodes as a `BatchArrowRecords` protobuf message, so
+        /// OTAP encoding is validated for metrics (not just logs).
+        #[tokio::test]
+        async fn exports_metrics_otap_sets_otap_format_header() {
+            use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+
+            let topic = "it-metrics-otap";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_metrics(SignalConfig::new(topic.into(), MessageFormat::OtapProto))
+                            .try_into()
+                            .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let (pdata, _payload) = metrics_pdata();
+                    exporter.send_pdata(pdata).await.expect("send pdata");
+
+                    let msg = consumer.recv().await;
+                    let _ = msg.assert_topic(topic).assert_format_otap();
+                    let decoded =
+                        BatchArrowRecords::decode(msg.payload.as_deref().expect("payload"));
+                    assert!(
+                        decoded.is_ok(),
+                        "OTAP metrics payload should decode as BatchArrowRecords"
+                    );
+
+                    exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: export one OTLP-encoded and one OTAP-encoded logs batch to
+        /// separate topics and read the broker's partition watermarks.
+        /// Guarantees: each successfully-sent record is durably persisted on its
+        /// partition (`high - low == 1`), so delivery is confirmed against the
+        /// broker's stored state, not just a consumer read-back, for both
+        /// encodings.
+        #[tokio::test]
+        async fn otlp_and_otap_payloads_persist_on_broker() {
+            let otlp_topic = "it-persist-otlp";
+            let otap_topic = "it-persist-otap";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(otlp_topic)
+                    .topic(otap_topic),
+                |cluster| async move {
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_logs(SignalConfig::new(
+                                otlp_topic.into(),
+                                MessageFormat::OtlpProto,
+                            ))
+                            .try_into()
+                            .expect("config should be valid");
+                    let otlp_exporter = KafkaExporterHarness::start(&cluster, cfg);
+                    otlp_exporter
+                        .send_pdata(logs_pdata(logs_request_bytes(), None))
+                        .await
+                        .expect("send otlp pdata");
+                    otlp_exporter.shutdown(Duration::from_secs(5)).await;
+                    otlp_exporter.await_stopped().await;
+
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_logs(SignalConfig::new(
+                                otap_topic.into(),
+                                MessageFormat::OtapProto,
+                            ))
+                            .try_into()
+                            .expect("config should be valid");
+                    let otap_exporter = KafkaExporterHarness::start(&cluster, cfg);
+                    otap_exporter
+                        .send_pdata(logs_pdata(logs_request_bytes(), None))
+                        .await
+                        .expect("send otap pdata");
+                    otap_exporter.shutdown(Duration::from_secs(5)).await;
+                    otap_exporter.await_stopped().await;
+
+                    // Both records are durably retained on their partitions.
+                    let _ = cluster
+                        .inspect()
+                        .assert_message_count(otlp_topic, 0, 1)
+                        .assert_message_count(otap_topic, 0, 1);
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: the broker rejects a logs produce request (injected
+        /// non-retriable errors) so the delivery callback resolves with a
+        /// failure.
+        /// Guarantees: a broker-reported produce failure increments
+        /// `logs.failed` and not `logs.exported`, so the failure path is
+        /// accounted for the logs signal.
+        #[tokio::test]
+        async fn logs_send_failure_increments_failed() {
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
+            use rdkafka::types::RDKafkaRespErr;
+            let topic = "it-fail-logs";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    cluster
+                        .faults()
+                        .fail_produce(&[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION; 8]);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(1500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes(), None))
+                        .await
+                        .expect("send pdata");
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert_eq!(
+                        kafka_exports(snaps, "logs", "failure"),
+                        1,
+                        "one failed logs batch"
+                    );
+                    assert_eq!(kafka_exports(snaps, "logs", "success"), 0);
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: the broker rejects a traces produce request (injected
+        /// non-retriable errors) so the delivery callback resolves with a
+        /// failure.
+        /// Guarantees: a broker-reported produce failure increments
+        /// `traces.failed` and not `traces.exported`, so the failure path is
+        /// accounted for the traces signal.
+        #[tokio::test]
+        async fn traces_send_failure_increments_failed() {
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
+            use rdkafka::types::RDKafkaRespErr;
+            let topic = "it-fail-traces";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    cluster
+                        .faults()
+                        .fail_produce(&[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION; 8]);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_traces(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(1500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let (pdata, _payload) = traces_pdata();
+                    exporter.send_pdata(pdata).await.expect("send pdata");
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert_eq!(
+                        kafka_exports(snaps, "traces", "failure"),
+                        1,
+                        "one failed traces batch"
+                    );
+                    assert_eq!(kafka_exports(snaps, "traces", "success"), 0);
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: the broker rejects a metrics produce request (injected
+        /// non-retriable errors) so the delivery callback resolves with a
+        /// failure.
+        /// Guarantees: a broker-reported produce failure increments
+        /// `metrics.failed` and not `metrics.exported`, so the failure path is
+        /// accounted for the metrics signal.
+        #[tokio::test]
+        async fn metrics_send_failure_increments_failed() {
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
+            use rdkafka::types::RDKafkaRespErr;
+            let topic = "it-fail-metrics";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    cluster
+                        .faults()
+                        .fail_produce(&[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION; 8]);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_metrics(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(1500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let (pdata, _payload) = metrics_pdata();
+                    exporter.send_pdata(pdata).await.expect("send pdata");
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert_eq!(
+                        kafka_exports(snaps, "metrics", "failure"),
+                        1,
+                        "one failed metrics batch"
+                    );
+                    assert_eq!(kafka_exports(snaps, "metrics", "success"), 0);
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: a caller configures the not-yet-implemented `otlp_json`
+        /// message format via config deserialization.
+        /// Guarantees: `MessageFormat` accepts `otlp_proto` and `otap_proto` but
+        /// rejects `otlp_json`, pinning the documented gap that OTLP JSON
+        /// encoding is not available (so a silent partial rollout cannot slip
+        /// in an unhandled format).
+        #[test]
+        fn otlp_json_message_format_is_unavailable() {
+            assert!(
+                serde_json::from_str::<MessageFormat>("\"otlp_proto\"").is_ok(),
+                "otlp_proto must be a valid message format"
+            );
+            assert!(
+                serde_json::from_str::<MessageFormat>("\"otap_proto\"").is_ok(),
+                "otap_proto must be a valid message format"
+            );
+            assert!(
+                serde_json::from_str::<MessageFormat>("\"otlp_json\"").is_err(),
+                "otlp_json is not implemented and must be rejected"
+            );
+        }
+
+        // ---- Kafka integration: acknowledgements (section 6) ----
+
+        /// Scenario: export a logs batch with `required_acks = All` (maps to
+        /// `request.required.acks = -1`, leader plus all in-sync replicas).
+        /// Guarantees: the record is delivered and read back intact and the
+        /// batch counts as exactly one `logs_exported`, so the exporter's
+        /// delivery path works end-to-end under the strongest ack setting.
+        #[tokio::test]
+        async fn exports_logs_with_acks_all_round_trips() {
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
+            use crate::exporters::kafka_exporter::config::RequiredAcks;
+            let topic = "it-acks-all";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_required_acks(RequiredAcks::All)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    exporter
+                        .send_pdata(logs_pdata(payload.clone(), None))
+                        .await
+                        .expect("send pdata");
+
+                    let _ = consumer
+                        .recv()
+                        .await
+                        .assert_topic(topic)
+                        .assert_payload(&payload)
+                        .assert_format_otlp();
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert_eq!(
+                        kafka_exports(snaps, "logs", "success"),
+                        1,
+                        "one exported batch under acks=all"
+                    );
+                    assert_eq!(kafka_exports(snaps, "logs", "failure"), 0);
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: export a logs batch with `required_acks = None` (maps to
+        /// `request.required.acks = 0`, fire-and-forget with no broker ack).
+        /// Guarantees: the exporter's delivery callback still resolves so the
+        /// record is delivered and read back intact and counts as one
+        /// `logs_exported`, so acks=0 does not break the ack accounting or lose
+        /// the record.
+        #[tokio::test]
+        async fn exports_logs_with_acks_none_round_trips() {
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
+            use crate::exporters::kafka_exporter::config::RequiredAcks;
+            let topic = "it-acks-none";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_required_acks(RequiredAcks::None)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    exporter
+                        .send_pdata(logs_pdata(payload.clone(), None))
+                        .await
+                        .expect("send pdata");
+
+                    let _ = consumer
+                        .recv()
+                        .await
+                        .assert_topic(topic)
+                        .assert_payload(&payload)
+                        .assert_format_otlp();
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert_eq!(
+                        kafka_exports(snaps, "logs", "success"),
+                        1,
+                        "one exported batch even under fire-and-forget acks=0"
+                    );
+                    assert_eq!(kafka_exports(snaps, "logs", "failure"), 0);
+                },
+            )
+            .await;
+        }
+
+        // ---- Kafka integration: compression (section 6) ----
+        //
+        // These validate that librdkafka accepts each codec and the payload
+        // survives a produce/consume round-trip. NOTE: the consumer (librdkafka)
+        // transparently decompresses, and `ConsumedMessage` retains no codec
+        // field, so the on-wire codec is not observable here; `assert_payload`
+        // compares the decompressed bytes against the original OTLP payload. The
+        // `compression.type` client-config mapping is asserted separately in
+        // `config.rs::build_client_config_maps_each_compression_codec`.
+
+        /// Scenario: export a logs batch with gzip compression enabled.
+        /// Guarantees: the record round-trips (delivered, persisted, and read
+        /// back with the original decompressed payload), so gzip is accepted by
+        /// the producer end-to-end.
+        #[tokio::test]
+        async fn exports_logs_gzip_round_trips() {
+            use crate::exporters::kafka_exporter::config::CompressionType;
+            assert_compression_round_trips("it-gzip", CompressionType::Gzip).await;
+        }
+
+        /// Scenario: export a logs batch with snappy compression enabled.
+        /// Guarantees: the record round-trips (delivered, persisted, and read
+        /// back with the original decompressed payload), promoting snappy from
+        /// "defined but not end-to-end tested" to round-trip validated on the
+        /// mock broker.
+        #[tokio::test]
+        async fn exports_logs_snappy_round_trips() {
+            use crate::exporters::kafka_exporter::config::CompressionType;
+            assert_compression_round_trips("it-snappy", CompressionType::Snappy).await;
+        }
+
+        /// Scenario: export a logs batch with lz4 compression enabled.
+        /// Guarantees: the record round-trips (delivered, persisted, and read
+        /// back with the original decompressed payload), promoting lz4 from
+        /// "defined but not end-to-end tested" to round-trip validated on the
+        /// mock broker.
+        #[tokio::test]
+        async fn exports_logs_lz4_round_trips() {
+            use crate::exporters::kafka_exporter::config::CompressionType;
+            assert_compression_round_trips("it-lz4", CompressionType::Lz4).await;
+        }
+
+        /// Scenario: export a logs batch with zstd compression enabled.
+        /// Guarantees: the record round-trips (delivered, persisted, and read
+        /// back with the original decompressed payload), so zstd is accepted by
+        /// the producer end-to-end.
+        #[tokio::test]
+        async fn exports_logs_zstd_round_trips() {
+            use crate::exporters::kafka_exporter::config::CompressionType;
+            assert_compression_round_trips("it-zstd", CompressionType::Zstd).await;
+        }
+
+        /// Drives one logs record through the exporter with `compression`
+        /// enabled and asserts it round-trips: delivered, read back with the
+        /// original (decompressed) payload and OTLP format header, and durably
+        /// persisted on the partition. Shared by the four per-codec tests.
+        async fn assert_compression_round_trips(
+            topic: &str,
+            compression: crate::exporters::kafka_exporter::config::CompressionType,
+        ) {
+            let topic = topic.to_string();
+            with_cluster(
+                KafkaTestCluster::builder().topic(&topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic.as_str()]);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.clone(), MessageFormat::OtlpProto))
+                        .with_compression(compression)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    exporter
+                        .send_pdata(logs_pdata(payload.clone(), None))
+                        .await
+                        .expect("send pdata");
+
+                    let _ = consumer
+                        .recv()
+                        .await
+                        .assert_topic(&topic)
+                        .assert_payload(&payload)
+                        .assert_format_otlp();
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    exporter.await_stopped().await;
+
+                    let _ = cluster.inspect().assert_message_count(&topic, 0, 1);
                 },
             )
             .await;

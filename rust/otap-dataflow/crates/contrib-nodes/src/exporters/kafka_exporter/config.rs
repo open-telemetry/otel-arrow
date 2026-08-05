@@ -1379,6 +1379,34 @@ mod tests {
         }
     }
 
+    /// Scenario (section 6, compression): a config built with each supported
+    /// `CompressionType` is turned into an rdkafka client config.
+    /// Guarantees: every codec is written to librdkafka's `compression.type`
+    /// with the exact wire string (`gzip`/`snappy`/`lz4`/`zstd`), so the
+    /// operator-selected codec actually reaches the producer for all four
+    /// variants (not just the two validated end-to-end).
+    #[test]
+    fn build_client_config_maps_each_compression_codec() {
+        for (codec, expected) in [
+            (CompressionType::Gzip, "gzip"),
+            (CompressionType::Snappy, "snappy"),
+            (CompressionType::Lz4, "lz4"),
+            (CompressionType::Zstd, "zstd"),
+        ] {
+            let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+                .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+                .with_compression(codec)
+                .try_into()
+                .unwrap();
+            let client = config.build_client_config();
+            assert_eq!(
+                client.get("compression.type"),
+                Some(expected),
+                "unexpected compression.type for {expected}"
+            );
+        }
+    }
+
     // ---- TLS ----
 
     #[test]

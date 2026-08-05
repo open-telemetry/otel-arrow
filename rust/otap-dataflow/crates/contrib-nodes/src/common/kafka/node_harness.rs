@@ -118,10 +118,84 @@ pub(crate) mod node_metrics {
         }
 
         /// Returns `true` if any value has been folded for `name`.
+        ///
+        /// NOTE: [`FoldedMetrics`] folds by field name and ignores measurement
+        /// attributes, so it collapses every attribute bucket of a
+        /// [`MeasurementMetricSet`] (e.g. the exporter's
+        /// `exporter.kafka.exports.messages`, keyed by `signal` and `outcome`)
+        /// into a single per-field total. Use it only for flat metric sets; for
+        /// attribute-keyed measurement metrics use [`measurement_value`] /
+        /// [`kafka_exports`], which select a specific bucket by its attributes.
+        ///
+        /// [`MeasurementMetricSet`]: otap_df_telemetry::metrics::MeasurementMetricSet
         #[must_use]
         pub(crate) fn contains(&self, name: &str) -> bool {
             self.totals.contains_key(&normalize(name))
         }
+    }
+
+    /// Reads a single measurement-metric field for the bucket that matches all
+    /// of `attributes`, across every snapshot produced by a
+    /// [`otap_df_engine::terminal_state::TerminalState`].
+    ///
+    /// A [`MeasurementMetricSet`] emits one [`MetricSetSnapshot`] per
+    /// attribute-value combination (bucket); each snapshot exposes its decoded
+    /// attributes via `measurement_attribute_value`. This finds the snapshot
+    /// whose metric set is named `set_name` and whose
+    /// `measurement_attribute_value(key)` equals `Some(value)` for every
+    /// `(key, value)` in `attributes`, then returns field `field`'s `u64` value
+    /// (or `0` if no such bucket was emitted -- an untouched bucket is not
+    /// snapshotted). Field names accept the identifier or dotted form.
+    ///
+    /// [`MeasurementMetricSet`]: otap_df_telemetry::metrics::MeasurementMetricSet
+    #[must_use]
+    pub(crate) fn measurement_value(
+        snapshots: &[MetricSetSnapshot],
+        set_name: &str,
+        field: &str,
+        attributes: &[(&str, &str)],
+    ) -> u64 {
+        let wanted_field = normalize(field);
+        snapshots
+            .iter()
+            .filter(|snapshot| snapshot.descriptor().name == set_name)
+            .filter(|snapshot| {
+                attributes
+                    .iter()
+                    .all(|(key, value)| snapshot.measurement_attribute_value(key) == Some(value))
+            })
+            .find_map(|snapshot| {
+                let fields = snapshot.descriptor().metrics;
+                let values = snapshot.get_metrics();
+                fields
+                    .iter()
+                    .zip(values.iter())
+                    .find(|(f, _)| f.name == wanted_field)
+                    .map(|(_, v)| v.to_u64_lossy())
+            })
+            .unwrap_or(0)
+    }
+
+    /// Returns the Kafka exporter's `exporter.kafka.exports.messages` count for
+    /// the `(signal, outcome)` bucket, e.g. `kafka_exports(snaps, "logs",
+    /// "success")`. Convenience wrapper over [`measurement_value`] for the
+    /// exporter's migrated export counter (replaces the old flat
+    /// `logs_exported` / `logs_failed` fields).
+    ///
+    /// `signal` is one of `"logs"` / `"traces"` / `"metrics"`; `outcome` is one
+    /// of `"success"` / `"failure"`.
+    #[must_use]
+    pub(crate) fn kafka_exports(
+        snapshots: &[MetricSetSnapshot],
+        signal: &str,
+        outcome: &str,
+    ) -> u64 {
+        measurement_value(
+            snapshots,
+            "exporter.kafka.exports",
+            "messages",
+            &[("signal", signal), ("outcome", outcome)],
+        )
     }
 }
 
