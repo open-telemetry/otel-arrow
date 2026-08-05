@@ -165,6 +165,8 @@ const fn default_record_json_scope() -> bool {
 /// Console exporter that prints OTLP data to stdout.
 pub struct ConsoleExporter {
     formatter: ConsoleFormatter,
+    /// Overrides the process-wide stdout handle; only tests supply one.
+    output: Option<StreamHandle>,
 }
 
 impl ConsoleExporter {
@@ -179,7 +181,34 @@ impl ConsoleExporter {
                 ConsoleFormatter::RecordJson(RecordJsonFormatter::new(config.record_json))
             }
         };
-        Self { formatter }
+        Self {
+            formatter,
+            output: None,
+        }
+    }
+
+    /// Creates an exporter bound to a caller-supplied output stream.
+    #[cfg(test)]
+    #[must_use]
+    fn with_output(config: ConsoleExporterConfig, output: StreamHandle) -> Self {
+        Self {
+            output: Some(output),
+            ..Self::new(config)
+        }
+    }
+
+    /// Returns the stream this exporter writes to.
+    ///
+    /// Pretty output is human readable, so it follows the diagnostics stream and
+    /// steps aside once any exporter claims stdout for machine-readable records.
+    fn output_handle(&self) -> StreamHandle {
+        if let Some(output) = self.output.clone() {
+            return output;
+        }
+        match self.formatter {
+            ConsoleFormatter::Pretty(_) => OutputService::diagnostics(),
+            ConsoleFormatter::RecordJson(_) => OutputService::stdout(),
+        }
     }
 }
 
@@ -198,8 +227,8 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 error: format!("Failed to parse console exporter config: {}", e),
             })?;
         if config.format == ConsoleOutputFormat::RecordJson {
-            // Keeps human-readable diagnostics off a machine-readable stdout.
-            OutputService::set_structured_stdout(true);
+            // Claims stdout for records, which moves all prose to stderr.
+            OutputService::mark_structured_stdout();
         }
         Ok(ExporterWrapper::local(
             ConsoleExporter::new(config),
@@ -219,7 +248,7 @@ impl Exporter<OtapPdata> for ConsoleExporter {
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        let output = OutputService::stdout();
+        let output = self.output_handle();
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
@@ -550,6 +579,12 @@ fn nanos_to_time(nanos: u64) -> SystemTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::Interests;
+    use otap_df_engine::control::PipelineCompletionMsg;
+    use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::test_node;
+    use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack};
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::encode::encode_logs_otap_batch;
     use otap_df_pdata::proto::opentelemetry::{
@@ -564,6 +599,7 @@ mod tests {
     use otap_df_telemetry::output_service::{OutputSink, OutputStream, StreamId};
     use prost::Message;
     use serde_json::{Value, json};
+    use std::time::Instant;
 
     /// Format proto logs through the raw OTLP view and parse the resulting JSON lines.
     fn format_record_json(logs_data: &LogsData, formatter: &RecordJsonFormatter) -> Vec<Value> {
@@ -1110,11 +1146,11 @@ mod tests {
         );
     }
 
-    /// Scenario: the console writer is already gone when an exporter submits a payload.
-    /// Guarantees: the submit attempt resolves and is counted as a failed enqueue instead
-    /// of blocking, so the exporter still reaches its ACK for that message.
+    /// Scenario: the console writer is already closed when the exporter formats a payload.
+    /// Guarantees: the handoff resolves as a counted enqueue failure instead of
+    /// blocking, which is what lets the exporter's message loop continue to its ACK.
     #[tokio::test]
-    async fn console_output_resolves_when_the_writer_is_gone() {
+    async fn console_handoff_resolves_when_the_writer_is_gone() {
         let encoded = logs_with_full_resource_and_scope().encode_to_vec();
         let bytes = OtlpProtoBytes::ExportLogsRequest(encoded.into());
         let sink = RecordingSink::new();
@@ -1130,5 +1166,91 @@ mod tests {
 
         assert!(sink.contents().is_empty());
         assert_eq!(handle.stats().frames_enqueue_failed, 1);
+    }
+
+    /// Scenario: a payload reaches the exporter's message loop while the console writer
+    /// is already closed, so the handoff fails.
+    /// Guarantees: the exporter still ACKs that message exactly once and terminates
+    /// cleanly, so a dead console writer never strands the upstream pipeline.
+    #[test]
+    fn enqueue_failure_still_acks_exactly_once() {
+        const SUBSCRIBER_NODE_ID: usize = 4242;
+
+        let sink = RecordingSink::new();
+        let mut stream = OutputStream::start(StreamId::Stdout, 1, true, Box::new(sink.clone()))
+            .expect("writer thread spawns");
+        let handle = stream.handle();
+        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(CONSOLE_EXPORTER_URN));
+        let exporter = ExporterWrapper::local(
+            ConsoleExporter::with_output(
+                ConsoleExporterConfig {
+                    format: ConsoleOutputFormat::RecordJson,
+                    ..ConsoleExporterConfig::default()
+                },
+                handle.clone(),
+            ),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| async move {
+                let pdata = create_test_pdata().test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::default().into(),
+                    SUBSCRIBER_NODE_ID,
+                );
+                ctx.send_pdata(pdata)
+                    .await
+                    .expect("exporter accepts the payload");
+                ctx.send_shutdown(Instant::now() + Duration::from_secs(1), "test complete")
+                    .await
+                    .expect("exporter accepts shutdown");
+            })
+            .run_validation(move |mut ctx, result| async move {
+                result.expect("exporter terminates cleanly after a failed console handoff");
+
+                let mut completion_rx = ctx
+                    .take_pipeline_completion_receiver()
+                    .expect("pipeline completion receiver");
+                match completion_rx.recv().await {
+                    Ok(PipelineCompletionMsg::DeliverAck { ack }) => {
+                        let (node_id, _) = next_ack(ack).expect("an ACKS subscriber");
+                        assert_eq!(node_id, SUBSCRIBER_NODE_ID);
+                    }
+                    other => panic!("expected exactly one ACK, got {other:?}"),
+                }
+                assert!(
+                    completion_rx.recv().await.is_err(),
+                    "the failed handoff must not produce a second completion message"
+                );
+
+                assert_eq!(handle.stats().frames_enqueue_failed, 1);
+                assert!(sink.contents().is_empty());
+            });
+    }
+
+    /// Scenario: a pretty exporter and a record JSON exporter run in the same process.
+    /// Guarantees: record JSON keeps stdout while pretty output moves to the diagnostics
+    /// stream, so a co-configured pretty exporter cannot make stdout unparseable.
+    #[test]
+    fn pretty_output_steps_aside_once_stdout_carries_records() {
+        // The latch is process-wide and monotonic, matching a record JSON exporter
+        // having been created anywhere in this process.
+        OutputService::mark_structured_stdout();
+
+        let pretty = ConsoleExporter::new(ConsoleExporterConfig::default());
+        let records = ConsoleExporter::new(ConsoleExporterConfig {
+            format: ConsoleOutputFormat::RecordJson,
+            ..ConsoleExporterConfig::default()
+        });
+
+        assert_eq!(pretty.output_handle().stream_id(), StreamId::Stderr);
+        assert_eq!(records.output_handle().stream_id(), StreamId::Stdout);
     }
 }

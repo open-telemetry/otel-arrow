@@ -605,10 +605,10 @@ impl ConsoleWriter {
     /// Human-readable diagnostics move to stderr whenever stdout carries
     /// machine-readable records, so they cannot corrupt that stream.
     fn target_stream(level: &Level) -> StreamId {
-        if matches!(*level, Level::ERROR | Level::WARN) || OutputService::structured_stdout() {
+        if matches!(*level, Level::ERROR | Level::WARN) {
             StreamId::Stderr
         } else {
-            StreamId::Stdout
+            OutputService::diagnostics().stream_id()
         }
     }
 
@@ -966,10 +966,10 @@ mod tests {
         assert_eq!(&buf, b"abc\n");
     }
 
-    /// Scenario: log lines are routed by level, first with prose on stdout and then
-    /// while stdout carries machine-readable records.
-    /// Guarantees: ERROR and WARN always go to stderr, INFO and below go to stdout by
-    /// default, and every level moves to stderr once stdout is structured.
+    /// Scenario: log lines are routed by level, with the structured-stdout policy owned
+    /// by the output service.
+    /// Guarantees: ERROR and WARN always reach stderr, and lower levels always follow
+    /// the engine's diagnostics stream instead of pinning themselves to stdout.
     #[test]
     fn console_writer_routes_levels_to_the_expected_stream() {
         assert_eq!(
@@ -977,20 +977,13 @@ mod tests {
             StreamId::Stderr
         );
         assert_eq!(ConsoleWriter::target_stream(&Level::WARN), StreamId::Stderr);
-        assert_eq!(ConsoleWriter::target_stream(&Level::INFO), StreamId::Stdout);
-        assert_eq!(
-            ConsoleWriter::target_stream(&Level::DEBUG),
-            StreamId::Stdout
-        );
-        assert_eq!(
-            ConsoleWriter::target_stream(&Level::TRACE),
-            StreamId::Stdout
-        );
 
-        OutputService::set_structured_stdout(true);
-        let structured = ConsoleWriter::target_stream(&Level::INFO);
-        OutputService::set_structured_stdout(false);
-        assert_eq!(structured, StreamId::Stderr);
+        // Read once and compared, so this stays correct even if another test has
+        // structured stdout enabled while it runs.
+        let diagnostics = OutputService::diagnostics().stream_id();
+        for level in [Level::INFO, Level::DEBUG, Level::TRACE] {
+            assert_eq!(ConsoleWriter::target_stream(&level), diagnostics);
+        }
     }
 
     static TEST_CALLSITE: TestCallsite = TestCallsite;

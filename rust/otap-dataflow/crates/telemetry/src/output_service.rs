@@ -26,8 +26,8 @@
 
 use crate::otel_error;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -45,6 +45,13 @@ const FLUSH_BYTES_THRESHOLD: usize = 256 * 1024;
 
 /// Frames written since the last flush that force a safety flush.
 const FLUSH_FRAMES_THRESHOLD: usize = 256;
+
+/// Marks a stream closed in the packed admission state; the low bits count
+/// enqueue attempts that were admitted but have not resolved yet.
+const ADMISSION_CLOSED: u64 = 1 << 63;
+
+/// Poll interval while shutdown waits for admitted enqueues to land.
+const ENQUEUE_SETTLE_POLL: Duration = Duration::from_micros(200);
 
 /// Set when stdout carries machine-readable records instead of prose.
 static STRUCTURED_STDOUT: AtomicBool = AtomicBool::new(false);
@@ -207,7 +214,10 @@ impl OutputSink for StderrSink {
 /// Point-in-time snapshot of one stream's counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OutputStats {
-    /// Frames accepted into the queue.
+    /// Frames whose enqueue the producer observed succeeding.
+    ///
+    /// A submit that is cancelled after the queue took its frame is written
+    /// without being counted here, so this is a lower bound on frames accepted.
     pub frames_submitted: u64,
     /// Frames rejected because the queue was closed, full, or unavailable.
     pub frames_enqueue_failed: u64,
@@ -234,20 +244,23 @@ pub struct ServiceStats {
     pub stderr: OutputStats,
 }
 
-/// Result of draining an output stream at shutdown.
+/// Result of draining an output stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShutdownOutcome {
-    /// Whether every accepted frame was written and flushed.
+    /// Whether every accepted frame was written and flushed successfully.
     pub drained: bool,
-    /// Accepted frames still queued when the drain deadline expired.
-    pub frames_dropped: u64,
+    /// Whether a writer stopped on an I/O error rather than running out of time.
+    pub writer_failed: bool,
+    /// Accepted frames still unwritten when the operation returned.
+    pub frames_pending: u64,
 }
 
 impl Default for ShutdownOutcome {
     fn default() -> Self {
         Self {
             drained: true,
-            frames_dropped: 0,
+            writer_failed: false,
+            frames_pending: 0,
         }
     }
 }
@@ -256,7 +269,8 @@ impl ShutdownOutcome {
     /// Folds another stream's outcome into this one.
     fn merge(&mut self, other: Self) {
         self.drained &= other.drained;
-        self.frames_dropped = self.frames_dropped.saturating_add(other.frames_dropped);
+        self.writer_failed |= other.writer_failed;
+        self.frames_pending = self.frames_pending.saturating_add(other.frames_pending);
     }
 }
 
@@ -287,16 +301,27 @@ impl Default for OutputServiceConfig {
 /// Queue item. `Stop` ends the writer loop after everything ahead of it drains.
 enum Command {
     Frame(Frame),
+    /// Flush everything queued ahead of this barrier, then acknowledge.
+    Barrier(flume::Sender<()>),
     Stop,
+}
+
+/// Why a writer thread stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriterExit {
+    /// Every queued frame was written and the final flush succeeded.
+    Drained,
+    /// A write or flush failed, so queued frames were abandoned.
+    Failed,
 }
 
 /// State shared between the producers and the writer thread of one stream.
 #[derive(Debug, Default)]
 struct StreamShared {
-    closing: AtomicBool,
+    /// Packed [`ADMISSION_CLOSED`] flag plus the count of unresolved enqueues.
+    admission: AtomicU64,
     unavailable: AtomicBool,
-    queue_depth: AtomicUsize,
-    queue_depth_high_water: AtomicUsize,
+    queue_depth_high_water: AtomicU64,
     frames_submitted: AtomicU64,
     frames_enqueue_failed: AtomicU64,
     frames_written: AtomicU64,
@@ -307,6 +332,53 @@ struct StreamShared {
 }
 
 impl StreamShared {
+    /// Admits one enqueue attempt, or fails once the stream stopped accepting frames.
+    ///
+    /// Admission and the in-flight count move together, so a stream that observes
+    /// zero in-flight attempts after closing knows no further frame can be queued.
+    fn enter(&self) -> bool {
+        let mut state = self.admission.load(Ordering::Acquire);
+        loop {
+            if state & ADMISSION_CLOSED != 0 {
+                return false;
+            }
+            match self.admission.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => state = actual,
+            }
+        }
+    }
+
+    /// Marks one admitted enqueue attempt as resolved.
+    fn leave(&self) {
+        let _ = self.admission.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// Stops admitting new enqueue attempts.
+    fn close_admission(&self) {
+        let _ = self.admission.fetch_or(ADMISSION_CLOSED, Ordering::AcqRel);
+    }
+
+    /// Returns the number of admitted enqueue attempts that have not resolved.
+    fn enqueues_in_flight(&self) -> u64 {
+        self.admission.load(Ordering::Acquire) & !ADMISSION_CLOSED
+    }
+
+    /// Returns the frames the writer accepted but has not written yet.
+    ///
+    /// Counted from the write side rather than the queue, so a frame the writer
+    /// is still inside `write_frame` for is reported as pending.
+    fn frames_pending(&self) -> u64 {
+        self.frames_submitted
+            .load(Ordering::Acquire)
+            .saturating_sub(self.frames_written.load(Ordering::Acquire))
+    }
+
     fn snapshot(&self) -> OutputStats {
         OutputStats {
             frames_submitted: self.frames_submitted.load(Ordering::Relaxed),
@@ -316,7 +388,7 @@ impl StreamShared {
             write_errors: self.write_errors.load(Ordering::Relaxed),
             diagnostics_dropped: self.diagnostics_dropped.load(Ordering::Relaxed),
             frames_dropped_shutdown: self.frames_dropped_shutdown.load(Ordering::Relaxed),
-            queue_depth_high_water: self.queue_depth_high_water.load(Ordering::Relaxed) as u64,
+            queue_depth_high_water: self.queue_depth_high_water.load(Ordering::Relaxed),
         }
     }
 }
@@ -329,28 +401,17 @@ struct QueuedHandle {
 }
 
 impl QueuedHandle {
-    /// Reserves a queue slot, failing fast when the stream no longer accepts frames.
-    fn reserve(&self) -> Result<(), SubmitError> {
-        if self.shared.closing.load(Ordering::Acquire) {
-            return Err(SubmitError::QueueClosed);
-        }
+    /// Admits one enqueue attempt, failing fast when the stream no longer accepts frames.
+    fn admit(&self) -> Result<Admission<'_>, SubmitError> {
         if self.shared.unavailable.load(Ordering::Acquire) {
             return Err(SubmitError::WriterUnavailable);
         }
-        let depth = self.shared.queue_depth.fetch_add(1, Ordering::AcqRel) + 1;
-        let _ = self
-            .shared
-            .queue_depth_high_water
-            .fetch_max(depth, Ordering::Relaxed);
-        Ok(())
-    }
-
-    fn release(&self) {
-        let _ = self.shared.queue_depth.fetch_sub(1, Ordering::AcqRel);
-    }
-
-    fn accepted(&self) {
-        let _ = self.shared.frames_submitted.fetch_add(1, Ordering::Relaxed);
+        if !self.shared.enter() {
+            return Err(SubmitError::QueueClosed);
+        }
+        Ok(Admission {
+            shared: &self.shared,
+        })
     }
 
     fn rejected(&self, error: SubmitError) -> SubmitError {
@@ -367,6 +428,32 @@ impl QueuedHandle {
 pub struct StreamHandle {
     id: StreamId,
     queued: Option<QueuedHandle>,
+}
+/// One admitted enqueue attempt, released when it resolves.
+///
+/// `submit` can be cancelled at its await point, so the release happens in
+/// `Drop`. Without it a cancelled send would leave the stream permanently
+/// believing an enqueue is still in flight, and shutdown could never settle.
+struct Admission<'a> {
+    shared: &'a StreamShared,
+}
+
+impl Admission<'_> {
+    /// Records a frame the writer now owns.
+    fn commit(&self) {
+        let submitted = self.shared.frames_submitted.fetch_add(1, Ordering::AcqRel) + 1;
+        let written = self.shared.frames_written.load(Ordering::Acquire);
+        let _ = self
+            .shared
+            .queue_depth_high_water
+            .fetch_max(submitted.saturating_sub(written), Ordering::Relaxed);
+    }
+}
+
+impl Drop for Admission<'_> {
+    fn drop(&mut self) {
+        self.shared.leave();
+    }
 }
 
 impl StreamHandle {
@@ -401,16 +488,13 @@ impl StreamHandle {
         let Some(queued) = self.queued.as_ref() else {
             return write_direct(self.id, &frame);
         };
-        queued.reserve().map_err(|error| queued.rejected(error))?;
+        let admission = queued.admit().map_err(|error| queued.rejected(error))?;
         match queued.sender.send_async(Command::Frame(frame)).await {
             Ok(()) => {
-                queued.accepted();
+                admission.commit();
                 Ok(())
             }
-            Err(_) => {
-                queued.release();
-                Err(queued.rejected(SubmitError::QueueClosed))
-            }
+            Err(_) => Err(queued.rejected(SubmitError::QueueClosed)),
         }
     }
 
@@ -428,14 +512,13 @@ impl StreamHandle {
         let Some(queued) = self.queued.as_ref() else {
             return write_direct(self.id, &frame);
         };
-        queued.reserve().map_err(|error| queued.rejected(error))?;
+        let admission = queued.admit().map_err(|error| queued.rejected(error))?;
         match queued.sender.try_send(Command::Frame(frame)) {
             Ok(()) => {
-                queued.accepted();
+                admission.commit();
                 Ok(())
             }
             Err(flume::TrySendError::Full(_)) => {
-                queued.release();
                 let _ = queued
                     .shared
                     .diagnostics_dropped
@@ -443,7 +526,6 @@ impl StreamHandle {
                 Err(queued.rejected(SubmitError::WouldBlock))
             }
             Err(flume::TrySendError::Disconnected(_)) => {
-                queued.release();
                 Err(queued.rejected(SubmitError::QueueClosed))
             }
         }
@@ -483,7 +565,7 @@ pub struct OutputStream {
     handle: StreamHandle,
     shared: Arc<StreamShared>,
     sender: flume::Sender<Command>,
-    done: flume::Receiver<()>,
+    done: flume::Receiver<WriterExit>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -502,19 +584,18 @@ impl OutputStream {
         sink: Box<dyn OutputSink>,
     ) -> io::Result<Self> {
         let (sender, receiver) = flume::bounded::<Command>(capacity.max(1));
-        let (done_tx, done) = flume::bounded::<()>(1);
+        let (done_tx, done) = flume::bounded::<WriterExit>(1);
         let shared = Arc::new(StreamShared::default());
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
             .name(id.thread_name().to_owned())
             .spawn(move || {
-                // Dropped last, so a completed drain is only signalled after the
-                // receiver is gone and the unavailable flag is set.
-                let _done = done_tx;
                 let _guard = TeardownGuard {
                     shared: Arc::clone(&worker_shared),
                 };
-                run_writer(id, receiver, sink, &worker_shared, flush_on_idle);
+                let exit = run_writer(id, receiver, sink, &worker_shared, flush_on_idle);
+                // A panic instead drops this sender, which callers read as a failed drain.
+                let _ = done_tx.send(exit);
             })?;
 
         Ok(Self {
@@ -544,40 +625,73 @@ impl OutputStream {
         self.shared.snapshot()
     }
 
+    /// Writes and flushes everything accepted so far, leaving the writer running.
+    ///
+    /// A barrier queued behind the accepted frames is acknowledged only after they
+    /// reach the stream, so this reports a completed drain without tearing the
+    /// writer down. The stream keeps accepting frames afterwards.
+    #[must_use]
+    pub fn drain(&self, deadline: Duration) -> ShutdownOutcome {
+        let started = Instant::now();
+        let (ack_tx, ack_rx) = flume::bounded::<()>(1);
+        if self
+            .sender
+            .send_timeout(Command::Barrier(ack_tx), deadline)
+            .is_err()
+        {
+            return self.pending_outcome();
+        }
+        let remaining = deadline.saturating_sub(started.elapsed());
+        match ack_rx.recv_timeout(remaining) {
+            Ok(()) => ShutdownOutcome::default(),
+            Err(_) => self.pending_outcome(),
+        }
+    }
+
     /// Stops accepting frames, drains what was accepted, and flushes.
     ///
-    /// Returns once the writer finishes or the deadline expires, whichever
-    /// comes first, so a stalled console pipe can never block process exit.
+    /// Returns once the writer finishes or the deadline expires, whichever comes
+    /// first, so a stalled console pipe cannot block the caller indefinitely.
     pub fn shutdown(&mut self, deadline: Duration) -> ShutdownOutcome {
-        self.shared.closing.store(true, Ordering::Release);
         let started = Instant::now();
-        // FIFO means Stop is only observed after every frame already queued.
-        let _ = self.sender.send_timeout(Command::Stop, deadline);
+        self.shared.close_admission();
+        // Stop must be the last command queued, otherwise a frame that already
+        // reported a successful enqueue could land behind it and be discarded.
+        while self.shared.enqueues_in_flight() > 0 && started.elapsed() < deadline {
+            thread::sleep(ENQUEUE_SETTLE_POLL);
+        }
         let remaining = deadline.saturating_sub(started.elapsed());
-        // Nothing is ever sent on `done`; the writer exiting drops its sender.
-        let finished = matches!(
-            self.done.recv_timeout(remaining),
-            Err(flume::RecvTimeoutError::Disconnected)
-        );
+        let _ = self.sender.send_timeout(Command::Stop, remaining);
+        let remaining = deadline.saturating_sub(started.elapsed());
+        let exit = self.done.recv_timeout(remaining);
 
-        if finished {
-            if let Some(worker) = self.worker.take() {
-                let _ = worker.join();
-            }
-            return ShutdownOutcome {
-                drained: true,
-                frames_dropped: 0,
-            };
+        // A timed-out writer is still running, so it cannot be joined here.
+        if !matches!(exit, Err(flume::RecvTimeoutError::Timeout))
+            && let Some(worker) = self.worker.take()
+        {
+            let _ = worker.join();
         }
 
-        let undrained = self.shared.queue_depth.load(Ordering::Acquire) as u64;
+        if exit == Ok(WriterExit::Drained) {
+            return ShutdownOutcome::default();
+        }
+
+        let outcome = self.pending_outcome();
         let _ = self
             .shared
             .frames_dropped_shutdown
-            .fetch_add(undrained, Ordering::Relaxed);
+            .fetch_add(outcome.frames_pending, Ordering::Relaxed);
+        outcome
+    }
+
+    /// Reports the frames that were accepted but are not on the stream yet.
+    fn pending_outcome(&self) -> ShutdownOutcome {
         ShutdownOutcome {
             drained: false,
-            frames_dropped: undrained,
+            // The writer latches this before it exits, including on panic, so it
+            // separates an I/O failure from a deadline that simply expired.
+            writer_failed: self.shared.unavailable.load(Ordering::Acquire),
+            frames_pending: self.shared.frames_pending(),
         }
     }
 }
@@ -589,38 +703,57 @@ fn run_writer(
     mut sink: Box<dyn OutputSink>,
     shared: &StreamShared,
     flush_on_idle: bool,
-) {
+) -> WriterExit {
     let mut pending_bytes = 0usize;
     let mut pending_frames = 0usize;
 
     'writer: while let Ok(first) = receiver.recv() {
         let mut next = Some(first);
         while let Some(command) = next.take() {
-            let Command::Frame(frame) = command else {
-                break 'writer;
-            };
-            let _ = shared.queue_depth.fetch_sub(1, Ordering::AcqRel);
-            if !write_one(id, sink.as_mut(), &frame, shared) {
-                break 'writer;
-            }
-            pending_bytes = pending_bytes.saturating_add(frame.len());
-            pending_frames += 1;
-            // A saturated queue never goes idle, so flush on volume too.
-            if pending_bytes >= FLUSH_BYTES_THRESHOLD || pending_frames >= FLUSH_FRAMES_THRESHOLD {
-                let _ = sink.flush();
-                pending_bytes = 0;
-                pending_frames = 0;
+            match command {
+                Command::Frame(frame) => {
+                    if !write_one(id, sink.as_mut(), &frame, shared) {
+                        return WriterExit::Failed;
+                    }
+                    pending_bytes = pending_bytes.saturating_add(frame.len());
+                    pending_frames += 1;
+                    // A saturated queue never goes idle, so flush on volume too.
+                    if pending_bytes >= FLUSH_BYTES_THRESHOLD
+                        || pending_frames >= FLUSH_FRAMES_THRESHOLD
+                    {
+                        if !flush_sink(id, sink.as_mut(), shared) {
+                            return WriterExit::Failed;
+                        }
+                        pending_bytes = 0;
+                        pending_frames = 0;
+                    }
+                }
+                Command::Barrier(ack) => {
+                    if !flush_sink(id, sink.as_mut(), shared) {
+                        return WriterExit::Failed;
+                    }
+                    pending_bytes = 0;
+                    pending_frames = 0;
+                    let _ = ack.send(());
+                }
+                Command::Stop => break 'writer,
             }
             next = receiver.try_recv().ok();
         }
         if flush_on_idle && pending_frames > 0 {
-            let _ = sink.flush();
+            if !flush_sink(id, sink.as_mut(), shared) {
+                return WriterExit::Failed;
+            }
             pending_bytes = 0;
             pending_frames = 0;
         }
     }
 
-    let _ = sink.flush();
+    if flush_sink(id, sink.as_mut(), shared) {
+        WriterExit::Drained
+    } else {
+        WriterExit::Failed
+    }
 }
 
 /// Writes one frame, returning false when the writer must stop.
@@ -639,29 +772,46 @@ fn write_one(
             true
         }
         Err(error) => {
-            let _ = shared.write_errors.fetch_add(1, Ordering::Relaxed);
-            shared.unavailable.store(true, Ordering::Release);
-            if id == StreamId::Stdout {
-                // The self-tracing layer routes errors to stderr, so this cannot
-                // recurse into the stream that just failed.
-                otel_error!(
-                    "output_service.write_failed",
-                    stream = id.as_str(),
-                    error = ?error,
-                    message = "Console writer stopped after a write error"
-                );
-            }
+            report_failure(id, shared, &error);
             false
         }
     }
 }
 
+/// Flushes the sink, returning false when the writer must stop.
+///
+/// A failed flush can lose bytes the writer already accepted, so it ends the
+/// writer exactly like a failed write instead of being silently discarded.
+fn flush_sink(id: StreamId, sink: &mut dyn OutputSink, shared: &StreamShared) -> bool {
+    match sink.flush() {
+        Ok(()) => true,
+        Err(error) => {
+            report_failure(id, shared, &error);
+            false
+        }
+    }
+}
+
+/// Latches the stream as unavailable and reports the failure off the failed stream.
+fn report_failure(id: StreamId, shared: &StreamShared, error: &io::Error) {
+    let _ = shared.write_errors.fetch_add(1, Ordering::Relaxed);
+    shared.unavailable.store(true, Ordering::Release);
+    if id == StreamId::Stdout {
+        // The self-tracing layer routes errors to stderr, so this cannot
+        // recurse into the stream that just failed.
+        otel_error!(
+            "output_service.write_failed",
+            stream = id.as_str(),
+            error = ?error,
+            message = "Console writer stopped after a write or flush error"
+        );
+    }
+}
+
 /// The process-wide streams held by [`SERVICE`].
 struct GlobalStreams {
-    stdout_handle: StreamHandle,
-    stderr_handle: StreamHandle,
-    stdout: Mutex<Option<OutputStream>>,
-    stderr: Mutex<Option<OutputStream>>,
+    stdout: OutputStream,
+    stderr: OutputStream,
 }
 
 /// Process-wide console output facade.
@@ -693,14 +843,8 @@ impl OutputService {
             config.flush_on_idle,
             StreamId::Stderr.std_sink(),
         )?;
-        let streams = GlobalStreams {
-            stdout_handle: stdout.handle(),
-            stderr_handle: stderr.handle(),
-            stdout: Mutex::new(Some(stdout)),
-            stderr: Mutex::new(Some(stderr)),
-        };
         // A losing racer drops its streams here, which stops its writer threads.
-        Ok(SERVICE.set(streams).is_ok())
+        Ok(SERVICE.set(GlobalStreams { stdout, stderr }).is_ok())
     }
 
     /// Returns a producer handle for the process standard output.
@@ -708,7 +852,7 @@ impl OutputService {
     pub fn stdout() -> StreamHandle {
         SERVICE.get().map_or_else(
             || StreamHandle::direct(StreamId::Stdout),
-            |service| service.stdout_handle.clone(),
+            |service| service.stdout.handle(),
         )
     }
 
@@ -717,40 +861,57 @@ impl OutputService {
     pub fn stderr() -> StreamHandle {
         SERVICE.get().map_or_else(
             || StreamHandle::direct(StreamId::Stderr),
-            |service| service.stderr_handle.clone(),
+            |service| service.stderr.handle(),
         )
     }
 
-    /// Stops accepting frames, drains both streams, and flushes.
+    /// Returns the handle human-readable diagnostics must use.
     ///
+    /// While stdout carries machine-readable records, prose moves to stderr so a
+    /// structured stream never gains a line that does not parse.
+    #[must_use]
+    pub fn diagnostics() -> StreamHandle {
+        if Self::structured_stdout() {
+            Self::stderr()
+        } else {
+            Self::stdout()
+        }
+    }
+
+    /// Writes and flushes everything accepted so far on both streams.
+    ///
+    /// The writer threads keep running afterwards, so a process that hosts more
+    /// than one engine run in sequence or in parallel keeps its console output.
     /// The deadline bounds the total wait across both streams.
-    pub fn shutdown(deadline: Duration) -> ShutdownOutcome {
+    pub fn drain(deadline: Duration) -> ShutdownOutcome {
         let Some(service) = SERVICE.get() else {
             return ShutdownOutcome::default();
         };
         let started = Instant::now();
-        // stdout drains first so late diagnostics still reach stderr.
-        let mut outcome = shutdown_stream(&service.stdout, deadline);
+        let mut outcome = service.stdout.drain(deadline);
         let remaining = deadline.saturating_sub(started.elapsed());
-        outcome.merge(shutdown_stream(&service.stderr, remaining));
+        outcome.merge(service.stderr.drain(remaining));
         outcome
     }
 
     /// Returns a snapshot of both streams' counters.
     #[must_use]
     pub fn stats() -> ServiceStats {
-        ServiceStats {
-            stdout: Self::stdout().stats(),
-            stderr: Self::stderr().stats(),
-        }
+        SERVICE
+            .get()
+            .map_or_else(ServiceStats::default, |service| ServiceStats {
+                stdout: service.stdout.stats(),
+                stderr: service.stderr.stats(),
+            })
     }
 
-    /// Records whether stdout currently carries machine-readable records.
+    /// Records that stdout carries machine-readable records.
     ///
-    /// While set, human-readable diagnostics are routed to stderr so they
-    /// cannot corrupt a structured stdout stream.
-    pub fn set_structured_stdout(enabled: bool) {
-        STRUCTURED_STDOUT.store(enabled, Ordering::Release);
+    /// This latches for the life of the process: once a stream has carried
+    /// records, keeping prose off it stays correct even when a later engine run
+    /// in the same process emits only human-readable output.
+    pub fn mark_structured_stdout() {
+        STRUCTURED_STDOUT.store(true, Ordering::Release);
     }
 
     /// Returns whether stdout currently carries machine-readable records.
@@ -760,22 +921,10 @@ impl OutputService {
     }
 }
 
-/// Shuts one global stream down and releases it.
-fn shutdown_stream(slot: &Mutex<Option<OutputStream>>, deadline: Duration) -> ShutdownOutcome {
-    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    match guard.as_mut() {
-        Some(stream) => {
-            let outcome = stream.shutdown(deadline);
-            *guard = None;
-            outcome
-        }
-        None => ShutdownOutcome::default(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicU32;
 
     /// Chunk size used to simulate an operating system that accepts partial writes.
@@ -789,6 +938,7 @@ mod tests {
         flushes: Arc<AtomicU32>,
         delay: Option<Duration>,
         fail_after: Option<Arc<AtomicU32>>,
+        flush_fails: bool,
         stalled: Option<Arc<AtomicBool>>,
     }
 
@@ -799,6 +949,7 @@ mod tests {
                 flushes: Arc::new(AtomicU32::new(0)),
                 delay: None,
                 fail_after: None,
+                flush_fails: false,
                 stalled: None,
             }
         }
@@ -810,6 +961,11 @@ mod tests {
 
         fn failing_after(mut self, writes: u32) -> Self {
             self.fail_after = Some(Arc::new(AtomicU32::new(writes)));
+            self
+        }
+
+        fn failing_flush(mut self) -> Self {
+            self.flush_fails = true;
             self
         }
 
@@ -862,6 +1018,9 @@ mod tests {
 
         fn flush(&mut self) -> io::Result<()> {
             let _ = self.flushes.fetch_add(1, Ordering::Relaxed);
+            if self.flush_fails {
+                return Err(io::Error::other("simulated console flush failure"));
+            }
             Ok(())
         }
     }
@@ -1002,7 +1161,8 @@ mod tests {
 
     /// Scenario: a slow sink cannot keep up with a producer submitting more frames than the queue holds.
     /// Guarantees: the producer waits for capacity and still makes progress, and the
-    /// number of accepted-but-unwritten frames never exceeds the queue capacity.
+    /// number of accepted-but-unwritten frames stays bounded by the queue capacity
+    /// rather than growing with the number of frames submitted.
     #[tokio::test]
     async fn slow_sink_applies_bounded_backpressure() {
         const CAPACITY: usize = 4;
@@ -1031,13 +1191,15 @@ mod tests {
         assert_eq!(stats.frames_submitted, FRAMES as u64);
         assert_eq!(stats.frames_written, FRAMES as u64);
         assert_eq!(stats.frames_enqueue_failed, 0);
-        // One extra slot is in flight in the writer while the queue refills.
-        assert!(stats.queue_depth_high_water <= CAPACITY as u64 + 1);
+        // Two slots sit outside the queue: one frame the writer has taken but not
+        // yet accounted for, and one the producer reserved but has not sent yet.
+        assert!(stats.queue_depth_high_water <= CAPACITY as u64 + 2);
     }
 
     /// Scenario: the sink starts returning io::Error partway through a run.
     /// Guarantees: the writer records the error, marks itself unavailable, closes
-    /// the queue, and later submits fail fast instead of blocking.
+    /// the queue, later submits fail fast instead of blocking, and shutdown reports
+    /// a failed drain because accepted frames were abandoned.
     #[tokio::test]
     async fn write_error_makes_the_stream_unavailable() {
         // Uses the stderr stream so the failure report cannot reach the stream
@@ -1063,10 +1225,171 @@ mod tests {
         assert!(failed, "submits must start failing after a write error");
 
         let outcome = stream.shutdown(Duration::from_secs(5));
-        assert!(outcome.drained);
+        assert!(
+            !outcome.drained,
+            "a write failure is not a successful drain"
+        );
         let stats = stream.stats();
         assert_eq!(stats.write_errors, 1);
         assert_eq!(sink.contents(), b"first\n");
+    }
+
+    /// Scenario: the sink accepts every write but fails to flush.
+    /// Guarantees: shutdown reports a failed drain, because bytes the writer already
+    /// accepted may never have reached the operating system.
+    #[tokio::test]
+    async fn flush_error_reports_a_failed_drain() {
+        let sink = TestSink::new().failing_flush();
+        let mut stream = OutputStream::start(StreamId::Stderr, 4, false, Box::new(sink.clone()))
+            .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        handle
+            .submit(Frame::line("first"))
+            .await
+            .expect("frame is accepted");
+        let outcome = stream.shutdown(Duration::from_secs(5));
+
+        assert!(
+            !outcome.drained,
+            "a flush failure is not a successful drain"
+        );
+        assert!(stream.stats().write_errors > 0);
+    }
+
+    /// Scenario: producers keep submitting while shutdown closes the stream.
+    /// Guarantees: every submit that reported success is written before the writer
+    /// stops, so an accepted frame is never discarded behind the stop marker.
+    #[test]
+    fn shutdown_never_drops_an_accepted_frame() {
+        // Enough concurrent producers that at least one is reliably mid-enqueue
+        // when shutdown closes the stream.
+        const PRODUCERS: usize = 16;
+
+        let sink = TestSink::new();
+        let mut stream = start(&sink, 4);
+        let handle = stream.handle();
+        let keep_going = Arc::new(AtomicBool::new(true));
+
+        let workers: Vec<_> = (0..PRODUCERS)
+            .map(|_| {
+                let handle = handle.clone();
+                let keep_going = Arc::clone(&keep_going);
+                thread::spawn(move || {
+                    while keep_going.load(Ordering::Acquire) {
+                        if handle.try_submit(Frame::line("frame")) == Err(SubmitError::QueueClosed)
+                        {
+                            return;
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        thread::sleep(Duration::from_millis(20));
+        let outcome = stream.shutdown(Duration::from_secs(10));
+        keep_going.store(false, Ordering::Release);
+        for worker in workers {
+            worker.join().expect("producer thread finishes");
+        }
+
+        assert!(outcome.drained);
+        assert_eq!(outcome.frames_pending, 0);
+        let stats = stream.stats();
+        assert!(
+            stats.frames_submitted > 0,
+            "the race window must be exercised"
+        );
+        assert_eq!(
+            stats.frames_written, stats.frames_submitted,
+            "every accepted frame must reach the sink"
+        );
+        assert_eq!(stats.frames_dropped_shutdown, 0);
+        let contents = String::from_utf8(sink.contents()).expect("utf8 output");
+        assert_eq!(contents.lines().count() as u64, stats.frames_submitted);
+    }
+
+    /// Scenario: a pending `submit` is cancelled while it waits for queue capacity.
+    /// Guarantees: the cancelled attempt releases its admission slot and is not counted
+    /// as accepted, so a later shutdown settles instead of waiting out its deadline.
+    #[tokio::test]
+    async fn cancelled_submit_releases_its_admission_slot() {
+        let stalled = Arc::new(AtomicBool::new(true));
+        let sink = TestSink::new().stalling(Arc::clone(&stalled));
+        let mut stream = start(&sink, 1);
+        let handle = stream.handle();
+
+        // One frame reaches the stalled writer, the next fills the single queue slot.
+        handle
+            .submit(Frame::line("in-writer"))
+            .await
+            .expect("frame is accepted");
+        handle
+            .submit(Frame::line("queued"))
+            .await
+            .expect("frame is accepted");
+
+        // This one cannot be enqueued, so the timeout drops it mid-send.
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(100),
+            handle.submit(Frame::line("cancelled")),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "the submit must still be pending when it is cancelled"
+        );
+
+        stalled.store(false, Ordering::Release);
+        let started = Instant::now();
+        let outcome = stream.shutdown(Duration::from_secs(5));
+        let elapsed = started.elapsed();
+
+        assert!(outcome.drained);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "shutdown must not wait on a cancelled submit"
+        );
+        let stats = stream.stats();
+        assert_eq!(
+            stats.frames_submitted, 2,
+            "a cancelled submit must not count as accepted"
+        );
+        assert_eq!(stats.frames_written, stats.frames_submitted);
+    }
+
+    /// Scenario: a drain completes and the same stream is used again afterwards.
+    /// Guarantees: the drain confirms everything queued before it was written and
+    /// flushed, and the writer keeps accepting frames, so one engine run in a
+    /// process cannot silence the console for a later one.
+    #[tokio::test]
+    async fn drain_flushes_without_stopping_the_writer() {
+        const BATCH: usize = 8;
+
+        let sink = TestSink::new().with_delay(Duration::from_millis(1));
+        let stream = start(&sink, 4);
+        let handle = stream.handle();
+
+        for index in 0..BATCH {
+            handle
+                .submit(Frame::line(&format!("first-{index}")))
+                .await
+                .expect("frame is accepted");
+        }
+        assert!(stream.drain(Duration::from_secs(10)).drained);
+        let contents = String::from_utf8(sink.contents()).expect("utf8 output");
+        assert_eq!(contents.lines().count(), BATCH);
+        assert!(sink.flushes.load(Ordering::Relaxed) > 0);
+
+        for index in 0..BATCH {
+            handle
+                .submit(Frame::line(&format!("second-{index}")))
+                .await
+                .expect("the stream still accepts frames after a drain");
+        }
+        assert!(stream.drain(Duration::from_secs(10)).drained);
+        let contents = String::from_utf8(sink.contents()).expect("utf8 output");
+        assert_eq!(contents.lines().count(), BATCH * 2);
     }
 
     /// Scenario: the writer thread panics while a producer is still submitting.
@@ -1129,7 +1452,7 @@ mod tests {
         let outcome = stream.shutdown(Duration::from_secs(10));
 
         assert!(outcome.drained);
-        assert_eq!(outcome.frames_dropped, 0);
+        assert_eq!(outcome.frames_pending, 0);
         assert_eq!(stream.stats().frames_written, FRAMES as u64);
         assert!(sink.flushes.load(Ordering::Relaxed) > 0);
         let contents = String::from_utf8(sink.contents()).expect("utf8 output");
@@ -1158,11 +1481,11 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert!(!outcome.drained);
-        assert!(outcome.frames_dropped > 0);
+        assert!(outcome.frames_pending > 0);
         assert!(elapsed < Duration::from_secs(5), "shutdown must be bounded");
         assert_eq!(
             stream.stats().frames_dropped_shutdown,
-            outcome.frames_dropped
+            outcome.frames_pending
         );
         stalled.store(false, Ordering::Release);
     }
@@ -1208,6 +1531,61 @@ mod tests {
         assert!(stats.diagnostics_dropped > 0);
         assert_eq!(stats.frames_enqueue_failed, stats.diagnostics_dropped);
         stalled.store(false, Ordering::Release);
+    }
+
+    /// Scenario: a drain runs after the writer already stopped on an I/O error.
+    /// Guarantees: the outcome separates a failed writer from an expired deadline, so
+    /// an operator is not told output merely ran out of time.
+    #[tokio::test]
+    async fn drain_reports_a_failed_writer_separately_from_a_timeout() {
+        let failing = TestSink::new().failing_after(0);
+        let stream = OutputStream::start(StreamId::Stderr, 4, true, Box::new(failing.clone()))
+            .expect("writer thread spawns");
+        let handle = stream.handle();
+        // Drive one write so the sink fails and the writer latches unavailable.
+        let _ = handle.submit(Frame::line("doomed")).await;
+        for _ in 0..1000 {
+            if stream.stats().write_errors > 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        let failed = stream.drain(Duration::from_millis(200));
+        assert!(!failed.drained);
+        assert!(
+            failed.writer_failed,
+            "an I/O failure must be distinguishable"
+        );
+
+        // A stalled but healthy writer is a timeout, not a failure.
+        let stalled = Arc::new(AtomicBool::new(true));
+        let slow = TestSink::new().stalling(Arc::clone(&stalled));
+        let stalled_stream = start(&slow, 4);
+        // The writer blocks inside this frame's write, so the barrier queues behind it.
+        stalled_stream
+            .handle()
+            .submit(Frame::line("stuck"))
+            .await
+            .expect("frame is accepted");
+        let timed_out = stalled_stream.drain(Duration::from_millis(200));
+        stalled.store(false, Ordering::Release);
+
+        assert!(!timed_out.drained);
+        assert!(!timed_out.writer_failed);
+    }
+
+    /// Scenario: engine prose is emitted while stdout carries machine-readable records.
+    /// Guarantees: the diagnostics handle moves to stderr, so `record_json` stdout
+    /// never gains a human-readable line that does not parse.
+    #[test]
+    fn diagnostics_move_to_stderr_while_stdout_is_structured() {
+        // The latch is process-wide and monotonic, so this test owns the transition.
+        assert_eq!(OutputService::diagnostics().stream_id(), StreamId::Stdout);
+
+        OutputService::mark_structured_stdout();
+
+        assert_eq!(OutputService::diagnostics().stream_id(), StreamId::Stderr);
     }
 
     /// Scenario: a frame is built from a plain message, as `EffectHandler::info` does.

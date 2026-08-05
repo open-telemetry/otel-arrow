@@ -30,11 +30,12 @@ agent, were persisted, or were delivered durably.
 
 ## Console Output Serialization
 
-All console output produced by the engine flows through a single writer thread
-per standard stream. That thread holds the stream lock for the whole frame, so
-concurrent exporters on different cores can never interleave bytes inside one
-frame, even when a payload is larger than a single underlying write. Every
-`record_json` line therefore stays independently parseable.
+Console output from the engine's cooperating writers -- this exporter, node
+`info` messages, and internal diagnostics -- flows through a single writer
+thread per standard stream. That thread holds the stream lock for the whole
+frame, so concurrent exporters on different cores can never interleave bytes
+inside one frame, even when a payload is larger than a single underlying write.
+Every `record_json` line therefore stays independently parseable.
 
 The queue feeding the writer is bounded, so a console that cannot keep up slows
 producers down instead of dropping data or growing without limit. Best-effort
@@ -44,16 +45,27 @@ different cores is not globally ordered by timestamp.
 
 Defaults require no configuration: 1024 queued frames for stdout, 256 for
 stderr, a flush whenever the queue goes idle, and a 5 second drain deadline at
-shutdown. Frames still queued when that deadline expires are counted and
-discarded so a stalled console pipe cannot block process exit.
+shutdown. When an engine run ends, accepted frames are written and flushed
+before it returns; anything still queued when that deadline expires is reported
+instead of waited on. The writer threads are process-wide and stay running, so
+another engine run in the same process keeps its console output.
 
-While `format: record_json` is configured, human-readable engine diagnostics
-are routed to stderr so they cannot corrupt the structured stdout stream.
+A console that never accepts writes is a separate case. Because the queue
+applies backpressure by design, producers wait once it fills, and the pipeline
+stops making progress until the console drains. The drain deadline bounds the
+final flush, not that upstream stall.
+
+While any console exporter in the process is configured with
+`format: record_json`, stdout is treated as a machine-readable stream for the
+rest of the run: human-readable engine diagnostics and the output of any
+`pretty` console exporter are routed to stderr instead, so they cannot corrupt
+it.
 
 The integrity guarantee covers output submitted through this writer only. It
 excludes writers that bypass it: raw file descriptors, inherited child
-processes, the debug processor's console fallback, and standalone binaries such
-as `ctl`.
+processes, the debug processor's console fallback, last-resort messages emitted
+while a controller thread is being torn down, and standalone binaries such as
+`ctl`.
 
 ## Getting Started
 

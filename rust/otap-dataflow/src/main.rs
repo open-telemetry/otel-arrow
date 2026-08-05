@@ -271,7 +271,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
-    println!(
+    // Diagnostics go to stderr: stdout may be a machine-readable record stream.
+    eprintln!(
         "{}",
         startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name())
     );
@@ -306,7 +307,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match result {
         Ok(_) => {
-            println!("Pipeline run successfully");
+            eprintln!("Pipeline run successfully");
             std::process::exit(0);
         }
         Err(e) => {

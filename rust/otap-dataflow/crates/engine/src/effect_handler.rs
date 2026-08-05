@@ -145,14 +145,16 @@ impl<PData> EffectHandlerCore<PData> {
         self.node_id.clone()
     }
 
-    /// Print an info message to stdout.
+    /// Print an info message to the engine's diagnostic stream.
     ///
     /// This method provides a standardized way for all nodes in the pipeline
     /// to output informational messages without blocking the async runtime.
     pub(crate) async fn info(&self, message: &str) {
         // One frame per message so the line is written whole, and the caller
         // waits for queue capacity instead of performing blocking I/O here.
-        let _ = OutputService::stdout().submit(Frame::line(message)).await;
+        let _ = OutputService::diagnostics()
+            .submit(Frame::line(message))
+            .await;
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the

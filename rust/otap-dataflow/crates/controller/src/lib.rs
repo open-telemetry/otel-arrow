@@ -1785,15 +1785,26 @@ impl<
         obs_state_join_handle.shutdown_and_join()?;
         drop(telemetry_system);
 
-        // Torn down last so late diagnostics still reach the terminal. A stalled
-        // console pipe expires against the deadline instead of blocking exit.
-        let output_outcome = OutputService::shutdown(output_service_config.shutdown_drain_deadline);
+        // Drained last so late diagnostics still reach the terminal. The writer
+        // threads stay up: they are process-wide, and another engine run in this
+        // process must keep its console output.
+        let output_outcome = OutputService::drain(output_service_config.shutdown_drain_deadline);
         if !output_outcome.drained {
-            otel_warn!(
-                "controller.console_output_drain_timeout",
-                frames_dropped = output_outcome.frames_dropped,
-                message = "Timed out draining console output; some queued frames were not written"
-            );
+            if output_outcome.writer_failed {
+                otel_warn!(
+                    "controller.console_output_writer_failed",
+                    frames_pending = output_outcome.frames_pending,
+                    message = "A console writer stopped on an I/O error; queued console output was not written"
+                );
+            } else {
+                otel_warn!(
+                    "controller.console_output_drain_timeout",
+                    frames_pending = output_outcome.frames_pending,
+                    message = "Timed out draining console output; some queued frames may not have been written"
+                );
+            }
+            // The report above is itself console output, so give it a chance to land.
+            let _ = OutputService::drain(Duration::from_secs(1));
         }
 
         if let Some(err) = controller_extension_error {
