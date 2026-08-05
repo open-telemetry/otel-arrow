@@ -25,7 +25,7 @@ use super::auth::Auth;
 use super::config::{Config, GrantType, SignatureAlgorithm};
 use super::metrics::OAuth2ClientAuthMetrics;
 use super::*;
-use crate::common::token_refresh::TokenProviderMetricsTracker;
+use crate::common::token_refresh::{TokenProviderMetricsTracker, TokenSource};
 
 // -- Helpers ---------------------------------------------------
 
@@ -442,6 +442,72 @@ fn factory_is_registered_with_capability() {
     assert!(
         capabilities.shared.contains(&"bearer_token_provider"),
         "BearerTokenProvider must be advertised as a shared capability"
+    );
+}
+
+/// Invokes the factory's `create` hook with `config` against a throwaway
+/// extension context, mirroring how the engine wires the extension.
+fn create_bundle(config: serde_json::Value) -> Result<ExtensionBundle, ConfigError> {
+    let (ext_ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
+    let name: otap_df_config::ExtensionId = "oauth2-client-auth".into();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        OAUTH2_CLIENT_AUTH_URN.into(),
+        config,
+    ));
+    let extension_config = ExtensionConfig::new(name.clone());
+    create(&ext_ctx, name, user_config, &extension_config)
+}
+
+// Scenario: The factory's `create` hook runs against a valid client-credentials config.
+// Guarantees: Wiring succeeds and yields a shared, active extension bundle usable by the engine.
+#[test]
+fn create_builds_a_shared_active_bundle() {
+    let bundle = create_bundle(valid_config_json("https://idp.example.com/token"))
+        .expect("a valid config wires successfully");
+    assert!(
+        bundle.local().is_none(),
+        "the OAuth2 client auth extension has no local variant"
+    );
+    let shared = bundle.shared().expect("a shared variant is produced");
+    assert_eq!(shared.variant(), ExtensionVariant::Shared);
+    assert!(
+        !shared.is_passive(),
+        "the extension must be active so its refresh loop runs"
+    );
+}
+
+// Scenario: The factory's `create` hook runs against a config that fails deserialization.
+// Guarantees: Wiring fails fast with InvalidUserConfig instead of building a broken extension.
+#[test]
+fn create_rejects_a_malformed_config() {
+    let Err(err) = create_bundle(serde_json::json!({ "client_id": "id" })) else {
+        panic!("a config without token_url must be rejected");
+    };
+    assert!(
+        matches!(err, ConfigError::InvalidUserConfig { .. }),
+        "expected InvalidUserConfig, got {err:?}"
+    );
+}
+
+// Scenario: The factory's `create` hook runs against a config whose TLS material cannot build a client.
+// Guarantees: The Auth::new failure is surfaced as InvalidUserConfig at wiring time, not at first token fetch.
+#[test]
+fn create_surfaces_auth_construction_failures() {
+    let leaf =
+        generate_ca("client CA").issue_leaf("client", None, Some(ExtendedKeyUsage::ClientAuth));
+    let config = config_json_with(
+        "https://idp.example.com/token",
+        serde_json::json!({ "tls": { "cert_pem": leaf.cert_pem } }),
+    );
+    let Err(err) = create_bundle(config) else {
+        panic!("an mTLS certificate without a key must be rejected");
+    };
+    let ConfigError::InvalidUserConfig { error } = &err else {
+        panic!("expected InvalidUserConfig, got {err:?}");
+    };
+    assert!(
+        error.contains("failed to initialize OAuth2 client"),
+        "error must identify the client-construction failure, got {error}"
     );
 }
 
@@ -1258,5 +1324,298 @@ async fn client_id_file_rotation_takes_effect() {
     assert_ne!(
         auth1, auth2,
         "the rotated client id must change the Authorization header"
+    );
+}
+
+// -- Auth construction and credential-read error paths ----------
+
+// Scenario: A plaintext http:// token endpoint is configured.
+// Guarantees: Auth still builds (the endpoint is usable) while the insecure-endpoint
+// warning path runs, so operators are told rather than blocked.
+#[test]
+fn plaintext_token_url_builds_auth() {
+    let cfg = config_from_json(config_json_with(
+        "http://idp.example.com/token",
+        serde_json::json!({ "tls": { "insecure": true } }),
+    ))
+    .expect("http token_url with insecure=true parses");
+    assert!(
+        Auth::new(&cfg).is_ok(),
+        "a plaintext endpoint must warn, not fail"
+    );
+}
+
+// Scenario: A token_url passes config validation but is not a parsable URL.
+// Guarantees: Auth::new fails with BuildHttpClient naming token_url instead of panicking later.
+#[test]
+fn unparsable_token_url_is_rejected_by_auth() {
+    let cfg = config_from_json(config_json_with(
+        "https://",
+        serde_json::json!({ "tls": { "insecure": false } }),
+    ))
+    .expect("config validation only checks the scheme");
+    let Err(err) = Auth::new(&cfg) else {
+        panic!("an unparsable token_url must be rejected");
+    };
+    assert!(
+        err.to_string().contains("invalid token_url"),
+        "unexpected error: {err}"
+    );
+}
+
+// Scenario: A ca_file points at a path that does not exist.
+// Guarantees: Client construction fails with ReadCredentialFile naming the path,
+// so a typo is diagnosed at startup rather than as a TLS handshake failure.
+#[test]
+fn missing_ca_file_is_reported_with_its_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("absent-ca.pem");
+    let cfg = config_from_json(config_json_with(
+        "https://idp.example.com/token",
+        serde_json::json!({ "tls": { "ca_file": missing.to_string_lossy() } }),
+    ))
+    .expect("config parses");
+    let Err(err) = Auth::new(&cfg) else {
+        panic!("a missing ca_file must be rejected");
+    };
+    assert!(
+        err.to_string().contains("absent-ca.pem"),
+        "error must name the offending path, got: {err}"
+    );
+}
+
+// Scenario: A ca_file exists but does not contain a certificate.
+// Guarantees: Client construction fails rather than silently trusting nothing extra.
+#[test]
+fn unparsable_ca_file_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ca_path = dir.path().join("garbage-ca.pem");
+    std::fs::write(
+        &ca_path,
+        "-----BEGIN CERTIFICATE-----\nZ\n-----END CERTIFICATE-----\n",
+    )
+    .expect("write garbage CA");
+    let cfg = config_from_json(config_json_with(
+        "https://idp.example.com/token",
+        serde_json::json!({ "tls": { "ca_file": ca_path.to_string_lossy() } }),
+    ))
+    .expect("config parses");
+    assert!(
+        Auth::new(&cfg).is_err(),
+        "an unparsable CA bundle must be rejected"
+    );
+}
+
+// Scenario: A complete mTLS client certificate and key pair is configured.
+// Guarantees: The identity is accepted and the HTTP client builds, exercising the
+// success side of the mTLS branch that the two rejection tests only cover negatively.
+#[test]
+fn mtls_certificate_and_key_pair_builds_a_client() {
+    let leaf =
+        generate_ca("client CA").issue_leaf("client", None, Some(ExtendedKeyUsage::ClientAuth));
+    let cfg = config_from_json(config_json_with(
+        "https://idp.example.com/token",
+        serde_json::json!({
+            "tls": { "cert_pem": leaf.cert_pem, "key_pem": leaf.key_pem },
+        }),
+    ))
+    .expect("config parses");
+    assert!(
+        Auth::new(&cfg).is_ok(),
+        "a matching certificate and key must build an mTLS client"
+    );
+}
+
+// Scenario: A client_secret_file points at a path that does not exist.
+// Guarantees: Token acquisition fails with the path named, and the failure surfaces
+// per-acquisition rather than at construction (the file is read on every refresh).
+#[tokio::test]
+async fn missing_client_secret_file_fails_acquisition() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("absent-secret");
+    let server = start_token_server("tok", 3600).await;
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": format!("{}/token", server.uri()),
+        "client_id": "id",
+        "client_secret_file": missing.to_string_lossy(),
+    }))
+    .expect("config parses");
+    let auth = Auth::new(&cfg).expect("auth builds");
+    let err = auth
+        .fetch_token()
+        .await
+        .expect_err("a missing credential file must fail acquisition");
+    assert!(
+        err.to_string().contains("absent-secret"),
+        "error must name the offending path, got: {err}"
+    );
+}
+
+// Scenario: A client_secret_file contains bytes that are not valid UTF-8.
+// Guarantees: Acquisition fails with an explicit encoding error naming the field,
+// instead of sending mangled credentials to the token endpoint.
+#[tokio::test]
+async fn non_utf8_client_secret_file_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let secret_path = dir.path().join("client_secret");
+    std::fs::write(&secret_path, [0xff, 0xfe, 0xfd]).expect("write non-UTF-8 secret");
+    let server = start_token_server("tok", 3600).await;
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": format!("{}/token", server.uri()),
+        "client_id": "id",
+        "client_secret_file": secret_path.to_string_lossy(),
+    }))
+    .expect("config parses");
+    let auth = Auth::new(&cfg).expect("auth builds");
+    let err = auth
+        .fetch_token()
+        .await
+        .expect_err("non-UTF-8 credentials must be rejected");
+    assert!(
+        err.to_string().contains("valid UTF-8"),
+        "unexpected error: {err}"
+    );
+}
+
+// Scenario: A JWT-bearer client_certificate_key_file points at a path that does not exist.
+// Guarantees: Acquisition fails with the path named rather than signing with empty key material.
+#[tokio::test]
+async fn missing_signing_key_file_fails_acquisition() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("absent-key.pem");
+    let server = start_token_server("tok", 3600).await;
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": format!("{}/token", server.uri()),
+        "grant_type": "jwt-bearer",
+        "client_id": "id",
+        "client_certificate_key_file": missing.to_string_lossy(),
+    }))
+    .expect("config parses");
+    let auth = Auth::new(&cfg).expect("auth builds");
+    let err = auth
+        .fetch_token()
+        .await
+        .expect_err("a missing signing key file must fail acquisition");
+    assert!(
+        err.to_string().contains("absent-key.pem"),
+        "error must name the offending path, got: {err}"
+    );
+}
+
+// Scenario: A JWT-bearer signing key is present but is not a usable RSA private key.
+// Guarantees: Acquisition fails with a signing error naming the key, and no request is sent.
+#[tokio::test]
+async fn unusable_signing_key_fails_before_any_request() {
+    let server = start_token_server("tok", 3600).await;
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": format!("{}/token", server.uri()),
+        "grant_type": "jwt-bearer",
+        "client_id": "id",
+        "client_certificate_key": "-----BEGIN PRIVATE KEY-----\nZ\n-----END PRIVATE KEY-----\n",
+    }))
+    .expect("config parses");
+    let auth = Auth::new(&cfg).expect("auth builds");
+    let err = auth
+        .fetch_token()
+        .await
+        .expect_err("an unusable signing key must fail acquisition");
+    assert!(
+        err.to_string().contains("invalid RSA signing key"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests recorded")
+            .is_empty(),
+        "signing must fail before the token endpoint is contacted"
+    );
+}
+
+// -- JWT-bearer token endpoint response handling ----------------
+
+/// Builds a JWT-bearer `Auth` pointed at `token_url` with a freshly generated key.
+fn jwt_bearer_auth(token_url: &str) -> Auth {
+    let (private_pem, _public_pem) = generate_test_rsa_keypair();
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": token_url,
+        "grant_type": "jwt-bearer",
+        "client_id": "id",
+        "client_certificate_key": private_pem,
+    }))
+    .expect("config parses");
+    Auth::new(&cfg).expect("auth builds")
+}
+
+// Scenario: A JWT-bearer token endpoint answers with a non-2xx status and a body.
+// Guarantees: The status and body are both surfaced in the error so the failure is diagnosable.
+#[tokio::test]
+async fn jwt_bearer_surfaces_error_status_and_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("invalid_client"))
+        .mount(&server)
+        .await;
+
+    let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
+    let err = auth
+        .fetch_token()
+        .await
+        .expect_err("a 401 must fail acquisition");
+    let message = err.to_string();
+    assert!(
+        message.contains("401"),
+        "error must carry the status: {message}"
+    );
+    assert!(
+        message.contains("invalid_client"),
+        "error must carry the body: {message}"
+    );
+}
+
+// Scenario: A JWT-bearer token endpoint answers 200 with a body that is not a token response.
+// Guarantees: Deserialization failure is reported as an acquisition error, not a panic.
+#[tokio::test]
+async fn jwt_bearer_rejects_an_unparsable_success_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+        .mount(&server)
+        .await;
+
+    let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
+    let err = auth
+        .fetch_token()
+        .await
+        .expect_err("an unparsable body must fail acquisition");
+    assert!(
+        err.to_string().contains("invalid token response"),
+        "unexpected error: {err}"
+    );
+}
+
+// Scenario: A JWT-bearer token endpoint omits expires_in from an otherwise valid response.
+// Guarantees: The token is accepted without an expiry rather than being treated as expired.
+#[tokio::test]
+async fn jwt_bearer_response_without_expires_in_has_no_expiry() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "tok",
+            "token_type": "Bearer",
+        })))
+        .mount(&server)
+        .await;
+
+    let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
+    let token = auth.fetch_token().await.expect("acquisition succeeds");
+    assert_eq!(token.expose_token(), "tok");
+    assert!(
+        token.expires_on().is_none(),
+        "a response without expires_in must yield a token with no expiry"
     );
 }

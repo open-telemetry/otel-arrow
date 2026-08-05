@@ -137,6 +137,52 @@ fn factory_is_registered_with_capability() {
     );
 }
 
+/// Invokes the factory's `create` hook with `config` against a throwaway
+/// extension context, mirroring how the engine wires the extension.
+fn create_bundle(config: serde_json::Value) -> Result<ExtensionBundle, ConfigError> {
+    let (ext_ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
+    let name: otap_df_config::ExtensionId = "azure-identity-auth".into();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        AZURE_IDENTITY_AUTH_URN.into(),
+        config,
+    ));
+    let extension_config = ExtensionConfig::new(name.clone());
+    create(&ext_ctx, name, user_config, &extension_config)
+}
+
+// Scenario: The factory's `create` hook runs against a valid managed-identity config.
+// Guarantees: Wiring succeeds and yields a shared, active extension bundle usable by the engine.
+#[test]
+fn create_builds_a_shared_active_bundle() {
+    otap_df_otap::crypto::ensure_crypto_provider();
+    let bundle = create_bundle(serde_json::json!({ "method": "managed_identity" }))
+        .expect("a valid config wires successfully");
+    assert!(
+        bundle.local().is_none(),
+        "the Azure identity auth extension has no local variant"
+    );
+    let shared = bundle.shared().expect("a shared variant is produced");
+    assert_eq!(shared.variant(), ExtensionVariant::Shared);
+    assert!(
+        !shared.is_passive(),
+        "the extension must be active so its refresh loop runs"
+    );
+}
+
+// Scenario: The factory's `create` hook runs against a config that fails validation.
+// Guarantees: Wiring fails fast with InvalidUserConfig instead of building a broken extension.
+#[test]
+fn create_rejects_an_invalid_config() {
+    let Err(err) = create_bundle(serde_json::json!({ "method": "development", "client_id": "c" }))
+    else {
+        panic!("client_id is not valid for the development method");
+    };
+    assert!(
+        matches!(err, ConfigError::InvalidUserConfig { .. }),
+        "expected InvalidUserConfig, got {err:?}"
+    );
+}
+
 // -- Credential construction tests ------------------------------
 
 #[test]
