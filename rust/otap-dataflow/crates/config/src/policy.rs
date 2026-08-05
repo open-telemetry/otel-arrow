@@ -554,6 +554,11 @@ pub struct MemoryLimiterPolicy {
     #[schemars(with = "Option<String>")]
     pub hard_limit: Option<u64>,
     /// Bytes below the soft limit required to leave `Soft` pressure.
+    ///
+    /// When omitted, defaults to the smaller of the soft-to-hard gap and 10% of
+    /// the soft limit (`min(hard_limit - soft_limit, soft_limit / 10)`), a
+    /// narrow recovery band so pressure leaves `Soft` once usage falls modestly
+    /// below `soft_limit`.
     #[serde(default, deserialize_with = "byte_units::deserialize_u64")]
     #[schemars(with = "Option<String>")]
     pub hysteresis: Option<u64>,
