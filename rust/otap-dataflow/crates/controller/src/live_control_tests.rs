@@ -3733,7 +3733,8 @@ fn runtime_thread_panic_populates_error_source_in_observed_status() {
     assert!(source.contains("backtrace:"));
 }
 
-static LAUNCH_PAUSE: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = Mutex::new(None);
+static LAUNCH_PAUSE: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> =
+    Mutex::new(None);
 
 fn blocking_create(
     _pipeline_ctx: PipelineContext,
@@ -3767,12 +3768,13 @@ async fn has_active_instances_checks_multiple_state_fields() {
 
     *LAUNCH_PAUSE.lock().unwrap() = Some((launch_started_tx, allow_launch_rx));
 
-    let receiver_factories: &'static [ReceiverFactory<()>] = Box::leak(Box::new(vec![ReceiverFactory {
-        name: "urn:test:receiver:example",
-        create: blocking_create,
-        wiring_contract: WiringContract::UNRESTRICTED,
-        validate_config: test_validate_config,
-    }]));
+    let receiver_factories: &'static [ReceiverFactory<()>] =
+        Box::leak(Box::new(vec![ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: blocking_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        }]));
     let test_factory = Box::leak(Box::new(PipelineFactory::new(
         receiver_factories,
         TEST_PROCESSOR_FACTORIES,
@@ -3793,7 +3795,9 @@ async fn has_active_instances_checks_multiple_state_fields() {
     });
 
     // Wait for the pipeline creation to begin and block
-    launch_started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    launch_started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
 
     // At this point, the instance is launching but NOT yet registered.
     // The "new guard" (active_engine_operation.is_some()) keeps has_active_instances() true.
@@ -3809,18 +3813,24 @@ async fn has_active_instances_checks_multiple_state_fields() {
     });
 
     // Shutdown should NOT complete immediately. Wait a moment to ensure it's blocked.
-    assert!(shutdown_result_rx.recv_timeout(Duration::from_millis(50)).is_err());
+    assert!(
+        shutdown_result_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err()
+    );
 
     // Allow the launch to finish
     allow_launch_tx.send(()).unwrap();
 
     // Now that launch finishes, the instance is registered, and then shutdown will signal it to exit.
     // Eventually shutdown_all should finish, though it might time out since we only gave it 1s
-    // and the pipeline needs to receive the shutdown msg. 
+    // and the pipeline needs to receive the shutdown msg.
     // For this test, we just care that it didn't early-return.
-    let _result = shutdown_result_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    
-    // The result might be a timeout Error(504) or Ok(()) depending on timing of test exit, 
+    let _result = shutdown_result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+
+    // The result might be a timeout Error(504) or Ok(()) depending on timing of test exit,
     // but the key assertion was that it did not return immediately above.
 }
 
