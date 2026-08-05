@@ -1,0 +1,7 @@
+# Use this changelog template to create an entry for release notes.
+
+change_type: breaking
+component: pipeline
+note: Consolidate OTAP receiver and exporter metrics into bounded signal, outcome, and rejection error dimensions.
+issues: [3300]
+subtext:

@@ -96,21 +96,29 @@ by the exporter.
 | --- | --- | --- | --- |
 | `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
 
-#### `otap.exporter.grpc.async`
+#### `exporter.otap.exports`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `otap.exporter.grpc.async.export.rpc.duration` | `ns` | End-to-end duration from yielding a batch to receiving the matching OTAP stream response. |
-| `otap.exporter.grpc.async.stream.enqueue.duration` | `ns` | Time spent waiting to enqueue a batch into the per-signal stream task. |
-| `otap.exporter.grpc.async.stream.enqueue.depth` | `{batch}` | Occupancy of the per-signal stream task queue before enqueueing a batch. |
-| `otap.exporter.grpc.async.stream.encode.duration` | `ns` | Time spent encoding an OTAP batch into outbound Arrow batch records. |
-| `otap.exporter.grpc.async.stream.correlation.enqueue.duration` | `ns` | Time spent enqueueing a yielded batch into the response correlation queue. |
-| `otap.exporter.grpc.async.stream.correlation.depth` | `{batch}` | Occupancy of the response correlation queue before enqueueing a yielded batch. |
-| `otap.exporter.grpc.async.stream.response.wait.duration` | `ns` | Time spent waiting for the next server response on an OTAP stream. |
-| `otap.exporter.grpc.async.stream.response.inflight` | `{batch}` | Number of yielded batches awaiting a matching server response. |
-| `otap.exporter.grpc.async.export.rpc.duration.p50` | `ns` | Median outbound gRPC export response duration for the latest telemetry interval. |
-| `otap.exporter.grpc.async.export.rpc.duration.p90` | `ns` | 90th percentile outbound gRPC export response duration for the latest telemetry interval. |
-| `otap.exporter.grpc.async.export.rpc.duration.p99` | `ns` | 99th percentile outbound gRPC export response duration for the latest telemetry interval. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otap.exports.duration` | `ns` | `signal`, `outcome` | End-to-end duration from yielding a batch to its terminal OTAP stream response. |
+| `exporter.otap.exports.duration.p50` | `ns` | `signal`, `outcome` | Median export response duration for the latest telemetry interval. |
+| `exporter.otap.exports.duration.p90` | `ns` | `signal`, `outcome` | 90th percentile export response duration for the latest telemetry interval. |
+| `exporter.otap.exports.duration.p99` | `ns` | `signal`, `outcome` | 99th percentile export response duration for the latest telemetry interval. |
+
+`signal` is one of `traces`, `metrics`, or `logs`. The exporter emits the
+terminal `outcome` values `success` and `failure`.
+
+#### `exporter.otap.streams`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otap.streams.enqueue.duration` | `ns` | `signal` | Time spent waiting to enqueue a batch into a per-signal stream task. |
+| `exporter.otap.streams.enqueue.depth` | `{batch}` | `signal` | Occupancy of the per-signal stream task queue before enqueueing a batch. |
+| `exporter.otap.streams.encode.duration` | `ns` | `signal` | Time spent encoding an OTAP batch into outbound Arrow batch records. |
+| `exporter.otap.streams.correlation.enqueue.duration` | `ns` | `signal` | Time spent enqueueing a yielded batch into the response correlation queue. |
+| `exporter.otap.streams.correlation.depth` | `{batch}` | `signal` | Occupancy of the response correlation queue before enqueueing a yielded batch. |
+| `exporter.otap.streams.response.wait.duration` | `ns` | `signal` | Time spent waiting for the next server response on an OTAP stream. |
+| `exporter.otap.streams.response.inflight` | `{batch}` | `signal` | Number of yielded batches awaiting a matching server response. |
 
 ### Events
 
