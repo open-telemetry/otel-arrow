@@ -111,6 +111,51 @@ free-form and each component supplies its own value.
 
 ---
 
+## Controlled Attribute Values (protocol, auth)
+
+The `protocol` and `auth` attributes carry security-relevant properties, so
+their values are drawn from a controlled vocabulary defined once in the
+`otap-df-component-inventory-syntax` crate (`Protocol` and `Auth` enums). This
+keeps values consistent across components and catches typos.
+
+Matching is case-insensitive and ignores a trailing parenthetical qualifier, so
+`"gRPC (HTTP/2)"` matches `grpc` and `"mTLS (opt-in)"` matches `mtls`.
+
+* Known `protocol` values: `grpc`, `http`, `tcp`, `udp`, `kafka`, `syslog`,
+  `otlp`, `otap`.
+* Known `auth` values: `none`, `tls`, `mtls`, `sasl`, `bearer_token`,
+  `api_key`, `oauth2`, `managed_identity`, `kerberos`.
+
+First-party components (URNs in the `urn:otel:` namespace) **must** use a known
+value. A value outside the known set is a `Custom` value, which is allowed only
+for external/vendor components (non-`urn:otel` namespaces, e.g.
+`urn:microsoft:`). `cargo xtask component-inventory` fails the check when a
+first-party component uses a `Custom` value.
+
+To enrich the vocabulary (e.g. add a new protocol), add a variant to the
+corresponding enum in `crates/component-inventory-syntax/src/lib.rs`; both the
+proc-macro and the scanner pick it up automatically.
+
+---
+
+## Scanner Configuration
+
+The `cargo xtask component-inventory` scanner reads
+`rust/otap-dataflow/component-inventory.toml` at the workspace root. It lists
+the directory names the scanner skips (build tooling, test-only crates, and
+generated/vendored trees that carry no shippable components):
+
+```toml
+skip_dirs = ["tests", "benches", "engine-macros", "component-inventory", ...]
+```
+
+Every `skip_dirs` entry must name a directory that exists somewhere under
+`crates/`; the scanner errors on a stale entry so the list cannot silently rot.
+The scanner also errors if the config file itself is missing or if the `crates/`
+scan root does not exist.
+
+---
+
 ## Baseline Verification
 
 When adding or modifying a component annotation, verify your changes locally:
@@ -177,3 +222,12 @@ error classes. Here is how to resolve them:
   ```rust
   #[component_inventory(id = "urn:otel:receiver:custom", category = Receiver)]
   ```
+
+### 6. Disallowed attribute value
+
+* Cause: A first-party (`urn:otel:`) component uses a `protocol` or `auth`
+  value outside the controlled vocabulary (see "Controlled Attribute Values").
+* Fix: Use a known value, or, if the value is genuinely new, add a variant to
+  the `Protocol`/`Auth` enum in `crates/component-inventory-syntax/src/lib.rs`.
+  `Custom` values remain allowed for external/vendor (non-`urn:otel`)
+  components.

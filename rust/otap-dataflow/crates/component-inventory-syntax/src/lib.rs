@@ -165,6 +165,206 @@ pub fn category_urn_segment(cat: &str) -> Option<&'static str> {
     Category::from_ident_str(cat).map(Category::urn_segment)
 }
 
+/// Normalize a free-form attribute value for controlled-vocabulary matching:
+/// lowercased, with any trailing parenthetical qualifier removed. So
+/// `"gRPC (HTTP/2)"` and `"mTLS (opt-in)"` normalize to `"grpc"` and `"mtls"`.
+fn normalize_value(value: &str) -> String {
+    let base = match value.split_once('(') {
+        Some((head, _)) => head,
+        None => value,
+    };
+    base.trim().to_ascii_lowercase()
+}
+
+/// Controlled vocabulary for the `protocol` attribute (RFC 0001).
+///
+/// This is a threat-model taxonomy for the wire protocol a component speaks --
+/// not a runtime config type. First-party (`urn:otel:*`) components must use a
+/// known variant; the [`Custom`](Protocol::Custom) escape hatch is reserved for
+/// external/vendor components (non-`otel` URN namespaces). The
+/// `cargo xtask component-inventory` check enforces this.
+///
+/// Matching is case-insensitive and ignores a trailing parenthetical qualifier
+/// (so `"gRPC (HTTP/2)"` maps to [`Grpc`](Protocol::Grpc)). Add a variant here
+/// to enrich the vocabulary; both the proc-macro and the scanner pick it up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Protocol {
+    /// gRPC (including "gRPC (HTTP/2)").
+    Grpc,
+    /// HTTP (non-gRPC).
+    Http,
+    /// Raw TCP.
+    Tcp,
+    /// UDP.
+    Udp,
+    /// Kafka protocol.
+    Kafka,
+    /// Syslog wire protocol.
+    Syslog,
+    /// OTLP.
+    Otlp,
+    /// OTAP (OpenTelemetry Arrow Protocol).
+    Otap,
+    /// Any value outside the known set. Allowed only for external/vendor
+    /// (non-`urn:otel`) components; rejected for first-party components.
+    Custom(String),
+}
+
+impl Protocol {
+    /// Known (non-`Custom`) variants, in declaration order.
+    pub const KNOWN: &'static [Protocol] = &[
+        Protocol::Grpc,
+        Protocol::Http,
+        Protocol::Tcp,
+        Protocol::Udp,
+        Protocol::Kafka,
+        Protocol::Syslog,
+        Protocol::Otlp,
+        Protocol::Otap,
+    ];
+
+    /// The canonical lowercase token for a known variant (`None` for `Custom`).
+    #[must_use]
+    pub fn known_token(&self) -> Option<&'static str> {
+        match self {
+            Protocol::Grpc => Some("grpc"),
+            Protocol::Http => Some("http"),
+            Protocol::Tcp => Some("tcp"),
+            Protocol::Udp => Some("udp"),
+            Protocol::Kafka => Some("kafka"),
+            Protocol::Syslog => Some("syslog"),
+            Protocol::Otlp => Some("otlp"),
+            Protocol::Otap => Some("otap"),
+            Protocol::Custom(_) => None,
+        }
+    }
+
+    /// Parse a free-form `protocol` attribute value into a [`Protocol`],
+    /// normalizing case and trailing parenthetical qualifiers. Any value not in
+    /// the known set becomes [`Custom`](Protocol::Custom).
+    #[must_use]
+    pub fn parse(value: &str) -> Protocol {
+        let norm = normalize_value(value);
+        Protocol::KNOWN
+            .iter()
+            .find(|p| p.known_token() == Some(norm.as_str()))
+            .cloned()
+            .unwrap_or_else(|| Protocol::Custom(value.to_string()))
+    }
+
+    /// Whether this value fell outside the known vocabulary.
+    #[must_use]
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Protocol::Custom(_))
+    }
+
+    /// Comma-separated list of known tokens, for diagnostics.
+    #[must_use]
+    pub fn known_list() -> String {
+        Protocol::KNOWN
+            .iter()
+            .filter_map(Protocol::known_token)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// Controlled vocabulary for the `auth` attribute (RFC 0001).
+///
+/// Threat-model taxonomy for a component's authentication mechanism. Same
+/// first-party-vs-external rule as [`Protocol`]: `urn:otel:*` components must
+/// use a known variant; [`Custom`](Auth::Custom) is for external/vendor
+/// components. Matching is case-insensitive and ignores trailing parenthetical
+/// qualifiers (so `"mTLS (opt-in)"` maps to [`MutualTls`](Auth::MutualTls)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Auth {
+    /// No authentication.
+    None,
+    /// Server-side TLS.
+    Tls,
+    /// Mutual TLS (client + server certificates).
+    MutualTls,
+    /// SASL (e.g. Kafka).
+    Sasl,
+    /// Bearer token.
+    BearerToken,
+    /// API key.
+    ApiKey,
+    /// OAuth 2.0.
+    OAuth2,
+    /// Managed / workload identity (e.g. Azure managed identity).
+    ManagedIdentity,
+    /// Kerberos.
+    Kerberos,
+    /// Any value outside the known set. Allowed only for external/vendor
+    /// (non-`urn:otel`) components; rejected for first-party components.
+    Custom(String),
+}
+
+impl Auth {
+    /// Known (non-`Custom`) variants, in declaration order.
+    pub const KNOWN: &'static [Auth] = &[
+        Auth::None,
+        Auth::Tls,
+        Auth::MutualTls,
+        Auth::Sasl,
+        Auth::BearerToken,
+        Auth::ApiKey,
+        Auth::OAuth2,
+        Auth::ManagedIdentity,
+        Auth::Kerberos,
+    ];
+
+    /// The canonical lowercase token for a known variant (`None` for `Custom`).
+    #[must_use]
+    pub fn known_token(&self) -> Option<&'static str> {
+        match self {
+            Auth::None => Some("none"),
+            Auth::Tls => Some("tls"),
+            Auth::MutualTls => Some("mtls"),
+            Auth::Sasl => Some("sasl"),
+            Auth::BearerToken => Some("bearer_token"),
+            Auth::ApiKey => Some("api_key"),
+            Auth::OAuth2 => Some("oauth2"),
+            Auth::ManagedIdentity => Some("managed_identity"),
+            Auth::Kerberos => Some("kerberos"),
+            Auth::Custom(_) => None,
+        }
+    }
+
+    /// Parse a free-form `auth` attribute value into an [`Auth`]. Normalizes
+    /// case, trailing parenthetical qualifiers, and spaces/hyphens to
+    /// underscores (so `"API key"` and `"managed identity"` match). Unknown
+    /// values become [`Custom`](Auth::Custom).
+    #[must_use]
+    pub fn parse(value: &str) -> Auth {
+        let norm = normalize_value(value).replace([' ', '-'], "_");
+        Auth::KNOWN
+            .iter()
+            .find(|a| a.known_token() == Some(norm.as_str()))
+            .cloned()
+            .unwrap_or_else(|| Auth::Custom(value.to_string()))
+    }
+
+    /// Whether this value fell outside the known vocabulary.
+    #[must_use]
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Auth::Custom(_))
+    }
+
+    /// Comma-separated list of known tokens, for diagnostics.
+    #[must_use]
+    pub fn known_list() -> String {
+        Auth::KNOWN
+            .iter()
+            .filter_map(Auth::known_token)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// Parsed arguments from `#[component_inventory(...)]`.
 #[derive(Debug)]
 pub struct ComponentInventoryArgs {
@@ -502,5 +702,57 @@ mod tests {
             Category::expected_list(),
             "Receiver, Exporter, Processor, Extension, Admin, Controller, Cli, Subsystem, Safety"
         );
+    }
+
+    /// Scenario: known protocol values are parsed, including a case- and
+    /// suffix-varied spelling.
+    /// Guarantees: canonical tokens and "gRPC (HTTP/2)" all map to known
+    /// variants (never `Custom`), so annotation prose does not defeat matching.
+    #[test]
+    fn protocol_parses_known_values() {
+        assert_eq!(Protocol::parse("grpc"), Protocol::Grpc);
+        assert_eq!(Protocol::parse("gRPC (HTTP/2)"), Protocol::Grpc);
+        assert_eq!(Protocol::parse("HTTP"), Protocol::Http);
+        assert_eq!(Protocol::parse("TCP"), Protocol::Tcp);
+        assert_eq!(Protocol::parse("Syslog"), Protocol::Syslog);
+        for p in Protocol::KNOWN {
+            assert!(!p.is_custom());
+        }
+    }
+
+    /// Scenario: an unknown protocol value is parsed.
+    /// Guarantees: it becomes `Custom` carrying the original string, so the
+    /// scanner can reject it for first-party components.
+    #[test]
+    fn protocol_unknown_is_custom() {
+        let p = Protocol::parse("carrier-pigeon");
+        assert!(p.is_custom());
+        assert_eq!(p, Protocol::Custom("carrier-pigeon".to_string()));
+        assert!(Protocol::known_list().contains("grpc"));
+    }
+
+    /// Scenario: known auth values are parsed, including spaced/hyphenated and
+    /// parenthetical spellings.
+    /// Guarantees: "mTLS (opt-in)", "API key", and "managed identity" map to
+    /// their variants; every known variant is non-`Custom`.
+    #[test]
+    fn auth_parses_known_values() {
+        assert_eq!(Auth::parse("NONE"), Auth::None);
+        assert_eq!(Auth::parse("mTLS (opt-in)"), Auth::MutualTls);
+        assert_eq!(Auth::parse("API key"), Auth::ApiKey);
+        assert_eq!(Auth::parse("managed identity"), Auth::ManagedIdentity);
+        assert_eq!(Auth::parse("OAuth2"), Auth::OAuth2);
+        for a in Auth::KNOWN {
+            assert!(!a.is_custom());
+        }
+    }
+
+    /// Scenario: an unknown auth value is parsed.
+    /// Guarantees: it becomes `Custom` carrying the original string.
+    #[test]
+    fn auth_unknown_is_custom() {
+        let a = Auth::parse("secret-handshake");
+        assert!(a.is_custom());
+        assert_eq!(a, Auth::Custom("secret-handshake".to_string()));
     }
 }
