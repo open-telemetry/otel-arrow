@@ -36,9 +36,11 @@ fn default_connect_timeout() -> Duration {
 /// RFC 6749 section 5.1 makes `expires_in` only RECOMMENDED and directs
 /// servers that omit it to document a default. Treating such a token as
 /// non-expiring would pin it in the cache indefinitely, so a finite assumed
-/// lifetime is used instead.
+/// lifetime is used instead. 24h is deliberately generous: it bounds the stale
+/// window without re-acquiring far more often than a silent endpoint is likely
+/// to need.
 fn default_token_lifetime() -> Duration {
-    Duration::from_secs(3600)
+    Duration::from_secs(24 * 60 * 60)
 }
 
 /// Default startup readiness timeout.

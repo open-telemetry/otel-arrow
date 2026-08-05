@@ -259,7 +259,7 @@ groups:
 | `scopes` | `[string]` | `[]` | Requested scopes. |
 | `endpoint_params` | `map<string,string>` | `{}` | Extra parameters sent to the token endpoint (e.g. `audience`). |
 | `expiry_buffer` | duration | `5m` | Refresh this far ahead of `expires_on`. Must be non-zero. |
-| `default_token_lifetime` | duration | `1h` | Lifetime assumed when the token response omits `expires_in`. Must be non-zero and greater than `expiry_buffer`. |
+| `default_token_lifetime` | duration | `24h` | Lifetime assumed when the token response omits `expires_in`. Must be non-zero and greater than `expiry_buffer`. See [Expiry handling](#expiry-handling). |
 | `timeout` | duration | `30s` | Per-request timeout on the token client. Must be non-zero. |
 | `connect_timeout` | duration | `10s` | Connection-establishment timeout on the token client. Must be non-zero. |
 | `tls` | object? | *none* | Client TLS for the token endpoint. The engine's shared `otap_df_config::tls::TlsClientConfig` (not extension-specific knobs). See [Token-endpoint TLS](#token-endpoint-tls). |
@@ -399,16 +399,43 @@ absolute expiry (`now + expires_in`) and hands it to the engine's
 `capability::auth::BearerToken` constructor, which centralizes the
 absolute-to-monotonic `Instant` conversion (the same path the Azure extension
 uses via `BearerToken::from_absolute_expiry`). After that single conversion the
-schedule is immune to wall-clock jumps. `expires_in` is only RECOMMENDED by
-RFC 6749 section 5.1; a response that omits it is treated as living for
-`default_token_lifetime` rather than as non-expiring, so a short-lived token
-from a silent endpoint is still rotated instead of being served until exporters
-start seeing `401`s.
+schedule is immune to wall-clock jumps.
 
 Both grants share one response parser, so they accept the same payloads: a
 `token_type` other than `Bearer` (case-insensitively; absent means `Bearer`) is
 rejected rather than handed to consumers, and `expires_in` is accepted as either
 a JSON number or a JSON string.
+
+#### When the response omits `expires_in`
+
+RFC 6749 section 5.1 makes `expires_in` only RECOMMENDED, and directs a server
+that omits it to "provide the expiration time via other means or document the
+default value". A missing `expires_in` therefore means *the endpoint did not
+tell us*, which is not the same as *this token never expires*. The extension
+does not conflate the two: such a token is given a finite assumed lifetime of
+`default_token_lifetime` (**`24h`** by default) rather than being cached as
+non-expiring, so it is still re-acquired on a predictable cadence instead of
+being served until exporters start seeing `401`s.
+
+The `24h` default is deliberately generous, because this path is a **backstop
+for a non-conforming endpoint, not a refresh policy**. An endpoint that reports
+`expires_in` never reaches it, so a shorter default would not make any
+well-behaved deployment safer - it would only add token traffic against
+endpoints that are already silent about their own expiry, and those are the
+least likely to be issuing short-lived tokens. Operators who know their endpoint
+issues shorter-lived tokens should set `default_token_lifetime` explicitly.
+
+Validation rejects a `default_token_lifetime` at or below `expiry_buffer`: the
+loop schedules a refresh at `expiry - expiry_buffer`, so a fallback inside the
+buffer would place every refresh in the past and collapse the cadence onto
+`MIN_TOKEN_REFRESH_INTERVAL_SECS`, hammering the token endpoint.
+
+This fallback is specific to the OAuth 2.0 grants, where a missing expiry is a
+gap in the response rather than a fact about the token. It is applied in this
+extension, not in the shared refresh machinery, so a future extension whose
+tokens genuinely have no expiry - a static or file-sourced bearer token, for
+example - can still publish one via `BearerToken::without_expiry` and keep that
+meaning intact.
 
 ## Consumer Integration
 

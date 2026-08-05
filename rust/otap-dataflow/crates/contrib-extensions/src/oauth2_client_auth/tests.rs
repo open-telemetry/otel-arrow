@@ -197,7 +197,7 @@ async fn start_tls_token_server(access_token: &'static str) -> TlsTokenServer {
 
 // Scenario: A minimal valid config is deserialized with all optional fields omitted.
 // Guarantees: Documented defaults (client_credentials grant, 5m buffer, 30s startup, finite
-// request/connect timeouts, 1h assumed lifetime, empty scopes/params, no tls) are applied so
+// request/connect timeouts, 24h assumed lifetime, empty scopes/params, no tls) are applied so
 // operators can rely on them.
 #[test]
 fn config_defaults_apply() {
@@ -210,7 +210,10 @@ fn config_defaults_apply() {
     assert!(cfg.endpoint_params.is_empty());
     assert_eq!(cfg.timeout, Duration::from_secs(30));
     assert_eq!(cfg.connect_timeout, Duration::from_secs(10));
-    assert_eq!(cfg.default_token_lifetime, Duration::from_secs(3600));
+    assert_eq!(
+        cfg.default_token_lifetime,
+        Duration::from_secs(24 * 60 * 60)
+    );
     assert!(cfg.tls.is_none());
 }
 
@@ -1659,8 +1662,8 @@ async fn jwt_bearer_response_without_expires_in_uses_the_fallback_lifetime() {
         .expect("a response without expires_in must still get a finite expiry");
     let remaining = expires_on.duration_since(Instant::now());
     assert!(
-        remaining > Duration::from_secs(3500) && remaining <= Duration::from_secs(3600),
-        "expected the 1h default fallback, got {remaining:?}"
+        remaining > Duration::from_secs(86_000) && remaining <= Duration::from_secs(86_400),
+        "expected the 24h default fallback, got {remaining:?}"
     );
 }
 
@@ -1701,8 +1704,8 @@ async fn client_credentials_response_without_expires_in_uses_the_fallback_lifeti
         .expect("a response without expires_in must still get a finite expiry")
         .duration_since(Instant::now());
     assert!(
-        remaining > Duration::from_secs(3500) && remaining <= Duration::from_secs(3600),
-        "expected the 1h default fallback, got {remaining:?}"
+        remaining > Duration::from_secs(86_000) && remaining <= Duration::from_secs(86_400),
+        "expected the 24h default fallback, got {remaining:?}"
     );
 }
 
