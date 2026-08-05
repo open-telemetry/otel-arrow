@@ -91,6 +91,9 @@ impl DebugOutputWriter {
                     })?;
                 Box::new(file)
             }
+            // Console debug output writes incrementally rather than in complete
+            // frames, so it stays outside the process-wide console writer and its
+            // frame-integrity guarantee. See this node's README.
             None => Box::new(tokio::io::stdout()),
         };
         // determine which marshler to use

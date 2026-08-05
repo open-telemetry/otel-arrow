@@ -31,6 +31,7 @@ use otap_df_pdata_views::views::logs::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::otel_error;
+use otap_df_telemetry::output_service::{Frame, OutputService, StreamHandle};
 use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
 use std::io::Write;
 use std::sync::Arc;
@@ -196,6 +197,10 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             .map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse console exporter config: {}", e),
             })?;
+        if config.format == ConsoleOutputFormat::RecordJson {
+            // Keeps human-readable diagnostics off a machine-readable stdout.
+            OutputService::set_structured_stdout(true);
+        }
         Ok(ExporterWrapper::local(
             ConsoleExporter::new(config),
             node,
@@ -214,11 +219,12 @@ impl Exporter<OtapPdata> for ConsoleExporter {
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        let output = OutputService::stdout();
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
-                    self.export(data.payload_ref()).await;
+                    self.export(data.payload_ref(), &output).await;
                     effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }
                 _ => {
@@ -232,19 +238,19 @@ impl Exporter<OtapPdata> for ConsoleExporter {
 }
 
 impl ConsoleExporter {
-    async fn export(&self, payload: &OtapPayload) {
+    async fn export(&self, payload: &OtapPayload, output: &StreamHandle) {
         match payload.signal_type() {
-            SignalType::Logs => self.export_logs(payload).await,
+            SignalType::Logs => self.export_logs(payload, output).await,
             SignalType::Traces => self.export_traces(payload).await,
             SignalType::Metrics => self.export_metrics(payload).await,
         }
     }
 
-    async fn export_logs(&self, payload: &OtapPayload) {
+    async fn export_logs(&self, payload: &OtapPayload, output: &StreamHandle) {
         match payload {
             OtapPayload::OtlpBytes(bytes) => match RawLogsData::try_from(bytes) {
                 Ok(logs_view) => {
-                    self.formatter.print_logs_data(&logs_view).await;
+                    self.formatter.print_logs_data(&logs_view, output).await;
                 }
                 Err(e) => {
                     otel_error!("console.logs_view.otlp_create_failed", error = ?e, message = "Failed to create OTLP logs view");
@@ -252,7 +258,7 @@ impl ConsoleExporter {
             },
             OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
                 Ok(logs_view) => {
-                    self.formatter.print_logs_data(&logs_view).await;
+                    self.formatter.print_logs_data(&logs_view, output).await;
                 }
                 Err(e) => {
                     otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
@@ -285,15 +291,15 @@ enum ConsoleFormatter {
 }
 
 impl ConsoleFormatter {
-    /// Format logs and write the complete payload to stdout.
-    async fn print_logs_data<L: LogsDataView>(&self, logs_data: &L) {
-        let mut output = Vec::new();
+    /// Format logs and hand the complete payload to the process-wide writer.
+    async fn print_logs_data<L: LogsDataView>(&self, logs_data: &L, output: &StreamHandle) {
+        let mut buffer = Vec::new();
         let format_result = match self {
             Self::Pretty(formatter) => {
-                formatter.format_logs_data_to(logs_data, &mut output);
+                formatter.format_logs_data_to(logs_data, &mut buffer);
                 Ok(())
             }
-            Self::RecordJson(formatter) => formatter.format_logs_data_to(logs_data, &mut output),
+            Self::RecordJson(formatter) => formatter.format_logs_data_to(logs_data, &mut buffer),
         };
 
         if let Err(err) = format_result {
@@ -305,15 +311,13 @@ impl ConsoleFormatter {
             return;
         }
 
-        // Note: each per-core exporter currently creates a new Tokio stdout handle for every
-        // payload. Because stdout is a process-global serialized sink, concurrent handles still
-        // contend, and large writes can be reordered or interleaved. A future implementation
-        // could move each core's complete formatted buffers through a bounded channel to one
-        // dedicated process-wide writer thread, preserving backpressure while keeping blocking
-        // I/O off the core threads. A filelog exporter could avoid this serialization by letting
-        // each core write its logs to a separate file in parallel.
-        use tokio::io::AsyncWriteExt;
-        if let Err(err) = tokio::io::stdout().write_all(&output).await {
+        // One frame per payload: the writer holds the stdout lock for the whole
+        // buffer, so concurrent exporters can never split a record.
+        let frame = match self {
+            Self::Pretty(_) => Frame::new(buffer),
+            Self::RecordJson(_) => Frame::new_record_json(buffer),
+        };
+        if let Err(err) = output.submit(frame).await {
             otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
         }
     }
@@ -557,6 +561,7 @@ mod tests {
     };
     use otap_df_pdata::testing::fixtures::logs_with_full_resource_and_scope;
     use otap_df_pdata::views::otap::OtapLogsView;
+    use otap_df_telemetry::output_service::{OutputSink, OutputStream, StreamId};
     use prost::Message;
     use serde_json::{Value, json};
 
@@ -1018,5 +1023,112 @@ mod tests {
         }
 
         assert_eq!(otap_values, otlp_values);
+    }
+
+    /// Sink that records the frames written by a test-owned writer thread.
+    #[derive(Clone)]
+    struct RecordingSink {
+        buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> Self {
+            Self {
+                buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+
+        fn contents(&self) -> Vec<u8> {
+            self.buffer.lock().expect("sink buffer").clone()
+        }
+    }
+
+    impl OutputSink for RecordingSink {
+        fn write_frame(&mut self, frame: &[u8]) -> std::io::Result<()> {
+            let mut buffer = self.buffer.lock().expect("sink buffer");
+            // Chunked appends mimic an operating system that accepts partial writes.
+            for chunk in frame.chunks(4096) {
+                buffer.extend_from_slice(chunk);
+                std::thread::yield_now();
+            }
+            Ok(())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Scenario: several console exporters concurrently emit record JSON through one writer.
+    /// Guarantees: every emitted line remains an independently parseable JSON record,
+    /// so concurrent producers never interleave bytes inside a record.
+    #[test]
+    fn record_json_lines_stay_parseable_under_concurrent_exporters() {
+        // The fixture carries four log records per payload.
+        const RECORDS_PER_PAYLOAD: usize = 4;
+        const EXPORTERS: usize = 4;
+        const PAYLOADS_PER_EXPORTER: usize = 25;
+
+        let encoded = logs_with_full_resource_and_scope().encode_to_vec();
+        let sink = RecordingSink::new();
+        let mut stream = OutputStream::start(StreamId::Stdout, 8, true, Box::new(sink.clone()))
+            .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        let workers: Vec<_> = (0..EXPORTERS)
+            .map(|_| {
+                let handle = handle.clone();
+                let encoded = encoded.clone();
+                std::thread::spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .expect("current-thread runtime");
+                    let formatter = ConsoleFormatter::RecordJson(RecordJsonFormatter::new(
+                        RecordJsonConfig::default(),
+                    ));
+                    let bytes = OtlpProtoBytes::ExportLogsRequest(encoded.into());
+                    runtime.block_on(async {
+                        for _ in 0..PAYLOADS_PER_EXPORTER {
+                            let logs_view = RawLogsData::try_from(&bytes).expect("logs");
+                            formatter.print_logs_data(&logs_view, &handle).await;
+                        }
+                    });
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("exporter thread finishes");
+        }
+
+        let outcome = stream.shutdown(Duration::from_secs(30));
+        assert!(outcome.drained);
+
+        let records = parse_json_lines(&sink.contents());
+        assert_eq!(
+            records.len(),
+            EXPORTERS * PAYLOADS_PER_EXPORTER * RECORDS_PER_PAYLOAD
+        );
+    }
+
+    /// Scenario: the console writer is already gone when an exporter submits a payload.
+    /// Guarantees: the submit attempt resolves and is counted as a failed enqueue instead
+    /// of blocking, so the exporter still reaches its ACK for that message.
+    #[tokio::test]
+    async fn console_output_resolves_when_the_writer_is_gone() {
+        let encoded = logs_with_full_resource_and_scope().encode_to_vec();
+        let bytes = OtlpProtoBytes::ExportLogsRequest(encoded.into());
+        let sink = RecordingSink::new();
+        let mut stream = OutputStream::start(StreamId::Stdout, 1, true, Box::new(sink.clone()))
+            .expect("writer thread spawns");
+        let handle = stream.handle();
+        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+
+        let formatter =
+            ConsoleFormatter::RecordJson(RecordJsonFormatter::new(RecordJsonConfig::default()));
+        let logs_view = RawLogsData::try_from(&bytes).expect("logs");
+        formatter.print_logs_data(&logs_view, &handle).await;
+
+        assert!(sink.contents().is_empty());
+        assert_eq!(handle.stats().frames_enqueue_failed, 1);
     }
 }

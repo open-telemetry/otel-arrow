@@ -12,12 +12,48 @@
 
 The console exporter prints OTLP logs to standard output. It supports a
 human-readable hierarchical `pretty` format for interactive inspection and a
-newline-delimited record JSON format for structured logging pipelines. It ACKs
-each message after attempting to write the formatted view.
+newline-delimited record JSON format for structured logging pipelines.
 
 This node is intended for local inspection, demos, and debugging pipelines. It
 is not a production exporter, durable export path, or stable machine-readable
 storage path.
+
+## Acknowledgment Semantics
+
+Each payload is formatted into one complete frame and handed to the engine's
+process-wide console writer. The exporter ACKs the message once that handoff
+attempt resolves, including when the handoff fails.
+
+An ACK therefore means only "handed to the process-wide writer". It does not
+mean the bytes reached the terminal, were consumed by a downstream logging
+agent, were persisted, or were delivered durably.
+
+## Console Output Serialization
+
+All console output produced by the engine flows through a single writer thread
+per standard stream. That thread holds the stream lock for the whole frame, so
+concurrent exporters on different cores can never interleave bytes inside one
+frame, even when a payload is larger than a single underlying write. Every
+`record_json` line therefore stays independently parseable.
+
+The queue feeding the writer is bounded, so a console that cannot keep up slows
+producers down instead of dropping data or growing without limit. Best-effort
+internal diagnostics are the exception: they are dropped rather than allowed to
+stall an engine core thread. Ordering is FIFO per producer; output from
+different cores is not globally ordered by timestamp.
+
+Defaults require no configuration: 1024 queued frames for stdout, 256 for
+stderr, a flush whenever the queue goes idle, and a 5 second drain deadline at
+shutdown. Frames still queued when that deadline expires are counted and
+discarded so a stalled console pipe cannot block process exit.
+
+While `format: record_json` is configured, human-readable engine diagnostics
+are routed to stderr so they cannot corrupt the structured stdout stream.
+
+The integrity guarantee covers output submitted through this writer only. It
+excludes writers that bypass it: raw file descriptors, inherited child
+processes, the debug processor's console fallback, and standalone binaries such
+as `ctl`.
 
 ## Getting Started
 

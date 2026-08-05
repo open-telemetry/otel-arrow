@@ -7,6 +7,7 @@ use super::encoder::level_to_severity_number;
 use super::{
     BorrowedLogRecord, LOG_BUFFER_SIZE, LogContext, LogContextFn, LogRecord, SavedCallsite,
 };
+use crate::output_service::{Frame, OutputService, StreamId};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
@@ -599,14 +600,27 @@ impl StyledBufWriter<'_> {
 }
 
 impl ConsoleWriter {
-    /// Write a log line to stdout or stderr.
-    fn write_line(&self, level: &Level, data: &[u8]) {
-        let use_stderr = matches!(*level, Level::ERROR | Level::WARN);
-        let _ = if use_stderr {
-            std::io::stderr().write_all(data)
+    /// Select the stream a log line at this level belongs on.
+    ///
+    /// Human-readable diagnostics move to stderr whenever stdout carries
+    /// machine-readable records, so they cannot corrupt that stream.
+    fn target_stream(level: &Level) -> StreamId {
+        if matches!(*level, Level::ERROR | Level::WARN) || OutputService::structured_stdout() {
+            StreamId::Stderr
         } else {
-            std::io::stdout().write_all(data)
+            StreamId::Stdout
+        }
+    }
+
+    /// Hand a formatted log line to the process-wide writer.
+    fn write_line(&self, level: &Level, data: &[u8]) {
+        let handle = match Self::target_stream(level) {
+            StreamId::Stderr => OutputService::stderr(),
+            StreamId::Stdout => OutputService::stdout(),
         };
+        // This runs in a synchronous tracing callback on an engine core thread,
+        // so a full queue drops the diagnostic rather than stalling the thread.
+        let _ = handle.try_submit(Frame::new(data.to_vec()));
     }
 }
 
@@ -950,6 +964,33 @@ mod tests {
         assert!(w.is_full());
         w.finish_line();
         assert_eq!(&buf, b"abc\n");
+    }
+
+    /// Scenario: log lines are routed by level, first with prose on stdout and then
+    /// while stdout carries machine-readable records.
+    /// Guarantees: ERROR and WARN always go to stderr, INFO and below go to stdout by
+    /// default, and every level moves to stderr once stdout is structured.
+    #[test]
+    fn console_writer_routes_levels_to_the_expected_stream() {
+        assert_eq!(
+            ConsoleWriter::target_stream(&Level::ERROR),
+            StreamId::Stderr
+        );
+        assert_eq!(ConsoleWriter::target_stream(&Level::WARN), StreamId::Stderr);
+        assert_eq!(ConsoleWriter::target_stream(&Level::INFO), StreamId::Stdout);
+        assert_eq!(
+            ConsoleWriter::target_stream(&Level::DEBUG),
+            StreamId::Stdout
+        );
+        assert_eq!(
+            ConsoleWriter::target_stream(&Level::TRACE),
+            StreamId::Stdout
+        );
+
+        OutputService::set_structured_stdout(true);
+        let structured = ConsoleWriter::target_stream(&Level::INFO);
+        OutputService::set_structured_stdout(false);
+        assert_eq!(structured, StreamId::Stderr);
     }
 
     static TEST_CALLSITE: TestCallsite = TestCallsite;

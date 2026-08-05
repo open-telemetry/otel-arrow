@@ -98,6 +98,10 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ## Limits
 
 - Debug output is diagnostic and not a stable machine-readable export format.
+- Console output bypasses the engine's process-wide console writer, so it is
+  outside that writer's frame-integrity guarantee and can interleave with other
+  console output under concurrency. Configure `output_file` when you need
+  uninterleaved output.
 - File or console output can become expensive for high-volume streams.
 - Configuration changes are not applied dynamically after node creation.
 

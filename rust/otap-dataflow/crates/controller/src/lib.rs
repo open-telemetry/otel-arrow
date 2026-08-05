@@ -91,6 +91,7 @@ use otap_df_engine::topic::{
 };
 use otap_df_state::store::{ObservedStateHandle, ObservedStateStore};
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
+use otap_df_telemetry::output_service::{OutputService, OutputServiceConfig};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
@@ -1269,6 +1270,16 @@ impl<
         let num_pipelines = pipelines.len();
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
 
+        // Start the process-wide console writers before any pipeline or tracing
+        // output exists, so every engine-owned frame is written contiguously and
+        // no core thread performs blocking console I/O.
+        let output_service_config = OutputServiceConfig::default();
+        let _ = OutputService::init(output_service_config).map_err(|error| {
+            Error::PipelineRuntimeError {
+                source: Box::new(error),
+            }
+        })?;
+
         // Create the shared telemetry registry first - it is used by both the
         // observed state store and the internal telemetry system, and by the
         // controller context below.
@@ -1773,6 +1784,17 @@ impl<
         metrics_agg_handle.shutdown_and_join()?;
         obs_state_join_handle.shutdown_and_join()?;
         drop(telemetry_system);
+
+        // Torn down last so late diagnostics still reach the terminal. A stalled
+        // console pipe expires against the deadline instead of blocking exit.
+        let output_outcome = OutputService::shutdown(output_service_config.shutdown_drain_deadline);
+        if !output_outcome.drained {
+            otel_warn!(
+                "controller.console_output_drain_timeout",
+                frames_dropped = output_outcome.frames_dropped,
+                message = "Timed out draining console output; some queued frames were not written"
+            );
+        }
 
         if let Some(err) = controller_extension_error {
             return Err(err);
