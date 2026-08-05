@@ -90,6 +90,21 @@ fn next_field(buf: &[u8], pos: usize) -> Option<(u64, u64, usize, usize)> {
     }
 }
 
+/// Returns `true` when every field in `buf` parses cleanly through to the end
+/// (no truncated or invalid field). Used to decide whether a resource entry can
+/// be safely split: if any part is malformed, the entry is emitted whole rather
+/// than reconstructed (which could reorder or duplicate bytes).
+fn fully_parseable(buf: &[u8]) -> bool {
+    let mut pos = 0;
+    while pos < buf.len() {
+        match next_field(buf, pos) {
+            Some((_, _, _, field_end)) => pos = field_end,
+            None => return false,
+        }
+    }
+    true
+}
+
 /// Move the accumulated bytes in `cur` into a new output batch, if any.
 fn flush(signal: SignalType, cur: &mut Vec<u8>, batches: &mut Vec<OtlpProtoBytes>) {
     if !cur.is_empty() {
@@ -171,16 +186,26 @@ fn split_resource_entry(
             Some((field, wire, payload_start, field_end)) => {
                 let full = &entry_payload[pos..field_end];
                 if field == CHILD_LIST_FIELD && wire == wire_types::LEN {
+                    let scope_payload = &entry_payload[payload_start..field_end];
+                    if !fully_parseable(scope_payload) {
+                        // A malformed field inside a scope: emitting a rebuilt
+                        // entry would reorder trailing non-scope fields (e.g.
+                        // schema_url) and, with multiple scopes, split the entry
+                        // across fragments. Emit the entry byte-for-byte instead
+                        // (best-effort, may exceed max_size).
+                        emit_top(signal, entry_payload, batches);
+                        return;
+                    }
                     scope_fulls.push(full);
-                    scope_payloads.push(&entry_payload[payload_start..field_end]);
+                    scope_payloads.push(scope_payload);
                 } else {
                     header.extend_from_slice(full);
                 }
                 pos = field_end;
             }
             None => {
-                // A malformed field inside the resource entry: do not attempt
-                // to split it. Splitting would fold the corrupt tail into the
+                // A malformed field at the resource level: do not attempt to
+                // split it. Splitting would fold the corrupt tail into the
                 // duplicated header, reordering it ahead of every fragment's
                 // scopes and possibly breaking the decode of otherwise-valid
                 // fragments. Emit the entry byte-for-byte as a single batch
@@ -227,6 +252,11 @@ fn split_resource_entry(
 /// carrying `resource_header` + a scope wrapping a subset of the records. A
 /// single record that is larger than `max_size` (with minimal wrappers) is
 /// emitted on its own, exceeding the limit.
+///
+/// The caller (`split_resource_entry`) only descends here after verifying the
+/// whole entry -- including this scope's payload -- is `fully_parseable`, so the
+/// `None` arm below is a defensive fallback that is not reached for the inputs
+/// the caller produces.
 fn split_scope_entry(
     signal: SignalType,
     resource_header: &[u8],
@@ -249,10 +279,10 @@ fn split_scope_entry(
                 pos = field_end;
             }
             None => {
-                // A malformed field inside the scope: emit the whole scope
-                // unmodified as a single fragment rather than reordering the
-                // corrupt tail ahead of the records. This preserves the scope
-                // bytes exactly (best-effort, may exceed max_size).
+                // Defensive fallback (see the doc comment: the caller guarantees
+                // a fully-parseable scope). Emit the whole scope unmodified as a
+                // single fragment rather than reordering the tail ahead of the
+                // records (best-effort, may exceed max_size).
                 let mut entry = Vec::with_capacity(
                     resource_header.len() + wrapped_len(CHILD_LIST_FIELD, scope_payload.len()),
                 );
@@ -320,7 +350,10 @@ fn split_scope_entry(
 /// unknown wrapper fields are preserved. Any indivisible unit whose minimal
 /// encoding still exceeds `max_bytes` -- a lone record, an opaque/unparseable
 /// field, or a wrapper-only (header/empty-scope) fragment -- is emitted alone,
-/// exceeding the limit.
+/// exceeding the limit. If a resource entry that must be split is malformed
+/// (any field truncated or invalid, at the resource level or within one of its
+/// scopes), it is emitted whole and unchanged rather than reconstructed, so its
+/// original bytes and field ordering are preserved.
 pub fn make_bytes_batches(
     signal: SignalType,
     max_bytes: Option<NonZeroU64>,

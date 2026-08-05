@@ -656,3 +656,62 @@ fn test_split_malformed_scope_field_emits_entry_whole() {
         "malformed scope must be preserved byte-for-byte",
     );
 }
+
+/// Scenario: An oversize resource entry has (in this field order) an empty
+/// resource, a valid scope with records, a malformed scope, then trailing
+/// non-scope fields (schema_url and an unknown field) *after* the scope list,
+/// under a byte limit that forces a within-entry split.
+/// Guarantees: Because the entry is malformed, it is emitted as exactly one
+/// batch byte-identical to the original -- the earlier valid scope is not
+/// duplicated and the trailing non-scope fields keep their original position
+/// (they are not reordered ahead of the scopes).
+#[test]
+fn test_split_malformed_scope_preserves_entry_order() {
+    // A valid scope carrying a few records.
+    let mut clean_scope = Vec::new();
+    wlen(&mut clean_scope, 1, &[]); // InstrumentationScope (empty)
+    for i in 0..6u8 {
+        wlen(&mut clean_scope, 2, &[0x08, i]); // valid LogRecord (field 1 varint)
+    }
+
+    // A scope whose payload has valid records followed by a truncated field.
+    let mut bad_scope = Vec::new();
+    wlen(&mut bad_scope, 1, &[]);
+    for i in 0..6u8 {
+        wlen(&mut bad_scope, 2, &[0x08, 100 + i]);
+    }
+    bad_scope.push((3 << 3) | 2); // field 3, wire type 2 (LEN)
+    bad_scope.push(0x7F); // declares 127 payload bytes but none follow: truncated
+
+    // ResourceLogs payload with non-scope fields *after* the scope list.
+    let mut entry = Vec::new();
+    wlen(&mut entry, 1, &[]); // Resource (empty)
+    wlen(&mut entry, 2, &clean_scope); // valid ScopeLogs
+    wlen(&mut entry, 2, &bad_scope); // malformed ScopeLogs
+    wlen(&mut entry, 3, b"http://schema.example/v1"); // schema_url, after scopes
+    wlen(&mut entry, 15, b"META"); // unknown field, after scopes
+
+    let mut top = Vec::new();
+    wlen(&mut top, 1, &entry);
+
+    let input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, top.clone());
+    let max_size = (top.len() / 4).max(4);
+
+    let outputs = make_bytes_batches(
+        SignalType::Logs,
+        NonZeroU64::new(max_size as u64),
+        vec![input],
+    )
+    .expect("ok");
+
+    assert_eq!(
+        outputs.len(),
+        1,
+        "a malformed entry must be emitted whole, not split",
+    );
+    assert_eq!(
+        outputs[0].as_bytes(),
+        top.as_slice(),
+        "the entry must be preserved byte-for-byte, in original field order",
+    );
+}
