@@ -168,8 +168,8 @@ pub struct ContentRouterOutcomeAttributes {
 #[derive(Debug, Default, Clone)]
 pub struct ContentRouterMeasurementMetrics {
     /// Number of messages with this outcome.
-    #[metric(unit = "{msg}")]
-    pub signals: Counter<u64>,
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
 }
 
 /// Metrics for the ContentRouter processor.
@@ -198,7 +198,7 @@ impl ContentRouterMetrics {
     pub fn record(&mut self, outcome: ContentRouterOutcome) {
         self.metrics
             .with(ContentRouterOutcomeAttributes { outcome })
-            .signals
+            .messages
             .inc();
     }
 }
