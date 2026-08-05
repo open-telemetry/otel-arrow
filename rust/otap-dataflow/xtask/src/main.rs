@@ -71,7 +71,7 @@ pub fn print_help() -> anyhow::Result<()> {
 Usage: Execute the command using `cargo xtask <task>`, e.g., `cargo xtask check`.
 
 Tasks:
-  - check [--diagnostics]: Run the required full validation suite: structure check, cargo fmt --all, cargo clippy --workspace --all-targets, and cargo test --workspace. The optional diagnostics flag prints end-of-run timing and hotspot summaries.
+  - check [--diagnostics]: Run the required full validation suite: structure check, cargo fmt --all, cargo clippy --workspace --all-targets, a no_std build of the crates that support it, and cargo test --workspace. The optional diagnostics flag prints end-of-run timing and hotspot summaries.
   - quick-check: Run a faster iterative subset: structure check, cargo fmt --all, cargo clippy --workspace --lib --bins --tests, and cargo test --workspace --lib --bins --tests --no-run. This is not a replacement for `cargo xtask check`.
   - check-benches: Lint and compile bench targets only.
   - structure-check: Validate the entire structure of the project.
@@ -118,6 +118,7 @@ fn check_all(options: CheckOptions) -> anyhow::Result<()> {
     run_component_inventory_step(diagnostics.as_mut())?;
     format_all(diagnostics.as_mut())?;
     clippy_all(options, diagnostics.as_mut())?;
+    build_no_std()?;
     test_all(options, diagnostics.as_mut())?;
 
     if let Some(diagnostics) = diagnostics.as_ref() {
@@ -288,6 +289,21 @@ fn clippy_quick() -> anyhow::Result<()> {
         ],
     )?;
     println!("\u{2705} Fast clippy linting passed without warnings.\n");
+    Ok(())
+}
+
+fn build_no_std() -> anyhow::Result<()> {
+    // A `no_std` crate builds against `std` in every other configuration, so
+    // nothing else in the suite notices a stray `use std::` until a downstream
+    // embedded build fails. Each crate here declares `#![no_std]` when its
+    // `std` feature is off.
+    const NO_STD_PACKAGES: &[&str] = &["otap-df-expohisto"];
+
+    println!("\u{1F680} Building no_std crates without default features...");
+    for package in NO_STD_PACKAGES {
+        run("cargo", &["build", "-p", package, "--no-default-features"])?;
+    }
+    println!("\u{2705} no_std builds succeeded.\n");
     Ok(())
 }
 

@@ -568,6 +568,7 @@ fn extract_engine_vitals_maps_cpu_rss_and_pressure() {
         metric_sets: vec![telemetry::MetricSet {
             name: "engine".to_string(),
             attributes: BTreeMap::new(),
+            data_point_attributes: BTreeMap::new(),
             metrics: BTreeMap::from([
                 (
                     "cpu.utilization".to_string(),
@@ -623,6 +624,7 @@ fn extract_engine_vitals_accepts_legacy_underscore_names() {
         metric_sets: vec![telemetry::MetricSet {
             name: "engine".to_string(),
             attributes: BTreeMap::new(),
+            data_point_attributes: BTreeMap::new(),
             metrics: BTreeMap::from([
                 (
                     "cpu_utilization".to_string(),

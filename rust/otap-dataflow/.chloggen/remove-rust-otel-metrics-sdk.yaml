@@ -8,7 +8,7 @@ change_type: breaking
 component: observability
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Remove the direct OpenTelemetry client SDK metrics path and route internal metrics through the Internal Telemetry System observability pipeline.
+note: Remove the direct OpenTelemetry client SDK metrics path and Prometheus pull export.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2409]
@@ -17,7 +17,4 @@ issues: [2409]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  The `engine.telemetry.metrics` reader and view configuration is no longer
-  supported. Configure periodic export and views on
-  `receiver:internal_telemetry`; the registry-backed admin metrics endpoint
-  remains available. See the [configuration migration guide](docs/configuration.md#migrating-internal-metrics-from-the-rust-opentelemetry-sdk).
+  Migration: Use `receiver:internal_telemetry` for periodic export and views; replace Prometheus pull readers with `engine.http_admin.bind_address` and `/api/v1/metrics`. See [configuration migration guide](docs/configuration.md#migrating-internal-metrics-from-the-rust-opentelemetry-sdk).
