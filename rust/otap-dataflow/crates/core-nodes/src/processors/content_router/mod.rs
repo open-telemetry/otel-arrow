@@ -2268,8 +2268,8 @@ mod tests {
 
                 let metrics = collect_metrics_map(&telemetry_registry);
                 println!("COLLECTED METRICS: {:?}", metrics);
-                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 1);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2319,8 +2319,8 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
+                assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2376,10 +2376,10 @@ mod tests {
 
                 let metrics = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    metrics.get("signals.routed_default").copied().unwrap_or(0),
+                    metrics.get("messages.routed_default").copied().unwrap_or(0),
                     1
                 );
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2443,18 +2443,18 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
                 assert_eq!(
                     metrics
-                        .get("signals.rejected_route_full")
+                        .get("messages.rejected_route_full")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.rejected_route_closed")
+                        .get("messages.rejected_route_closed")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2521,18 +2521,18 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
                 assert_eq!(
                     metrics
-                        .get("signals.rejected_route_full")
+                        .get("messages.rejected_route_full")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.rejected_route_closed")
+                        .get("messages.rejected_route_closed")
                         .copied()
                         .unwrap_or(0),
                     1
@@ -2600,20 +2600,20 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("signals.routed_default").copied().unwrap_or(0),
+                    metrics.get("messages.routed_default").copied().unwrap_or(0),
                     0
                 );
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
                 assert_eq!(
                     metrics
-                        .get("signals.rejected_route_full")
+                        .get("messages.rejected_route_full")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.rejected_route_closed")
+                        .get("messages.rejected_route_closed")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2680,20 +2680,20 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("signals.routed_default").copied().unwrap_or(0),
+                    metrics.get("messages.routed_default").copied().unwrap_or(0),
                     0
                 );
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
                 assert_eq!(
                     metrics
-                        .get("signals.rejected_route_closed")
+                        .get("messages.rejected_route_closed")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.rejected_route_full")
+                        .get("messages.rejected_route_full")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2784,18 +2784,18 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 1);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
                 assert_eq!(
                     metrics
-                        .get("signals.rejected_route_full")
+                        .get("messages.rejected_route_full")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.rejected_route_closed")
+                        .get("messages.rejected_route_closed")
                         .copied()
                         .unwrap_or(0),
                     0
