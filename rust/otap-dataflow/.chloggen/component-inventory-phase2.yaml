@@ -17,16 +17,7 @@ issues: [3435]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Adds non-factory Category variants (Admin, Controller, Cli, Subsystem, Safety)
-  and annotates core components with #[component_inventory] metadata. Includes
-  developer documentation in docs/component-inventory.md.
-
-  The `cargo xtask component-inventory` baseline scanner parses source with
-  `syn` (not text heuristics) and shares one attribute parser
-  (`otap-df-component-inventory-syntax`) with the proc-macro so the two cannot
-  drift. Factory URNs are resolved via a workspace-wide `const` table
-  (including cross-crate `use` re-exports); anything unresolved is reported
-  loudly and fails the check rather than being recorded as a silent value. A
-  link-time oracle test (`otap` crate) cross-checks the scanner's output
-  against the compiler-resolved `COMPONENT_INVENTORY` slice for all linked
-  components.
+  Annotates core components and non-factory categories (Admin, Controller, Cli,
+  Subsystem, Safety) with #[component_inventory] metadata, and adds the
+  `cargo xtask component-inventory` baseline scanner (wired into `cargo xtask
+  check`) that detects component drift against components-baseline.json.
