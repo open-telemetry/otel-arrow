@@ -73,6 +73,9 @@ The `attributes` object in each credential snapshot must use this shape:
 the ingestion endpoint through the credential snapshot's `endpoint` attribute.
 That attribute must be a non-empty absolute HTTPS URL with a host and cannot
 contain embedded credentials, a query string, or a fragment. The exporter
+canonicalizes it before use. The uploader uses that canonical value as both the
+upload base URL and the `endpoint=` query fallback when a token has no usable
+Endpoint claim. The exporter
 selects a non-empty string from `moniker_map` by the configured `account`,
 falling back only to an explicit `default`. A map containing neither key is
 rejected, even if it has a single entry. Empty or malformed routing is also
@@ -89,6 +92,10 @@ rotation cannot produce a mixed-generation token/routing pair. Subsequent
 uploads observe the new snapshot without reconstructing the exporter. Tokens
 with a known expiry must remain usable for more than 30 seconds; expired or
 near-expiry snapshots fail closed while the provider refreshes them.
+Credential lookup, including time waiting for another lookup to release the
+provider, is limited to five seconds. Provider futures must be cancellation-safe
+and should normally clone an already-published snapshot instead of performing
+network I/O.
 
 Capability bindings are checked when the exporter is created because the
 factory's earlier config-validation hook receives only the `config` object.

@@ -23,6 +23,7 @@ const ENDPOINT_KEY: &str = "endpoint";
 const MONIKER_MAP_KEY: &str = "moniker_map";
 const DEFAULT_MONIKER_KEY: &str = "default";
 const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
+const CREDENTIAL_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 // TODO: Move this reusable failure-log sampling helper to `crates/telemetry`.
 #[derive(Default)]
@@ -95,16 +96,27 @@ impl AgentFedGenevaSource {
 impl AgentFedCredentialSource for AgentFedGenevaSource {
     fn current(&self) -> AgentFedCredentialFuture<'_> {
         Box::pin(async move {
-            let snapshot = match self.credential_provider.lock().await.get_credential().await {
-                Ok(snapshot) => {
+            let lookup = async { self.credential_provider.lock().await.get_credential().await };
+            let snapshot = match tokio::time::timeout(CREDENTIAL_LOOKUP_TIMEOUT, lookup).await {
+                Ok(Ok(snapshot)) => {
                     self.credential_failures.record_success();
                     snapshot
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     if let Some(consecutive_failures) = self.credential_failures.record_failure() {
                         otel_warn!(
                             "geneva_exporter.agent_fed.credential_unavailable",
                             error = %error,
+                            consecutive_failures = consecutive_failures
+                        );
+                    }
+                    return None;
+                }
+                Err(_) => {
+                    if let Some(consecutive_failures) = self.credential_failures.record_failure() {
+                        otel_warn!(
+                            "geneva_exporter.agent_fed.credential_unavailable",
+                            error = "credential lookup timed out",
                             consecutive_failures = consecutive_failures
                         );
                     }
@@ -145,9 +157,11 @@ impl AgentFedCredentialSource for AgentFedGenevaSource {
 
             // Keep the engine token secret-wrapped across the routing lookup;
             // the uploader creates its zeroizing owned copy only after success.
+            // The uploader also uses this canonical endpoint as the `endpoint=`
+            // fallback when the token has no usable Endpoint claim.
             Some(AgentFedCredential::new(
                 token.expose_token(),
-                endpoint,
+                endpoint.to_string(),
                 moniker,
             ))
         })
@@ -166,6 +180,8 @@ fn validated_moniker<'a>(
     invalid_reason: &'static str,
 ) -> Result<&'a str, &'static str> {
     let moniker = non_blank_string(value).ok_or(invalid_reason)?;
+    // The pinned uploader interpolates moniker directly into its query string.
+    // Keep it URL-unreserved until the uploader applies its own encoding.
     if !moniker
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
@@ -177,7 +193,7 @@ fn validated_moniker<'a>(
     Ok(moniker)
 }
 
-fn validated_endpoint(value: Option<&Value>) -> Result<&str, &'static str> {
+fn validated_endpoint(value: Option<&Value>) -> Result<Url, &'static str> {
     let endpoint =
         non_blank_string(value).ok_or("agent-fed routing endpoint is missing or empty")?;
     let parsed = Url::parse(endpoint)
@@ -196,13 +212,13 @@ fn validated_endpoint(value: Option<&Value>) -> Result<&str, &'static str> {
         return Err("agent-fed routing endpoint must not include a query or fragment");
     }
 
-    Ok(endpoint)
+    Ok(parsed)
 }
 
 fn resolve_routing<'a>(
     attributes: &'a Map<String, Value>,
     account: &str,
-) -> Result<(&'a str, &'a str), &'static str> {
+) -> Result<(Url, &'a str), &'static str> {
     let endpoint = validated_endpoint(attributes.get(ENDPOINT_KEY))?;
     let moniker_map = attributes
         .get(MONIKER_MAP_KEY)
@@ -315,8 +331,25 @@ mod tests {
         let s = source("tok", false, full_attrs());
         let c = s.current().await.expect("credential");
         assert_eq!(c.expose_token(), "tok");
-        assert_eq!(c.endpoint, "https://ep");
+        assert_eq!(c.endpoint, "https://ep/");
         assert_eq!(c.moniker, "mon");
+    }
+
+    /// Scenario: The supplied endpoint uses a valid but non-canonical URL spelling.
+    /// Guarantees: The credential carries the canonical value used for both the upload base URL
+    /// and the uploader's claimless-token `endpoint=` fallback.
+    #[tokio::test]
+    async fn returns_canonical_validated_endpoint() {
+        let attrs = json!({
+            "endpoint": "HTTPS://EXAMPLE.COM",
+            "moniker_map": { "default": "mon" },
+        });
+
+        let credential = source("tok", false, attrs)
+            .current()
+            .await
+            .expect("credential");
+        assert_eq!(credential.endpoint, "https://example.com/");
     }
 
     /// Scenario: The credential-provider future yields once before returning a snapshot.
@@ -631,8 +664,46 @@ mod tests {
         assert!(source.current().await.is_none());
         let credential = source.current().await.expect("recovered credential");
         assert_eq!(credential.expose_token(), "recovered-token");
-        assert_eq!(credential.endpoint, "https://ep");
+        assert_eq!(credential.endpoint, "https://ep/");
         assert_eq!(credential.moniker, "mon");
+    }
+
+    struct PendingThenReadyCredential(AtomicUsize);
+
+    #[async_trait]
+    impl AgentFedCredentialProvider for PendingThenReadyCredential {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
+                return std::future::pending().await;
+            }
+            Ok(snapshot("recovered-token", "https://ep", "mon"))
+        }
+    }
+
+    /// Scenario: The provider never completes its first credential lookup.
+    /// Guarantees: The lookup times out, releases the mutex, and a later read can recover.
+    #[tokio::test(start_paused = true)]
+    async fn times_out_stuck_provider_and_recovers() {
+        let source = AgentFedGenevaSource::new(
+            Box::new(PendingThenReadyCredential(AtomicUsize::new(0))),
+            "account".to_owned(),
+        );
+
+        assert!(source.current().await.is_none());
+        let credential = source.current().await.expect("recovered credential");
+        assert_eq!(credential.expose_token(), "recovered-token");
+    }
+
+    /// Scenario: Another credential lookup holds the provider mutex past the deadline.
+    /// Guarantees: Waiting for the mutex is bounded and a later lookup succeeds.
+    #[tokio::test(start_paused = true)]
+    async fn times_out_waiting_for_provider_mutex_and_recovers() {
+        let source = source("tok", false, full_attrs());
+        let guard = source.credential_provider.lock().await;
+
+        assert!(source.current().await.is_none());
+        drop(guard);
+        assert!(source.current().await.is_some());
     }
 
     struct RotatingCredential(AtomicUsize);
@@ -662,12 +733,12 @@ mod tests {
 
         let first = source.current().await.expect("first credential");
         assert_eq!(first.expose_token(), "token-1");
-        assert_eq!(first.endpoint, "https://endpoint-1");
+        assert_eq!(first.endpoint, "https://endpoint-1/");
         assert_eq!(first.moniker, "moniker-1");
 
         let second = source.current().await.expect("second credential");
         assert_eq!(second.expose_token(), "token-2");
-        assert_eq!(second.endpoint, "https://endpoint-2");
+        assert_eq!(second.endpoint, "https://endpoint-2/");
         assert_eq!(second.moniker, "moniker-2");
     }
 
@@ -724,7 +795,7 @@ mod tests {
 
         let credential = source.current().await.expect("atomic credential");
         assert_eq!(credential.expose_token(), "token-before-rotation");
-        assert_eq!(credential.endpoint, "https://endpoint-before-rotation");
+        assert_eq!(credential.endpoint, "https://endpoint-before-rotation/");
         assert_eq!(credential.moniker, "moniker-before-rotation");
     }
 

@@ -55,6 +55,12 @@ pub trait AgentFedCredentialProvider {
     /// The provider must load one host snapshot and return both values from
     /// that same generation. It must not reconstruct this result by calling
     /// separate token and vendor capabilities.
+    ///
+    /// The returned future must be cancellation-safe because consumers may
+    /// enforce a lookup deadline and drop it before completion. Cancellation
+    /// must not leave shared state or locks unusable. Implementations should
+    /// normally clone an already-published snapshot and avoid network I/O or
+    /// other unbounded work in this method.
     async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError>;
 }
 
