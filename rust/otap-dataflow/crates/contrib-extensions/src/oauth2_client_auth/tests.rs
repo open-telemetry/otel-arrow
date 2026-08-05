@@ -4,7 +4,7 @@
 //! Unit and integration tests for the OAuth 2.0 Client Auth extension.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use otap_df_config::error::Error as ConfigError;
@@ -196,8 +196,9 @@ async fn start_tls_token_server(access_token: &'static str) -> TlsTokenServer {
 // -- Config tests ----------------------------------------------
 
 // Scenario: A minimal valid config is deserialized with all optional fields omitted.
-// Guarantees: Documented defaults (client_credentials grant, 5m buffer, 30s startup, empty
-// scopes/params, no timeout/tls) are applied so operators can rely on them.
+// Guarantees: Documented defaults (client_credentials grant, 5m buffer, 30s startup, finite
+// request/connect timeouts, 1h assumed lifetime, empty scopes/params, no tls) are applied so
+// operators can rely on them.
 #[test]
 fn config_defaults_apply() {
     let cfg =
@@ -207,7 +208,9 @@ fn config_defaults_apply() {
     assert_eq!(cfg.startup_timeout, Duration::from_secs(30));
     assert!(cfg.scopes.is_empty());
     assert!(cfg.endpoint_params.is_empty());
-    assert!(cfg.timeout.is_none());
+    assert_eq!(cfg.timeout, Duration::from_secs(30));
+    assert_eq!(cfg.connect_timeout, Duration::from_secs(10));
+    assert_eq!(cfg.default_token_lifetime, Duration::from_secs(3600));
     assert!(cfg.tls.is_none());
 }
 
@@ -286,6 +289,42 @@ fn zero_expiry_buffer_is_rejected() {
     assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
 }
 
+// Scenario: A config sets `timeout` or `connect_timeout` to zero.
+// Guarantees: Validation rejects both, so a token request can never be left without a finite
+// bound and hold the acquisition lock indefinitely.
+#[test]
+fn zero_request_or_connect_timeout_is_rejected() {
+    for field in ["timeout", "connect_timeout"] {
+        let err = config_from_json(serde_json::json!({
+            "token_url": "https://idp.example.com/token",
+            "client_id": "id",
+            "client_secret": "s",
+            field: "0s",
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, ConfigError::InvalidUserConfig { .. }),
+            "{field}"
+        );
+    }
+}
+
+// Scenario: A config sets `default_token_lifetime` at or below `expiry_buffer`.
+// Guarantees: Validation rejects it, so the fallback cannot place every refresh in the past and
+// collapse the refresh loop onto its minimum cadence.
+#[test]
+fn a_fallback_lifetime_below_the_expiry_buffer_is_rejected() {
+    let err = config_from_json(serde_json::json!({
+        "token_url": "https://idp.example.com/token",
+        "client_id": "id",
+        "client_secret": "s",
+        "expiry_buffer": "5m",
+        "default_token_lifetime": "5m",
+    }))
+    .expect_err("a fallback lifetime at the expiry buffer must be rejected");
+    assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+}
+
 // Scenario: A config sets `startup_timeout` to zero.
 // Guarantees: Validation rejects it, so the readiness gate always has a positive bound.
 #[test]
@@ -314,7 +353,7 @@ fn durations_parse_as_human_readable() {
     }))
     .expect("durations parse");
     assert_eq!(cfg.expiry_buffer, Duration::from_secs(600));
-    assert_eq!(cfg.timeout, Some(Duration::from_secs(2)));
+    assert_eq!(cfg.timeout, Duration::from_secs(2));
     assert_eq!(cfg.startup_timeout, Duration::from_secs(45));
 }
 
@@ -903,7 +942,7 @@ async fn jwt_bearer_signs_assertion_and_acquires_token() {
 }
 
 // Scenario: The token endpoint reports an `expires_in` far too large to add to the current time
-// (client-credentials grant, parsed by the oauth2 crate).
+// (client-credentials grant).
 // Guarantees: The acquisition returns a token with no known expiry instead of panicking on the
 // `SystemTime` overflow, so a hostile or buggy endpoint cannot crash the node.
 #[tokio::test]
@@ -920,7 +959,7 @@ async fn absurd_expires_in_yields_token_without_expiry() {
 }
 
 // Scenario: The token endpoint reports an `expires_in` far too large to add to the current time on
-// the jwt-bearer path, which parses the response itself rather than through the oauth2 crate.
+// the jwt-bearer path.
 // Guarantees: The acquisition returns a token with no known expiry instead of panicking, matching
 // the client-credentials path.
 #[tokio::test]
@@ -1274,7 +1313,7 @@ async fn request_timeout_aborts_a_slow_token_endpoint() {
     ))
     .expect("valid config");
 
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let _ = extension_from_config(&cfg)
         .get_token()
         .await
@@ -1598,9 +1637,10 @@ async fn jwt_bearer_rejects_an_unparsable_success_body() {
 }
 
 // Scenario: A JWT-bearer token endpoint omits expires_in from an otherwise valid response.
-// Guarantees: The token is accepted without an expiry rather than being treated as expired.
+// Guarantees: The token is given the configured fallback lifetime instead of being cached as
+// non-expiring, so a short-lived token from a silent endpoint is still rotated.
 #[tokio::test]
-async fn jwt_bearer_response_without_expires_in_has_no_expiry() {
+async fn jwt_bearer_response_without_expires_in_uses_the_fallback_lifetime() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -1614,8 +1654,162 @@ async fn jwt_bearer_response_without_expires_in_has_no_expiry() {
     let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
     let token = auth.fetch_token().await.expect("acquisition succeeds");
     assert_eq!(token.expose_token(), "tok");
+    let expires_on = token
+        .expires_on()
+        .expect("a response without expires_in must still get a finite expiry");
+    let remaining = expires_on.duration_since(Instant::now());
     assert!(
-        token.expires_on().is_none(),
-        "a response without expires_in must yield a token with no expiry"
+        remaining > Duration::from_secs(3500) && remaining <= Duration::from_secs(3600),
+        "expected the 1h default fallback, got {remaining:?}"
+    );
+}
+
+// -- Shared token-response parsing -------------------------------
+
+/// Builds a client-credentials `Auth` pointed at `token_url`.
+fn client_credentials_auth(token_url: &str) -> Auth {
+    let cfg = config_from_json(valid_config_json(token_url)).expect("config parses");
+    Auth::new(&cfg).expect("auth builds")
+}
+
+/// Mounts a single token endpoint returning `body` with a 200 status.
+async fn start_json_token_server(body: serde_json::Value) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    server
+}
+
+// Scenario: A client-credentials token endpoint omits expires_in from an otherwise valid response.
+// Guarantees: The configured fallback lifetime is applied on this grant too, so neither grant can
+// pin a token in the cache indefinitely.
+#[tokio::test]
+async fn client_credentials_response_without_expires_in_uses_the_fallback_lifetime() {
+    let server = start_json_token_server(serde_json::json!({
+        "access_token": "tok",
+        "token_type": "Bearer",
+    }))
+    .await;
+
+    let auth = client_credentials_auth(&format!("{}/token", server.uri()));
+    let token = auth.fetch_token().await.expect("acquisition succeeds");
+    let remaining = token
+        .expires_on()
+        .expect("a response without expires_in must still get a finite expiry")
+        .duration_since(Instant::now());
+    assert!(
+        remaining > Duration::from_secs(3500) && remaining <= Duration::from_secs(3600),
+        "expected the 1h default fallback, got {remaining:?}"
+    );
+}
+
+// Scenario: A token endpoint reports `expires_in` as a JSON string rather than a number, which
+// some providers do.
+// Guarantees: Both grants accept it and carry the reported expiry through, instead of failing or
+// silently falling back to the assumed lifetime.
+#[tokio::test]
+async fn expires_in_is_accepted_as_a_string_on_both_grants() {
+    for jwt_bearer in [false, true] {
+        let server = start_json_token_server(serde_json::json!({
+            "access_token": "tok",
+            "token_type": "Bearer",
+            "expires_in": "120",
+        }))
+        .await;
+        let token_url = format!("{}/token", server.uri());
+        let auth = if jwt_bearer {
+            jwt_bearer_auth(&token_url)
+        } else {
+            client_credentials_auth(&token_url)
+        };
+
+        let token = auth.fetch_token().await.expect("acquisition succeeds");
+        let remaining = token
+            .expires_on()
+            .expect("a string expires_in must still produce an expiry")
+            .duration_since(Instant::now());
+        assert!(
+            remaining > Duration::from_secs(110) && remaining <= Duration::from_secs(120),
+            "expected the reported 120s expiry (jwt_bearer={jwt_bearer}), got {remaining:?}"
+        );
+    }
+}
+
+// Scenario: A token endpoint issues a token whose `token_type` is not Bearer.
+// Guarantees: Both grants reject it rather than presenting a non-bearer credential to exporters
+// that will send it in an `Authorization: Bearer` header.
+#[tokio::test]
+async fn a_non_bearer_token_type_is_rejected_on_both_grants() {
+    for jwt_bearer in [false, true] {
+        let server = start_json_token_server(serde_json::json!({
+            "access_token": "tok",
+            "token_type": "mac",
+            "expires_in": 120,
+        }))
+        .await;
+        let token_url = format!("{}/token", server.uri());
+        let auth = if jwt_bearer {
+            jwt_bearer_auth(&token_url)
+        } else {
+            client_credentials_auth(&token_url)
+        };
+
+        let err = auth
+            .fetch_token()
+            .await
+            .expect_err("a non-bearer token_type must fail acquisition");
+        assert!(
+            err.to_string().contains("unsupported token_type"),
+            "unexpected error (jwt_bearer={jwt_bearer}): {err}"
+        );
+    }
+}
+
+// Scenario: A token endpoint omits `token_type`, which RFC 6749 requires but some providers drop,
+// and spells it with a leading capital in the case where it is present.
+// Guarantees: Both spellings are treated as Bearer, so a compliant-enough provider still works.
+#[tokio::test]
+async fn a_missing_or_differently_cased_token_type_is_treated_as_bearer() {
+    for body in [
+        serde_json::json!({ "access_token": "tok", "expires_in": 120 }),
+        serde_json::json!({ "access_token": "tok", "token_type": "BEARER", "expires_in": 120 }),
+    ] {
+        let server = start_json_token_server(body).await;
+        let auth = client_credentials_auth(&format!("{}/token", server.uri()));
+        let token = auth.fetch_token().await.expect("acquisition succeeds");
+        assert_eq!(token.expose_token(), "tok");
+    }
+}
+
+// Scenario: A token endpoint fails and echoes back a very large response body.
+// Guarantees: The error carries only a bounded prefix of the body, so the warn-level refresh
+// failure log cannot be filled with whatever the endpoint or an intermediary chose to return.
+#[tokio::test]
+async fn a_large_error_body_is_truncated_before_it_reaches_the_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("x".repeat(10_000)))
+        .mount(&server)
+        .await;
+
+    let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
+    let err = auth
+        .fetch_token()
+        .await
+        .expect_err("a 400 must fail acquisition")
+        .to_string();
+    assert!(err.contains("400"), "status must be reported: {err}");
+    assert!(
+        err.contains("[truncated]"),
+        "an oversized body must be marked as truncated: {err}"
+    );
+    assert!(
+        err.len() < 512,
+        "the error must stay bounded, got {} bytes",
+        err.len()
     );
 }

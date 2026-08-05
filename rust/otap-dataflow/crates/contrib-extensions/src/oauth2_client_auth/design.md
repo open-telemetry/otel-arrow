@@ -97,7 +97,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 | Grant types (v1) | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523 section 2.1 authorization grant; the signed JWT is sent as the `assertion` parameter). |
 | Credential rotation | `client_id` / `client_secret` / signing key may be supplied inline or via `*_file` paths re-read on each acquisition; the file form takes precedence. |
 | Refresh tuning | `expiry_buffer` is user-configurable; the usability margin, min cadence, refresh jitter, and exponential-backoff-with-jitter retry are fixed constants. |
-| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS). `https://` recommended; `http://` allowed but warned. A `timeout` bounds each request. |
+| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS). `https://` recommended; `http://` allowed but warned. Finite request and connect timeouts bound every acquisition by default. |
 | Registration | `#[distributed_slice(OTAP_EXTENSION_FACTORIES)]` link-time discovery, same mechanism as nodes. |
 | Telemetry | `MetricSet`-backed counters + latency histogram, flushed via `ExtensionControlMsg::CollectTelemetry`. |
 
@@ -259,7 +259,9 @@ groups:
 | `scopes` | `[string]` | `[]` | Requested scopes. |
 | `endpoint_params` | `map<string,string>` | `{}` | Extra parameters sent to the token endpoint (e.g. `audience`). |
 | `expiry_buffer` | duration | `5m` | Refresh this far ahead of `expires_on`. Must be non-zero. |
-| `timeout` | duration? | *none* (no timeout) | Per-request timeout on the token client. |
+| `default_token_lifetime` | duration | `1h` | Lifetime assumed when the token response omits `expires_in`. Must be non-zero and greater than `expiry_buffer`. |
+| `timeout` | duration | `30s` | Per-request timeout on the token client. Must be non-zero. |
+| `connect_timeout` | duration | `10s` | Connection-establishment timeout on the token client. Must be non-zero. |
 | `tls` | object? | *none* | Client TLS for the token endpoint. The engine's shared `otap_df_config::tls::TlsClientConfig` (not extension-specific knobs). See [Token-endpoint TLS](#token-endpoint-tls). |
 | `startup_timeout` | duration | `30s` | How long the engine holds data-path startup waiting for the first token publish before aborting (see [Lifecycle](#lifecycle)). Must be non-zero. |
 
@@ -287,7 +289,9 @@ sent as the `scope` parameter.
 
 The config struct uses `#[serde(deny_unknown_fields)]` and is validated before
 the pipeline starts. Validation rejects an empty `token_url`, a zero
-`expiry_buffer`/`startup_timeout`, a missing client identifier, a missing
+`expiry_buffer`/`startup_timeout`/`timeout`/`connect_timeout`, a
+`default_token_lifetime` at or below `expiry_buffer`, a missing client
+identifier, a missing
 secret/signing key for the selected grant, and any grant-specific field that does
 not apply to the selected `grant_type`. Because these cross-field rules go beyond
 what serde deserialization can express, the factory wires a **custom**
@@ -395,8 +399,16 @@ absolute expiry (`now + expires_in`) and hands it to the engine's
 `capability::auth::BearerToken` constructor, which centralizes the
 absolute-to-monotonic `Instant` conversion (the same path the Azure extension
 uses via `BearerToken::from_absolute_expiry`). After that single conversion the
-schedule is immune to wall-clock jumps. A response without expiry pushes the next
-refresh far into the future; the loop is still woken by control messages.
+schedule is immune to wall-clock jumps. `expires_in` is only RECOMMENDED by
+RFC 6749 section 5.1; a response that omits it is treated as living for
+`default_token_lifetime` rather than as non-expiring, so a short-lived token
+from a silent endpoint is still rotated instead of being served until exporters
+start seeing `401`s.
+
+Both grants share one response parser, so they accept the same payloads: a
+`token_type` other than `Bearer` (case-insensitively; absent means `Bearer`) is
+rejected rather than handed to consumers, and `expires_in` is accepted as either
+a JSON number or a JSON string.
 
 ## Consumer Integration
 

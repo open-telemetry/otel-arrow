@@ -16,6 +16,31 @@ fn default_expiry_buffer() -> Duration {
     Duration::from_secs(300)
 }
 
+/// Default per-request timeout on the token client.
+///
+/// Finite by default: an IdP that accepts the connection but never responds
+/// would otherwise hold the acquisition lock forever, so no caller could
+/// obtain a token and the refresh loop would never record a failure or enter
+/// backoff.
+fn default_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+/// Default connection-establishment timeout on the token client.
+fn default_connect_timeout() -> Duration {
+    Duration::from_secs(10)
+}
+
+/// Default assumed lifetime for a token whose response omits `expires_in`.
+///
+/// RFC 6749 section 5.1 makes `expires_in` only RECOMMENDED and directs
+/// servers that omit it to document a default. Treating such a token as
+/// non-expiring would pin it in the cache indefinitely, so a finite assumed
+/// lifetime is used instead.
+fn default_token_lifetime() -> Duration {
+    Duration::from_secs(3600)
+}
+
 /// Default startup readiness timeout.
 ///
 /// Larger than the engine's 5 s readiness-probe default: a cold-start token
@@ -120,10 +145,25 @@ pub struct Config {
     #[serde(with = "humantime_serde", default = "default_expiry_buffer")]
     pub expiry_buffer: Duration,
 
-    /// Optional per-request timeout on the token client. Accepts human-readable
-    /// durations. When omitted, no timeout is applied.
-    #[serde(with = "humantime_serde", default)]
-    pub timeout: Option<Duration>,
+    /// Assumed token lifetime when the token endpoint's response omits
+    /// `expires_in`. Accepts human-readable durations. Must be non-zero and
+    /// greater than `expiry_buffer`.
+    ///
+    /// Such a token is refreshed on this cadence rather than being cached
+    /// indefinitely, so a short-lived token from an endpoint that does not
+    /// report its expiry is still rotated.
+    #[serde(with = "humantime_serde", default = "default_token_lifetime")]
+    pub default_token_lifetime: Duration,
+
+    /// Per-request timeout on the token client, covering the whole request.
+    /// Accepts human-readable durations. Must be non-zero.
+    #[serde(with = "humantime_serde", default = "default_timeout")]
+    pub timeout: Duration,
+
+    /// Timeout for establishing a connection to the token endpoint. Accepts
+    /// human-readable durations. Must be non-zero.
+    #[serde(with = "humantime_serde", default = "default_connect_timeout")]
+    pub connect_timeout: Duration,
 
     /// Client TLS for the token endpoint. Uses the engine's shared
     /// [`TlsClientConfig`] so behavior matches the rest of the collector.
@@ -184,6 +224,22 @@ impl Config {
 
         if self.expiry_buffer.is_zero() {
             return Err("`expiry_buffer` must be greater than zero".to_string());
+        }
+
+        if self.timeout.is_zero() {
+            return Err("`timeout` must be greater than zero".to_string());
+        }
+
+        if self.connect_timeout.is_zero() {
+            return Err("`connect_timeout` must be greater than zero".to_string());
+        }
+
+        // A fallback lifetime at or below the refresh buffer would place every
+        // refresh in the past, collapsing the loop onto its minimum cadence.
+        if self.default_token_lifetime <= self.expiry_buffer {
+            return Err(
+                "`default_token_lifetime` must be greater than `expiry_buffer`".to_string(),
+            );
         }
 
         if self.startup_timeout.is_zero() {

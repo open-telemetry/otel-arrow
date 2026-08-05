@@ -10,10 +10,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-use oauth2::basic::{BasicClient, BasicTokenResponse};
+use oauth2::basic::{
+    BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse,
+    BasicTokenType,
+};
 use oauth2::{
-    AsyncHttpClient, ClientId, ClientSecret, HttpRequest, HttpResponse, Scope, TokenResponse,
-    TokenUrl,
+    AccessToken, AsyncHttpClient, Client, ClientId, ClientSecret, EndpointNotSet, HttpRequest,
+    HttpResponse, RefreshToken, Scope, StandardRevocableToken, TokenResponse, TokenUrl,
 };
 use otap_df_engine::capability::auth::BearerToken;
 use otap_df_otap::tls_utils::{read_file_with_limit_async, read_file_with_limit_sync};
@@ -21,7 +24,7 @@ use otap_df_telemetry::otel_warn;
 use rand::RngExt;
 use reqwest::{Certificate, Identity};
 use secrecy::{ExposeSecret, SecretString};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::config::{Config, GrantType, SignatureAlgorithm};
 use super::error::Error;
@@ -32,6 +35,10 @@ const JWT_BEARER_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer
 /// Validity window of a signed assertion. Kept short: the assertion is minted
 /// per acquisition and only needs to survive the token request.
 const ASSERTION_LIFETIME_SECS: u64 = 300;
+/// Maximum number of bytes of a token endpoint's response body echoed back in
+/// an error. The body is attacker-influenced and is logged on every refresh
+/// failure, so it is truncated to keep it diagnostic rather than a log sink.
+const MAX_ERROR_BODY_BYTES: usize = 256;
 
 /// An OAuth 2.0 token source: a grant, token endpoint, scopes, and a
 /// TLS-configured HTTP client used to reach the token endpoint.
@@ -67,6 +74,8 @@ pub struct Auth {
     audience: Option<String>,
     /// Extra claims added to the signed assertion.
     claims: Vec<(String, String)>,
+    /// Assumed lifetime for a token whose response omits `expires_in`.
+    default_token_lifetime: Duration,
     /// TLS-configured HTTP client used to reach the token endpoint.
     client: reqwest::Client,
 }
@@ -118,6 +127,7 @@ impl Auth {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            default_token_lifetime: config.default_token_lifetime,
             client,
         })
     }
@@ -139,7 +149,7 @@ impl Auth {
         )
         .await?;
 
-        let client = BasicClient::new(ClientId::new(client_id))
+        let client = TokenClient::new(ClientId::new(client_id))
             .set_client_secret(ClientSecret::new(client_secret))
             .set_token_uri(self.token_url.clone());
 
@@ -162,7 +172,7 @@ impl Auth {
                     message: e.to_string(),
                 })?;
 
-        Ok(to_bearer_token(&response))
+        to_bearer_token(&response, self.default_token_lifetime)
     }
 
     /// Acquires a token using the JWT-bearer grant (RFC 7523 section 2.1): it
@@ -215,7 +225,7 @@ impl Auth {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(Error::TokenAcquisition {
-                message: format!("token endpoint returned {status}: {body}"),
+                message: format!("token endpoint returned {status}: {}", truncate_body(&body)),
             });
         }
 
@@ -223,7 +233,7 @@ impl Auth {
             response.json().await.map_err(|e| Error::TokenAcquisition {
                 message: format!("invalid token response: {e}"),
             })?;
-        Ok(bearer_from_response(token))
+        to_bearer_token(&token, self.default_token_lifetime)
     }
 
     /// Builds and signs the JWT-bearer assertion for `client_id`.
@@ -293,22 +303,140 @@ impl TokenSource for Auth {
 }
 
 /// Minimal OAuth 2.0 token endpoint response (RFC 6749 section 5.1).
-#[derive(Deserialize)]
+///
+/// Both grants deserialize into this one type: the client-credentials path via
+/// the `oauth2` crate (which is generic over its response type) and the
+/// JWT-bearer path by parsing the response body directly. Sharing it keeps the
+/// two grants from accepting different payloads.
+#[derive(Debug, Deserialize, Serialize)]
 struct TokenEndpointResponse {
     /// The issued access token.
-    access_token: String,
-    /// Relative lifetime in seconds, when the endpoint reports one.
-    #[serde(default)]
+    access_token: AccessToken,
+    /// Token type. Absent is treated as `Bearer`, matching what the Go
+    /// implementation does; anything else is rejected rather than handed to
+    /// consumers as a bearer token.
+    #[serde(default = "bearer_token_type")]
+    token_type: BasicTokenType,
+    /// Relative lifetime in seconds, when the endpoint reports one. Accepted
+    /// as a JSON number or a string: both appear in the wild, and the Go
+    /// implementation accepts either.
+    #[serde(default, deserialize_with = "deserialize_expires_in")]
     expires_in: Option<u64>,
+    /// Refresh token, if the endpoint issues one. Unused: this extension only
+    /// runs grants that can re-acquire from configured credentials.
+    #[serde(default)]
+    refresh_token: Option<RefreshToken>,
 }
 
-/// Converts a manually-parsed token response into a [`BearerToken`].
-fn bearer_from_response(response: TokenEndpointResponse) -> BearerToken {
-    match response.expires_in {
-        Some(secs) => {
-            BearerToken::from_relative_expiry(response.access_token, Duration::from_secs(secs))
-        }
-        None => BearerToken::without_expiry(response.access_token),
+/// `token_type` default for responses that omit it.
+fn bearer_token_type() -> BasicTokenType {
+    BasicTokenType::Bearer
+}
+
+/// Deserializes `expires_in` from either a JSON number or a JSON string.
+fn deserialize_expires_in<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ExpiresIn {
+        Number(u64),
+        Text(String),
+    }
+
+    match Option::<ExpiresIn>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(ExpiresIn::Number(seconds)) => Ok(Some(seconds)),
+        Some(ExpiresIn::Text(text)) => text
+            .trim()
+            .parse()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
+impl TokenResponse for TokenEndpointResponse {
+    type TokenType = BasicTokenType;
+
+    fn access_token(&self) -> &AccessToken {
+        &self.access_token
+    }
+
+    fn token_type(&self) -> &Self::TokenType {
+        &self.token_type
+    }
+
+    fn expires_in(&self) -> Option<Duration> {
+        self.expires_in.map(Duration::from_secs)
+    }
+
+    fn refresh_token(&self) -> Option<&RefreshToken> {
+        self.refresh_token.as_ref()
+    }
+
+    fn scopes(&self) -> Option<&Vec<Scope>> {
+        None
+    }
+}
+
+/// The `oauth2` client specialized to [`TokenEndpointResponse`], so the
+/// client-credentials grant parses responses exactly as the JWT-bearer grant
+/// does.
+type TokenClient<
+    HasAuthUrl = EndpointNotSet,
+    HasDeviceAuthUrl = EndpointNotSet,
+    HasIntrospectionUrl = EndpointNotSet,
+    HasRevocationUrl = EndpointNotSet,
+    HasTokenUrl = EndpointNotSet,
+> = Client<
+    BasicErrorResponse,
+    TokenEndpointResponse,
+    BasicTokenIntrospectionResponse,
+    StandardRevocableToken,
+    BasicRevocationErrorResponse,
+    HasAuthUrl,
+    HasDeviceAuthUrl,
+    HasIntrospectionUrl,
+    HasRevocationUrl,
+    HasTokenUrl,
+>;
+
+/// Converts a token endpoint response into a [`BearerToken`].
+///
+/// Rejects a non-bearer `token_type` rather than presenting it as a bearer
+/// token, and substitutes `fallback_lifetime` when the endpoint reports no
+/// `expires_in`, so a token is never cached indefinitely.
+fn to_bearer_token(
+    response: &TokenEndpointResponse,
+    fallback_lifetime: Duration,
+) -> Result<BearerToken, Error> {
+    // RFC 6749 section 7.1 makes `token_type` case-insensitive, but the
+    // `oauth2` crate only recognizes the lowercase spelling, so normalize here.
+    if !response.token_type.as_ref().eq_ignore_ascii_case("bearer") {
+        return Err(Error::TokenAcquisition {
+            message: format!(
+                "token endpoint returned unsupported token_type `{}`; only Bearer is supported",
+                response.token_type.as_ref()
+            ),
+        });
+    }
+    let secret = response.access_token().secret().to_owned();
+    let expires_in = response.expires_in().unwrap_or(fallback_lifetime);
+    Ok(BearerToken::from_relative_expiry(secret, expires_in))
+}
+
+/// Truncates an untrusted response body to [`MAX_ERROR_BODY_BYTES`] for
+/// inclusion in an error message.
+fn truncate_body(body: &str) -> String {
+    let mut end = MAX_ERROR_BODY_BYTES.min(body.len());
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == body.len() {
+        body.to_owned()
+    } else {
+        format!("{}... [truncated]", &body[..end])
     }
 }
 
@@ -318,16 +446,6 @@ fn jwt_algorithm(alg: SignatureAlgorithm) -> Algorithm {
         SignatureAlgorithm::Rs256 => Algorithm::RS256,
         SignatureAlgorithm::Rs384 => Algorithm::RS384,
         SignatureAlgorithm::Rs512 => Algorithm::RS512,
-    }
-}
-
-/// Converts an OAuth 2.0 token response into a [`BearerToken`], carrying the
-/// issuer's relative `expires_in` through as the token's expiry.
-fn to_bearer_token(response: &BasicTokenResponse) -> BearerToken {
-    let secret = response.access_token().secret().to_owned();
-    match response.expires_in() {
-        Some(expires_in) => BearerToken::from_relative_expiry(secret, expires_in),
-        None => BearerToken::without_expiry(secret),
     }
 }
 
@@ -442,11 +560,10 @@ impl<'c> AsyncHttpClient<'c> for HttpExecutor {
 /// Builds a reqwest client for the token endpoint from the extension's shared
 /// TLS config, mirroring how the OTLP/HTTP exporter builds its client.
 fn build_reqwest_client(config: &Config) -> Result<reqwest::Client, Error> {
-    let mut builder = reqwest::Client::builder().use_rustls_tls();
-
-    if let Some(timeout) = config.timeout {
-        builder = builder.timeout(timeout);
-    }
+    let mut builder = reqwest::Client::builder()
+        .use_rustls_tls()
+        .timeout(config.timeout)
+        .connect_timeout(config.connect_timeout);
 
     if let Some(tls) = &config.tls {
         // `insecure_skip_verify` disables server certificate verification; it
