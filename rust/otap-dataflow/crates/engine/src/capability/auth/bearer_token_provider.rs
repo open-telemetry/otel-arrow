@@ -9,6 +9,11 @@
 //! both the shared and local execution models. Consumers depend only on
 //! the two methods below, never on how a token is produced or refreshed.
 //!
+//! Reading this capability separately from `vendor_bundle` cannot produce an
+//! atomic token-and-attributes pair. Agent-fed consumers requiring that
+//! guarantee must use
+//! [`AgentFedCredentialProvider`](super::agent_fed_credential_provider::AgentFedCredentialProvider).
+//!
 //! The `#[capability]` proc macro expands the trait into:
 //!
 //! - A `pub(crate) mod local` containing the `!Send` `BearerTokenProvider` trait variant

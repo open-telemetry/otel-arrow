@@ -2,20 +2,12 @@ change_type: enhancement
 
 component: pipeline
 
-note: Let the Geneva exporter use agent-fed credentials by resolving the `BearerTokenProvider` and `VendorBundle` capabilities instead of driving its own config-service handshake.
+note: Let the Geneva exporter use an atomic `AgentFedCredentialProvider` snapshot instead of driving its own config-service handshake.
 
 issues: [3275]
 
 subtext: |
-  The Geneva exporter binds a fail-closed `AgentFedGenevaSource` when
-  `auth.type=agentfed`, bridging the agent-fed capabilities to
-  geneva-uploader's agent-fed credential source. Both capabilities must bind
-  to the same configured extension. The exporter selects `moniker_map` by the
-  configured account, then `default`, then a sole entry, and rejects ambiguous
-  or malformed maps. Extension clones must share one `Arc`-backed token/routing
-  snapshot. Token and bundle reads are non-atomic, so the host and backend must
-  make transient mixed-generation pairs safe or reject them. A rejected upload
-  is NACKed so the pipeline's retry policy can read the capabilities again.
-  The Azure Monitor exporter already consumes the `BearerTokenProvider`
-  capability, so an agent-fed host extension bound to that capability serves
-  it with no exporter change.
+  Agent-fed auth gets endpoint, moniker, and token from one atomic snapshot.
+  It requires HTTPS and an exact-account/default URL-safe moniker, rejects
+  invalid or near-expiry data, supports rotation, and uses zeroizing token/header
+  buffers. Other auth modes still reject blank endpoint or region.

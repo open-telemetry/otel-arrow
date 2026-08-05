@@ -38,14 +38,12 @@ config:
 ### Agent-fed credentials
 
 When the embedding host supplies the Geneva token and routing metadata, bind
-both capabilities to the same configured host extension and use `agentfed`
-authentication:
+the combined credential-provider capability and use `agentfed` authentication:
 
 ```yaml
 type: urn:microsoft:exporter:geneva
 capabilities:
-  bearer_token_provider: agent-auth
-  vendor_bundle: agent-auth
+  agent_fed_credential_provider: agent-auth
 config:
   environment: production
   account: "my-account"
@@ -59,21 +57,46 @@ config:
   max_concurrent_uploads: 4
 ```
 
+The `attributes` object in each credential snapshot must use this shape:
+
+```json
+{
+  "endpoint": "https://ingest.example.com",
+  "moniker_map": {
+    "my-account": "my-moniker",
+    "default": "fallback-moniker"
+  }
+}
+```
+
 `endpoint` and `region` are not required in this mode because the host supplies
-the ingestion endpoint through `vendor_bundle`. The exporter selects a moniker
-from `moniker_map` by the configured `account`, then `default`, then a sole map
-entry. A map with multiple entries and no account/default match is rejected.
+the ingestion endpoint through the credential snapshot's `endpoint` attribute.
+That attribute must be a non-empty absolute HTTPS URL with a host and cannot
+contain embedded credentials, a query string, or a fragment. The exporter
+selects a non-empty string from `moniker_map` by the configured `account`,
+falling back only to an explicit `default`. A map containing neither key is
+rejected, even if it has a single entry. Empty or malformed routing is also
+rejected. If the configured account or `default` key exists with an invalid
+value, the snapshot is rejected instead of falling back to another entry. The
+selected moniker must be safe to use as one URL query value without additional
+encoding. Surrounding whitespace is trimmed; the remaining value may contain
+only ASCII letters, digits, hyphen, dot, underscore, and tilde. Embedded
+whitespace, non-ASCII text, and reserved delimiters are rejected.
+
+The provider must load the token and routing attributes from one atomically
+published host snapshot. Each upload consumes one immutable snapshot, so a host
+rotation cannot produce a mixed-generation token/routing pair. Subsequent
+uploads observe the new snapshot without reconstructing the exporter. Tokens
+with a known expiry must remain usable for more than 30 seconds; expired or
+near-expiry snapshots fail closed while the provider refreshes them.
+
 Capability bindings are checked when the exporter is created because the
 factory's earlier config-validation hook receives only the `config` object.
 Capability factories create a clone for each consumer, so the host extension's
-clones must share one `Arc`-backed token and routing snapshot.
-
-The token and vendor bundle are separate capability reads and are not an atomic
-snapshot. A host rotation can therefore produce transiently mismatched
-token/routing pairs, which the exporter cannot identify by generation. The host
-and Geneva backend must make such pairs safe or reject them. A rejected upload
-causes the exporter to NACK the payload, allowing a configured retry to read
-the capabilities again; an accepted upload is ACKed normally.
+clones must share the same atomically swapped snapshot state. The host extension
+must register `agent_fed_credential_provider` for the shared execution model;
+a local-only registration cannot satisfy the uploader's thread-safe credential
+source.
 
 ## Build df_engine with Geneva Exporter
 
