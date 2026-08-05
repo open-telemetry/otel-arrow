@@ -16,5 +16,5 @@ issues: [3530]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Replaced `logs_exported`, `metrics_exported`, etc with `exporter.kafka.exports` partitioned by `SignalOutcomeAttributes`.
-  This aligns the component's telemetry with the project's standard metric naming conventions.
+  Replaced `logs_exported`, `metrics_exported`, etc with `exporter.kafka.exports.msgs` partitioned by `SignalOutcomeAttributes`.
+  Migration: Update dashboards/alerts to use `exporter.kafka.exports.msgs` instead of signal-specific counters.
