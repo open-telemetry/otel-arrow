@@ -14,6 +14,12 @@ on:
       - 'proto/**'
       - '.github/workflows/dataflow-engine-binary-size.yml'
 
+# serialize runs so two merges landing close together do not race on the
+# push to the benchmarks branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-multiarch:
     strategy:
@@ -173,6 +179,11 @@ jobs:
           jq -r '.[] | "| \(.name) | \(.value) MB |"' consolidated-sizes.json
 
       - name: Update binary size benchmarks
+        # the table above still renders from whatever landed, but a partial
+        # matrix must not become a benchmark data point
+        if: >-
+          needs.build-multiarch.result == 'success' &&
+          needs.bloat-multiarch.result == 'success'
         uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
