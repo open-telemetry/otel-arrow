@@ -7170,6 +7170,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "otap-df-component-inventory"
+version = "0.50.0"
+dependencies = [
+ "otap-df-contrib-nodes",
+ "otap-df-core-nodes",
+ "otap-df-engine",
+ "otap-df-otap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "otap-df-component-inventory-syntax"
 version = "0.50.0"
 dependencies = [

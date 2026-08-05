@@ -10,8 +10,8 @@
 //! component regardless of `#[cfg]`/feature/target gating) but it must resolve
 //! factory URNs itself (following `name: SOME_URN_CONST` to the const's value,
 //! including cross-crate `use` re-exports). This test is the **reliability**
-//! half: it links a large set of real components (`core-nodes` + `contrib-nodes`
-//! via the `otap` dev-dependency graph) and reads the **compiler-resolved**
+//! half: it links a large set of real components (`core-nodes`, `contrib-nodes`,
+//! and `otap` via this crate's dev-dependencies) and reads the **compiler-resolved**
 //! `COMPONENT_INVENTORY` distributed slice, then asserts that every linked
 //! component matches the committed `components-baseline.json`.
 //!
@@ -53,8 +53,8 @@ struct BaselineEntry {
 
 /// Load `components-baseline.json` from the `otap-dataflow` workspace root.
 ///
-/// `CARGO_MANIFEST_DIR` for this crate is `.../crates/otap`; the baseline lives
-/// two levels up at the workspace root.
+/// `CARGO_MANIFEST_DIR` for this crate is `.../crates/component-inventory`; the
+/// baseline lives two levels up at the workspace root.
 fn load_baseline() -> Vec<BaselineEntry> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let baseline_path = manifest_dir
