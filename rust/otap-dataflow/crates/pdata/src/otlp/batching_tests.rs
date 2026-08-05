@@ -281,6 +281,18 @@ fn wlen(buf: &mut Vec<u8>, field: u64, payload: &[u8]) {
     buf.extend_from_slice(payload);
 }
 
+/// Minimal protobuf FIXED64 (wire type 1) field writer.
+fn wfixed64(buf: &mut Vec<u8>, field: u64, val: u64) {
+    wv(buf, (field << 3) | 1);
+    buf.extend_from_slice(&val.to_le_bytes());
+}
+
+/// Minimal protobuf FIXED32 (wire type 5) field writer.
+fn wfixed32(buf: &mut Vec<u8>, field: u64, val: u32) {
+    wv(buf, (field << 3) | 5);
+    buf.extend_from_slice(&val.to_le_bytes());
+}
+
 /// Scenario: A single ExportLogsServiceRequest carrying one ResourceLogs with a
 /// single scope and many small records is batched with a byte limit far smaller
 /// than the whole resource entry, forcing a split *within* the one resource
@@ -714,4 +726,180 @@ fn test_split_malformed_scope_preserves_entry_order() {
         top.as_slice(),
         "the entry must be preserved byte-for-byte, in original field order",
     );
+}
+
+/// Scenario: `make_bytes_batches` is called with no inputs, and with a single
+/// zero-byte input.
+/// Guarantees: Both are rejected with an error rather than producing a batch.
+#[test]
+fn test_empty_inputs_error() {
+    assert!(make_bytes_batches(SignalType::Logs, NonZeroU64::new(10), vec![]).is_err());
+
+    let empty = OtlpProtoBytes::new_from_bytes(SignalType::Logs, Vec::new());
+    assert!(make_bytes_batches(SignalType::Logs, NonZeroU64::new(10), vec![empty]).is_err());
+}
+
+/// Scenario: A request carrying only non-resource top-level fields (field != 1)
+/// is batched. These are opaque units the splitter cannot descend into.
+/// Guarantees: Small opaque fields pack together into one batch (the "fits"
+/// path); a single opaque field larger than the limit is emitted on its own,
+/// exceeding the limit. Bytes are preserved in both cases.
+#[test]
+fn test_non_resource_toplevel_fields_are_opaque() {
+    // Two small non-resource fields pack into a single batch.
+    let mut buf = Vec::new();
+    wlen(&mut buf, 7, b"hello");
+    wlen(&mut buf, 7, b"world");
+    let input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, buf.clone());
+    let outputs = make_bytes_batches(
+        SignalType::Logs,
+        NonZeroU64::new(buf.len() as u64),
+        vec![input],
+    )
+    .expect("ok");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].as_bytes(), buf.as_slice());
+
+    // A single opaque field larger than the limit is emitted alone.
+    let mut big = Vec::new();
+    wlen(&mut big, 7, &[0x41u8; 200]);
+    let big_input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, big.clone());
+    let outputs =
+        make_bytes_batches(SignalType::Logs, NonZeroU64::new(16), vec![big_input]).expect("ok");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].as_bytes(), big.as_slice());
+}
+
+/// Scenario: An oversize resource entry whose header carries fixed64 (wire
+/// type 1) and fixed32 (wire type 5) unknown fields is split by scope.
+/// Guarantees: Multiple batches are produced and every fragment carries both
+/// fixed-width header fields (exercises the FIXED64/FIXED32 field scanner).
+#[test]
+fn test_split_entry_with_fixed_width_header_fields() {
+    let mut scope = Vec::new();
+    wlen(&mut scope, 1, &[]);
+    for i in 0..20u8 {
+        wlen(&mut scope, 2, &[0x08, i]);
+    }
+
+    let mut entry = Vec::new();
+    wlen(&mut entry, 1, &[]); // Resource (empty)
+    wfixed64(&mut entry, 4, 0x1122_3344_5566_7788); // unknown fixed64 header field
+    wfixed32(&mut entry, 5, 0xAABB_CCDD); // unknown fixed32 header field
+    wlen(&mut entry, 2, &scope); // ScopeLogs
+
+    let mut top = Vec::new();
+    wlen(&mut top, 1, &entry);
+
+    let input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, top.clone());
+    let max_size = (top.len() / 4).max(8);
+    let outputs = make_bytes_batches(
+        SignalType::Logs,
+        NonZeroU64::new(max_size as u64),
+        vec![input],
+    )
+    .expect("ok");
+
+    assert!(outputs.len() > 1, "expected a split, got {}", outputs.len());
+    let f64_bytes = 0x1122_3344_5566_7788u64.to_le_bytes();
+    let f32_bytes = 0xAABB_CCDDu32.to_le_bytes();
+    for out in &outputs {
+        let bytes = out.as_bytes();
+        assert!(
+            bytes.windows(8).any(|w| w == f64_bytes),
+            "fixed64 header field dropped from a batch",
+        );
+        assert!(
+            bytes.windows(4).any(|w| w == f32_bytes),
+            "fixed32 header field dropped from a batch",
+        );
+    }
+}
+
+/// Scenario: Top-level fields with a truncated fixed64, a truncated fixed32,
+/// and an invalid wire type are batched.
+/// Guarantees: The field scanner returns `None` for each (bounds check /
+/// unknown wire type), so the remainder is emitted opaquely, byte-preserved.
+#[test]
+fn test_truncated_and_invalid_wire_types_emitted_opaque() {
+    // Truncated fixed64: wire type 1 but only 3 of 8 payload bytes.
+    let mut f64 = Vec::new();
+    f64.push((4 << 3) | 1);
+    f64.extend_from_slice(&[0x01, 0x02, 0x03]);
+    let input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, f64.clone());
+    let outputs =
+        make_bytes_batches(SignalType::Logs, NonZeroU64::new(4), vec![input]).expect("ok");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].as_bytes(), f64.as_slice());
+
+    // Truncated fixed32: wire type 5 but only 2 of 4 payload bytes.
+    let mut f32 = Vec::new();
+    f32.push((5 << 3) | 5);
+    f32.extend_from_slice(&[0x01, 0x02]);
+    let input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, f32.clone());
+    let outputs =
+        make_bytes_batches(SignalType::Logs, NonZeroU64::new(4), vec![input]).expect("ok");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].as_bytes(), f32.as_slice());
+
+    // Invalid wire type 6 (not LEN/VARINT/FIXED32/FIXED64).
+    let invalid = vec![(1u8 << 3) | 6, 0x00];
+    let input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, invalid.clone());
+    let outputs =
+        make_bytes_batches(SignalType::Logs, NonZeroU64::new(4), vec![input]).expect("ok");
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].as_bytes(), invalid.as_slice());
+}
+
+/// Scenario: An oversize resource entry that contains no scope fields at all
+/// (only a large Resource wrapper).
+/// Guarantees: With nothing to descend into, the entry is emitted whole,
+/// byte-preserved.
+#[test]
+fn test_split_resource_entry_without_scopes() {
+    let mut entry = Vec::new();
+    wlen(&mut entry, 1, &[0x08u8; 100]); // large Resource(1), no scope list
+    let mut top = Vec::new();
+    wlen(&mut top, 1, &entry);
+
+    let input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, top.clone());
+    let max_size = (top.len() / 2).max(4);
+    let outputs = make_bytes_batches(
+        SignalType::Logs,
+        NonZeroU64::new(max_size as u64),
+        vec![input],
+    )
+    .expect("ok");
+
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].as_bytes(), top.as_slice());
+}
+
+/// Scenario: An oversize resource entry holds a single scope with a large
+/// InstrumentationScope header but zero records.
+/// Guarantees: The scope cannot be reduced further, so it is emitted as one
+/// fragment (the empty-record-list path), byte-preserved.
+#[test]
+fn test_split_scope_without_records() {
+    let mut scope = Vec::new();
+    wlen(&mut scope, 1, &[0x0Au8; 100]); // large scope header, no field-2 records
+
+    let mut entry = Vec::new();
+    wlen(&mut entry, 1, &[]); // Resource (empty)
+    wlen(&mut entry, 2, &scope); // one big scope, no records
+
+    let mut top = Vec::new();
+    wlen(&mut top, 1, &entry);
+
+    let input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, top.clone());
+    let max_size = (top.len() / 2).max(4);
+    let outputs = make_bytes_batches(
+        SignalType::Logs,
+        NonZeroU64::new(max_size as u64),
+        vec![input],
+    )
+    .expect("ok");
+
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].as_bytes(), top.as_slice());
 }

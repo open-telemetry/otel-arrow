@@ -255,8 +255,7 @@ fn split_resource_entry(
 ///
 /// The caller (`split_resource_entry`) only descends here after verifying the
 /// whole entry -- including this scope's payload -- is `fully_parseable`, so the
-/// `None` arm below is a defensive fallback that is not reached for the inputs
-/// the caller produces.
+/// field scan always terminates cleanly at the end of the payload.
 fn split_scope_entry(
     signal: SignalType,
     resource_header: &[u8],
@@ -267,31 +266,17 @@ fn split_scope_entry(
     let mut scope_header: Vec<u8> = Vec::new();
     let mut record_fulls: Vec<&[u8]> = Vec::new();
     let mut pos = 0;
-    while pos < scope_payload.len() {
-        match next_field(scope_payload, pos) {
-            Some((field, wire, _payload_start, field_end)) => {
-                let full = &scope_payload[pos..field_end];
-                if field == CHILD_LIST_FIELD && wire == wire_types::LEN {
-                    record_fulls.push(full);
-                } else {
-                    scope_header.extend_from_slice(full);
-                }
-                pos = field_end;
-            }
-            None => {
-                // Defensive fallback (see the doc comment: the caller guarantees
-                // a fully-parseable scope). Emit the whole scope unmodified as a
-                // single fragment rather than reordering the tail ahead of the
-                // records (best-effort, may exceed max_size).
-                let mut entry = Vec::with_capacity(
-                    resource_header.len() + wrapped_len(CHILD_LIST_FIELD, scope_payload.len()),
-                );
-                entry.extend_from_slice(resource_header);
-                write_len_delimited(&mut entry, CHILD_LIST_FIELD, scope_payload);
-                emit_top(signal, &entry, batches);
-                return;
-            }
+    // The caller only descends here for a fully-parseable scope, so the loop
+    // always terminates via the end-of-buffer `None` after consuming every
+    // field (no malformed-field handling is needed here).
+    while let Some((field, wire, _payload_start, field_end)) = next_field(scope_payload, pos) {
+        let full = &scope_payload[pos..field_end];
+        if field == CHILD_LIST_FIELD && wire == wire_types::LEN {
+            record_fulls.push(full);
+        } else {
+            scope_header.extend_from_slice(full);
         }
+        pos = field_end;
     }
 
     let emit_frag = |recs: &[u8], batches: &mut Vec<OtlpProtoBytes>| {
