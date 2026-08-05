@@ -21,7 +21,7 @@
 //!   do this (a single build only links one feature/target combination), which
 //!   is why the source scan owns the baseline.
 //! - **Reliability (the link-time oracle):** the `#[test]` in
-//!   `crates/engine/tests/component_inventory_oracle.rs` cross-checks this
+//!   `crates/component-inventory/tests/oracle.rs` cross-checks this
 //!   scanner's output against the compiler-resolved slice for whatever is
 //!   linked, catching any URN-resolution error for linked components.
 //!
@@ -37,7 +37,7 @@
 //! greppable `urn:UNRESOLVED:<const>` marker (never a silent value), and the
 //! check fails so it cannot be frozen into the baseline unnoticed.
 
-use otap_df_component_inventory_syntax::ComponentInventoryArgs;
+use otap_df_component_inventory_syntax::{Auth, ComponentInventoryArgs, Protocol};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -78,21 +78,132 @@ struct MissingAnnotation {
     slice: String,
 }
 
-/// Directory names that are never scanned for components.
-const SKIP_DIRS: &[&str] = &[
-    "target",
-    ".git",
-    "tests",
-    "benches",
-    "examples",
-    "engine-macros",
-    "component-inventory-syntax",
-    "telemetry-macros",
-    "validation",
-    "otap-test-net",
-    "otap-test-tls-certs",
-    "quiver-e2e",
-];
+/// Name of the scanner configuration file, read from the `otap-dataflow`
+/// workspace root (the directory that also holds `components-baseline.json`).
+const CONFIG_FILE: &str = "component-inventory.toml";
+
+/// Scanner configuration loaded from [`CONFIG_FILE`].
+#[derive(Debug, Deserialize)]
+struct Config {
+    /// Directory names (matched by basename, at any depth under `crates/`) that
+    /// the scanner never descends into. See [`CONFIG_FILE`] for documentation.
+    #[serde(default)]
+    skip_dirs: Vec<String>,
+}
+
+/// Load the scanner config from `<base_dir>/component-inventory.toml`.
+///
+/// Errors if the file is missing or malformed: the skip list controls which
+/// directories are excluded from threat-model drift detection, so a missing or
+/// unreadable config must fail loudly rather than silently scan everything.
+fn load_config(base_dir: &Path) -> anyhow::Result<Config> {
+    let path = base_dir.join(CONFIG_FILE);
+    let content = std::fs::read_to_string(&path).map_err(|e| {
+        anyhow::anyhow!(
+            "could not read scanner config {}: {e}. This file lists the \
+             directories the component-inventory scanner skips; it must exist \
+             at the otap-dataflow workspace root.",
+            path.display()
+        )
+    })?;
+    toml::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("invalid scanner config {}: {e}", path.display()))
+}
+
+/// Validate that every configured skip directory actually exists somewhere
+/// under `crates/`.
+///
+/// A stale entry (a directory that was renamed or removed) would silently stop
+/// excluding what the author intended, so it is treated as a hard error rather
+/// than ignored.
+fn validate_skip_dirs(crates_dir: &Path, skip_dirs: &[String]) -> anyhow::Result<()> {
+    let mut present = std::collections::HashSet::new();
+    collect_dir_names(crates_dir, &mut present)?;
+    let stale: Vec<&String> = skip_dirs
+        .iter()
+        .filter(|d| !present.contains(d.as_str()))
+        .collect();
+    if !stale.is_empty() {
+        anyhow::bail!(
+            "component-inventory.toml lists skip_dirs that do not exist under \
+             {}: {}. Remove or fix the stale entr(y/ies).",
+            crates_dir.display(),
+            stale
+                .iter()
+                .map(|d| d.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Recursively collect every directory *basename* under `root` into `out`.
+fn collect_dir_names(
+    root: &Path,
+    out: &mut std::collections::HashSet<String>,
+) -> anyhow::Result<()> {
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            if let Some(name) = path.file_name() {
+                out.insert(name.to_string_lossy().into_owned());
+            }
+            collect_dir_names(&path, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// A component is "first-party" when its URN is in the project's own namespace
+/// (`urn:otel:...`). External/vendor components use a different namespace
+/// (e.g. `urn:microsoft:...`) and may use `Custom` attribute values.
+fn is_first_party(id: &str) -> bool {
+    id.starts_with("urn:otel:")
+}
+
+/// Validate controlled-vocabulary attribute values (`protocol`, `auth`).
+///
+/// Returns one error string per first-party component that uses an
+/// off-vocabulary (`Custom`) value. External components are exempt.
+fn check_controlled_values(components: &[Component]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for c in components {
+        if !is_first_party(&c.id) {
+            continue;
+        }
+        if let Some(v) = c.attributes.get("protocol") {
+            if Protocol::parse(v).is_custom() {
+                errors.push(format!(
+                    "{}:{}: {}: protocol value {v:?} is not in the known set \
+                     ({}); `Custom` values are only allowed for external \
+                     (non-urn:otel) components",
+                    c.file,
+                    c.line,
+                    c.id,
+                    Protocol::known_list()
+                ));
+            }
+        }
+        if let Some(v) = c.attributes.get("auth") {
+            if Auth::parse(v).is_custom() {
+                errors.push(format!(
+                    "{}:{}: {}: auth value {v:?} is not in the known set ({}); \
+                     `Custom` values are only allowed for external \
+                     (non-urn:otel) components",
+                    c.file,
+                    c.line,
+                    c.id,
+                    Auth::known_list()
+                ));
+            }
+        }
+    }
+    errors
+}
 
 pub fn run(args: &[String]) -> anyhow::Result<()> {
     let mut check_path: Option<PathBuf> = None;
@@ -154,6 +265,22 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         );
     }
 
+    // First-party (`urn:otel:*`) components must use a known `protocol`/`auth`
+    // value from the controlled vocabulary; the `Custom` escape hatch is only
+    // for external/vendor components. Enforced before recording or verifying a
+    // baseline so an off-vocabulary value on a first-party component fails CI.
+    let value_errors = check_controlled_values(&components);
+    if !value_errors.is_empty() {
+        for e in &value_errors {
+            eprintln!("\u{274C} {e}");
+        }
+        anyhow::bail!(
+            "found {} disallowed attribute value(s) on first-party components; \
+             use a known protocol/auth value or fix the annotation(s) above",
+            value_errors.len()
+        );
+    }
+
     if update_baseline {
         // Refuse to write a baseline containing unresolved URNs -- that is
         // exactly the silent-corruption failure this rewrite prevents.
@@ -205,11 +332,20 @@ fn scan_workspace(
 ) -> anyhow::Result<(Vec<Component>, Vec<MissingAnnotation>, Vec<String>)> {
     // Collect every .rs file under crates/ once, then run two passes over the
     // parsed ASTs: (1) build the URN const table, (2) extract components.
+    let config = load_config(base_dir)?;
+
     let crates_dir = base_dir.join("crates");
-    let mut rs_files = Vec::new();
-    if crates_dir.exists() {
-        collect_rs_files(&crates_dir, &mut rs_files)?;
+    if !crates_dir.is_dir() {
+        anyhow::bail!(
+            "component-inventory scan root {} does not exist; run this from the \
+             otap-dataflow workspace root",
+            crates_dir.display()
+        );
     }
+    validate_skip_dirs(&crates_dir, &config.skip_dirs)?;
+
+    let mut rs_files = Vec::new();
+    collect_rs_files(&crates_dir, &config.skip_dirs, &mut rs_files)?;
     rs_files.sort();
 
     // Parse each file once; keep (relative path, AST) for both passes.
@@ -261,7 +397,11 @@ fn scan_workspace(
     Ok((components, missing, parse_errors))
 }
 
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+fn collect_rs_files(
+    dir: &Path,
+    skip_dirs: &[String],
+    out: &mut Vec<PathBuf>,
+) -> anyhow::Result<()> {
     if !dir.is_dir() {
         return Ok(());
     }
@@ -270,8 +410,8 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
         let path = entry.path();
         if path.is_dir() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if !SKIP_DIRS.contains(&name.as_ref()) {
-                collect_rs_files(&path, out)?;
+            if !skip_dirs.iter().any(|d| d == name.as_ref()) {
+                collect_rs_files(&path, skip_dirs, out)?;
             }
         } else if path.extension().is_some_and(|ext| ext == "rs") {
             out.push(path);
@@ -1086,6 +1226,62 @@ mod tests {
         assert_eq!(report.modified.len(), 1, "modified: {:?}", report.modified);
         assert_eq!(report.removed.len(), 1, "removed: {:?}", report.removed);
         assert!(!report.is_clean());
+    }
+
+    /// Build a `Component` with the given URN id and attribute pairs.
+    fn component_with_attrs(id: &str, attrs: &[(&str, &str)]) -> Component {
+        Component {
+            id: id.to_string(),
+            category: "Receiver".to_string(),
+            description: None,
+            file: "f.rs".to_string(),
+            line: 1,
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    /// Scenario: a first-party (urn:otel) component uses an off-vocabulary
+    /// `protocol`/`auth` value.
+    /// Guarantees: each off-vocabulary value is reported, so first-party
+    /// components cannot record a `Custom` security property.
+    #[test]
+    fn first_party_custom_values_are_rejected() {
+        let components = vec![
+            component_with_attrs("urn:otel:receiver:a", &[("protocol", "carrier-pigeon")]),
+            component_with_attrs("urn:otel:exporter:b", &[("auth", "secret-handshake")]),
+        ];
+        let errors = check_controlled_values(&components);
+        assert_eq!(errors.len(), 2, "errors: {errors:?}");
+        assert!(errors.iter().any(|e| e.contains("protocol")));
+        assert!(errors.iter().any(|e| e.contains("auth")));
+    }
+
+    /// Scenario: a first-party component uses known `protocol`/`auth` values
+    /// (including a parenthetical spelling).
+    /// Guarantees: known values pass with no errors.
+    #[test]
+    fn first_party_known_values_pass() {
+        let components = vec![component_with_attrs(
+            "urn:otel:receiver:a",
+            &[("protocol", "gRPC (HTTP/2)"), ("auth", "mTLS (opt-in)")],
+        )];
+        assert!(check_controlled_values(&components).is_empty());
+    }
+
+    /// Scenario: an external/vendor (non-urn:otel) component uses a `Custom`
+    /// protocol value.
+    /// Guarantees: external components are exempt from the controlled
+    /// vocabulary, so no error is raised.
+    #[test]
+    fn external_custom_values_are_allowed() {
+        let components = vec![component_with_attrs(
+            "urn:microsoft:exporter:x",
+            &[("protocol", "proprietary-wire"), ("auth", "vendor-sso")],
+        )];
+        assert!(check_controlled_values(&components).is_empty());
     }
 
     /// Scenario: an unresolved URN reaches the diff.
