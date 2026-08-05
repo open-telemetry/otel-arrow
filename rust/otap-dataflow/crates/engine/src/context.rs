@@ -537,32 +537,6 @@ impl PipelineContext {
         }
     }
 
-    /// Returns a channel attribute set tied to this node context, extended with custom telemetry attributes.
-    #[must_use]
-    pub fn node_with_custom_channel_attribute_set(
-        &self,
-        channel_id: Cow<'static, str>,
-        node_port: Cow<'static, str>,
-        channel_kind: &'static str,
-        channel_mode: &'static str,
-        channel_type: &'static str,
-        channel_impl: &'static str,
-    ) -> NodeWithCustomChannelAttributeSet {
-        NodeWithCustomChannelAttributeSet {
-            channel_attrs: self.node_channel_attribute_set(
-                channel_id,
-                node_port,
-                channel_kind,
-                channel_mode,
-                channel_type,
-                channel_impl,
-            ),
-            custom_attrs: CustomAttributeSet::new(config_map_to_telemetry(
-                &self.node_telemetry_attrs,
-            )),
-        }
-    }
-
     /// Registers a node-scoped channel entity for the given channel attributes.
     #[must_use]
     pub fn register_node_channel_entity(
@@ -574,30 +548,25 @@ impl PipelineContext {
         channel_type: &'static str,
         channel_impl: &'static str,
     ) -> EntityKey {
+        let attrs = self.node_channel_attribute_set(
+            channel_id,
+            node_port,
+            channel_kind,
+            channel_mode,
+            channel_type,
+            channel_impl,
+        );
+        let registry = &self.controller_context.telemetry_registry_handle;
+
         if self.node_telemetry_attrs.is_empty() {
-            let attrs = self.node_channel_attribute_set(
-                channel_id,
-                node_port,
-                channel_kind,
-                channel_mode,
-                channel_type,
-                channel_impl,
-            );
-            self.controller_context
-                .telemetry_registry_handle
-                .register_entity(attrs)
+            registry.register_entity(attrs)
         } else {
-            let attrs = self.node_with_custom_channel_attribute_set(
-                channel_id,
-                node_port,
-                channel_kind,
-                channel_mode,
-                channel_type,
-                channel_impl,
-            );
-            self.controller_context
-                .telemetry_registry_handle
-                .register_entity(attrs)
+            registry.register_entity(NodeWithCustomChannelAttributeSet {
+                channel_attrs: attrs,
+                custom_attrs: CustomAttributeSet::new(config_map_to_telemetry(
+                    &self.node_telemetry_attrs,
+                )),
+            })
         }
     }
 
@@ -898,11 +867,11 @@ mod tests {
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::collections::HashMap;
 
-    #[test]
-    fn register_node_channel_entity_includes_custom_attributes() {
-        let registry = TelemetryRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(registry.clone());
-
+    fn pipeline_ctx_with_custom_attrs(
+        registry: TelemetryRegistryHandle,
+        custom: HashMap<String, TelemetryAttribute>,
+    ) -> PipelineContext {
+        let controller_ctx = ControllerContext::new(registry);
         let pipeline_params = PipelineContextParams {
             pipeline_group_id: Cow::Borrowed("group1"),
             pipeline_id: Cow::Borrowed("pipe1"),
@@ -910,45 +879,73 @@ mod tests {
             num_cores: 1,
             thread_id: 0,
         };
-        let base_pipeline_ctx = PipelineContext::new(controller_ctx, pipeline_params);
-
-        let mut custom_attrs = HashMap::new();
-        let _ = custom_attrs.insert(
-            "custom.identity.foo".to_string(),
-            TelemetryAttribute::new(AttributeValue::String("bar".to_string())),
-        );
-
-        let pipeline_ctx = base_pipeline_ctx.with_node_context(
+        PipelineContext::new(controller_ctx, pipeline_params).with_node_context(
             Cow::Borrowed("test-node"),
             NodeUrn::parse("urn:otel:receiver:test").unwrap(),
             NodeKind::Receiver,
-            custom_attrs,
-        );
+            custom,
+        )
+    }
 
-        let entity_key = pipeline_ctx.register_node_channel_entity(
+    fn register_channel(ctx: &PipelineContext) -> EntityKey {
+        ctx.register_node_channel_entity(
             Cow::Borrowed("channel-1"),
             Cow::Borrowed("out"),
             "test_kind",
             "test_mode",
             "test_type",
             "test_impl",
+        )
+    }
+
+    /// Scenario: a node configured with `entity.extend.identity_attributes` registers a
+    /// channel endpoint entity.
+    /// Guarantees: the channel entity carries the configured custom attributes in addition to
+    /// the base channel attributes, so channel metrics keep the node's configured identity.
+    #[test]
+    fn register_node_channel_entity_includes_custom_attributes() {
+        let registry = TelemetryRegistryHandle::new();
+        let mut custom = HashMap::new();
+        let _ = custom.insert(
+            "custom.identity.foo".to_string(),
+            TelemetryAttribute::new(AttributeValue::String("bar".to_string())),
         );
+        let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), custom);
+        let key = register_channel(&ctx);
 
-        let has_custom_attr = registry
-            .visit_entity(entity_key, |attrs| {
-                let mut found = false;
-                for (key, val) in attrs.iter_attributes() {
-                    if key == "custom" && format!("{:?}", val).contains("custom.identity.foo") {
-                        found = true;
-                    }
-                }
-                found
-            })
-            .unwrap_or(false);
+        let (schema, rendered) = registry
+            .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
+            .expect("channel entity registered");
 
+        assert_eq!(schema, "node.channel.custom.attrs");
         assert!(
-            has_custom_attr,
-            "The custom identity attribute should be present in the channel entity"
+            rendered.contains("custom={custom.identity.foo=bar}"),
+            "custom identity attributes missing from channel entity: {rendered}"
+        );
+        assert!(
+            rendered.contains("channel.id=channel-1") && rendered.contains("node.id=test-node"),
+            "base channel attributes must be preserved: {rendered}"
+        );
+    }
+
+    /// Scenario: a node with no `entity.extend.identity_attributes` registers a channel
+    /// endpoint entity.
+    /// Guarantees: the entity stays on the plain channel schema and emits no empty
+    /// `custom={}` attribute, keeping telemetry output clean for unconfigured nodes.
+    #[test]
+    fn register_node_channel_entity_omits_empty_custom_attributes() {
+        let registry = TelemetryRegistryHandle::new();
+        let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), HashMap::new());
+        let key = register_channel(&ctx);
+
+        let (schema, rendered) = registry
+            .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
+            .expect("channel entity registered");
+
+        assert_eq!(schema, "node.channel.attrs");
+        assert!(
+            !rendered.contains("custom="),
+            "nodes without custom attributes must not emit a custom attribute: {rendered}"
         );
     }
 }

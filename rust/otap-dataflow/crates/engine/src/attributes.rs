@@ -350,7 +350,7 @@ pub struct NodeChannelAttributeSet {
 }
 
 /// Channel endpoint attributes for a node-hosted channel, extended with user-configured custom telemetry attributes.
-#[attribute_set(scope, name = "node.custom.channel.attrs")]
+#[attribute_set(scope, name = "node.channel.custom.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeWithCustomChannelAttributeSet {
     /// Base node channel attributes.
