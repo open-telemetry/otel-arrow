@@ -5,7 +5,6 @@
 
 use std::collections::BTreeMap;
 use std::slice;
-use std::sync::Arc;
 
 /// The value of a single claim.
 ///
@@ -97,20 +96,12 @@ impl ClaimValue {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct AuthorizedIdentity {
-    // Behind an `Arc` so cloning an identity -- which happens on every
-    // authorization-cache hit -- is a refcount bump, not a deep copy of the
-    // claims and their strings.
-    inner: Arc<Inner>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Inner {
-    principal: Option<Box<str>>,
-    scheme: Option<Box<str>>,
+    principal: Option<String>,
+    scheme: Option<String>,
     // Keyed by claim name; ordered iteration and last-write-wins dedup for free.
     // (An interned/compiled representation would avoid these per-string
     // allocations, but that belongs with the shared tenant-token work.)
-    claims: BTreeMap<Box<str>, ClaimValue>,
+    claims: BTreeMap<String, ClaimValue>,
 }
 
 impl AuthorizedIdentity {
@@ -121,31 +112,33 @@ impl AuthorizedIdentity {
 
     /// Creates an empty identity (no principal, scheme, or claims).
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self {
+            principal: None,
+            scheme: None,
+            claims: BTreeMap::new(),
+        }
     }
 
     /// Sets the canonical, best-effort principal name (for logging / coarse
     /// identity; not for policy matching).
     #[must_use]
     pub fn with_principal(mut self, principal: &str) -> Self {
-        Arc::make_mut(&mut self.inner).principal = Some(principal.into());
+        self.principal = Some(principal.to_owned());
         self
     }
 
     /// Sets the authentication scheme tag (e.g. `k8s_sat`, `oidc`, `mtls`).
     #[must_use]
     pub fn with_scheme(mut self, scheme: &str) -> Self {
-        Arc::make_mut(&mut self.inner).scheme = Some(scheme.into());
+        self.scheme = Some(scheme.to_owned());
         self
     }
 
     /// Sets a claim to an arbitrary [`ClaimValue`] (last write wins).
     #[must_use]
     pub fn with_claim(mut self, name: &str, value: ClaimValue) -> Self {
-        let _ = Arc::make_mut(&mut self.inner)
-            .claims
-            .insert(name.into(), value);
+        let _ = self.claims.insert(name.to_owned(), value);
         self
     }
 
@@ -183,19 +176,19 @@ impl AuthorizedIdentity {
     /// The canonical principal name, if set.
     #[must_use]
     pub fn principal(&self) -> Option<&str> {
-        self.inner.principal.as_deref()
+        self.principal.as_deref()
     }
 
     /// The authentication scheme tag, if set.
     #[must_use]
     pub fn scheme(&self) -> Option<&str> {
-        self.inner.scheme.as_deref()
+        self.scheme.as_deref()
     }
 
     /// The value of a claim by name, if present.
     #[must_use]
     pub fn claim(&self, name: &str) -> Option<&ClaimValue> {
-        self.inner.claims.get(name)
+        self.claims.get(name)
     }
 
     /// The single string value of a claim, if present and single-valued.
@@ -206,10 +199,9 @@ impl AuthorizedIdentity {
 
     /// Iterates over all claims as `(name, value)` pairs, ordered by name.
     pub fn claims(&self) -> impl Iterator<Item = (&str, &ClaimValue)> {
-        self.inner
-            .claims
+        self.claims
             .iter()
-            .map(|(name, value)| (&**name, value))
+            .map(|(name, value)| (name.as_str(), value))
     }
 
     /// The `sub` claim (the principal the credential represents), if known.

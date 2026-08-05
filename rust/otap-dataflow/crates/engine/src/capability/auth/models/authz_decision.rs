@@ -39,7 +39,7 @@ impl AuthzDecision {
     /// Constructs an [`Allow`](AuthzDecision::Allow) decision with an empty
     /// identity, for authorizers that allow without a meaningful principal.
     #[must_use]
-    pub fn allow_anonymous() -> Self {
+    pub const fn allow_anonymous() -> Self {
         Self::Allow {
             identity: AuthorizedIdentity::new(),
         }
