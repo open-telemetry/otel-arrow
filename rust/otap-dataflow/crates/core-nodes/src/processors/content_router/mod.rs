@@ -652,6 +652,7 @@ impl ContentRouter {
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
+            m.record(ContentRouterOutcome::Nacked);
             m.record(ContentRouterOutcome::RejectedRouteFull);
         }
 
@@ -673,6 +674,7 @@ impl ContentRouter {
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
+            m.record(ContentRouterOutcome::Nacked);
             m.record(ContentRouterOutcome::RejectedRouteClosed);
         }
 
@@ -949,6 +951,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     }
                     RouteResolution::ConversionError => {
                         if let Some(m) = self.metrics.as_mut() {
+                            m.record(ContentRouterOutcome::Nacked);
                             m.record(ContentRouterOutcome::ConversionError);
                         }
                         let reason =
@@ -2444,7 +2447,7 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
                         .get("messages.rejected_route_full")
@@ -2522,7 +2525,7 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
                         .get("messages.rejected_route_full")
@@ -2603,7 +2606,7 @@ mod tests {
                     metrics.get("messages.routed_default").copied().unwrap_or(0),
                     0
                 );
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
                         .get("messages.rejected_route_full")
@@ -2683,7 +2686,7 @@ mod tests {
                     metrics.get("messages.routed_default").copied().unwrap_or(0),
                     0
                 );
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
                         .get("messages.rejected_route_closed")
@@ -2785,7 +2788,7 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
                         .get("messages.rejected_route_full")
