@@ -3,7 +3,6 @@
 
 //! Shared functions and data types for contrib extension implementations.
 
-/// Shared token cache and refresh machinery for `BearerTokenProvider` extensions.
 #[cfg(any(
     feature = "azure-identity-auth-extension",
     feature = "oauth2-client-auth-extension"

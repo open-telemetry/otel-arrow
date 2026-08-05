@@ -215,7 +215,8 @@ pub type AzureIdentityAuthExtension = TokenProviderExtension<Auth, AzureIdentity
 ```
 
 ```rust
-#[derive(Clone)]
+// Manual `Clone`: deriving would add `S: Clone, M: Clone` bounds, but the
+// state is shared through the `Arc` and is never cloned itself.
 pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
     inner: Arc<Inner<S, M>>,
 }
@@ -224,10 +225,15 @@ struct Inner<S, M> {
     source: S,                                        // credential + scope
     expiry_buffer: Duration,                          // refresh skew
     tx: watch::Sender<Option<BearerToken>>,           // token cache + pub/sub
-    cap_err: CapabilityErrorSource<BearerTokenProvider>,
+    cap_err: CapabilityErrorSource<BearerTokenProviderCap>,
     fetch_lock: tokio::sync::Mutex<()>,               // coalesce slow-path fetches
-    last_failure: std::sync::Mutex<Option<Instant>>,  // negative cache
+    failures: std::sync::Mutex<FailureState>,         // negative cache + retry backoff
     metrics: std::sync::Mutex<TokenProviderMetricsTracker<M>>,
+}
+
+struct FailureState {
+    last_failure: Option<Instant>,
+    consecutive_failures: u32,
 }
 ```
 

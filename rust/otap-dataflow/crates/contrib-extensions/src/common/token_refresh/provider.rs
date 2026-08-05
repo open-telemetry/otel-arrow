@@ -70,7 +70,7 @@ pub trait TokenSource: Send + Sync + 'static {
 /// Shared, clonable bearer-token provider extension.
 ///
 /// Every clone (consumers + the background refresh task) observes the same
-/// [`Inner`] state via `Arc`, so they share one token cache and refresh loop.
+/// `Inner` state via `Arc`, so they share one token cache and refresh loop.
 pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
     inner: Arc<Inner<S, M>>,
 }

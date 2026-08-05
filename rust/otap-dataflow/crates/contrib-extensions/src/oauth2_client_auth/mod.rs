@@ -98,7 +98,7 @@ fn create(
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: OAUTH2_CLIENT_AUTH_URN,
-    description: "Active+Shared extension exposing BearerTokenProvider via OAuth 2.0 client credentials",
+    description: "Active+Shared extension exposing BearerTokenProvider via the OAuth 2.0 client-credentials and JWT-bearer grants",
     documentation_url: "",
     capabilities: Some(extension_capabilities!(
         shared: OAuth2ClientAuthExtension => [BearerTokenProvider]

@@ -1593,7 +1593,7 @@ where
     }
 }
 
-/// Reads a file, rejecting anything larger than [`MAX_TLS_FILE_SIZE`].
+/// Reads a file, rejecting anything larger than `MAX_TLS_FILE_SIZE` (4MB).
 ///
 /// Shared by every component that loads certificate, key, or credential
 /// material from disk, so a misconfigured or hostile path cannot OOM the

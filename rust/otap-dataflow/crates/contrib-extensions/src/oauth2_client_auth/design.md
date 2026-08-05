@@ -174,7 +174,8 @@ pub type OAuth2ClientAuthExtension = TokenProviderExtension<Auth, OAuth2ClientAu
 ```
 
 ```rust
-#[derive(Clone)]
+// Manual `Clone`: deriving would add `S: Clone, M: Clone` bounds, but the
+// state is shared through the `Arc` and is never cloned itself.
 pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
     inner: Arc<Inner<S, M>>,
 }
@@ -183,10 +184,15 @@ struct Inner<S, M> {
     source: S,                                        // oauth2 client + grant + scopes
     expiry_buffer: Duration,                          // refresh skew (configurable here)
     tx: watch::Sender<Option<BearerToken>>,           // token cache + pub/sub
-    cap_err: CapabilityErrorSource<BearerTokenProvider>,
+    cap_err: CapabilityErrorSource<BearerTokenProviderCap>,
     fetch_lock: tokio::sync::Mutex<()>,               // coalesce slow-path fetches
-    last_failure: std::sync::Mutex<Option<Instant>>,  // negative cache: throttle slow-path retries
+    failures: std::sync::Mutex<FailureState>,         // negative cache: throttle slow-path retries
     metrics: std::sync::Mutex<TokenProviderMetricsTracker<M>>,
+}
+
+struct FailureState {
+    last_failure: Option<Instant>,
+    consecutive_failures: u32,
 }
 ```
 
@@ -356,14 +362,17 @@ and the `expiry_buffer` value differ:
      acquire a new token. A merely still-valid token is not reused, so the
      planned early refresh is not deferred.
    - On success: publish with `send_replace` (updates the cache regardless of
-     subscriber count), reset the consecutive-failure count, clear the
-     `last_failure` negative cache, then compute `next_refresh` from `expires_on`
-     minus `expiry_buffer` (clamped to a minimum cadence) with a small negative
-     jitter so per-core extensions do not all refresh on the same tick.
-   - On failure: log, record the failure instant (so the slow path throttles its
-     own retries during the cooldown), and reschedule using bounded exponential
-     backoff with equal jitter - each delay is drawn from `[base/2, base]`, where
-     `base` doubles per consecutive failure from the base retry delay up to the
+     subscriber count), clear the shared `FailureState` (both the failure instant
+     and the consecutive-failure streak), then compute `next_refresh` from
+     `expires_on` minus `expiry_buffer` (clamped to a minimum cadence) with a
+     small negative jitter so per-core extensions do not all refresh on the same
+     tick.
+   - On failure: log, record the failure instant and increment the streak in the
+     shared `FailureState` (so the slow path throttles its own retries during a
+     cooldown that widens in step with this loop), and reschedule using bounded
+     exponential backoff with equal jitter - each delay is drawn from
+     `[base/2, base]`, where `base` doubles per consecutive failure from the base
+     retry delay up to the
      cap - tracking consecutive failures; keep retrying for the lifetime of the
      extension. The backoff spreads retries across cores so a token-endpoint
      outage is not stampeded on a fixed cadence.
