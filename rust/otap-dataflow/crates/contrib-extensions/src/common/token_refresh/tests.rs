@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use otap_df_engine::capability::auth::BearerToken;
 
-use super::provider::{jitter_refresh, retry_backoff_secs, schedule_next};
+use super::provider::{
+    jitter_refresh, negative_cache_window_secs, retry_backoff_secs, schedule_next,
+};
 
 // -- schedule_next timing tests --------------------------------
 
@@ -75,6 +77,27 @@ fn retry_backoff_grows_exponentially_and_caps() {
     assert_eq!(retry_backoff_secs(6), 300);
     // A very large failure count must not overflow the shift.
     assert_eq!(retry_backoff_secs(u32::MAX), 300);
+}
+
+// Scenario: Compute the slow-path negative-cache window for a growing failure streak, where the
+// count includes the failure that opened the current cooldown.
+// Guarantees: The window matches the backoff the refresh loop is waiting out for the same streak,
+// so cache-miss callers cannot keep probing a token endpoint the loop has already backed off from.
+#[test]
+fn negative_cache_window_tracks_retry_backoff() {
+    // No failure recorded yet: the window degenerates to the base delay, and
+    // `recently_failed` gates on `last_failure` being set anyway.
+    assert_eq!(negative_cache_window_secs(0), 10);
+    // The first failure holds the slow path off for the base delay, matching
+    // `retry_backoff_secs(0)` that the loop uses for its first retry.
+    assert_eq!(negative_cache_window_secs(1), retry_backoff_secs(0));
+    // Each further failure widens both in lockstep.
+    assert_eq!(negative_cache_window_secs(2), retry_backoff_secs(1));
+    assert_eq!(negative_cache_window_secs(3), retry_backoff_secs(2));
+    // A sustained outage settles at the 300s cap rather than the old fixed 10s
+    // window, which is the regression this guards.
+    assert_eq!(negative_cache_window_secs(6), 300);
+    assert_eq!(negative_cache_window_secs(u32::MAX), 300);
 }
 
 // -- jitter_refresh tests --------------------------------------

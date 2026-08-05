@@ -85,6 +85,21 @@ impl<S: TokenSource, M: TokenProviderMetrics> Clone for TokenProviderExtension<S
     }
 }
 
+/// Failure bookkeeping shared by the background refresh loop and the slow-path
+/// `get_token`.
+///
+/// Keeping the streak counter here (rather than local to the refresh loop) is
+/// what lets the negative cache widen in step with the loop's retry backoff:
+/// otherwise a sustained outage would leave the loop retrying every 5 minutes
+/// while cache-miss callers kept probing the token endpoint every 10 seconds.
+#[derive(Default)]
+struct FailureState {
+    /// Instant of the most recent failed acquisition.
+    last_failure: Option<Instant>,
+    /// Number of consecutive failed acquisitions. Reset on any success.
+    consecutive_failures: u32,
+}
+
 /// Shared state behind [`TokenProviderExtension`].
 struct Inner<S: TokenSource, M: TokenProviderMetrics> {
     /// Provider-specific token source.
@@ -97,9 +112,9 @@ struct Inner<S: TokenSource, M: TokenProviderMetrics> {
     cap_err: CapabilityErrorSource<BearerTokenProviderCap>,
     /// Coalesces concurrent slow-path fetches onto one in-flight request.
     fetch_lock: tokio::sync::Mutex<()>,
-    /// Instant of the most recent failed acquisition (negative cache). Used to
-    /// throttle slow-path retries so a failing token endpoint is not stampeded.
-    last_failure: Mutex<Option<Instant>>,
+    /// Negative cache + retry-backoff state. Used to throttle slow-path retries
+    /// so a failing token endpoint is not stampeded.
+    failures: Mutex<FailureState>,
     /// Metric tracker. Its critical sections are short and never span an
     /// `.await`, so a `std` `Mutex` is appropriate.
     metrics: Mutex<TokenProviderMetricsTracker<M>>,
@@ -122,7 +137,7 @@ impl<S: TokenSource, M: TokenProviderMetrics> TokenProviderExtension<S, M> {
                 tx,
                 cap_err: CapabilityErrorSource::new(name.to_owned().into()),
                 fetch_lock: tokio::sync::Mutex::new(()),
-                last_failure: Mutex::new(None),
+                failures: Mutex::new(FailureState::default()),
                 metrics: Mutex::new(metrics),
             }),
         }
@@ -151,13 +166,14 @@ impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
         }
     }
 
-    /// Returns true if the most recent acquisition failed within the retry
-    /// cooldown window. Used as a negative cache to throttle slow-path retries.
+    /// Returns true if the most recent acquisition failed and the backoff for
+    /// the current failure streak has not yet elapsed. Used as a negative cache
+    /// to throttle slow-path retries.
     fn recently_failed(&self) -> bool {
-        // Open the shared box holding the last-failure timestamp. If the lock
-        // is somehow poisoned, treat it as "no recent failure" and allow a
-        // retry rather than failing here.
-        let guard = match self.last_failure.lock() {
+        // Open the shared box holding the failure state. If the lock is somehow
+        // poisoned, treat it as "no recent failure" and allow a retry rather
+        // than failing here.
+        let guard = match self.failures.lock() {
             Ok(guard) => guard,
             Err(_) => return false,
         };
@@ -165,10 +181,23 @@ impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
         // If a failure timestamp is recorded, we are throttling only while it
         // is still within the cooldown window; otherwise (no failure recorded)
         // we are not throttling.
-        match *guard {
-            Some(failed_at) => failed_at.elapsed() < Duration::from_secs(TOKEN_REFRESH_RETRY_SECS),
+        match guard.last_failure {
+            Some(failed_at) => {
+                let window = negative_cache_window_secs(guard.consecutive_failures);
+                failed_at.elapsed() < Duration::from_secs(window)
+            }
             None => false,
         }
+    }
+
+    /// Number of consecutive failed acquisitions recorded so far.
+    fn consecutive_failures(&self) -> u32 {
+        // A poisoned lock degrades to "no failures", which only costs us a
+        // shorter backoff; it must not take the refresh loop down.
+        self.failures
+            .lock()
+            .map(|f| f.consecutive_failures)
+            .unwrap_or(0)
     }
 
     /// Acquires a token and publishes it to consumers.
@@ -187,8 +216,8 @@ impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
                     metrics.record_publish();
                 }
                 // Clear the negative cache: acquisitions are healthy again.
-                if let Ok(mut f) = self.last_failure.lock() {
-                    *f = None;
+                if let Ok(mut failures) = self.failures.lock() {
+                    *failures = FailureState::default();
                 }
                 Ok(token)
             }
@@ -196,10 +225,12 @@ impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
                 if let Ok(mut metrics) = self.metrics.lock() {
                     metrics.record_failure();
                 }
-                // Record the failure instant so the slow path can throttle
-                // further attempts until the cooldown elapses.
-                if let Ok(mut f) = self.last_failure.lock() {
-                    *f = Some(Instant::now());
+                // Record the failure so the refresh loop and the slow path back
+                // off together: the instant starts the cooldown, the streak
+                // count widens it on each further failure.
+                if let Ok(mut failures) = self.failures.lock() {
+                    failures.last_failure = Some(Instant::now());
+                    failures.consecutive_failures = failures.consecutive_failures.saturating_add(1);
                 }
                 Err(err)
             }
@@ -240,6 +271,22 @@ pub(crate) fn retry_backoff_secs(consecutive_failures: u32) -> u64 {
     TOKEN_REFRESH_RETRY_SECS
         .saturating_mul(1u64 << shift)
         .min(MAX_TOKEN_REFRESH_RETRY_SECS)
+}
+
+/// Cooldown window during which the slow path refuses to retry, given the
+/// number of consecutive failures recorded so far.
+///
+/// This is the same (un-jittered) delay the refresh loop is waiting out for the
+/// same streak, so a sustained outage throttles both paths identically instead
+/// of leaving cache-miss callers probing a token endpoint the loop has already
+/// backed off from. `consecutive_failures` counts the failure that *started*
+/// the current cooldown, so it is stepped back by one to line the first failure
+/// up with the base delay.
+///
+/// The loop's own sleep is jittered down to as little as half this window, so
+/// the loop always gets to retry before the slow path reopens.
+pub(crate) fn negative_cache_window_secs(consecutive_failures: u32) -> u64 {
+    retry_backoff_secs(consecutive_failures.saturating_sub(1))
 }
 
 /// Applies "equal jitter" to a backoff: half the delay is a fixed floor and the
@@ -335,9 +382,6 @@ impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderE
         // (see `with_readiness_probe`). Fire once, after the first token is
         // published, so consumers never observe an empty cache.
         let mut ready_signaled = false;
-        // Consecutive failed acquisitions; drives exponential retry backoff and
-        // is reset on any successful (or already-fresh) refresh.
-        let mut consecutive_failures: u32 = 0;
 
         loop {
             tokio::select! {
@@ -428,7 +472,6 @@ impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderE
 
                     match outcome {
                         Ok(token) => {
-                            consecutive_failures = 0;
                             next_refresh =
                                 jitter_refresh(schedule_next(&token, inner.expiry_buffer));
                             if !ready_signaled {
@@ -441,9 +484,12 @@ impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderE
                             // Bounded exponential backoff with jitter so many
                             // per-core extensions do not stampede the token
                             // endpoint on the same cadence during an outage.
-                            let backoff =
-                                jittered_backoff(retry_backoff_secs(consecutive_failures));
-                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            // The streak counter lives in `Inner` (already
+                            // incremented by `refresh_once`) so the slow-path
+                            // negative cache widens on the same schedule.
+                            let backoff = jittered_backoff(negative_cache_window_secs(
+                                inner.consecutive_failures(),
+                            ));
                             next_refresh = tokio::time::Instant::now() + backoff;
                         }
                     }
