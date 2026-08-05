@@ -8,76 +8,319 @@ use crate::views::otlp::bytes::decode::{read_len_delim, read_varint};
 use otap_df_config::SignalType;
 use std::num::NonZeroU64;
 
-/// Position within the inputs (input index and byte offset)
-#[derive(Copy, Clone, PartialEq)]
-struct Position {
-    input_idx: usize,
-    offset: usize,
+// OTLP export requests share a uniform nesting across all three signals:
+//
+//   ExportXServiceRequest { repeated ResourceX resource_x = 1 }
+//   ResourceX { Resource resource = 1; repeated ScopeX scope_x = 2; string schema_url = 3 }
+//   ScopeX    { InstrumentationScope scope = 1; repeated Record records = 2; string schema_url = 3 }
+//
+// so the field numbers used when splitting are identical for logs, traces and
+// metrics: the top-level repeated resource entry is field 1, and both the
+// repeated scope list (within a resource entry) and the repeated record list
+// (within a scope entry) are field 2.
+const RESOURCE_ENTRY_FIELD: u64 = 1;
+const CHILD_LIST_FIELD: u64 = 2;
+
+/// Number of bytes needed to encode `v` as a protobuf varint.
+fn varint_len(mut v: u64) -> usize {
+    let mut n = 1;
+    while v >= 0x80 {
+        v >>= 7;
+        n += 1;
+    }
+    n
 }
 
-impl Position {
-    const fn new(input_idx: usize, offset: usize) -> Self {
-        Self { input_idx, offset }
+/// Append `v` to `buf` as a protobuf varint.
+fn write_varint(buf: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        buf.push(((v & 0x7F) | 0x80) as u8);
+        v >>= 7;
+    }
+    buf.push(v as u8);
+}
+
+/// Append a LEN-delimited field (`tag` + length + `payload`) to `buf`.
+fn write_len_delimited(buf: &mut Vec<u8>, field: u64, payload: &[u8]) {
+    write_varint(buf, (field << 3) | wire_types::LEN);
+    write_varint(buf, payload.len() as u64);
+    buf.extend_from_slice(payload);
+}
+
+/// On-wire size of a LEN-delimited field carrying `payload_len` bytes.
+fn wrapped_len(field: u64, payload_len: usize) -> usize {
+    varint_len((field << 3) | wire_types::LEN) + varint_len(payload_len as u64) + payload_len
+}
+
+/// Parse one protobuf field starting at `pos`.
+///
+/// Returns `(field_number, wire_type, payload_start, field_end)`. For LEN
+/// fields, `[payload_start, field_end)` is the value bytes; for other wire
+/// types `payload_start == field_end`. Returns `None` when the field cannot be
+/// parsed (truncated or invalid), which signals the caller to treat the rest of
+/// the buffer as an opaque unit (matching the previous skip-to-EOF behavior).
+fn next_field(buf: &[u8], pos: usize) -> Option<(u64, u64, usize, usize)> {
+    let (tag, after_tag) = read_varint(buf, pos)?;
+    let field = tag >> 3;
+    let wire = tag & wire_types::PROTOBUF_TAG_BITMASK;
+    match wire {
+        wire_types::LEN => {
+            let (payload, end) = read_len_delim(buf, after_tag)?;
+            Some((field, wire, end - payload.len(), end))
+        }
+        wire_types::VARINT => {
+            let (_, end) = read_varint(buf, after_tag)?;
+            Some((field, wire, end, end))
+        }
+        wire_types::FIXED64 => {
+            let end = after_tag.checked_add(8)?;
+            if end > buf.len() {
+                return None;
+            }
+            Some((field, wire, end, end))
+        }
+        wire_types::FIXED32 => {
+            let end = after_tag.checked_add(4)?;
+            if end > buf.len() {
+                return None;
+            }
+            Some((field, wire, end, end))
+        }
+        _ => None,
     }
 }
 
-/// Definition of the batch size in bytes
-fn batch_bytes(start_pos: &Position, end_pos: &Position, inputs: &[OtlpProtoBytes]) -> usize {
-    if start_pos.input_idx == end_pos.input_idx {
-        end_pos.offset - start_pos.offset
-    } else {
-        (inputs[start_pos.input_idx].num_bytes() - start_pos.offset)
-            + (start_pos.input_idx + 1..end_pos.input_idx)
-                .map(|i| inputs[i].num_bytes())
-                .sum::<usize>()
-            + end_pos.offset
+/// Move the accumulated bytes in `cur` into a new output batch, if any.
+fn flush(signal: SignalType, cur: &mut Vec<u8>, batches: &mut Vec<OtlpProtoBytes>) {
+    if !cur.is_empty() {
+        batches.push(OtlpProtoBytes::new_from_bytes(signal, std::mem::take(cur)));
     }
 }
 
-/// Helper to finalize batch by copying bytes from start to end positions
-fn finalize_batch(
+/// Wrap `entry_bytes` (a resource-entry payload) in the top-level repeated
+/// field and push it as a standalone batch.
+fn emit_top(signal: SignalType, entry_bytes: &[u8], batches: &mut Vec<OtlpProtoBytes>) {
+    let mut batch = Vec::with_capacity(wrapped_len(RESOURCE_ENTRY_FIELD, entry_bytes.len()));
+    write_len_delimited(&mut batch, RESOURCE_ENTRY_FIELD, entry_bytes);
+    batches.push(OtlpProtoBytes::new_from_bytes(signal, batch));
+}
+
+/// Greedily place an indivisible (non-resource or unparseable) top-level unit,
+/// starting a new batch when it does not fit and emitting it on its own when it
+/// exceeds `max_size` by itself.
+fn push_opaque(
     signal: SignalType,
-    inputs: &[OtlpProtoBytes],
-    start_pos: &Position,
-    end_pos: &Position,
-    outputs: &mut Vec<OtlpProtoBytes>,
+    full: &[u8],
+    max_size: usize,
+    cur: &mut Vec<u8>,
+    batches: &mut Vec<OtlpProtoBytes>,
 ) {
-    // Calculate exact size needed
-    let size = batch_bytes(start_pos, end_pos, inputs);
+    if cur.len() + full.len() <= max_size {
+        cur.extend_from_slice(full);
+        return;
+    }
+    flush(signal, cur, batches);
+    cur.extend_from_slice(full);
+    if cur.len() > max_size {
+        // An indivisible unit larger than max_size is emitted on its own.
+        flush(signal, cur, batches);
+    }
+}
 
-    if size == 0 {
+/// Place a top-level resource entry, descending into it only when it cannot fit
+/// within `max_size` on its own.
+fn push_resource_entry(
+    signal: SignalType,
+    full: &[u8],
+    payload: &[u8],
+    max_size: usize,
+    cur: &mut Vec<u8>,
+    batches: &mut Vec<OtlpProtoBytes>,
+) {
+    if cur.len() + full.len() <= max_size {
+        cur.extend_from_slice(full);
+        return;
+    }
+    if full.len() <= max_size {
+        flush(signal, cur, batches);
+        cur.extend_from_slice(full);
+        return;
+    }
+    // A single resource entry exceeds max_size: split within it.
+    flush(signal, cur, batches);
+    split_resource_entry(signal, payload, max_size, batches);
+}
+
+/// Split one oversize resource entry into multiple valid resource entries,
+/// descending into individual scopes (and, when a scope is still too large,
+/// into individual records). The resource header (`resource`, `schema_url` and
+/// any unknown fields) is preserved and duplicated across the produced
+/// fragments.
+fn split_resource_entry(
+    signal: SignalType,
+    entry_payload: &[u8],
+    max_size: usize,
+    batches: &mut Vec<OtlpProtoBytes>,
+) {
+    let mut header: Vec<u8> = Vec::new();
+    let mut scope_fulls: Vec<&[u8]> = Vec::new();
+    let mut scope_payloads: Vec<&[u8]> = Vec::new();
+    let mut pos = 0;
+    while pos < entry_payload.len() {
+        match next_field(entry_payload, pos) {
+            Some((field, wire, payload_start, field_end)) => {
+                let full = &entry_payload[pos..field_end];
+                if field == CHILD_LIST_FIELD && wire == wire_types::LEN {
+                    scope_fulls.push(full);
+                    scope_payloads.push(&entry_payload[payload_start..field_end]);
+                } else {
+                    header.extend_from_slice(full);
+                }
+                pos = field_end;
+            }
+            None => {
+                // A malformed field inside the resource entry: do not attempt
+                // to split it. Splitting would fold the corrupt tail into the
+                // duplicated header, reordering it ahead of every fragment's
+                // scopes and possibly breaking the decode of otherwise-valid
+                // fragments. Emit the entry byte-for-byte as a single batch
+                // instead (best-effort, may exceed max_size).
+                emit_top(signal, entry_payload, batches);
+                return;
+            }
+        }
+    }
+
+    if scope_fulls.is_empty() {
+        // Nothing to split (e.g. a resource entry with no scopes): emit as-is.
+        emit_top(signal, entry_payload, batches);
         return;
     }
 
-    let mut batch = Vec::with_capacity(size);
-
-    if start_pos.input_idx == end_pos.input_idx {
-        // Single input
-        let buf = inputs[start_pos.input_idx].as_bytes();
-        batch.extend_from_slice(&buf[start_pos.offset..end_pos.offset]);
-    } else {
-        // Multiple inputs
-        debug_assert!(start_pos.input_idx < inputs.len());
-
-        let buf = inputs[start_pos.input_idx].as_bytes();
-        batch.extend_from_slice(&buf[start_pos.offset..]);
-
-        for req in &inputs[(start_pos.input_idx + 1)..end_pos.input_idx] {
-            batch.extend_from_slice(req.as_bytes());
+    // Greedily pack whole scopes into a resource-entry fragment.
+    let mut frag: Vec<u8> = header.clone();
+    for (i, scope_full) in scope_fulls.iter().enumerate() {
+        let prospective = frag.len() + scope_full.len();
+        if wrapped_len(RESOURCE_ENTRY_FIELD, prospective) <= max_size {
+            frag.extend_from_slice(scope_full);
+            continue;
         }
+        // Flush what we have so far (if it carries at least one scope).
+        if frag.len() > header.len() {
+            emit_top(signal, &frag, batches);
+            frag.truncate(header.len());
+        }
+        // Try the scope on its own.
+        if wrapped_len(RESOURCE_ENTRY_FIELD, header.len() + scope_full.len()) <= max_size {
+            frag.extend_from_slice(scope_full);
+        } else {
+            // The scope alone is still too large: split it by records.
+            split_scope_entry(signal, &header, scope_payloads[i], max_size, batches);
+        }
+    }
+    if frag.len() > header.len() {
+        emit_top(signal, &frag, batches);
+    }
+}
 
-        if end_pos.offset != 0 {
-            debug_assert!(end_pos.input_idx < inputs.len());
-            let buf = inputs[end_pos.input_idx].as_bytes();
-            batch.extend_from_slice(&buf[..end_pos.offset]);
+/// Split one oversize scope entry into multiple resource-entry fragments, each
+/// carrying `resource_header` + a scope wrapping a subset of the records. A
+/// single record that is larger than `max_size` (with minimal wrappers) is
+/// emitted on its own, exceeding the limit.
+fn split_scope_entry(
+    signal: SignalType,
+    resource_header: &[u8],
+    scope_payload: &[u8],
+    max_size: usize,
+    batches: &mut Vec<OtlpProtoBytes>,
+) {
+    let mut scope_header: Vec<u8> = Vec::new();
+    let mut record_fulls: Vec<&[u8]> = Vec::new();
+    let mut pos = 0;
+    while pos < scope_payload.len() {
+        match next_field(scope_payload, pos) {
+            Some((field, wire, _payload_start, field_end)) => {
+                let full = &scope_payload[pos..field_end];
+                if field == CHILD_LIST_FIELD && wire == wire_types::LEN {
+                    record_fulls.push(full);
+                } else {
+                    scope_header.extend_from_slice(full);
+                }
+                pos = field_end;
+            }
+            None => {
+                // A malformed field inside the scope: emit the whole scope
+                // unmodified as a single fragment rather than reordering the
+                // corrupt tail ahead of the records. This preserves the scope
+                // bytes exactly (best-effort, may exceed max_size).
+                let mut entry = Vec::with_capacity(
+                    resource_header.len() + wrapped_len(CHILD_LIST_FIELD, scope_payload.len()),
+                );
+                entry.extend_from_slice(resource_header);
+                write_len_delimited(&mut entry, CHILD_LIST_FIELD, scope_payload);
+                emit_top(signal, &entry, batches);
+                return;
+            }
         }
     }
 
-    outputs.push(OtlpProtoBytes::new_from_bytes(signal, batch))
+    let emit_frag = |recs: &[u8], batches: &mut Vec<OtlpProtoBytes>| {
+        let mut scope_inner = Vec::with_capacity(scope_header.len() + recs.len());
+        scope_inner.extend_from_slice(&scope_header);
+        scope_inner.extend_from_slice(recs);
+        let mut entry = Vec::with_capacity(
+            resource_header.len() + wrapped_len(CHILD_LIST_FIELD, scope_inner.len()),
+        );
+        entry.extend_from_slice(resource_header);
+        write_len_delimited(&mut entry, CHILD_LIST_FIELD, &scope_inner);
+        emit_top(signal, &entry, batches);
+    };
+
+    if record_fulls.is_empty() {
+        // Preserve an empty scope rather than dropping it.
+        emit_frag(&[], batches);
+        return;
+    }
+
+    let mut recs: Vec<u8> = Vec::new();
+    for rec in &record_fulls {
+        let scope_inner_len = scope_header.len() + recs.len() + rec.len();
+        let entry_len = resource_header.len() + wrapped_len(CHILD_LIST_FIELD, scope_inner_len);
+        if wrapped_len(RESOURCE_ENTRY_FIELD, entry_len) <= max_size {
+            recs.extend_from_slice(rec);
+            continue;
+        }
+        if !recs.is_empty() {
+            emit_frag(&recs, batches);
+            recs.clear();
+        }
+        recs.extend_from_slice(rec);
+        let alone_inner = scope_header.len() + rec.len();
+        let alone_entry = resource_header.len() + wrapped_len(CHILD_LIST_FIELD, alone_inner);
+        if wrapped_len(RESOURCE_ENTRY_FIELD, alone_entry) > max_size {
+            // Indivisible record larger than max_size: emit it on its own.
+            emit_frag(&recs, batches);
+            recs.clear();
+        }
+    }
+    if !recs.is_empty() {
+        emit_frag(&recs, batches);
+    }
 }
 
-/// Combines OTLP content by concatenation of bytes. Because we have a
-/// top-level repeated field, this is precisely correct.
+/// Combines OTLP content into size-bounded batches.
+///
+/// With no limit, inputs are concatenated into a single batch (correct because
+/// the top-level field is repeated). With a byte limit, whole resource entries
+/// are packed greedily by concatenation (the cheap, byte-exact fast path); when
+/// a single resource entry exceeds `max_bytes`, it is split within the entry --
+/// descending to scopes and, when needed, to individual records -- re-encoding
+/// the resource and scope wrapper headers so every output batch is a valid
+/// `ExportXServiceRequest`. Records are never dropped, duplicated or reordered;
+/// unknown wrapper fields are preserved. Any indivisible unit whose minimal
+/// encoding still exceeds `max_bytes` -- a lone record, an opaque/unparseable
+/// field, or a wrapper-only (header/empty-scope) fragment -- is emitted alone,
+/// exceeding the limit.
 pub fn make_bytes_batches(
     signal: SignalType,
     max_bytes: Option<NonZeroU64>,
@@ -90,12 +333,13 @@ pub fn make_bytes_batches(
     if total_size == 0 {
         return Err(Error::EmptyBatch);
     }
-    match max_bytes {
+
+    let max_size = match max_bytes {
         None => {
             if inputs.len() == 1 {
                 return Ok(inputs);
             }
-            Ok(vec![OtlpProtoBytes::new_from_bytes(
+            return Ok(vec![OtlpProtoBytes::new_from_bytes(
                 signal,
                 inputs
                     .into_iter()
@@ -103,109 +347,45 @@ pub fn make_bytes_batches(
                         acc.extend_from_slice(record.as_bytes());
                         acc
                     }),
-            )])
+            )]);
         }
-        Some(max_nz) => {
-            let max_size = max_nz.get() as usize;
-            let mut batches = Vec::new();
+        Some(max_nz) => max_nz.get() as usize,
+    };
 
-            // Track current position and batch boundaries
-            let mut batch_start = Position::new(0, 0);
-            let mut current_size = 0;
-            let mut current_pos = Position::new(0, 0);
+    let mut batches: Vec<OtlpProtoBytes> = Vec::new();
+    let mut cur: Vec<u8> = Vec::new();
 
-            while current_pos.input_idx < inputs.len() {
-                // Step through top-level fields in the current input
-                loop {
-                    // If we're at end-of-file, the read_varint will error, which
-                    // gives the invalid wire type, causes skipping to EOF.
-                    let field_start = current_pos;
-                    let (field_end_offset, input_size) = {
-                        let buf = inputs[current_pos.input_idx].as_bytes();
-
-                        // All cases that encounter an error skip to EOF.
-                        let input_size = buf.len();
-
-                        let (tag, next_pos) = read_varint(buf, current_pos.offset)
-                            .unwrap_or((wire_types::INVALID, input_size));
-
-                        let wire_type = tag & wire_types::PROTOBUF_TAG_BITMASK;
-
-                        // Try to skip field value to find field end
-                        let field_end = match wire_type {
-                            wire_types::VARINT => {
-                                if let Some((_, pos)) = read_varint(buf, next_pos) {
-                                    pos
-                                } else {
-                                    input_size
-                                }
-                            }
-                            wire_types::LEN => {
-                                if let Some((_, pos)) = read_len_delim(buf, next_pos) {
-                                    pos
-                                } else {
-                                    input_size
-                                }
-                            }
-                            wire_types::FIXED64 => {
-                                if next_pos + 8 <= input_size {
-                                    next_pos + 8
-                                } else {
-                                    input_size
-                                }
-                            }
-                            wire_types::FIXED32 => {
-                                if next_pos + 4 <= input_size {
-                                    next_pos + 4
-                                } else {
-                                    input_size
-                                }
-                            }
-                            _ => input_size,
-                        };
-
-                        (field_end, input_size)
-                    };
-                    let field_size = field_end_offset - field_start.offset;
-                    debug_assert_ne!(field_size, 0);
-
-                    let field_end = Position::new(current_pos.input_idx, field_end_offset);
-
-                    // Advance the current position; current_size updated below.
-                    current_pos = field_end;
-
-                    let end_of_input = current_pos.offset == input_size;
-                    if end_of_input {
-                        current_pos.offset = 0;
-                        current_pos.input_idx += 1;
-                    }
-
-                    if field_size + current_size <= max_size {
-                        // If this field fits without becoming
-                        // over-full, batch_start is unchanged.
-                    } else if current_size != 0 {
-                        // Flush the pending batch b/c the new field
-                        // does not fit.
-                        finalize_batch(signal, &inputs, &batch_start, &field_start, &mut batches);
-                        batch_start = field_start;
-                        current_size = 0;
-                    }
-
-                    // Increment size counter
-                    current_size += field_size;
-
-                    if end_of_input {
-                        break;
+    for input in &inputs {
+        let buf = input.as_bytes();
+        let mut pos = 0;
+        while pos < buf.len() {
+            match next_field(buf, pos) {
+                Some((field, wire, payload_start, field_end)) => {
+                    let full = &buf[pos..field_end];
+                    pos = field_end;
+                    if field == RESOURCE_ENTRY_FIELD && wire == wire_types::LEN {
+                        push_resource_entry(
+                            signal,
+                            full,
+                            &buf[payload_start..field_end],
+                            max_size,
+                            &mut cur,
+                            &mut batches,
+                        );
+                    } else {
+                        push_opaque(signal, full, max_size, &mut cur, &mut batches);
                     }
                 }
+                None => {
+                    // Malformed field: treat the rest of the buffer as opaque.
+                    let full = &buf[pos..];
+                    pos = buf.len();
+                    push_opaque(signal, full, max_size, &mut cur, &mut batches);
+                }
             }
-
-            // Finish last batch if exists
-            if current_pos != batch_start {
-                finalize_batch(signal, &inputs, &batch_start, &current_pos, &mut batches);
-            }
-
-            Ok(batches)
         }
     }
+
+    flush(signal, &mut cur, &mut batches);
+    Ok(batches)
 }
