@@ -97,9 +97,9 @@ use otap_df_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_pdata_views::views::trace::{ResourceSpansView, TracesView};
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
-
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry::metrics::MeasurementMetricSet;
+use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -133,34 +133,74 @@ impl std::fmt::Display for RoutingKeyExpr {
     }
 }
 
-/// Metrics for the ContentRouter processor.
-#[metric_set(name = "processor.content_router")]
-#[derive(Debug, Default, Clone)]
-pub struct ContentRouterMetrics {
-    /// Number of messages routed to a named port.
-    #[metric(unit = "{msg}")]
-    pub signals_routed: Counter<u64>,
-    /// Number of messages routed to the default output.
-    #[metric(unit = "{msg}")]
-    pub signals_routed_default: Counter<u64>,
-    /// Number of messages NACKed (no route match, missing key, mixed batch,
-    /// conversion error, or send failure).
-    #[metric(unit = "{msg}")]
-    pub signals_nacked: Counter<u64>,
-    /// Number of messages where the routing key was missing.
-    #[metric(unit = "{msg}")]
-    pub signals_no_routing_key: Counter<u64>,
-    /// Number of messages that failed due to internal conversion errors.
-    #[metric(unit = "{msg}")]
-    pub signals_conversion_error: Counter<u64>,
+/// Outcomes for the ContentRouter processor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum ContentRouterOutcome {
+    /// Routed to a named port.
+    Routed,
+    /// Routed to the default output.
+    RoutedDefault,
+    /// Permanently NACKed.
+    Nacked,
+    /// Missing routing key.
+    NoRoutingKey,
+    /// Internal conversion error.
+    ConversionError,
+    /// Selected route was full.
+    RejectedRouteFull,
+    /// Selected route was closed.
+    RejectedRouteClosed,
+}
 
-    // ToDo Currently, we do not have the ability to report a bounded attribute representing the name of the output whose route is blocked or closed.
-    /// Number of messages rejected because the selected route was full.
+/// Attributes for ContentRouter outcome metric.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct ContentRouterOutcomeAttributes {
+    /// Outcome of the routing decision.
+    pub outcome: ContentRouterOutcome,
+}
+
+/// Measurement metrics for the ContentRouter processor.
+#[metric_set(
+    name = "processor.content_router",
+    measurement_attributes = ContentRouterOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ContentRouterMeasurementMetrics {
+    /// Number of messages with this outcome.
     #[metric(unit = "{msg}")]
-    pub signals_rejected_route_full: Counter<u64>,
-    /// Number of messages rejected because the selected route was closed.
-    #[metric(unit = "{msg}")]
-    pub signals_rejected_route_closed: Counter<u64>,
+    pub signals: Counter<u64>,
+}
+
+/// Metrics for the ContentRouter processor.
+pub struct ContentRouterMetrics {
+    /// Measurement metric set for outcomes.
+    pub metrics: MeasurementMetricSet<ContentRouterMeasurementMetrics>,
+}
+
+impl ContentRouterMetrics {
+    /// Creates a new ContentRouterMetrics.
+    pub fn new(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            metrics: ContentRouterMeasurementMetrics::register(pipeline_ctx),
+        }
+    }
+
+    /// Reports the metrics.
+    pub fn report(
+        &mut self,
+        reporter: &mut MetricsReporter,
+    ) -> Result<(), otap_df_telemetry::error::Error> {
+        reporter.report_measurement(&mut self.metrics)
+    }
+
+    /// Records a specific outcome.
+    pub fn record(&mut self, outcome: ContentRouterOutcome) {
+        self.metrics
+            .with(ContentRouterOutcomeAttributes { outcome })
+            .signals
+            .inc();
+    }
 }
 
 /// Configuration for the ContentRouter processor.
@@ -329,7 +369,7 @@ pub struct ContentRouter {
     /// Selected-route admission scheduler.
     admission: ExclusiveRouteScheduler<OtapPdata, SelectedRouteKind>,
     /// Telemetry metrics.
-    metrics: Option<MetricSet<ContentRouterMetrics>>,
+    metrics: Option<ContentRouterMetrics>,
 }
 
 impl ContentRouter {
@@ -350,7 +390,7 @@ impl ContentRouter {
     /// Creates a new ContentRouter with metrics registered via PipelineContext.
     #[must_use]
     pub fn with_pipeline_ctx(pipeline_ctx: PipelineContext, config: ContentRouterConfig) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<ContentRouterMetrics>();
+        let metrics = ContentRouterMetrics::new(&pipeline_ctx);
         let mut router = Self::new(config);
         router.metrics = Some(metrics);
         router
@@ -557,8 +597,8 @@ impl ContentRouter {
     fn record_forwarded_route(&mut self, route_kind: SelectedRouteKind) {
         if let Some(m) = self.metrics.as_mut() {
             match route_kind {
-                SelectedRouteKind::Matched => m.signals_routed.inc(),
-                SelectedRouteKind::Default => m.signals_routed_default.inc(),
+                SelectedRouteKind::Matched => m.record(ContentRouterOutcome::Routed),
+                SelectedRouteKind::Default => m.record(ContentRouterOutcome::RoutedDefault),
             }
         }
     }
@@ -612,8 +652,7 @@ impl ContentRouter {
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.signals_nacked.inc();
-            m.signals_rejected_route_full.inc();
+            m.record(ContentRouterOutcome::RejectedRouteFull);
         }
 
         effect_handler
@@ -634,8 +673,7 @@ impl ContentRouter {
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.signals_nacked.inc();
-            m.signals_rejected_route_closed.inc();
+            m.record(ContentRouterOutcome::RejectedRouteClosed);
         }
 
         effect_handler
@@ -658,7 +696,7 @@ impl ContentRouter {
         reason: &str,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.signals_nacked.inc();
+            m.record(ContentRouterOutcome::Nacked);
         }
 
         effect_handler
@@ -788,7 +826,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     mut metrics_reporter,
                 } => {
                     if let Some(m) = self.metrics.as_mut() {
-                        let _ = metrics_reporter.report(m);
+                        let _ = m.report(&mut metrics_reporter);
                     }
                     Ok(())
                 }
@@ -840,7 +878,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     RouteResolution::NoMatch | RouteResolution::MissingKey => {
                         if matches!(resolution, RouteResolution::MissingKey) {
                             if let Some(m) = self.metrics.as_mut() {
-                                m.signals_no_routing_key.inc();
+                                m.record(ContentRouterOutcome::NoRoutingKey);
                             }
                         }
                         // Default-route admission follows the same contract as
@@ -876,7 +914,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                         } else {
                             // No default output - NACK to inform upstream
                             if let Some(m) = self.metrics.as_mut() {
-                                m.signals_nacked.inc();
+                                m.record(ContentRouterOutcome::Nacked);
                             }
                             let reason = if matches!(resolution, RouteResolution::MissingKey) {
                                 format!(
@@ -897,7 +935,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     }
                     RouteResolution::MixedBatch => {
                         if let Some(m) = self.metrics.as_mut() {
-                            m.signals_nacked.inc();
+                            m.record(ContentRouterOutcome::Nacked);
                         }
                         let reason = format!(
                             "batch contains resources with inconsistent routing for key '{}'; \
@@ -911,8 +949,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     }
                     RouteResolution::ConversionError => {
                         if let Some(m) = self.metrics.as_mut() {
-                            m.signals_conversion_error.inc();
-                            m.signals_nacked.inc();
+                            m.record(ContentRouterOutcome::ConversionError);
                         }
                         let reason =
                             "internal error: failed to convert telemetry format for routing"

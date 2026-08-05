@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: Replace individual content_router metrics (e.g., signals_routed, signals_nacked) with new metric set partitioned by `outcome`
+issues: [3530]
+subtext: |
+  Migration: Update dashboards, alerts, and queries to use the new `processor.content_router` metric with the `outcome` attribute instead of the removed individual content_router metrics.
