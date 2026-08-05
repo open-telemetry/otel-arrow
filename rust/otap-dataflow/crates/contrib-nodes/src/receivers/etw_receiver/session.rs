@@ -512,9 +512,7 @@ fn wanted_lookup_names(providers: &[ProviderConfig]) -> HashSet<String> {
 /// verbatim for the caller to wrap via [`tdh_enumerate_error`].
 fn collect_wanted_providers<E: std::fmt::Display>(
     wanted: &HashSet<String>,
-    enumerate: impl FnOnce(
-        &mut dyn FnMut(&str, RegisteredProvider) -> ControlFlow<()>,
-    ) -> Result<(), E>,
+    enumerate: impl FnOnce(&mut dyn FnMut(&str, RegisteredProvider) -> ControlFlow<()>) -> Result<(), E>,
 ) -> Result<HashMap<String, RegisteredProvider>, String> {
     let mut found: HashMap<String, RegisteredProvider> = HashMap::with_capacity(wanted.len());
     enumerate(&mut |name, provider| {
@@ -1969,7 +1967,9 @@ mod tests {
     fn drive<'a>(
         entries: &'a [(&'a str, Guid, ProviderSchemaSource)],
         visited: &'a Cell<usize>,
-    ) -> impl FnOnce(&mut dyn FnMut(&str, RegisteredProvider) -> ControlFlow<()>) -> Result<(), String>
+    ) -> impl FnOnce(
+        &mut dyn FnMut(&str, RegisteredProvider) -> ControlFlow<()>,
+    ) -> Result<(), String>
     + 'a {
         move |visit| {
             for (name, guid, schema_source) in entries {
@@ -2030,7 +2030,10 @@ mod tests {
         let map = collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
         assert_eq!(map.len(), 2);
         assert!(map.contains_key("alpha") && map.contains_key("gamma"));
-        assert!(!map.contains_key("beta"), "unwanted names must not be retained");
+        assert!(
+            !map.contains_key("beta"),
+            "unwanted names must not be retained"
+        );
         assert_eq!(visited.get(), 3, "must scan through the last wanted name");
     }
 
@@ -2063,11 +2066,10 @@ mod tests {
         let wanted: HashSet<String> = ["alpha".to_string()].into_iter().collect();
         // Map the `Ok` map to `()` so `expect_err` does not require
         // `RegisteredProvider: Debug` (which `one_collect` does not implement).
-        let msg = collect_wanted_providers(&wanted, |_| {
-            Result::<(), &str>::Err("simulated failure")
-        })
-        .map(|_| ())
-        .expect_err("driver failure must propagate");
+        let msg =
+            collect_wanted_providers(&wanted, |_| Result::<(), &str>::Err("simulated failure"))
+                .map(|_| ())
+                .expect_err("driver failure must propagate");
         assert_eq!(msg, "simulated failure");
     }
 
