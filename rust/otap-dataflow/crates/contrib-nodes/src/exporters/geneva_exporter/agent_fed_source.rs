@@ -24,6 +24,7 @@ const MONIKER_MAP_KEY: &str = "moniker_map";
 const DEFAULT_MONIKER_KEY: &str = "default";
 const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 
+// TODO: Move this reusable failure-log sampling helper to `crates/telemetry`.
 #[derive(Default)]
 struct FailureLogLimiter {
     consecutive_failures: AtomicU64,
