@@ -69,7 +69,7 @@ permanently nack it (non-retryable).
 | `topic_from_transport_header` | string | *none* | Transport header name for dynamic topic routing. When set and the header is present with a valid topic, its value overrides `topic`; if the header is absent the static `topic` is used, and if present but invalid the batch is permanently nacked. See [Dynamic Topic Routing](#dynamic-topic-routing). |
 | `partition_by_transport_headers` | bool | `false` | Serialize all transport headers into a Kafka record key. See [Partitioning](#partitioning). |
 | `allowed_topics` | list of strings | *empty* | Operator allowlist of exact topic names permitted for header-supplied (dynamic) routing. Empty means no exact-match constraint. See [Security](#security). |
-| `allowed_topic_prefixes` | list of strings | *empty* | Operator allowlist of topic-name prefixes permitted for header-supplied (dynamic) routing (e.g. `tenant_`). Empty means no prefix constraint. See [Security](#security). |
+| `allowed_topics_regex` | list of strings | *empty* | Operator allowlist of regex patterns permitted for header-supplied (dynamic) routing. The header-supplied topic is matched against each pattern; entries must be valid regular expressions. Empty means no regex constraint. See [Security](#security). |
 
 ### Dynamic Topic Routing
 
@@ -112,14 +112,19 @@ Kafka topic-name syntax. In addition, each signal may declare an operator
 allowlist so a client cannot direct data to an arbitrary topic:
 
 - `allowed_topics`: exact topic names permitted for header routing.
-- `allowed_topic_prefixes`: permitted topic-name prefixes (e.g. `tenant_`).
+- `allowed_topics_regex`: regex patterns permitted for header routing. The
+  header-supplied topic is matched against each pattern as provided; entries
+  must be valid regular expressions. Patterns are compiled once at exporter
+  construction (and on reconfigure); an invalid pattern is a configuration error
+  caught at startup.
 
-When either list is non-empty, a header-supplied topic must match the exact list
-or start with one of the prefixes; otherwise the batch is **permanently nacked**
-(non-retryable) and is not routed to the static `topic`. When both lists are
-empty (the default), dynamic routing is unrestricted (backwards compatible). The
-allowlist constrains only the header-supplied path -- the static per-signal
-`topic` is operator-controlled and is never subject to it.
+When either list is non-empty, a header-supplied topic must exactly match the
+`allowed_topics` list or fully match an `allowed_topics_regex` pattern; otherwise
+the batch is **permanently nacked** (non-retryable) and is not routed to the
+static `topic`. When both lists are empty (the default), dynamic routing is
+unrestricted (backwards compatible). The allowlist constrains only the
+header-supplied path -- the static per-signal `topic` is operator-controlled and
+is never subject to it.
 
 #### Topic auto-creation (default-deny)
 
@@ -487,9 +492,9 @@ mechanisms, and routing/partitioning options -- see the tables above.
 2. `client_id` must be non-empty.
 3. At least one signal (`traces`, `metrics`, or `logs`) must be configured.
 4. Unknown configuration fields are rejected (`deny_unknown_fields`).
-5. Each signal's `topic`, and every entry in `allowed_topics` /
-   `allowed_topic_prefixes`, must be a syntactically valid Kafka topic name /
-   prefix.
+5. Each signal's `topic` and every entry in `allowed_topics` must be a
+   syntactically valid Kafka topic name; every `allowed_topics_regex` entry must
+   be a valid regular expression.
 
 ## Examples
 

@@ -7,10 +7,11 @@ pub use crate::common::kafka::TlsConfig;
 use crate::common::kafka::auth::Auth;
 use crate::common::kafka::security::{apply_sasl_config, resolve_security_protocol};
 use crate::common::kafka::{
-    DebugContext, LogLevel, MAX_KAFKA_TOPIC_LEN, MessageFormat, debug_list_to_string,
-    default_message_format_header, validate_kafka_topic,
+    DebugContext, LogLevel, MessageFormat, debug_list_to_string, default_message_format_header,
+    validate_kafka_topic,
 };
 use rdkafka::ClientConfig;
+use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -86,8 +87,8 @@ pub struct SignalConfig {
     /// header-supplied (dynamic) routing.
     ///
     /// When non-empty, a topic selected via `topic_from_transport_header` must
-    /// exactly match one of these entries (or match an entry in
-    /// [`SignalConfig::allowed_topic_prefixes`]); otherwise the batch is
+    /// exactly match one of these entries (or fully match a pattern in
+    /// [`SignalConfig::allowed_topics_regex`]); otherwise the batch is
     /// permanently nacked. Empty (the default) means no exact-match constraint.
     ///
     /// This constrains where a client-controlled routing header may direct data;
@@ -96,20 +97,21 @@ pub struct SignalConfig {
     #[serde(default)]
     allowed_topics: Vec<String>,
 
-    /// Operator allowlist of topic-name prefixes permitted for header-supplied
+    /// Operator allowlist of regex patterns permitted for header-supplied
     /// (dynamic) routing.
     ///
     /// When non-empty, a topic selected via `topic_from_transport_header` must
-    /// start with one of these prefixes (or exactly match an entry in
+    /// match one of these regex patterns (or exactly match an entry in
     /// [`SignalConfig::allowed_topics`]); otherwise the batch is permanently
-    /// nacked. Empty (the default) means no prefix constraint. Use this to scope
-    /// dynamic routing to a tenant namespace (e.g. `tenant_`).
+    /// nacked. Empty (the default) means no regex constraint. Entries must be
+    /// valid regular expressions and are compiled once at exporter construction
+    /// (and on reconfigure); an invalid pattern is a configuration error.
     ///
     /// This constrains where a client-controlled routing header may direct data;
     /// it does not affect the static `topic`, which the operator already
     /// controls.
     #[serde(default)]
-    allowed_topic_prefixes: Vec<String>,
+    allowed_topics_regex: Vec<String>,
 }
 
 impl SignalConfig {
@@ -122,7 +124,7 @@ impl SignalConfig {
             topic_from_transport_header: None,
             partition_by_transport_headers: false,
             allowed_topics: Vec::new(),
-            allowed_topic_prefixes: Vec::new(),
+            allowed_topics_regex: Vec::new(),
         }
     }
 
@@ -183,46 +185,24 @@ impl SignalConfig {
         self
     }
 
-    /// The prefix allowlist for topics permitted for header-supplied routing.
-    /// Empty means no prefix constraint.
+    /// The regex allowlist for topics permitted for header-supplied routing.
+    /// Empty means no regex constraint. Entries must be valid regular
+    /// expressions and are matched against the header-supplied topic.
     #[must_use]
-    pub fn allowed_topic_prefixes(&self) -> &[String] {
-        &self.allowed_topic_prefixes
+    pub fn allowed_topics_regex(&self) -> &[String] {
+        &self.allowed_topics_regex
     }
 
-    /// Set the prefix allowlist for topics permitted for header-supplied
+    /// Set the regex allowlist for topics permitted for header-supplied
     /// routing.
     #[must_use]
-    pub fn with_allowed_topic_prefixes<I, S>(mut self, prefixes: I) -> Self
+    pub fn with_allowed_topics_regex<I, S>(mut self, patterns: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.allowed_topic_prefixes = prefixes.into_iter().map(Into::into).collect();
+        self.allowed_topics_regex = patterns.into_iter().map(Into::into).collect();
         self
-    }
-
-    /// Returns `true` if this signal has any header-routing constraint
-    /// (exact allowlist or prefix allowlist) configured.
-    #[must_use]
-    pub fn has_dynamic_topic_constraint(&self) -> bool {
-        !self.allowed_topics.is_empty() || !self.allowed_topic_prefixes.is_empty()
-    }
-
-    /// Returns `true` if `topic` satisfies this signal's header-routing
-    /// constraint. When no constraint is configured, every (already
-    /// syntactically valid) topic is permitted.
-    #[must_use]
-    pub fn is_dynamic_topic_allowed(&self, topic: &str) -> bool {
-        if !self.has_dynamic_topic_constraint() {
-            return true;
-        }
-        if self.allowed_topics.iter().any(|t| t == topic) {
-            return true;
-        }
-        self.allowed_topic_prefixes
-            .iter()
-            .any(|p| topic.starts_with(p.as_str()))
     }
 }
 
@@ -339,7 +319,7 @@ pub struct KafkaExporterConfigBuilder {
     /// would let a client cause the broker to spawn arbitrary topics. Operators
     /// must explicitly opt in. This value is always written to the client config
     /// and takes precedence over any `producer_config` entry for the same key.
-    #[serde(default)]
+    #[serde(default = "default_allow_auto_create_topics")]
     allow_auto_create_topics: bool,
 
     /// Kafka header key for the message format indicator.
@@ -415,7 +395,7 @@ impl KafkaExporterConfigBuilder {
             auth: None,
             tls: None,
             partitioning_strategy: default_partitioning_strategy(),
-            allow_auto_create_topics: false,
+            allow_auto_create_topics: default_allow_auto_create_topics(),
             message_format_header: default_message_format_header(),
             debug: None,
             log_level: None,
@@ -626,46 +606,25 @@ impl KafkaExporterConfigBuilder {
 #[serde(try_from = "KafkaExporterConfigBuilder")]
 pub struct KafkaExporterConfig(KafkaExporterConfigBuilder);
 
-/// Validates that `prefix` is usable as a Kafka topic-name prefix for the
-/// dynamic-routing allowlist.
-///
-/// A prefix need not be a complete topic, but it must be non-empty, within the
-/// topic-length limit, and contain only characters that are legal in a Kafka
-/// topic name, so it can only ever match syntactically valid topics.
-fn validate_kafka_topic_prefix(prefix: &str) -> Result<(), String> {
-    if prefix.is_empty() {
-        return Err("topic prefix must not be empty".to_string());
-    }
-    if prefix.len() > MAX_KAFKA_TOPIC_LEN {
-        return Err(format!(
-            "topic prefix exceeds maximum length of {MAX_KAFKA_TOPIC_LEN} characters"
-        ));
-    }
-    if let Some(pos) = prefix
-        .bytes()
-        .position(|b| !(b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-'))
-    {
-        let bad_char = prefix.as_bytes()[pos] as char;
-        return Err(format!(
-            "topic prefix contains invalid character '{bad_char}' at position {pos}; \
-             only [a-zA-Z0-9._-] are allowed"
-        ));
-    }
-    Ok(())
-}
-
 /// Validates a signal's static topic and its dynamic-routing allowlist entries.
 ///
 /// Errors are prefixed with the field name (e.g. `topic:`,
-/// `allowed_topics[0]:`, `allowed_topic_prefixes[1]:`) so the caller can prepend
+/// `allowed_topics[0]:`, `allowed_topics_regex[1]:`) so the caller can prepend
 /// the signal name.
+///
+/// Each `allowed_topics_regex` pattern is compiled exactly as the exporter
+/// compiles it at runtime, so an invalid pattern fails fast at config time --
+/// including through the factory `validate_config` path, which runs this
+/// validation without constructing an exporter.
 fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
     validate_kafka_topic(&signal.topic).map_err(|e| format!("topic: {e}"))?;
     for (i, t) in signal.allowed_topics.iter().enumerate() {
         validate_kafka_topic(t).map_err(|e| format!("allowed_topics[{i}]: {e}"))?;
     }
-    for (i, p) in signal.allowed_topic_prefixes.iter().enumerate() {
-        validate_kafka_topic_prefix(p).map_err(|e| format!("allowed_topic_prefixes[{i}]: {e}"))?;
+    for (i, p) in signal.allowed_topics_regex.iter().enumerate() {
+        Regex::new(p)
+            .map(drop)
+            .map_err(|e| format!("allowed_topics_regex[{i}]: invalid regex '{p}': {e}"))?;
     }
     Ok(())
 }
@@ -918,6 +877,11 @@ fn default_linger_ms() -> u32 {
 /// Default partitioner strategy.
 fn default_partitioning_strategy() -> PartitionerStrategy {
     PartitionerStrategy::ConsistentRandom
+}
+
+/// Default topic auto-creation posture (default-deny).
+fn default_allow_auto_create_topics() -> bool {
+    false
 }
 
 /// Compression type for Kafka messages.
@@ -1845,46 +1809,33 @@ mod tests {
 
     // ---- Security: dynamic-routing allowlist config ----
 
-    /// Scenario: build a config with valid allowlist and prefix entries.
-    /// Guarantees: valid allowlist/prefix entries are accepted and readable, and
-    /// `is_dynamic_topic_allowed` reflects the configured policy (exact-or-prefix
-    /// match, deny otherwise).
+    /// Scenario: build a config with valid exact allowlist and regex allowlist
+    /// entries.
+    /// Guarantees: valid exact/regex entries are accepted and readable, and the
+    /// config as a whole validates (regex patterns compile).
     #[test]
-    fn allowlist_config_is_accepted_and_enforced() {
+    fn allowlist_config_is_accepted() {
         let signal = SignalConfig::new("static".into(), MessageFormat::OtlpProto)
             .with_topic_from_transport_header("x-target-topic")
             .with_allowed_topics(["approved"])
-            .with_allowed_topic_prefixes(["tenant_"]);
+            .with_allowed_topics_regex(["tenant_.*"]);
 
         assert_eq!(signal.allowed_topics(), &["approved".to_string()]);
-        assert_eq!(signal.allowed_topic_prefixes(), &["tenant_".to_string()]);
-        assert!(signal.has_dynamic_topic_constraint());
-        assert!(signal.is_dynamic_topic_allowed("approved"));
-        assert!(signal.is_dynamic_topic_allowed("tenant_a"));
-        assert!(!signal.is_dynamic_topic_allowed("other"));
+        assert_eq!(signal.allowed_topics_regex(), &["tenant_.*".to_string()]);
 
-        // The config as a whole validates.
+        // The config as a whole validates (regex compiles).
         let _config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
             .with_logs(signal)
             .try_into()
             .expect("config with allowlist should be valid");
     }
 
-    /// Scenario: no allowlist is configured.
-    /// Guarantees: `is_dynamic_topic_allowed` permits any topic (backwards
-    /// compatible), and no constraint is reported.
-    #[test]
-    fn no_allowlist_permits_any_topic() {
-        let signal = SignalConfig::new("static".into(), MessageFormat::OtlpProto);
-        assert!(!signal.has_dynamic_topic_constraint());
-        assert!(signal.is_dynamic_topic_allowed("literally-anything"));
-    }
-
-    /// Scenario: an allowlist entry is not a syntactically valid Kafka topic.
+    /// Scenario: an exact allowlist entry is not a syntactically valid Kafka
+    /// topic.
     /// Guarantees: config validation rejects it (with a field-scoped message),
-    /// so an operator cannot configure an unusable allowlist entry.
+    /// so an operator cannot configure an unusable exact allowlist entry.
     #[test]
-    fn invalid_allowlist_entry_is_rejected() {
+    fn invalid_exact_allowlist_entry_is_rejected() {
         let result: Result<KafkaExporterConfig, _> = KafkaExporterConfigBuilder::new("b", "c")
             .with_logs(
                 SignalConfig::new("static".into(), MessageFormat::OtlpProto)
@@ -1898,22 +1849,22 @@ mod tests {
         );
     }
 
-    /// Scenario: a prefix allowlist entry contains characters illegal in a Kafka
-    /// topic name.
-    /// Guarantees: config validation rejects it, so a prefix can only ever match
-    /// syntactically valid topics.
+    /// Scenario: a regex allowlist entry is not a valid regular expression.
+    /// Guarantees: config validation rejects it at config time (fail fast,
+    /// including through the factory validate path), naming the field so an
+    /// operator can fix it.
     #[test]
-    fn invalid_prefix_entry_is_rejected() {
+    fn invalid_regex_allowlist_entry_is_rejected() {
         let result: Result<KafkaExporterConfig, _> = KafkaExporterConfigBuilder::new("b", "c")
             .with_logs(
                 SignalConfig::new("static".into(), MessageFormat::OtlpProto)
-                    .with_allowed_topic_prefixes(["bad prefix"]),
+                    .with_allowed_topics_regex(["tenant_(", "["]),
             )
             .try_into();
-        let err = result.expect_err("invalid prefix entry should be rejected");
+        let err = result.expect_err("invalid regex entry should be rejected");
         assert!(
-            err.contains("allowed_topic_prefixes[0]"),
-            "error should point at the offending prefix, got: {err}"
+            err.contains("allowed_topics_regex[0]"),
+            "error should point at the offending pattern, got: {err}"
         );
     }
 

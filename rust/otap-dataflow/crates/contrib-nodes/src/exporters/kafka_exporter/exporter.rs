@@ -9,10 +9,11 @@
 use super::producer::{ExporterFutureProducer, ExporterFutureRecord};
 
 use super::config::{KafkaExporterConfig, SignalConfig};
-use super::encoder::{self, EncodingError};
+use super::encoder;
+use super::error::KafkaExporterError;
 use super::metrics::KafkaExporterMetrics;
 use super::partitioner;
-use super::topic_router::{TopicRouter, TopicRoutingError};
+use super::topic_router::TopicRouter;
 #[cfg(feature = "aws")]
 use crate::common::kafka::aws::ProducerClientContext;
 #[cfg(feature = "aws")]
@@ -43,36 +44,42 @@ use rdkafka::client::DefaultClientContext;
 use rdkafka::config::FromClientConfigAndContext;
 use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::Producer;
+use regex::Regex;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Compiles a signal's `allowed_topics_regex` patterns into [`Regex`] values,
+/// or returns `None` when the signal configures no patterns (avoiding an
+/// empty-vector allocation for the common case).
+///
+/// Each pattern is compiled exactly as provided by the operator; entries must
+/// be valid regular expressions.
+///
+/// # Errors
+///
+/// Returns [`KafkaExporterError::ConfigInvalidTopicRegex`] if any pattern fails
+/// to compile, naming the `signal` for operator diagnosis.
+fn compile_allowed_topic_regexes(
+    patterns: &[String],
+    signal: &str,
+) -> Result<Option<Vec<Regex>>, KafkaExporterError> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+    let mut compiled = Vec::with_capacity(patterns.len());
+    for pattern in patterns {
+        let re = Regex::new(pattern).map_err(|e| KafkaExporterError::ConfigInvalidTopicRegex {
+            signal: signal.to_string(),
+            pattern: pattern.clone(),
+            message: e.to_string(),
+        })?;
+        compiled.push(re);
+    }
+    Ok(Some(compiled))
+}
+
 /// URN for the Kafka exporter factory registration.
 pub const KAFKA_EXPORTER_URN: &str = "urn:otel:exporter:kafka";
-
-/// Errors specific to the Kafka exporter.
-#[derive(Debug, thiserror::Error)]
-pub enum KafkaExporterError {
-    /// Configuration error.
-    #[error("Kafka exporter configuration error: {0}")]
-    Configuration(String),
-
-    /// Missing topic configuration for a signal type.
-    #[error("No topic configured for signal type: {0:?}")]
-    MissingTopic(SignalType),
-
-    /// Kafka client error.
-    #[error("Kafka client error: {0}")]
-    KafkaError(#[from] rdkafka::error::KafkaError),
-
-    /// Encoding error.
-    #[error("Encoding error: {0}")]
-    Encoding(#[from] EncodingError),
-
-    /// Dynamic topic routing error (e.g. invalid topic supplied via a
-    /// transport header).
-    #[error("Topic routing error: {0}")]
-    TopicRouting(#[from] TopicRoutingError),
-}
 
 /// Trait for reporting Ack/Nack events.
 #[async_trait(?Send)]
@@ -156,6 +163,13 @@ pub struct KafkaExporter {
     producer: ExporterFutureProducer<DefaultClientContext>,
     pdata_producer: PdataProducer,
     metrics: MetricSet<KafkaExporterMetrics>,
+    /// Pre-compiled dynamic-routing allowlist regexes per signal, compiled once
+    /// at construction (and rebuilt on reconfigure) so the hot path never
+    /// recompiles. `None` when the signal configures no regex patterns, which
+    /// avoids allocating an empty vector for the common (unconstrained) case.
+    traces_allowed_topics_regex: Option<Vec<Regex>>,
+    metrics_allowed_topics_regex: Option<Vec<Regex>>,
+    logs_allowed_topics_regex: Option<Vec<Regex>>,
 }
 
 /// Factory registration for the Kafka exporter.
@@ -228,12 +242,57 @@ impl KafkaExporter {
                 KafkaExporterError::Configuration(format!("Failed to create Kafka producer: {}", e))
             })?;
 
+        // Pre-compile the per-signal dynamic-routing allowlist regexes once so
+        // the hot path never recompiles.
+        let (traces_allowed_topics_regex, metrics_allowed_topics_regex, logs_allowed_topics_regex) =
+            Self::compile_signal_allowed_regexes(&config)?;
+
         Ok(Self {
             config,
             producer,
             pdata_producer: PdataProducer::default(),
             metrics: pipeline_ctx.register_metrics::<KafkaExporterMetrics>(),
+            traces_allowed_topics_regex,
+            metrics_allowed_topics_regex,
+            logs_allowed_topics_regex,
         })
+    }
+
+    /// Compiles the dynamic-routing allowlist regexes for all three signals
+    /// from `config`, returning them in `(traces, metrics, logs)` order.
+    #[allow(clippy::type_complexity)]
+    fn compile_signal_allowed_regexes(
+        config: &KafkaExporterConfig,
+    ) -> Result<(Option<Vec<Regex>>, Option<Vec<Regex>>, Option<Vec<Regex>>), KafkaExporterError>
+    {
+        let traces = match config.traces() {
+            Some(s) => compile_allowed_topic_regexes(s.allowed_topics_regex(), "traces")?,
+            None => None,
+        };
+        let metrics = match config.metrics() {
+            Some(s) => compile_allowed_topic_regexes(s.allowed_topics_regex(), "metrics")?,
+            None => None,
+        };
+        let logs = match config.logs() {
+            Some(s) => compile_allowed_topic_regexes(s.allowed_topics_regex(), "logs")?,
+            None => None,
+        };
+        Ok((traces, metrics, logs))
+    }
+
+    /// Selects the pre-compiled allowlist regexes for `signal_type` from the
+    /// three per-signal fields, returning `Option<&[Regex]>`.
+    fn allowed_topics_regex_for<'a>(
+        signal_type: SignalType,
+        traces: &'a Option<Vec<Regex>>,
+        metrics: &'a Option<Vec<Regex>>,
+        logs: &'a Option<Vec<Regex>>,
+    ) -> Option<&'a [Regex]> {
+        match signal_type {
+            SignalType::Traces => traces.as_deref(),
+            SignalType::Metrics => metrics.as_deref(),
+            SignalType::Logs => logs.as_deref(),
+        }
     }
 
     /// Create a new Kafka exporter from a JSON config value.
@@ -360,19 +419,30 @@ impl KafkaExporter {
 
         let encoding = signal_config.encoding();
 
+        // Select the pre-compiled dynamic-routing allowlist regexes for this
+        // signal. This borrows a different field than `self.config` /
+        // `self.metrics`, so the disjoint borrows below are valid.
+        let allowed_regex = Self::allowed_topics_regex_for(
+            signal_type,
+            &self.traces_allowed_topics_regex,
+            &self.metrics_allowed_topics_regex,
+            &self.logs_allowed_topics_regex,
+        );
+
         // Resolve topic via the dynamic topic router *before* doing any encoding
         // work. If a transport header supplied an invalid topic,
         // permanently nack the batch
-        let topic = match TopicRouter::resolve(signal_config, &context, &mut self.metrics) {
-            Ok(t) => t,
-            Err(e) => {
-                self.metrics.inc_failed(signal_type);
-                let _ = reporter
-                    .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
-                    .await;
-                return Err(KafkaExporterError::TopicRouting(e));
-            }
-        };
+        let topic =
+            match TopicRouter::resolve(signal_config, allowed_regex, &context, &mut self.metrics) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.metrics.inc_failed(signal_type);
+                    let _ = reporter
+                        .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
+                        .await;
+                    return Err(e);
+                }
+            };
 
         let partition_key = partitioner::partition_key_for_signal(signal_config, &context);
 
@@ -405,7 +475,7 @@ impl KafkaExporter {
                 let _ = reporter
                     .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
                     .await;
-                return Err(KafkaExporterError::Encoding(e));
+                return Err(e);
             }
         };
 
@@ -579,6 +649,23 @@ impl KafkaExporter {
             }
         };
 
+        // Recompile the dynamic-routing allowlist regexes for the new config
+        // before touching the running one. On failure, keep the current
+        // producer/config running.
+        let (new_traces_regex, new_metrics_regex, new_logs_regex) =
+            match Self::compile_signal_allowed_regexes(&new_config) {
+                Ok(regexes) => regexes,
+                Err(e) => {
+                    otap_df_telemetry::otel_warn!(
+                        "kafka.exporter.reconfigure_error",
+                        error = %e,
+                        "failed to compile allowed_topics_regex for new config; \
+                         keeping current configuration",
+                    );
+                    return;
+                }
+            };
+
         effect_handler
             .info("Reconfiguring Kafka exporter: draining old producer before swap")
             .await;
@@ -596,10 +683,14 @@ impl KafkaExporter {
                 .purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
         }
 
-        // Swap in the new producer and config. Dropping the old producer joins
-        // its poll thread (see ExporterThreadedProducer::drop).
+        // Swap in the new producer, config, and compiled allowlist regexes.
+        // Dropping the old producer joins its poll thread (see
+        // ExporterThreadedProducer::drop).
         self.producer = new_producer;
         self.config = new_config;
+        self.traces_allowed_topics_regex = new_traces_regex;
+        self.metrics_allowed_topics_regex = new_metrics_regex;
+        self.logs_allowed_topics_regex = new_logs_regex;
 
         otap_df_telemetry::otel_info!(
             "kafka.exporter.reconfigured",
@@ -1183,8 +1274,11 @@ pub mod test_support {
             let result = export_once(&mut exporter, pdata, &reporter).await;
             assert!(result.is_err());
             assert!(
-                matches!(result.unwrap_err(), KafkaExporterError::TopicRouting(_)),
-                "invalid dynamic topic should surface a TopicRouting error"
+                matches!(
+                    result.unwrap_err(),
+                    KafkaExporterError::InvalidHeaderTopic { .. }
+                ),
+                "invalid dynamic topic should surface an InvalidHeaderTopic error"
             );
 
             // Verify a permanent nack was reported (not a transient nack) and the
@@ -2189,7 +2283,7 @@ pub mod test_support {
             use crate::common::kafka::test::message::count_by_partition;
             let topic = "it-delivery-roundrobin";
             const PARTS: i32 = 4;
-            const N: usize = 40;
+            const N: usize = 80;
             with_cluster(
                 KafkaTestCluster::builder().topic_with(topic, PARTS, 1),
                 |cluster| async move {
@@ -2200,8 +2294,13 @@ pub mod test_support {
                             .await,
                         "consumer should be assigned all partitions"
                     );
+                    // The `random` partitioner picks a partition per message for
+                    // null-key records, so records spread across all partitions.
+                    // (The default `consistent_random` picks one partition per
+                    // batch and can leave partitions empty over a small sample.)
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_partitioning_strategy(PartitionerStrategy::Random)
                         .try_into()
                         .expect("config should be valid");
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
@@ -2227,9 +2326,12 @@ pub mod test_support {
                         PARTS as usize,
                         "null-key records should reach every partition, got {dist:?}"
                     );
-                    // Near-even: every partition holds at least half of its fair
-                    // share (fair share = N / PARTS = 10, so at least 5).
-                    let min_expected = (N / PARTS as usize) / 2;
+                    // Near-even: with the random partitioner every partition
+                    // should hold at least a quarter of its fair share (fair
+                    // share = N / PARTS = 20, so at least 5). This catches a
+                    // clustered / non-spreading distribution without depending on
+                    // the exact per-run balance.
+                    let min_expected = (N / PARTS as usize) / 4;
                     for ((t, p), count) in &dist {
                         assert!(
                             *count >= min_expected,
@@ -2407,7 +2509,7 @@ pub mod test_support {
         // ---- Security: dynamic-topic routing constraint (section 1) ----
 
         /// Scenario: a routing header requests a topic that is not permitted by
-        /// the signal's operator-configured prefix allowlist.
+        /// the signal's operator-configured regex allowlist.
         /// Guarantees: the disallowed header topic is permanently nacked (never
         /// transiently retried) and is not routed to the static topic, so a
         /// client-controlled header cannot direct data to an arbitrary topic.
@@ -2419,7 +2521,7 @@ pub mod test_support {
                     .with_logs(
                         SignalConfig::new("static-logs".into(), MessageFormat::OtlpProto)
                             .with_topic_from_transport_header("x-target-topic")
-                            .with_allowed_topic_prefixes(["tenant_"]),
+                            .with_allowed_topics_regex(["tenant_.*"]),
                     )
                     .try_into()
                     .expect("config should be valid");
@@ -2434,8 +2536,11 @@ pub mod test_support {
             let result = export_once(&mut exporter, pdata, &reporter).await;
             assert!(result.is_err());
             assert!(
-                matches!(result.unwrap_err(), KafkaExporterError::TopicRouting(_)),
-                "a disallowed dynamic topic should surface a TopicRouting error"
+                matches!(
+                    result.unwrap_err(),
+                    KafkaExporterError::DisallowedHeaderTopic { .. }
+                ),
+                "a disallowed dynamic topic should surface a DisallowedHeaderTopic error"
             );
             assert_eq!(reporter.ack_count(), 0);
             assert_eq!(
@@ -2450,7 +2555,7 @@ pub mod test_support {
             );
         }
 
-        /// Scenario: a routing header requests a topic permitted by the prefix
+        /// Scenario: a routing header requests a topic permitted by the regex
         /// allowlist, exported through the fully-wired node to the mock broker.
         /// Guarantees: an allowed header topic is produced to that topic, so the
         /// routing constraint does not block legitimate tenant-scoped routing.
@@ -2468,7 +2573,7 @@ pub mod test_support {
                         cluster.bootstrap_servers(),
                         SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
                             .with_topic_from_transport_header("x-target-topic")
-                            .with_allowed_topic_prefixes(["tenant_"]),
+                            .with_allowed_topics_regex(["tenant_.*"]),
                     );
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
 

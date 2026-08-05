@@ -455,34 +455,24 @@ pub const MAX_SANITIZED_LOG_LEN: usize = 64;
 /// avoid log injection (control characters, newlines that forge log records) and
 /// unbounded log growth, this:
 ///
-/// - escapes ASCII control characters (including `\n`, `\r`, `\t`) using Rust's
-///   `char::escape_default`, and
-/// - truncates the result to [`MAX_SANITIZED_LOG_LEN`] characters, appending an
+/// - escapes the value with [`str::escape_default`] (control characters, quotes,
+///   and non-ASCII become ASCII escapes), and
+/// - truncates the escaped result to [`MAX_SANITIZED_LOG_LEN`], appending an
 ///   ellipsis marker when truncation occurred.
 ///
-/// The (bounded) value is kept human-readable so operators can still diagnose
-/// routing problems; it is not redacted.
+/// The escaped output is pure ASCII, so byte-index truncation always lands on a
+/// char boundary. The (bounded) value is kept human-readable so operators can
+/// still diagnose routing problems; it is not redacted.
 #[must_use]
 pub fn sanitize_for_log(value: &str) -> String {
-    let mut out = String::with_capacity(value.len().min(MAX_SANITIZED_LOG_LEN) + 3);
-    let mut truncated = false;
-    for c in value.chars() {
-        if out.chars().count() >= MAX_SANITIZED_LOG_LEN {
-            truncated = true;
-            break;
-        }
-        if c.is_control() {
-            for e in c.escape_default() {
-                out.push(e);
-            }
-        } else {
-            out.push(c);
-        }
-    }
+    // clean up escape chars
+    let mut escaped: String = value.escape_default().collect();
+    let truncated = escaped.len() > MAX_SANITIZED_LOG_LEN;
+    escaped.truncate(MAX_SANITIZED_LOG_LEN);
     if truncated {
-        out.push_str("...");
+        escaped.push_str("...");
     }
-    out
+    escaped
 }
 
 #[cfg(test)]
