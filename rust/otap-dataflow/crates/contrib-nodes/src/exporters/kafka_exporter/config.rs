@@ -7,8 +7,8 @@ pub use crate::common::kafka::TlsConfig;
 use crate::common::kafka::auth::Auth;
 use crate::common::kafka::security::{apply_sasl_config, resolve_security_protocol};
 use crate::common::kafka::{
-    DebugContext, LogLevel, MessageFormat, debug_list_to_string, default_message_format_header,
-    validate_kafka_topic,
+    DebugContext, LogLevel, MAX_KAFKA_TOPIC_LEN, MessageFormat, debug_list_to_string,
+    default_message_format_header, validate_kafka_topic,
 };
 use rdkafka::ClientConfig;
 use serde::Deserialize;
@@ -27,6 +27,7 @@ pub(crate) const MANAGED_PRODUCER_CONFIG_KEYS: &[&str] = &[
     "message.max.bytes",
     "linger.ms",
     "partitioner",
+    "allow.auto.create.topics",
     "security.protocol",
     "ssl.ca.location",
     "ssl.certificate.location",
@@ -80,6 +81,35 @@ pub struct SignalConfig {
     /// which hashing algorithm librdkafka uses to map the key to a partition.
     #[serde(default)]
     partition_by_transport_headers: bool,
+
+    /// Operator allowlist of exact topic names permitted for
+    /// header-supplied (dynamic) routing.
+    ///
+    /// When non-empty, a topic selected via `topic_from_transport_header` must
+    /// exactly match one of these entries (or match an entry in
+    /// [`SignalConfig::allowed_topic_prefixes`]); otherwise the batch is
+    /// permanently nacked. Empty (the default) means no exact-match constraint.
+    ///
+    /// This constrains where a client-controlled routing header may direct data;
+    /// it does not affect the static `topic`, which the operator already
+    /// controls.
+    #[serde(default)]
+    allowed_topics: Vec<String>,
+
+    /// Operator allowlist of topic-name prefixes permitted for header-supplied
+    /// (dynamic) routing.
+    ///
+    /// When non-empty, a topic selected via `topic_from_transport_header` must
+    /// start with one of these prefixes (or exactly match an entry in
+    /// [`SignalConfig::allowed_topics`]); otherwise the batch is permanently
+    /// nacked. Empty (the default) means no prefix constraint. Use this to scope
+    /// dynamic routing to a tenant namespace (e.g. `tenant_`).
+    ///
+    /// This constrains where a client-controlled routing header may direct data;
+    /// it does not affect the static `topic`, which the operator already
+    /// controls.
+    #[serde(default)]
+    allowed_topic_prefixes: Vec<String>,
 }
 
 impl SignalConfig {
@@ -91,6 +121,8 @@ impl SignalConfig {
             encoding,
             topic_from_transport_header: None,
             partition_by_transport_headers: false,
+            allowed_topics: Vec::new(),
+            allowed_topic_prefixes: Vec::new(),
         }
     }
 
@@ -130,6 +162,67 @@ impl SignalConfig {
     pub fn with_partition_by_transport_headers(mut self, enabled: bool) -> Self {
         self.partition_by_transport_headers = enabled;
         self
+    }
+
+    /// The exact-match allowlist of topics permitted for header-supplied
+    /// routing. Empty means no exact-match constraint.
+    #[must_use]
+    pub fn allowed_topics(&self) -> &[String] {
+        &self.allowed_topics
+    }
+
+    /// Set the exact-match allowlist of topics permitted for header-supplied
+    /// routing.
+    #[must_use]
+    pub fn with_allowed_topics<I, S>(mut self, topics: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allowed_topics = topics.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The prefix allowlist for topics permitted for header-supplied routing.
+    /// Empty means no prefix constraint.
+    #[must_use]
+    pub fn allowed_topic_prefixes(&self) -> &[String] {
+        &self.allowed_topic_prefixes
+    }
+
+    /// Set the prefix allowlist for topics permitted for header-supplied
+    /// routing.
+    #[must_use]
+    pub fn with_allowed_topic_prefixes<I, S>(mut self, prefixes: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allowed_topic_prefixes = prefixes.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Returns `true` if this signal has any header-routing constraint
+    /// (exact allowlist or prefix allowlist) configured.
+    #[must_use]
+    pub fn has_dynamic_topic_constraint(&self) -> bool {
+        !self.allowed_topics.is_empty() || !self.allowed_topic_prefixes.is_empty()
+    }
+
+    /// Returns `true` if `topic` satisfies this signal's header-routing
+    /// constraint. When no constraint is configured, every (already
+    /// syntactically valid) topic is permitted.
+    #[must_use]
+    pub fn is_dynamic_topic_allowed(&self, topic: &str) -> bool {
+        if !self.has_dynamic_topic_constraint() {
+            return true;
+        }
+        if self.allowed_topics.iter().any(|t| t == topic) {
+            return true;
+        }
+        self.allowed_topic_prefixes
+            .iter()
+            .any(|p| topic.starts_with(p.as_str()))
     }
 }
 
@@ -238,6 +331,17 @@ pub struct KafkaExporterConfigBuilder {
     #[serde(default = "default_partitioning_strategy")]
     partitioning_strategy: PartitionerStrategy,
 
+    /// Whether the broker may auto-create topics this exporter produces to
+    /// (maps to librdkafka `allow.auto.create.topics`).
+    ///
+    /// Defaults to `false` (default-deny). Because a client-controlled routing
+    /// header can select the destination topic, leaving auto-creation enabled
+    /// would let a client cause the broker to spawn arbitrary topics. Operators
+    /// must explicitly opt in. This value is always written to the client config
+    /// and takes precedence over any `producer_config` entry for the same key.
+    #[serde(default)]
+    allow_auto_create_topics: bool,
+
     /// Kafka header key for the message format indicator.
     ///
     /// The exporter writes the encoding format (`otlp` or `otap`) under this
@@ -311,6 +415,7 @@ impl KafkaExporterConfigBuilder {
             auth: None,
             tls: None,
             partitioning_strategy: default_partitioning_strategy(),
+            allow_auto_create_topics: false,
             message_format_header: default_message_format_header(),
             debug: None,
             log_level: None,
@@ -402,6 +507,13 @@ impl KafkaExporterConfigBuilder {
         self
     }
 
+    /// Set whether the broker may auto-create topics (default: `false`).
+    #[must_use]
+    pub fn with_allow_auto_create_topics(mut self, allow: bool) -> Self {
+        self.allow_auto_create_topics = allow;
+        self
+    }
+
     /// Set the message format header key.
     ///
     /// Defaults to `"MessageFormat"` when not explicitly set.
@@ -466,6 +578,18 @@ impl KafkaExporterConfigBuilder {
         // Partitioner strategy
         _ = config.set("partitioner", self.partitioning_strategy.as_kafka_value());
 
+        // Topic auto-creation posture (default-deny). Always written so a
+        // client-controlled routing header cannot rely on the librdkafka default
+        // to spawn arbitrary broker-side topics.
+        _ = config.set(
+            "allow.auto.create.topics",
+            if self.allow_auto_create_topics {
+                "true"
+            } else {
+                "false"
+            },
+        );
+
         // Security protocol, TLS, and SASL settings (shared with receiver)
         let protocol = resolve_security_protocol(self.tls.as_ref(), self.auth.as_ref());
         _ = config.set("security.protocol", protocol);
@@ -501,6 +625,50 @@ impl KafkaExporterConfigBuilder {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "KafkaExporterConfigBuilder")]
 pub struct KafkaExporterConfig(KafkaExporterConfigBuilder);
+
+/// Validates that `prefix` is usable as a Kafka topic-name prefix for the
+/// dynamic-routing allowlist.
+///
+/// A prefix need not be a complete topic, but it must be non-empty, within the
+/// topic-length limit, and contain only characters that are legal in a Kafka
+/// topic name, so it can only ever match syntactically valid topics.
+fn validate_kafka_topic_prefix(prefix: &str) -> Result<(), String> {
+    if prefix.is_empty() {
+        return Err("topic prefix must not be empty".to_string());
+    }
+    if prefix.len() > MAX_KAFKA_TOPIC_LEN {
+        return Err(format!(
+            "topic prefix exceeds maximum length of {MAX_KAFKA_TOPIC_LEN} characters"
+        ));
+    }
+    if let Some(pos) = prefix
+        .bytes()
+        .position(|b| !(b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-'))
+    {
+        let bad_char = prefix.as_bytes()[pos] as char;
+        return Err(format!(
+            "topic prefix contains invalid character '{bad_char}' at position {pos}; \
+             only [a-zA-Z0-9._-] are allowed"
+        ));
+    }
+    Ok(())
+}
+
+/// Validates a signal's static topic and its dynamic-routing allowlist entries.
+///
+/// Errors are prefixed with the field name (e.g. `topic:`,
+/// `allowed_topics[0]:`, `allowed_topic_prefixes[1]:`) so the caller can prepend
+/// the signal name.
+fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
+    validate_kafka_topic(&signal.topic).map_err(|e| format!("topic: {e}"))?;
+    for (i, t) in signal.allowed_topics.iter().enumerate() {
+        validate_kafka_topic(t).map_err(|e| format!("allowed_topics[{i}]: {e}"))?;
+    }
+    for (i, p) in signal.allowed_topic_prefixes.iter().enumerate() {
+        validate_kafka_topic_prefix(p).map_err(|e| format!("allowed_topic_prefixes[{i}]: {e}"))?;
+    }
+    Ok(())
+}
 
 impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
     type Error = String;
@@ -543,15 +711,15 @@ impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
             ));
         }
 
-        // Validate topic names for each configured signal
+        // Validate topic names and dynamic-routing allowlists for each signal.
         if let Some(ref signal) = builder.traces {
-            validate_kafka_topic(&signal.topic).map_err(|e| format!("traces.topic: {e}"))?;
+            validate_signal_topics(signal).map_err(|e| format!("traces.{e}"))?;
         }
         if let Some(ref signal) = builder.metrics {
-            validate_kafka_topic(&signal.topic).map_err(|e| format!("metrics.topic: {e}"))?;
+            validate_signal_topics(signal).map_err(|e| format!("metrics.{e}"))?;
         }
         if let Some(ref signal) = builder.logs {
-            validate_kafka_topic(&signal.topic).map_err(|e| format!("logs.topic: {e}"))?;
+            validate_signal_topics(signal).map_err(|e| format!("logs.{e}"))?;
         }
 
         // Validate auth configuration when present
@@ -670,6 +838,12 @@ impl KafkaExporterConfig {
     #[must_use]
     pub fn partitioning_strategy(&self) -> PartitionerStrategy {
         self.0.partitioning_strategy
+    }
+
+    /// Whether the broker may auto-create topics this exporter produces to.
+    #[must_use]
+    pub fn allow_auto_create_topics(&self) -> bool {
+        self.0.allow_auto_create_topics
     }
 
     /// The Kafka header key used for the message format indicator.
@@ -1570,6 +1744,65 @@ mod tests {
         assert!(config.overridden_producer_config_keys().is_empty());
     }
 
+    // ---- Security: allow.auto.create.topics (default-deny) ----
+
+    /// Scenario: build the librdkafka client config from a default exporter
+    /// config.
+    /// Guarantees: `allow.auto.create.topics` is explicitly set to `false` by
+    /// default, so a client-controlled routing header cannot rely on the broker
+    /// auto-creating arbitrary topics.
+    #[test]
+    fn build_client_config_defaults_auto_create_to_false() {
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .try_into()
+            .unwrap();
+        let client = config.build_client_config();
+        assert_eq!(client.get("allow.auto.create.topics"), Some("false"));
+    }
+
+    /// Scenario: an operator explicitly opts in to broker auto-creation.
+    /// Guarantees: `with_allow_auto_create_topics(true)` sets
+    /// `allow.auto.create.topics` to `true` in the built client config.
+    #[test]
+    fn build_client_config_allows_auto_create_when_opted_in() {
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_allow_auto_create_topics(true)
+            .try_into()
+            .unwrap();
+        let client = config.build_client_config();
+        assert_eq!(client.get("allow.auto.create.topics"), Some("true"));
+    }
+
+    /// Scenario: a `producer_config` passthrough tries to set
+    /// `allow.auto.create.topics`.
+    /// Guarantees: the key is a managed key -- the first-class field wins in the
+    /// built config, and the conflict is reported by
+    /// `overridden_producer_config_keys` so the operator is warned.
+    #[test]
+    fn auto_create_key_is_managed_and_first_class_field_wins() {
+        let overrides =
+            HashMap::from([("allow.auto.create.topics".to_string(), "true".to_string())]);
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_producer_config(overrides)
+            .try_into()
+            .unwrap();
+
+        // The managed default-deny value wins over the passthrough.
+        let client = config.build_client_config();
+        assert_eq!(client.get("allow.auto.create.topics"), Some("false"));
+
+        // And the conflict is surfaced for an operator warning.
+        assert!(
+            config
+                .overridden_producer_config_keys()
+                .contains(&"allow.auto.create.topics"),
+            "auto-create should be a managed key so the override is reported"
+        );
+    }
+
     // ---- Dynamic topic routing fields (per-signal) ----
 
     #[test]
@@ -1608,6 +1841,80 @@ mod tests {
 
         assert_eq!(signal.topic_from_transport_header(), Some("x_target_topic"));
         assert_eq!(signal.topic(), "otlp_logs");
+    }
+
+    // ---- Security: dynamic-routing allowlist config ----
+
+    /// Scenario: build a config with valid allowlist and prefix entries.
+    /// Guarantees: valid allowlist/prefix entries are accepted and readable, and
+    /// `is_dynamic_topic_allowed` reflects the configured policy (exact-or-prefix
+    /// match, deny otherwise).
+    #[test]
+    fn allowlist_config_is_accepted_and_enforced() {
+        let signal = SignalConfig::new("static".into(), MessageFormat::OtlpProto)
+            .with_topic_from_transport_header("x-target-topic")
+            .with_allowed_topics(["approved"])
+            .with_allowed_topic_prefixes(["tenant_"]);
+
+        assert_eq!(signal.allowed_topics(), &["approved".to_string()]);
+        assert_eq!(signal.allowed_topic_prefixes(), &["tenant_".to_string()]);
+        assert!(signal.has_dynamic_topic_constraint());
+        assert!(signal.is_dynamic_topic_allowed("approved"));
+        assert!(signal.is_dynamic_topic_allowed("tenant_a"));
+        assert!(!signal.is_dynamic_topic_allowed("other"));
+
+        // The config as a whole validates.
+        let _config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(signal)
+            .try_into()
+            .expect("config with allowlist should be valid");
+    }
+
+    /// Scenario: no allowlist is configured.
+    /// Guarantees: `is_dynamic_topic_allowed` permits any topic (backwards
+    /// compatible), and no constraint is reported.
+    #[test]
+    fn no_allowlist_permits_any_topic() {
+        let signal = SignalConfig::new("static".into(), MessageFormat::OtlpProto);
+        assert!(!signal.has_dynamic_topic_constraint());
+        assert!(signal.is_dynamic_topic_allowed("literally-anything"));
+    }
+
+    /// Scenario: an allowlist entry is not a syntactically valid Kafka topic.
+    /// Guarantees: config validation rejects it (with a field-scoped message),
+    /// so an operator cannot configure an unusable allowlist entry.
+    #[test]
+    fn invalid_allowlist_entry_is_rejected() {
+        let result: Result<KafkaExporterConfig, _> = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(
+                SignalConfig::new("static".into(), MessageFormat::OtlpProto)
+                    .with_allowed_topics(["bad topic/name"]),
+            )
+            .try_into();
+        let err = result.expect_err("invalid allowlist entry should be rejected");
+        assert!(
+            err.contains("allowed_topics[0]"),
+            "error should point at the offending entry, got: {err}"
+        );
+    }
+
+    /// Scenario: a prefix allowlist entry contains characters illegal in a Kafka
+    /// topic name.
+    /// Guarantees: config validation rejects it, so a prefix can only ever match
+    /// syntactically valid topics.
+    #[test]
+    fn invalid_prefix_entry_is_rejected() {
+        let result: Result<KafkaExporterConfig, _> = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(
+                SignalConfig::new("static".into(), MessageFormat::OtlpProto)
+                    .with_allowed_topic_prefixes(["bad prefix"]),
+            )
+            .try_into();
+        let err = result.expect_err("invalid prefix entry should be rejected");
+        assert!(
+            err.contains("allowed_topic_prefixes[0]"),
+            "error should point at the offending prefix, got: {err}"
+        );
     }
 
     #[test]

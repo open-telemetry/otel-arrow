@@ -17,13 +17,24 @@
 //! Each signal type can use a different transport header key (or none), allowing
 //! independent dynamic routing per signal.
 //!
-
-// TODO: allow prefix or acl mechanism so the operator can have some control over where these messages wind up (e.g. topic must start with tenant_)
-// TODO: Consider adding an operator-controlled restriction (e.g., allowlist, prefix constraint, or regex)
+//! # Security: constraining dynamic routing
+//!
+//! A client-controlled transport header can select the destination topic, so a
+//! header-supplied topic is constrained two ways before it is used:
+//!
+//! 1. It must be a syntactically valid Kafka topic ([`validate_kafka_topic`]).
+//! 2. If the signal configures an operator allowlist
+//!    ([`SignalConfig::allowed_topics`]) or prefix allowlist
+//!    ([`SignalConfig::allowed_topic_prefixes`]), the topic must match it.
+//!
+//! A header-supplied topic that fails either check is non-retryable, so the
+//! batch is permanently nacked rather than being rerouted to the static topic.
+//! The static per-signal topic is operator-controlled and is never subject to
+//! the allowlist.
 
 use super::config::SignalConfig;
 use super::metrics::KafkaExporterMetrics;
-use crate::common::kafka::validate_kafka_topic;
+use crate::common::kafka::{sanitize_for_log, validate_kafka_topic};
 use otap_df_config::transport_headers::TransportHeader;
 use otap_df_otap::pdata::Context;
 use std::borrow::Cow;
@@ -37,10 +48,23 @@ pub enum TopicRoutingError {
     /// than silently rerouting it to the static topic.
     #[error("invalid Kafka topic '{topic}' from transport header: {reason}")]
     InvalidHeaderTopic {
-        /// The offending topic value extracted from the transport header.
+        /// The offending topic value extracted from the transport header
+        /// (already sanitized/bounded for safe rendering).
         topic: String,
         /// Human-readable reason the topic failed validation.
         reason: String,
+    },
+
+    /// A topic was supplied via a transport header and is a syntactically valid
+    /// Kafka topic, but it is not permitted by the signal's operator-configured
+    /// dynamic-routing allowlist (exact or prefix). Non-retryable: the batch is
+    /// permanently nacked rather than routed to a disallowed destination or the
+    /// static topic.
+    #[error("Kafka topic '{topic}' from transport header is not allowed by the routing policy")]
+    DisallowedHeaderTopic {
+        /// The disallowed topic value (already sanitized/bounded for safe
+        /// rendering).
+        topic: String,
     },
 }
 
@@ -48,9 +72,11 @@ impl TopicRoutingError {
     /// Builds an [`TopicRoutingError::InvalidHeaderTopic`] and emits the routing
     /// warning once, so all "header present but unusable as a topic" cases
     /// (non-UTF-8 value or failed Kafka topic validation) share a single
-    /// construction and log site.
-    fn invalid_header_topic(topic: impl Into<String>, reason: impl Into<String>) -> Self {
-        let topic = topic.into();
+    /// construction and log site. The topic value is sanitized/bounded before
+    /// it is logged or stored, since it is client-controlled and may be
+    /// adversarial.
+    fn invalid_header_topic(topic: impl AsRef<str>, reason: impl Into<String>) -> Self {
+        let topic = sanitize_for_log(topic.as_ref());
         let reason = reason.into();
         otap_df_telemetry::otel_warn!(
             "kafka.exporter.topic.invalid_header",
@@ -59,6 +85,20 @@ impl TopicRoutingError {
             "invalid Kafka topic from transport header, permanently nacking batch"
         );
         Self::InvalidHeaderTopic { topic, reason }
+    }
+
+    /// Builds a [`TopicRoutingError::DisallowedHeaderTopic`] and emits the
+    /// routing warning once. The topic value is sanitized/bounded before it is
+    /// logged or stored, since it is client-controlled.
+    fn disallowed_header_topic(topic: impl AsRef<str>) -> Self {
+        let topic = sanitize_for_log(topic.as_ref());
+        otap_df_telemetry::otel_warn!(
+            "kafka.exporter.topic.disallowed_header",
+            header_topic = %topic,
+            "Kafka topic from transport header is not permitted by the routing policy, \
+             permanently nacking batch"
+        );
+        Self::DisallowedHeaderTopic { topic }
     }
 }
 
@@ -88,6 +128,13 @@ impl TopicRouter {
     /// batch, since rerouting an explicitly-requested-but-invalid topic to the
     /// static topic could silently misdeliver tenant data.
     ///
+    /// If a syntactically valid header topic is not permitted by the signal's
+    /// operator-configured allowlist ([`SignalConfig::allowed_topics`] /
+    /// [`SignalConfig::allowed_topic_prefixes`]), this returns
+    /// [`TopicRoutingError::DisallowedHeaderTopic`] (also a permanent-nack
+    /// condition). When no allowlist is configured, every syntactically valid
+    /// header topic is permitted (backwards compatible).
+    ///
     /// # Arguments
     ///
     /// * `signal_config` - The per-signal config (carries the static topic and optional header key)
@@ -113,6 +160,14 @@ impl TopicRouter {
             })?;
             validate_kafka_topic(topic)
                 .map_err(|reason| TopicRoutingError::invalid_header_topic(topic, reason))?;
+
+            // Operator-controlled routing constraint: a syntactically valid
+            // header topic must still be permitted by the signal's allowlist
+            // (exact or prefix), if one is configured. This bounds where a
+            // client-controlled routing header may direct data.
+            if !signal_config.is_dynamic_topic_allowed(topic) {
+                return Err(TopicRoutingError::disallowed_header_topic(topic));
+            }
 
             metrics.inc_topic_from_header();
             return Ok(Cow::Owned(topic.to_owned()));
@@ -451,5 +506,124 @@ mod tests {
         assert_eq!(&*topic, "tenant-a-logs");
         assert_eq!(metrics.topic_from_header.get(), 1);
         assert_eq!(metrics.topic_from_static_config.get(), 0);
+    }
+
+    // ---- Security: operator allowlist / prefix constraint on dynamic routing ----
+
+    /// Scenario: a header-supplied topic that matches the configured prefix
+    /// allowlist.
+    /// Guarantees: a header topic within an allowed prefix is routed normally,
+    /// so legitimate tenant-scoped routing keeps working under a constraint.
+    #[test]
+    fn test_allowed_prefix_permits_matching_header_topic() {
+        let config = make_signal_config("fallback", Some("x-topic"))
+            .with_allowed_topic_prefixes(["tenant_"]);
+        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "tenant_a_logs")]);
+        let mut metrics = KafkaExporterMetrics::default();
+
+        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("allowed topic");
+        assert_eq!(&*topic, "tenant_a_logs");
+        assert_eq!(metrics.topic_from_header.get(), 1);
+        assert_eq!(metrics.topic_from_static_config.get(), 0);
+    }
+
+    /// Scenario: a syntactically valid header-supplied topic that matches
+    /// neither the prefix allowlist nor the exact allowlist.
+    /// Guarantees: a disallowed header topic returns `DisallowedHeaderTopic`
+    /// (permanent-nack condition) without falling back to the static topic and
+    /// without incrementing a routing metric, so a client cannot direct data to
+    /// an arbitrary topic.
+    #[test]
+    fn test_disallowed_header_topic_is_rejected_without_fallback() {
+        let config = make_signal_config("fallback", Some("x-topic"))
+            .with_allowed_topic_prefixes(["tenant_"]);
+        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "evil-topic")]);
+        let mut metrics = KafkaExporterMetrics::default();
+
+        let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
+        assert!(matches!(
+            result,
+            Err(TopicRoutingError::DisallowedHeaderTopic { .. })
+        ));
+        assert_eq!(metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.topic_from_header.get(), 0);
+    }
+
+    /// Scenario: a header-supplied topic that exactly matches the exact-match
+    /// allowlist.
+    /// Guarantees: an exact-allowlisted header topic is routed, while the
+    /// constraint still applies (see the disallowed case).
+    #[test]
+    fn test_exact_allowlist_permits_listed_header_topic() {
+        let config = make_signal_config("fallback", Some("x-topic"))
+            .with_allowed_topics(["approved-a", "approved-b"]);
+        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "approved-b")]);
+        let mut metrics = KafkaExporterMetrics::default();
+
+        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("allowed topic");
+        assert_eq!(&*topic, "approved-b");
+        assert_eq!(metrics.topic_from_header.get(), 1);
+    }
+
+    /// Scenario: a header topic matches an entry in the exact allowlist while a
+    /// prefix allowlist is also configured (either may satisfy the constraint).
+    /// Guarantees: exact-list and prefix-list are combined with OR semantics.
+    #[test]
+    fn test_exact_or_prefix_allowlist_combined() {
+        let config = make_signal_config("fallback", Some("x-topic"))
+            .with_allowed_topics(["special-topic"])
+            .with_allowed_topic_prefixes(["tenant_"]);
+        let mut metrics = KafkaExporterMetrics::default();
+
+        // Matches exact allowlist (not the prefix).
+        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "special-topic")]);
+        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("exact match");
+        assert_eq!(&*topic, "special-topic");
+
+        // Matches the prefix (not the exact list).
+        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "tenant_x")]);
+        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("prefix match");
+        assert_eq!(&*topic, "tenant_x");
+
+        // Matches neither.
+        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "other")]);
+        let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
+        assert!(matches!(
+            result,
+            Err(TopicRoutingError::DisallowedHeaderTopic { .. })
+        ));
+    }
+
+    /// Scenario: no allowlist/prefix constraint is configured (the default).
+    /// Guarantees: dynamic routing is unrestricted (backwards compatible) -- any
+    /// syntactically valid header topic is accepted.
+    #[test]
+    fn test_no_constraint_allows_any_valid_header_topic() {
+        let config = make_signal_config("fallback", Some("x-topic"));
+        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "anything-valid")]);
+        let mut metrics = KafkaExporterMetrics::default();
+
+        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
+        assert_eq!(&*topic, "anything-valid");
+        assert_eq!(metrics.topic_from_header.get(), 1);
+    }
+
+    /// Scenario: an allowlist is configured, but the request uses the static
+    /// (config) topic path because no routing header is present.
+    /// Guarantees: the allowlist constrains only the header-supplied path; the
+    /// operator-controlled static topic is never subject to it.
+    #[test]
+    fn test_allowlist_does_not_constrain_static_topic() {
+        // Static topic "fallback" is not in the allowlist, but it must still be
+        // used when no routing header is present.
+        let config = make_signal_config("fallback", Some("x-topic"))
+            .with_allowed_topic_prefixes(["tenant_"]);
+        let ctx = Context::default();
+        let mut metrics = KafkaExporterMetrics::default();
+
+        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
+        assert_eq!(&*topic, "fallback");
+        assert_eq!(metrics.topic_from_static_config.get(), 1);
+        assert_eq!(metrics.topic_from_header.get(), 0);
     }
 }

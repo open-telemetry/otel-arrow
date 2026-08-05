@@ -49,6 +49,7 @@ config:
 | `auth` | object | *none* | Authentication configuration (see [Authentication](#authentication)). |
 | `tls` | object | *none* | TLS configuration (see [TLS Configuration](#tls-configuration)). |
 | `partitioning_strategy` | string | `"consistent_random"` | Librdkafka partitioner algorithm. See [Partitioning](#partitioning). |
+| `allow_auto_create_topics` | bool | `false` | Whether the broker may auto-create topics this exporter produces to (`allow.auto.create.topics`). Defaults to `false` (default-deny) because header-driven routing could otherwise let a client spawn arbitrary topics. See [Security](#security). |
 | `producer_config` | map | `{}` | Additional librdkafka producer settings as key-value string pairs. |
 | `message_format_header` | string | `"MessageFormat"` | Kafka header key for the message format indicator. Each outgoing message includes a header with this key and value `otlp` or `otap`, allowing consumers to detect the encoding. |
 | `debug` | list | *none* | List of librdkafka debug contexts: `generic`, `broker`, `topic`, `metadata`, `feature`, `queue`, `msg`, `protocol`, `cgrp`, `security`, `fetch`, `interceptor`, `plugin`, `consumer`, `admin`, `eos`, `mock`, `assignor`, `conf`, `telemetry`, `all`. |
@@ -67,6 +68,8 @@ permanently nack it (non-retryable).
 | `encoding` | string | `"otlp_proto"` | Encoding format: `otlp_proto` or `otap_proto`. |
 | `topic_from_transport_header` | string | *none* | Transport header name for dynamic topic routing. When set and the header is present with a valid topic, its value overrides `topic`; if the header is absent the static `topic` is used, and if present but invalid the batch is permanently nacked. See [Dynamic Topic Routing](#dynamic-topic-routing). |
 | `partition_by_transport_headers` | bool | `false` | Serialize all transport headers into a Kafka record key. See [Partitioning](#partitioning). |
+| `allowed_topics` | list of strings | *empty* | Operator allowlist of exact topic names permitted for header-supplied (dynamic) routing. Empty means no exact-match constraint. See [Security](#security). |
+| `allowed_topic_prefixes` | list of strings | *empty* | Operator allowlist of topic-name prefixes permitted for header-supplied (dynamic) routing (e.g. `tenant_`). Empty means no prefix constraint. See [Security](#security). |
 
 ### Dynamic Topic Routing
 
@@ -96,6 +99,48 @@ If a transport header *is* present but supplies an invalid Kafka topic name,
 the batch is **permanently nacked** rather than silently routed to the static
 `topic`. This avoids misdelivering data that explicitly requested a different
 (but unusable) destination.
+
+### Security
+
+Because a client-controlled transport header can influence routing and
+partitioning, the exporter provides operator controls for the trust boundary.
+
+#### Constraining dynamic topic routing
+
+A header-supplied topic (`topic_from_transport_header`) is always validated for
+Kafka topic-name syntax. In addition, each signal may declare an operator
+allowlist so a client cannot direct data to an arbitrary topic:
+
+- `allowed_topics`: exact topic names permitted for header routing.
+- `allowed_topic_prefixes`: permitted topic-name prefixes (e.g. `tenant_`).
+
+When either list is non-empty, a header-supplied topic must match the exact list
+or start with one of the prefixes; otherwise the batch is **permanently nacked**
+(non-retryable) and is not routed to the static `topic`. When both lists are
+empty (the default), dynamic routing is unrestricted (backwards compatible). The
+allowlist constrains only the header-supplied path -- the static per-signal
+`topic` is operator-controlled and is never subject to it.
+
+#### Topic auto-creation (default-deny)
+
+`allow_auto_create_topics` defaults to `false` and is always written to the
+librdkafka client config (`allow.auto.create.topics`). Combined with
+header-driven routing, leaving auto-creation enabled would let a client cause
+the broker to spawn arbitrary topics, so operators must explicitly opt in. The
+key is managed: setting it through the `producer_config` escape hatch is
+overridden by the first-class field and reported via the
+`kafka.exporter.producer_config.overridden_key` warning.
+
+#### Partition-key fingerprinting
+
+When `partition_by_transport_headers` is enabled, the record key is a
+deterministic 16-character hash of the transport header names and values -- never
+the plaintext value -- so tenant IDs / auth tokens are not exposed in the record
+key. The accepted tradeoff is that a given tenant/token produces a *stable* key,
+which makes its traffic fingerprintable via partition-assignment analysis; this
+is intentional (co-locating a tenant's data is the feature). Leave
+`partition_by_transport_headers` disabled (the default) for null-key
+round-robin partitioning.
 
 ### Authentication
 
@@ -442,6 +487,9 @@ mechanisms, and routing/partitioning options -- see the tables above.
 2. `client_id` must be non-empty.
 3. At least one signal (`traces`, `metrics`, or `logs`) must be configured.
 4. Unknown configuration fields are rejected (`deny_unknown_fields`).
+5. Each signal's `topic`, and every entry in `allowed_topics` /
+   `allowed_topic_prefixes`, must be a syntactically valid Kafka topic name /
+   prefix.
 
 ## Examples
 
