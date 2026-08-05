@@ -870,7 +870,7 @@ mod tests {
 
             let mut admin_values = Vec::new();
             registry.visit_admin_metrics_and_reset(|_, _, metrics| {
-                admin_values.extend(metrics.map(|(_, value)| value));
+                admin_values.extend(metrics.map(|(_, value)| value.clone()));
             });
             assert_eq!(
                 admin_values,

@@ -132,7 +132,8 @@ impl SavedCallsite {
 
 /// A log record encoded on the stack, not yet converted to `Bytes`.
 ///
-/// Returned by [`__log_record_impl!`]. Callers choose how to consume it:
+/// Returned by the `__log_record_impl!` macro, which is an implementation
+/// detail hidden from these docs. Callers choose how to consume it:
 /// - [`as_view()`](Self::as_view) for zero-copy formatting (e.g., `raw_error!`)
 /// - [`into_record()`](Self::into_record) to produce an owned `LogRecord`
 ///   with reference-counted `Bytes` storage

@@ -913,7 +913,7 @@ mod tests {
                         for (field, value) in iter {
                             if field.name == "consumed.items" {
                                 if let otap_df_telemetry::metrics::MetricValue::U64(c) = value {
-                                    expected_logs_consumed = c;
+                                    expected_logs_consumed = *c;
                                 }
                             }
                         }
