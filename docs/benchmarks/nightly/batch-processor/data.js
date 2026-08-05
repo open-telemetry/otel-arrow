@@ -1,402 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785872241024,
+  "lastUpdate": 1785896089313,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Cijo Thomas",
-            "username": "cijothomas",
-            "email": "cijo.thomas@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "672d665198917e2ede1ed856a9f88925ef2b151f",
-          "message": "perf: add egress_bytes_per_log metric to benchmark reports (#2982)\n\n## Summary\n\nTwo changes to benchmark report metrics:\n\n### 1. Add `egress_bytes_per_log` metric\nAdds a derived metric (bytes/log) computed as `network_tx_bytes_rate /\nlogs_received_rate`. This makes it easy to assess whether compression\nratios in tests are realistic.\n\nFor a ~150 byte log record, realistic values should be ~35-50 bytes/log.\nValues like ~27 bytes/log indicate unrealistic compression from\nlow-entropy test data (e.g., replayed identical payloads).\n\n### 2. Switch network metrics from bytes/sec to MB/s\nReplaces `network_tx_bytes_rate_avg` and `network_rx_bytes_rate_avg`\n(bytes/sec) with `network_tx_mb_per_sec` and `network_rx_mb_per_sec`\n(MB/s) for readability. Raw bytes/sec values like 2,689,390 are hard to\ninterpret at a glance; 2.56 MB/s is immediately meaningful.\n\n### Files changed\n- `integration/configs/integration_report_logs.yaml`\n- `integration/configs/integration_report_metrics.yaml`\n- `integration/configs/integration_report_traces.yaml`\n- `comparison_dashboard/reports/report_logs.yaml`\n- `comparison_dashboard/reports/report_metrics.yaml`\n- `comparison_dashboard/reports/report_traces.yaml`\n\nRelates to #2540",
-          "timestamp": "2026-05-15T22:28:24Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/672d665198917e2ede1ed856a9f88925ef2b151f"
-        },
-        "date": 1778897339846,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_signals_percentage",
-            "value": 1.75,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Dropped Metrics %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 41.113503668393044,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 43.23606086352051,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 23.760286458333333,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 26.8828125,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "metrics_produced_rate",
-            "value": 99996.53512005809,
-            "unit": "metrics/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Metric Throughput"
-          },
-          {
-            "name": "metrics_received_rate",
-            "value": 98246.59575545706,
-            "unit": "metrics/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Metric Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002079,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_mb_per_sec",
-            "value": 0.9033171150016518,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_mb_per_sec",
-            "value": 1.2448861106445421,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.55952809635494,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 64.96123896546383,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.694010416666668,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.27734375,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98327.9875684092,
-            "unit": "logs/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98327.9875684092,
-            "unit": "logs/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003262,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_mb_per_sec",
-            "value": 2.4915212266503977,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_mb_per_sec",
-            "value": 2.425333049622355,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 26.569743023964083,
-            "unit": "bytes/log",
-            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 1.75,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 37.57776520386486,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 38.55547769212801,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 24.317447916666666,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 25.9765625,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99986.38018857865,
-            "unit": "logs/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98236.61853527853,
-            "unit": "logs/sec",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.008173,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_mb_per_sec",
-            "value": 0.5734136206025078,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_mb_per_sec",
-            "value": 0.7239041452613095,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 6.1206072603259365,
-            "unit": "bytes/log",
-            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_signals_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Dropped Metrics %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.80713214600932,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 66.28495704001858,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.861328125,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.30859375,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "metrics_produced_rate",
-            "value": 98328.87903511304,
-            "unit": "metrics/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Metric Throughput"
-          },
-          {
-            "name": "metrics_received_rate",
-            "value": 98328.87903511304,
-            "unit": "metrics/sec",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Metric Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002718,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_mb_per_sec",
-            "value": 4.252218156660948,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_mb_per_sec",
-            "value": 4.226051062745624,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_signals_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Dropped Spans %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 66.47817842401054,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 66.93050282792284,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.636067708333332,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.62109375,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "spans_produced_rate",
-            "value": 74147.40484083057,
-            "unit": "spans/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Span Throughput"
-          },
-          {
-            "name": "spans_received_rate",
-            "value": 74147.40484083057,
-            "unit": "spans/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Span Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.0021,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_mb_per_sec",
-            "value": 10.268680157884496,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_mb_per_sec",
-            "value": 10.17974773176697,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_signals_percentage",
-            "value": 1.4194915294647217,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Dropped Spans %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 42.62575617887439,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 43.585400732144244,
-            "unit": "%",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 38.17565104166667,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 41.40625,
-            "unit": "MiB",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "spans_produced_rate",
-            "value": 78664.4509512982,
-            "unit": "spans/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Span Throughput"
-          },
-          {
-            "name": "spans_received_rate",
-            "value": 77547.81573652342,
-            "unit": "spans/sec",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Span Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.00169,
-            "unit": "seconds",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_mb_per_sec",
-            "value": 2.9313379890712543,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_mb_per_sec",
-            "value": 3.1713493979633887,
-            "unit": "MB/s",
-            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -39088,6 +38694,400 @@ window.BENCHMARK_DATA = {
             "value": 8.127098980734303,
             "unit": "bytes/log",
             "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Gokhan Uslu",
+            "username": "gouslu",
+            "email": "geukhanuslu@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1ba295db09906ce56c3b0c39c846b432a3d70999",
+          "message": "feat(engine): generalize AuthorizedIdentity into a scheme-agnostic claims model (#3648)\n\n## Description\n\nGeneralizes `capability::auth::AuthorizedIdentity` into a\n**scheme-agnostic claims model** so a single identity type serves every\nauthentication method (Kubernetes SAT, OIDC/JWT, mutual TLS) rather than\nbeing limited to a subject and audience.\n\n`AuthorizedIdentity` now carries:\n- an optional **`principal`** (the primary human/service identity),\n- an optional **`scheme`** tag (which auth method produced it),\n- a **`claims`** map of **`ClaimValue`** (single- or multi-valued) keyed\nby standard or namespaced claim names.\n\nClaim names follow JWT registered names where they exist (`sub`, `aud`,\n`groups`) and are otherwise namespaced by scheme (`k8s.*`, `x509.*`).\nThis lets an authorizer emit the full set of verified claims for a\ndownstream tenant / per-route authorization resolver to match on.\n\n`subject()` / `audience()` and their `with_*` builders are kept as thin,\ntyped accessors over the near-universal `sub` / `aud` claims (returning\n`Option<&str>` directly instead of going through the generic claims\nmap). `AuthorizedIdentity` stays `#[non_exhaustive]`.\n\nEngine-only; no new dependencies.\n\n### Testing\n- `cargo test -p otap-df-engine --lib capability::auth`\n- `cargo fmt --all --check`, `cargo clippy -p otap-df-engine\n--all-targets -- -D warnings`\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 10d746ae-67a2-4f55-be24-202717eaadd9",
+          "timestamp": "2026-08-05T01:22:17Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1ba295db09906ce56c3b0c39c846b432a3d70999"
+        },
+        "date": 1785896088352,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_signals_percentage",
+            "value": -1.7302069664001465,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Dropped Spans %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 67.2735297230903,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 67.64869457364341,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.137630208333334,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.3125,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "spans_produced_rate",
+            "value": 96655.01007245193,
+            "unit": "spans/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Span Throughput"
+          },
+          {
+            "name": "spans_received_rate",
+            "value": 98327.34172258826,
+            "unit": "spans/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Span Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.007236,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 14076676.768412324,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 13960600.650260327,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.008677965961396694,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 31.408792766783773,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 32.60241135852277,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 29.288151041666666,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 30.1171875,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98328.3841379984,
+            "unit": "logs/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98319.85123415454,
+            "unit": "logs/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.00302,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 798205.5982345699,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1152774.28116417,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 8.118458156874098,
+            "unit": "bytes/log",
+            "extra": "Nightly - Batch Processor/Logs-OTAP-BATCH-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_signals_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Dropped Metrics %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.8756796965507,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.84224576598871,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.172916666666666,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.12890625,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "metrics_produced_rate",
+            "value": 98330.17201830295,
+            "unit": "metrics/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Metric Throughput"
+          },
+          {
+            "name": "metrics_received_rate",
+            "value": 98330.17201830295,
+            "unit": "metrics/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Metric Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001929,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 4456888.933389894,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 4463831.471923183,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_signals_percentage",
+            "value": 0.011389831081032753,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Dropped Spans %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 47.48427864152037,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 49.103653250773995,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 50.571354166666666,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 54.4765625,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "spans_produced_rate",
+            "value": 98329.81148725189,
+            "unit": "spans/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Span Throughput"
+          },
+          {
+            "name": "spans_received_rate",
+            "value": 98318.6118883842,
+            "unit": "spans/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Span Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002149,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 4435866.36034775,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 5254540.750888237,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Traces-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "dropped_signals_percentage",
+            "value": 1.67520010471344,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Dropped Metrics %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 37.732309111368714,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 39.38549110595515,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 35.09544270833333,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 36.1328125,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "metrics_produced_rate",
+            "value": 99996.94675989226,
+            "unit": "metrics/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Metric Throughput"
+          },
+          {
+            "name": "metrics_received_rate",
+            "value": 98321.79790777055,
+            "unit": "metrics/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Metric Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001832,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 1230631.581147113,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1682339.0452018655,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Metrics-OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.008677965961396694,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.93467565682074,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.36207029741213,
+            "unit": "%",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.7296875,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.09375,
+            "unit": "MiB",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98330.3506460304,
+            "unit": "logs/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98321.81757153365,
+            "unit": "logs/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.00182,
+            "unit": "seconds",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2809253.8832978597,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2914999.764129559,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 28.572029613406993,
+            "unit": "bytes/log",
+            "extra": "Nightly - Batch Processor/Logs-OTLP-BATCH-OTLP - Egress Bytes Per Log"
           }
         ]
       }
