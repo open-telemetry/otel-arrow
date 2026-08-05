@@ -938,10 +938,8 @@ mod tests {
             .visit_entity(entity_key, |attrs| {
                 let mut found = false;
                 for (key, val) in attrs.iter_attributes() {
-                    if key == "custom" {
-                        if format!("{:?}", val).contains("custom.identity.foo") {
-                            found = true;
-                        }
+                    if key == "custom" && format!("{:?}", val).contains("custom.identity.foo") {
+                        found = true;
                     }
                 }
                 found
