@@ -145,7 +145,8 @@ mod exporter_harness {
     use otap_df_engine::Interests;
     use otap_df_engine::config::ExporterConfig;
     use otap_df_engine::control::{
-        Controllable, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+        Controllable, NackMsg, NodeControlMsg, PipelineCompletionMsg,
+        PipelineCompletionMsgReceiver, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
     use otap_df_engine::error::Error as EngineError;
     use otap_df_engine::exporter::ExporterWrapper;
@@ -155,6 +156,7 @@ mod exporter_harness {
     use otap_df_engine::terminal_state::TerminalState;
     use otap_df_engine::testing::{create_not_send_channel, test_node};
     use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::next_nack;
     use otap_df_telemetry::reporter::MetricsReporter;
     use tokio::task::JoinHandle;
 
@@ -167,6 +169,13 @@ mod exporter_harness {
     pub(crate) struct KafkaExporterHarness {
         pdata_tx: Sender<OtapPdata>,
         control_tx: Sender<NodeControlMsg<OtapPdata>>,
+        /// Ack/Nack unwind channel the node routes completions to. A pdata that
+        /// carries a subscriber unwind frame (e.g. built with
+        /// `test_subscribe_to(Interests::NACKS, ...)`) produces a
+        /// [`PipelineCompletionMsg`] here on ack/nack, letting a test observe
+        /// the real `EffectHandlerReporter` classification (transient vs
+        /// permanent) end-to-end and act as a stand-in retry processor.
+        completion_rx: PipelineCompletionMsgReceiver<OtapPdata>,
         join: JoinHandle<Result<TerminalState, EngineError>>,
         _keep_alive: KeepAlive,
     }
@@ -200,11 +209,10 @@ mod exporter_harness {
             let (completion_tx, completion_rx) = pipeline_completion_msg_channel(16);
             let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
-            let keep_alive = KeepAlive(vec![
-                Box::new(runtime_ctrl_rx),
-                Box::new(completion_rx),
-                Box::new(metrics_rx),
-            ]);
+            // `completion_rx` is retained as a live field (not buried in
+            // `KeepAlive`) so a test can read the node's routed Ack/Nack
+            // unwind messages.
+            let keep_alive = KeepAlive(vec![Box::new(runtime_ctrl_rx), Box::new(metrics_rx)]);
 
             let join = tokio::task::spawn_local(async move {
                 exporter
@@ -220,6 +228,7 @@ mod exporter_harness {
             Self {
                 pdata_tx,
                 control_tx,
+                completion_rx,
                 join,
                 _keep_alive: keep_alive,
             }
@@ -278,6 +287,35 @@ mod exporter_harness {
                 .send(NodeControlMsg::Config { config })
                 .await
                 .expect("send config to exporter");
+        }
+
+        /// Receives one Ack/Nack unwind message within `timeout`, or `None` on
+        /// timeout or a closed channel. Only pdata that carries a subscriber
+        /// unwind frame produces a message here.
+        pub(crate) async fn try_recv_completion(
+            &mut self,
+            timeout: Duration,
+        ) -> Option<PipelineCompletionMsg<OtapPdata>> {
+            match tokio::time::timeout(timeout, self.completion_rx.recv()).await {
+                Ok(Ok(msg)) => Some(msg),
+                Ok(Err(_)) | Err(_) => None,
+            }
+        }
+
+        /// Receives one routed Nack within `timeout`, standing in for the
+        /// runtime control manager that a real upstream `processor:retry` sits
+        /// behind. Drains the completion channel until a `DeliverNack` unwinds
+        /// to a subscriber (via [`next_nack`]); returns the routed
+        /// [`NackMsg`] so a test can inspect `permanent` / `reason` and re-send
+        /// `refused` to model a retry attempt. Returns `None` on timeout, a
+        /// closed channel, or a `DeliverAck` (a successful send never nacks).
+        pub(crate) async fn recv_nack(&mut self, timeout: Duration) -> Option<NackMsg<OtapPdata>> {
+            match self.try_recv_completion(timeout).await {
+                Some(PipelineCompletionMsg::DeliverNack { nack }) => {
+                    next_nack(nack).map(|(_node_id, nack)| nack)
+                }
+                _ => None,
+            }
         }
 
         /// Awaits the spawned exporter task's completion.

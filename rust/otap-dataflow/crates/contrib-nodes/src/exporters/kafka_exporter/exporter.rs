@@ -1364,6 +1364,26 @@ pub mod test_support {
             req.encode_to_vec()
         }
 
+        /// Wraps OTLP logs bytes into an [`OtapPdata`] that carries a NACKS
+        /// subscriber unwind frame, optionally with a single transport header.
+        ///
+        /// The unwind frame is what makes a nack observable end-to-end: the
+        /// real `EffectHandlerReporter` only routes a `PipelineCompletionMsg`
+        /// (readable via [`KafkaExporterHarness::recv_nack`]) when the refused
+        /// pdata has a subscriber frame. This models the pdata a real upstream
+        /// `processor:retry` would have subscribed to before the exporter.
+        fn logs_pdata_subscribed(bytes: Vec<u8>, header: Option<(&str, &str)>) -> OtapPdata {
+            use otap_df_engine::Interests;
+            use otap_df_otap::testing::TestCallData;
+            // RETURN_DATA so the refused pdata retains its payload when it
+            // unwinds, mirroring a retry processor that must re-send the batch.
+            logs_pdata(bytes, header).test_subscribe_to(
+                Interests::ACKS_OR_NACKS | Interests::RETURN_DATA,
+                TestCallData::default().into(),
+                654321,
+            )
+        }
+
         /// Wraps OTLP logs bytes into an [`OtapPdata`], optionally carrying a
         /// single transport header.
         fn logs_pdata(bytes: Vec<u8>, header: Option<(&str, &str)>) -> OtapPdata {
@@ -2593,6 +2613,398 @@ pub mod test_support {
                         .assert_payload(&payload);
 
                     exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        // ---- Retry correctness (issue section 3) ----
+        //
+        // The exporter has no internal retry loop; transient retry is delegated
+        // to a separate upstream `processor:retry` node. Its terminal
+        // contribution is a Nack classification (transient vs permanent). These
+        // tests validate that classification: at the unit level via
+        // `RecordingReporter`, and end-to-end via the real
+        // `EffectHandlerReporter` by reading the routed `PipelineCompletionMsg`
+        // off the harness completion channel with `recv_nack`, then acting as a
+        // stand-in retry processor (re-send `refused` on a transient nack, drop
+        // on a permanent one).
+
+        /// Builds OTLP logs bytes with one attribute whose value is an array
+        /// containing a string element with invalid UTF-8 bytes. The OTLP byte
+        /// views tolerate the raw string, but the OTAP conversion CBOR-encodes
+        /// array elements and validates UTF-8, so the conversion fails
+        /// deterministically.
+        fn logs_request_bytes_invalid_utf8_array() -> Vec<u8> {
+            use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+            use otap_df_pdata::proto::opentelemetry::common::v1::{
+                AnyValue, ArrayValue, KeyValue, any_value,
+            };
+            use otap_df_pdata::proto::opentelemetry::logs::v1::{
+                LogRecord, ResourceLogs, ScopeLogs,
+            };
+
+            // A unique marker whose interior bytes we overwrite with 0xFF after
+            // encoding (prost `String` cannot hold invalid UTF-8 directly).
+            let marker = "\u{0001}MARKER\u{0001}";
+            let req = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: vec![LogRecord {
+                            attributes: vec![KeyValue {
+                                key: "k".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(any_value::Value::ArrayValue(ArrayValue {
+                                        values: vec![AnyValue {
+                                            value: Some(any_value::Value::StringValue(
+                                                marker.to_string(),
+                                            )),
+                                        }],
+                                    })),
+                                }),
+                            }],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            let mut bytes = req.encode_to_vec();
+            let pos = bytes
+                .windows(marker.len())
+                .position(|w| w == marker.as_bytes())
+                .expect("marker present in encoded bytes");
+            for b in &mut bytes[pos + 1..pos + marker.len() - 1] {
+                *b = 0xFF;
+            }
+            bytes
+        }
+
+        /// Scenario: an OTAP-encoded signal whose OTLP bytes cannot be converted
+        /// to `OtapArrowRecords` fails encoding before any send.
+        /// Guarantees: an encoding failure is classified as a single permanent
+        /// nack (never transient, no ack), so the retry processor drops it at
+        /// the source rather than retrying an error that can never resolve.
+        #[tokio::test]
+        async fn encoding_failure_is_permanently_nacked() {
+            let pipeline_ctx = pipeline_context();
+            // Logs on the OTAP wire format: export must convert the OTLP bytes
+            // into OtapArrowRecords. The payload nests an invalid-UTF-8 string
+            // inside an array attribute, so the OTAP conversion fails
+            // deterministically before any broker send.
+            let config: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new("localhost:9092", "test-client")
+                    .with_logs(SignalConfig::new(
+                        "test-logs".into(),
+                        MessageFormat::OtapProto,
+                    ))
+                    .try_into()
+                    .expect("config should be valid");
+            let mut exporter =
+                KafkaExporter::new(pipeline_ctx, config).expect("config should be valid");
+
+            let reporter = RecordingReporter::new();
+            let pdata = logs_pdata(logs_request_bytes_invalid_utf8_array(), None);
+
+            let result = export_once(&mut exporter, pdata, &reporter).await;
+            assert!(result.is_err(), "malformed OTAP encoding should error");
+
+            assert_eq!(reporter.ack_count(), 0, "a failed encode must not ack");
+            assert_eq!(
+                reporter.nack_reasons().len(),
+                0,
+                "an encoding failure is permanent, never transient"
+            );
+            assert_eq!(
+                reporter.permanent_nack_reasons().len(),
+                1,
+                "an encoding failure should produce exactly one permanent nack"
+            );
+        }
+
+        /// Scenario: a send to an unreachable broker fails; the refused batch
+        /// carries a subscriber frame so its nack unwinds through the real
+        /// effect handler.
+        /// Guarantees: a send failure reaches the retry processor as a
+        /// non-permanent (retryable) nack carrying the refused pdata, so an
+        /// upstream `processor:retry` can schedule a retry.
+        #[tokio::test]
+        async fn transient_nack_reaches_retry_on_send_failure() {
+            let cfg: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new("127.0.0.1:1", "it-client")
+                    .with_logs(SignalConfig::new(
+                        "it-retry-transient".into(),
+                        MessageFormat::OtlpProto,
+                    ))
+                    .with_timeout_ms(500)
+                    .try_into()
+                    .expect("config should be valid");
+
+            run_on_local_set(|cluster| async move {
+                let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                exporter
+                    .send_pdata(logs_pdata_subscribed(logs_request_bytes(), None))
+                    .await
+                    .expect("send pdata");
+
+                let nack = exporter
+                    .recv_nack(Duration::from_secs(10))
+                    .await
+                    .expect("send failure must unwind a nack to the subscriber");
+                assert!(
+                    !nack.permanent,
+                    "a send failure must be a retryable (transient) nack"
+                );
+                assert!(
+                    nack.refused.num_items() >= 1,
+                    "the refused pdata (with its records) is returned for the retry processor"
+                );
+
+                exporter.shutdown(Duration::from_millis(500)).await;
+                exporter.await_stopped().await;
+            })
+            .await;
+        }
+
+        /// Scenario: a header requests a topic outside the regex allowlist; the
+        /// refused batch carries a subscriber frame.
+        /// Guarantees: a disallowed dynamic topic reaches the retry processor as
+        /// a permanent nack, so the retry processor forwards it upstream
+        /// immediately instead of retrying an error that can never resolve.
+        #[tokio::test]
+        async fn permanent_nack_reaches_retry_on_disallowed_topic() {
+            let static_topic = "it-retry-static";
+            with_cluster(
+                KafkaTestCluster::builder().topic(static_topic),
+                |cluster| async move {
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
+                            .with_topic_from_transport_header("x-target-topic")
+                            .with_allowed_topics_regex(["tenant_.*"]),
+                    );
+                    let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(
+                            logs_request_bytes(),
+                            Some(("X-Target-Topic", "evil-destination")),
+                        ))
+                        .await
+                        .expect("send pdata");
+
+                    let nack = exporter
+                        .recv_nack(Duration::from_secs(10))
+                        .await
+                        .expect("disallowed topic must unwind a nack to the subscriber");
+                    assert!(
+                        nack.permanent,
+                        "a disallowed dynamic topic must be a permanent nack"
+                    );
+
+                    exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: a stand-in retry processor re-sends the refused batch on
+        /// each transient nack; the mock broker rejects the first few produce
+        /// requests, then accepts.
+        /// Guarantees: transient nacks are retryable and a retried batch
+        /// eventually delivers once the broker recovers, with no data loss --
+        /// the out-of-process retry contract holds end-to-end.
+        #[tokio::test]
+        async fn transient_nack_retried_until_success_then_acked() {
+            use rdkafka::types::RDKafkaRespErr;
+            let topic = "it-retry-until-success";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    // Reject the first two produce requests with a non-retriable
+                    // error so librdkafka surfaces a delivery failure (a
+                    // transient nack) rather than retrying internally; the third
+                    // produce request succeeds.
+                    cluster.faults().fail_produce(&[
+                        RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION,
+                        RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION,
+                    ]);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(1500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    // Initial send by the (simulated) upstream.
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(payload.clone(), None))
+                        .await
+                        .expect("send pdata");
+
+                    // Stand-in retry loop re-send the refused batch on each
+                    // transient nack, up to a bounded number of attempts.
+                    let mut retries = 0usize;
+                    const MAX_RETRIES: usize = 5;
+                    while let Some(nack) = exporter.recv_nack(Duration::from_secs(5)).await {
+                        assert!(!nack.permanent, "produce rejection should be transient");
+                        retries += 1;
+                        assert!(retries <= MAX_RETRIES, "retry attempts must stay bounded");
+                        exporter
+                            .send_pdata(logs_pdata_subscribed(payload.clone(), None))
+                            .await
+                            .expect("retry send pdata");
+                    }
+
+                    // After the injected failures clear, a retry delivers.
+                    let msg = consumer
+                        .try_recv(Duration::from_secs(10))
+                        .await
+                        .expect("a retried batch must eventually be delivered");
+                    let _ = msg.assert_topic(topic).assert_payload(&payload);
+                    assert!(retries >= 1, "at least one transient retry should occur");
+
+                    exporter.shutdown(Duration::from_secs(1)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: a stand-in retry processor treats a permanent nack as
+        /// terminal and does not re-send.
+        /// Guarantees: a permanently-nacked batch is dropped at the source (no
+        /// re-send, nothing produced, no dead-letter queue) and counts as one
+        /// failed batch -- retry exhaustion / drop-at-source behavior.
+        #[tokio::test]
+        async fn permanent_nack_is_not_retried() {
+            use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+            let static_topic = "it-retry-drop-static";
+            let disallowed = "evil-destination";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(static_topic)
+                    .topic(disallowed),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[disallowed]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
+                            .with_topic_from_transport_header("x-target-topic")
+                            .with_allowed_topics_regex(["tenant_.*"]),
+                    );
+                    let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(
+                            logs_request_bytes(),
+                            Some(("X-Target-Topic", disallowed)),
+                        ))
+                        .await
+                        .expect("send pdata");
+
+                    let nack = exporter
+                        .recv_nack(Duration::from_secs(10))
+                        .await
+                        .expect("disallowed topic must nack");
+                    assert!(nack.permanent, "must be permanent so it is not retried");
+                    // Stand-in retry processor drops a permanent nack: no re-send.
+
+                    // Nothing should ever be produced to the disallowed topic.
+                    assert!(
+                        consumer.try_recv(Duration::from_secs(1)).await.is_none(),
+                        "a permanently-nacked batch must not reach any broker topic"
+                    );
+
+                    exporter.shutdown(Duration::from_secs(1)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let mut m = FoldedMetrics::new();
+                    m.fold_all(ts.metrics());
+                    assert_eq!(
+                        m.value("logs_failed"),
+                        1,
+                        "the dropped batch should count as exactly one failed batch"
+                    );
+                    assert_eq!(
+                        m.value("logs_exported"),
+                        0,
+                        "a permanently-nacked batch is never exported"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: a stand-in retry processor re-sends on each transient nack
+        /// while the broker rejects a bounded number of produce requests, then
+        /// accepts every subsequent attempt.
+        /// Guarantees: retry redelivery is bounded by the number of retries the
+        /// processor performs (at-least-once), characterizing the duplicate
+        /// window as bounded rather than unbounded.
+        #[tokio::test]
+        async fn retried_transient_send_duplicates_bounded() {
+            use rdkafka::types::RDKafkaRespErr;
+            let topic = "it-retry-dup-bounded";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    // Reject exactly one produce request, then accept.
+                    cluster
+                        .faults()
+                        .fail_produce(&[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION]);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(1500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(payload.clone(), None))
+                        .await
+                        .expect("send pdata");
+
+                    let mut retries = 0usize;
+                    const MAX_RETRIES: usize = 3;
+                    while let Some(nack) = exporter.recv_nack(Duration::from_secs(5)).await {
+                        assert!(!nack.permanent);
+                        retries += 1;
+                        assert!(retries <= MAX_RETRIES, "retries must stay bounded");
+                        exporter
+                            .send_pdata(logs_pdata_subscribed(payload.clone(), None))
+                            .await
+                            .expect("retry send pdata");
+                    }
+
+                    // The successful retry must deliver at least one copy.
+                    let mut delivered = 0usize;
+                    if consumer.try_recv(Duration::from_secs(10)).await.is_some() {
+                        delivered += 1;
+                    }
+                    // Drain any additional copies within a bounded window;
+                    // redelivery is bounded by the number of attempts.
+                    while consumer.try_recv(Duration::from_secs(2)).await.is_some() {
+                        delivered += 1;
+                        assert!(
+                            delivered <= retries + 1,
+                            "delivered copies must be bounded by attempts"
+                        );
+                    }
+                    assert_eq!(retries, 1, "exactly one produce rejection was injected");
+                    assert_eq!(
+                        delivered, 1,
+                        "a not-persisted rejection then a clean retry delivers exactly one copy"
+                    );
+
+                    exporter.shutdown(Duration::from_secs(1)).await;
                     exporter.await_stopped().await;
                 },
             )
