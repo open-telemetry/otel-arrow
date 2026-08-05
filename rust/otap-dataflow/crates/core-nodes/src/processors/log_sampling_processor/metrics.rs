@@ -32,7 +32,7 @@ pub struct SamplingAttributes {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct LogSamplingMetrics {
-    /// Total log records processed by sampling (either consumed or dropped).
+    /// Log record counts, partitioned by `SamplingAction` (Consumed=received, Dropped=dropped, Error=error).
     #[metric(unit = "{log}")]
     pub log_signals: Counter<u64>,
 
@@ -50,6 +50,8 @@ pub struct LogSamplingMetrics {
 mod tests {
     use super::*;
 
+    /// Scenario: A newly constructed LogSamplingMetrics has not recorded any measurements.
+    /// Guarantees: All counters start at 0.
     #[test]
     fn test_metrics_default() {
         let m = LogSamplingMetrics::default();
@@ -58,6 +60,8 @@ mod tests {
         assert_eq!(m.filter_buffer_reclamation_failures.get(), 0);
     }
 
+    /// Scenario: Measurements are recorded via increment or addition.
+    /// Guarantees: The underlying counters reflect the accumulated totals.
     #[test]
     fn test_metrics_add() {
         let mut m = LogSamplingMetrics::default();
