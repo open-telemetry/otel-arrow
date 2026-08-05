@@ -730,15 +730,20 @@ fn metric_value_u64(metric_set: &telemetry::MetricSet, name: &str) -> Option<u64
     match metric_set.metrics.get(name) {
         Some(telemetry::MetricValue::U64(value)) => Some(*value),
         Some(telemetry::MetricValue::F64(value)) => Some(value.max(0.0) as u64),
-        Some(telemetry::MetricValue::Mmsc(_)) | None => None,
+        Some(telemetry::MetricValue::Distribution(_)) | None => None,
     }
 }
 
 fn metric_value_f64(metric_set: &telemetry::MetricSet, name: &str) -> Option<f64> {
     match metric_set.metrics.get(name) {
+        None => None,
         Some(telemetry::MetricValue::F64(value)) => Some(*value),
         Some(telemetry::MetricValue::U64(value)) => Some(*value as f64),
-        Some(telemetry::MetricValue::Mmsc(_)) | None => None,
+        Some(telemetry::MetricValue::Distribution(value)) => Some(if value.count == 0 {
+            0.0
+        } else {
+            value.sum / value.count as f64
+        }),
     }
 }
 

@@ -1331,7 +1331,12 @@ mod tests {
         let duration_snapshot = metrics_rx
             .try_recv()
             .expect("duration metric should report");
-        let [MetricValue::Mmsc(duration)] = duration_snapshot.get_metrics() else {
+        let [
+            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
+                duration,
+            )),
+        ] = duration_snapshot.get_metrics()
+        else {
             panic!("expected duration metric");
         };
         assert_eq!(duration.count, 1);
@@ -1499,7 +1504,12 @@ mod tests {
                         .await
                         .expect("flow_metric stop metric should be reported")
                         .expect("metrics channel should remain open");
-                let [MetricValue::Mmsc(compute_duration)] = snapshot.get_metrics() else {
+                let [
+                    MetricValue::Distribution(
+                        otap_df_telemetry::instrument::DistributionValue::Basic(compute_duration),
+                    ),
+                ] = snapshot.get_metrics()
+                else {
                     panic!("expected flow duration MMSC metric");
                 };
                 assert!(
