@@ -21,9 +21,9 @@ use otap_df_telemetry_macros::metric_set;
 )]
 #[derive(Debug, Default, Clone)]
 pub struct KafkaExporterExportMetrics {
-    /// Number of exported msgs partitioned by `signal` and `outcome` (`success` or `failure`).
-    #[metric(unit = "{msg}")]
-    pub msgs: Counter<u64>,
+    /// Number of exported messages partitioned by `signal` and `outcome` (`success` or `failure`).
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
 }
 
 /// Operational metrics for the Kafka exporter.
@@ -78,14 +78,14 @@ impl KafkaExporterMetrics {
         snapshots
     }
 
-    /// Increments the counter for successfully exported msgs.
+    /// Increments the counter for successfully exported messages.
     pub fn inc_exported(&mut self, signal: otap_df_config::SignalType) {
         self.export_metrics
             .with(SignalOutcomeAttributes {
                 signal,
                 outcome: Outcome::Success,
             })
-            .msgs
+            .messages
             .inc();
     }
 
@@ -96,7 +96,7 @@ impl KafkaExporterMetrics {
                 signal,
                 outcome: Outcome::Failure,
             })
-            .msgs
+            .messages
             .inc();
     }
 
@@ -144,7 +144,7 @@ mod tests {
                     signal: SignalType::Traces,
                     outcome: Outcome::Success
                 })
-                .msgs
+                .messages
                 .get(),
             2
         );
@@ -162,7 +162,7 @@ mod tests {
                     signal: SignalType::Metrics,
                     outcome: Outcome::Success
                 })
-                .msgs
+                .messages
                 .get(),
             1
         );
@@ -180,7 +180,7 @@ mod tests {
                     signal: SignalType::Logs,
                     outcome: Outcome::Success
                 })
-                .msgs
+                .messages
                 .get(),
             1
         );
@@ -198,7 +198,7 @@ mod tests {
                     signal: SignalType::Traces,
                     outcome: Outcome::Failure
                 })
-                .msgs
+                .messages
                 .get(),
             1
         );
@@ -216,7 +216,7 @@ mod tests {
                     signal: SignalType::Metrics,
                     outcome: Outcome::Failure
                 })
-                .msgs
+                .messages
                 .get(),
             1
         );
@@ -234,7 +234,7 @@ mod tests {
                     signal: SignalType::Logs,
                     outcome: Outcome::Failure
                 })
-                .msgs
+                .messages
                 .get(),
             1
         );
@@ -272,7 +272,7 @@ mod tests {
                     signal: SignalType::Traces,
                     outcome: Outcome::Success
                 })
-                .msgs
+                .messages
                 .get(),
             1
         );
@@ -282,7 +282,7 @@ mod tests {
                     signal: SignalType::Metrics,
                     outcome: Outcome::Success
                 })
-                .msgs
+                .messages
                 .get(),
             1
         );
@@ -292,7 +292,7 @@ mod tests {
                     signal: SignalType::Logs,
                     outcome: Outcome::Success
                 })
-                .msgs
+                .messages
                 .get(),
             1
         );
@@ -302,7 +302,7 @@ mod tests {
                     signal: SignalType::Traces,
                     outcome: Outcome::Failure
                 })
-                .msgs
+                .messages
                 .get(),
             1
         );
