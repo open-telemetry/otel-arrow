@@ -527,7 +527,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `exporter.kafka.exports.items` | `{item}` | Number of exported items partitioned by `signal` and `outcome` (`success` or `failure`). |
+| `exporter.kafka.exports.msgs` | `{msg}` | Number of exported messages partitioned by `signal` and `outcome` (`success` or `failure`). |
 
 ### Events
 
