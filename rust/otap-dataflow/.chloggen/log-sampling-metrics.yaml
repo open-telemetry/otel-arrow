@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: "Migrate `log_sampling_processor` metrics to enum attributes (`SamplingAction`). Consolidates `log_signals_consumed` and `log_signals_dropped` into a single `log_signals` metric."
-issues: [3665, 3530]
-subtext: |
-  Migration: Update dashboards, alerts, and queries to use the new `processor.log_sampling.pdata.log_signals` metric (dimensioned by `SamplingAction`) instead of the removed `log_signals_consumed` and `log_signals_dropped` metrics.
