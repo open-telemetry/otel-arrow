@@ -259,7 +259,7 @@ impl AttributeView for RawKeyValue<'_> {
         loop {
             if let Some((start, end)) = from_option_nonzero_range_to_primitive(self.key_range.get())
             {
-                return &self.buf.get(start..end).unwrap_or_default();
+                return self.buf.get(start..end).unwrap_or_default();
             } else if self.pos.get() >= self.buf.len() {
                 break;
             } else {
