@@ -47,6 +47,10 @@ steps:
                 loadgen_exporter_type: otlp
                 exporter_extra_config:
                   max_in_flight: 256
+                # Load generator wire batch size only; it does not size
+                # ClickHouse inserts. The insert batch comes from the collector
+                # batch processor (send_batch_size: 8192 / 200ms) in
+                # configs/otelcol/clickhouse-logs.yaml.
                 max_batch_size: 512
                 signals_per_second: 100000
                 metric_weight: 0
