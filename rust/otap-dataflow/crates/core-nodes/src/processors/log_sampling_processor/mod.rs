@@ -12,7 +12,7 @@ mod metrics;
 mod samplers;
 
 use self::config::Config;
-use self::metrics::{LogSamplingMetrics, SamplingAction, SamplingAttributes};
+use self::metrics::LogSamplingMetrics;
 use self::samplers::{Sampler, sampler_from_config};
 
 use arrow::array::BooleanBufferBuilder;
@@ -38,7 +38,7 @@ use otap_df_pdata::OtapPayload;
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
-use otap_df_telemetry::metrics::MeasurementMetricSet;
+use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -66,7 +66,7 @@ struct LogSamplingProcessor {
     /// The chosen sampler
     sampler: Box<dyn Sampler>,
     /// Telemetry metrics.
-    metrics: MeasurementMetricSet<LogSamplingMetrics>,
+    metrics: MetricSet<LogSamplingMetrics>,
     /// Reusable bitmap pool for child batch filtering.
     id_bitmap_pool: IdBitmapPool,
     /// Reusable buffer for filtering
@@ -99,12 +99,6 @@ impl LogSamplingProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         let total = pdata.num_items();
-        self.metrics
-            .with(SamplingAttributes {
-                action: SamplingAction::Consumed,
-            })
-            .log_signals
-            .add(total as u64);
 
         // Convert to Arrow records (no-op if already Arrow)
         let (context, payload) = pdata.into_parts();
@@ -135,24 +129,14 @@ impl LogSamplingProcessor {
         match buf.into_inner().into_mutable() {
             Ok(mutable) => self.filter_buffer = mutable,
             Err(_) => {
-                self.metrics
-                    .with(SamplingAttributes {
-                        action: SamplingAction::Error,
-                    })
-                    .filter_buffer_reclamation_failures
-                    .inc();
+                self.metrics.filter_buffer_reclamation_failures.inc();
             }
         }
 
         let filtered = match filter_result {
             Ok(filtered) => filtered,
             Err(e) => {
-                self.metrics
-                    .with(SamplingAttributes {
-                        action: SamplingAction::Error,
-                    })
-                    .filtering_errors
-                    .inc();
+                self.metrics.filtering_errors.inc();
                 let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
                 effect_handler
                     .notify_nack(NackMsg::new(
@@ -167,12 +151,9 @@ impl LogSamplingProcessor {
         // Compute dropped count from the difference in item counts.
         let kept = filtered.num_items();
         let dropped = total - kept;
-        self.metrics
-            .with(SamplingAttributes {
-                action: SamplingAction::Dropped,
-            })
-            .log_signals
-            .add(dropped as u64);
+        if dropped > 0 {
+            self.metrics.dropped_items.add(dropped as u64);
+        }
 
         // Record the drop flow-metric. A no-op unless this node is a
         // decision node in a flow that enables `dropped.items`.
@@ -224,7 +205,7 @@ impl local::Processor<OtapPdata> for LogSamplingProcessor {
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    let _ = metrics_reporter.report_measurement(&mut self.metrics);
+                    let _ = metrics_reporter.report(&mut self.metrics);
                     Ok(())
                 }
                 NodeControlMsg::Shutdown { .. }

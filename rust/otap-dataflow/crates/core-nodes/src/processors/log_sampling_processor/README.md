@@ -99,13 +99,13 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `processor.log_sampling.pdata`
+#### `processor.log_sampling`
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.log_sampling.pdata.log_signals` | `{log}` | Log record counts, partitioned by `SamplingAction` (`Consumed`=received, `Dropped`=dropped, `Error`=error). |
-| `processor.log_sampling.pdata.filtering_errors` | `{error}` | Errors encountered while filtering OTAP batches. |
-| `processor.log_sampling.pdata.filter_buffer_reclamation_failures` | `{error}` | How many times we fail to reclaim the underlying filter buffer. |
+| `processor.log_sampling.dropped_items` | `{log}` | Log records dropped by sampling. |
+| `processor.log_sampling.filtering_errors` | `{error}` | Errors encountered while filtering OTAP batches. |
+| `processor.log_sampling.filter_buffer_reclamation_failures` | `{error}` | How many times we fail to reclaim the underlying filter buffer. |
 
 ### Events
 
