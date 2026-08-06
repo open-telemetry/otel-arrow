@@ -295,9 +295,12 @@ otap-df-pdata = { path = "crates/pdata" }
 otap-df-pdata-views = { path = "crates/pdata-views" }
 
 [features]
-# ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
 default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
-jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
+jemalloc = [
+    "dep:tikv-jemallocator",
+    "otap-df-engine/jemalloc",
+    "otap-df-controller/jemalloc-pprof",
+]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
 aws = ["otap-df-otap/aws", "otap-df-contrib-nodes/aws"]
