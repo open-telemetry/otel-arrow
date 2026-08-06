@@ -11,7 +11,7 @@ use otap_df_telemetry_macros::metric_set;
 #[derive(Debug, Default, Clone)]
 pub struct LogSamplingMetrics {
     /// Log records dropped by sampling.
-    #[metric(unit = "{log}", registration_attrs(signal = "logs"))]
+    #[metric(name = "dropped.items", unit = "{item}")]
     pub dropped_items: Counter<u64>,
 
     /// Errors encountered while filtering OTAP batches.
