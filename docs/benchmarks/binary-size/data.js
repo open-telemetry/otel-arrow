@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785976758052,
+  "lastUpdate": 1785978211699,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -7040,6 +7040,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 111.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.16,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "d.dahl@f5.com",
+            "name": "David Dahl",
+            "username": "daviddahl"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "62e4431a2e88ae6b328a76853507b23731147d7e",
+          "message": "feat(component-inventory): implement phase 2, 3 and 4 compiler checks and baseline compliance (#3435) (#3562)\n\n# Change Summary\n\nThis PR implements the **Component Inventory System (RFC 0001)** for\nPhases 2, 3, and 4. It adds a static-analysis source scanner, a\ndelta/baseline comparison mechanism, the baseline definition, and strict\nverification checks in CI, building on the Phase 1 macro and `inventory`\nmodule merged in #3487.\n\n### Core Changes:\n- **`cargo xtask component-inventory` subcommand**: An offline\n`syn`-based scanner that parses `#[component_inventory]` attributes and\nresolves factory URN constants statically (including cross-crate `use`\nre-exports). Anything unresolved fails the check loudly rather than\nbeing recorded as a silent value.\n- **Shared attribute grammar**: A leaf crate\n`otap-df-component-inventory-syntax` holds the single\n`#[component_inventory(...)]` parser, reused by both the proc-macro and\nthe scanner so the two cannot drift.\n- **Single `Category` source of truth**: The `Category` enum lives in\nthe leaf syntax crate and is re-exported from `otap-df-engine`, so the\nparser, the URN cross-check, and the runtime type share one definition.\n- **CI integration**: Wired validation into `cargo xtask check` and\n`cargo xtask quick-check`, after layout structure validation.\n- **Annotated components**: Annotated the production exporter, receiver,\nprocessor, and extension factory statics, plus non-factory components\n(controller, memory limiter).\n- **Baseline**: Captured and verified all 45 active components in\n`components-baseline.json`.\n- **Link-time oracle test** (`otap` crate): cross-checks the scanner\noutput against the compiler-resolved `COMPONENT_INVENTORY` slice for\nevery linked component.\n\n## Performance\n\nThe scanner's two passes (source parse + URN resolution) take roughly\n**5 s** on a warm build (measured directly on the built `xtask` binary;\nabout 6 s via `cargo run`, which includes cargo overhead). This is the\ncost added to `cargo xtask check`.\n\n## What issue does this PR close?\n\n* Closes #3435\n\n## Follow-ups\n\n* #3610 - expose the component inventory via the `dfctl` CLI\n(human-readable + JSON).\n* Value validation for security-relevant attribute keys (`auth`,\n`protocol`, ...) against a controlled set, per RFC 0001 (to be decided).\n\n## How are these changes tested?\n\n- **Unit tests**: Coverage in `otap-df-component-inventory-syntax`\n(attribute parsing, category validation, URN cross-check) and in\n`xtask/src/component_inventory.rs` (unescaping, attribute-map parsing,\nkey-value extraction). All documented with `Scenario`/`Guarantees`.\n- **E2E test** (`engine`): annotates factory and non-factory items and\nreads them back from `COMPONENT_INVENTORY`.\n- **Oracle test** (`otap`): compiler-resolved slice vs committed\nbaseline for all linked components.\n- **Project checks**: clean `cargo xtask check` with baseline\nverification passing; `cargo clippy --workspace --all-targets -- -D\nwarnings` and `cargo test --workspace` clean.\n\n## Are there any user-facing changes?\n\nNo (internal CI enforcement and build instrumentation).\n\n### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-08-05T23:56:58Z",
+          "tree_id": "66eca7280dac25fd27eac01bceb7a218b9aff601",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/62e4431a2e88ae6b328a76853507b23731147d7e"
+        },
+        "date": 1785978198490,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 80.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.9,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 67.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.72,
             "unit": "MB"
           },
           {
