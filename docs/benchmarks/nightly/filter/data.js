@@ -1,228 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785983326024,
+  "lastUpdate": 1785983333191,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Drew Relmas",
-            "username": "drewrelmas",
-            "email": "drewrelmas@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "59957e07eec5630be835293d6226289bcbfc0596",
-          "message": "fix(pdata): Fix silent attribute loss when decoding OTAP batches whose root IDs are not monotonic in resource/scope visitation order (#3450)\n\n# Change Summary\n\nAddresses a follow-up from #2421.\n\nOn that PR review, it was noted that a 'truly pathological' OTAP batch\nmight drop attributes in certain cases if root IDs are not in expected\norder. However, with query-engine, it is easily possible to construct\nsuch a batch when adding attributes to a record which previously didn't\nhave any.\n\nThe OTLP decoder joined child records (attributes, datapoints, span\nevents/links) to parents with a shared forward-only cursor that assumed\nparents were visited in ascending ID order. When root IDs aren't\nmonotonic in `(resource_id, scope_id, id)` visitation order, a\nlater-visited smaller-ID record's child rows were skipped — silently\ndropping all of that record's attributes with no error.\n\n`ChildIndexIter::new` now binary-searches to each parent's rows\n(`SortedBatchCursor::seek_to_parent`), making the join order-independent\nacross logs, metrics, and traces. Adds regression tests in `pdata` and\n`query-engine`.\n\nThis could have a minor performance impact adding a `O(P * log n)`\nsearch where `P` is the number of parent records and `n` is the number\nof child rows.\n\n## What issue does this PR close?\n\n* Closes #3448 \n\n## How are these changes tested?\n\nUnit tests\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
-          "timestamp": "2026-07-10T20:58:39Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/59957e07eec5630be835293d6226289bcbfc0596"
-        },
-        "date": 1783821132227,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.875,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 71.44485358370943,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 73.19737825421133,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 59.319010416666664,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 60.63671875,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98329.88195447673,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3072.808811077398,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002106,
-            "unit": "seconds",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 136739.98864923685,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2954840.3547453657,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 44.49999887929658,
-            "unit": "bytes/log",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.91983795166016,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 75.5494864497225,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 79.22554331921448,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 415.713671875,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 563.7578125,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98327.36778347753,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3028.648388846554,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002013,
-            "unit": "seconds",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 69319.80324366307,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1130322.0929242815,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 22.88803266134937,
-            "unit": "bytes/log",
-            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.88558197021484,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 74.16700753414045,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 78.11838911648759,
-            "unit": "%",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 368.61510416666664,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 524.484375,
-            "unit": "MiB",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98320.26492367651,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3062.1088149572556,
-            "unit": "logs/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003093,
-            "unit": "seconds",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 75944.99543892457,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2917318.399697008,
-            "unit": "bytes/sec",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 24.801533854042574,
-            "unit": "bytes/log",
-            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -25300,6 +25080,226 @@ window.BENCHMARK_DATA = {
             "value": 74.31308105260996,
             "unit": "bytes/log",
             "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Manish Goel",
+            "username": "manishgoel3",
+            "email": "manish_vit@hotmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "538053869042e3e6a0566d6bd300010accca6872",
+          "message": "feat(geneva-exporter): support agent-fed credentials (#3579)\n\n# Change Summary\n\nAdds agent-fed authentication to the Geneva exporter. An embedding host\nsupplies one atomic token-and-routing snapshot through the\n`agent_fed_credential_provider` capability, bypassing the Geneva Config\nService handshake.\n\nEach upload reads one immutable snapshot, preventing token, endpoint,\nand moniker generations from being mixed during rotation. Invalid,\nunavailable, or near-expiry credentials fail closed.\n\nThe exporter validates that:\n\n- The endpoint is an absolute HTTPS URL without credentials, query, or\nfragment.\n- The moniker matches the configured account or an explicit `default`.\n- Monikers contain only URL-unreserved ASCII characters.\n- Tokens with known expiry remain valid for more than 30 seconds.\n\nToken zeroization is preserved through the merged\n[geneva-uploader\nhardening](https://github.com/open-telemetry/opentelemetry-rust-contrib/pull/716).\n\n## What issue does this PR close?\n\n* Closes #3275 \n\n## How are these changes tested?\n\n- All 77 Geneva exporter unit and regression tests pass.\n- All 23 engine authentication capability tests pass.\n- Engine and contrib-nodes all-target clippy pass with warnings denied.\n- Formatting, Markdown lint, sanity, and focused dependency checks pass.\n- Coverage includes capability binding, atomic rotation, routing\nprecedence, endpoint validation, expiry handling, recovery, existing\nauthentication modes, logs/spans routing and ACK/NACK behavior.\n\n## Are there any user-facing changes?\n\nYes. Geneva exporters can select `auth.type: agentfed` and bind one\ncapability:\n\n```yaml\ncapabilities: agent_fed_credential_provider: agent-auth\nconfig: account: my-account auth:\n    type: agentfed\n```\n\nThe host extension must provide this capability using the shared\nexecution model.\nendpoint region are  are optional in agent-fed mode because the endpoint\ncomes from the credential snapshot. For other authentication modes they\nremain required, and blank values now fail during configuration\nvalidation.\n\n\n### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.\n\n---------\n\nCo-authored-by: Manish Goel <292890742+manishgoel3@users.noreply.github.com>\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>",
+          "timestamp": "2026-08-06T00:21:49Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/538053869042e3e6a0566d6bd300010accca6872"
+        },
+        "date": 1785983332267,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.93692016601562,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 74.20874846634317,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 77.68922981750696,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 373.1626302083333,
+            "unit": "MiB",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 528.28515625,
+            "unit": "MiB",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98321.38133234665,
+            "unit": "logs/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3011.663931489679,
+            "unit": "logs/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.004039,
+            "unit": "seconds",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 75212.55949281863,
+            "unit": "bytes/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2998543.1992839724,
+            "unit": "bytes/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 24.973755772150763,
+            "unit": "bytes/log",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTAP (Go Collector) - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.93748474121094,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 75.85509748159114,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 79.09635702683889,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 419.6450520833333,
+            "unit": "MiB",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 594.91796875,
+            "unit": "MiB",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99994.10685681875,
+            "unit": "logs/sec",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3062.33452200609,
+            "unit": "logs/sec",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001936,
+            "unit": "seconds",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 69468.07233877965,
+            "unit": "bytes/sec",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1143750.0337908047,
+            "unit": "bytes/sec",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 22.68467792776347,
+            "unit": "bytes/log",
+            "extra": "Nightly - OTel Collector/OTAP-FILTER-OTAP (Go Collector) - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.875,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 71.67126296709966,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 74.00259905404357,
+            "unit": "%",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 61.73684895833333,
+            "unit": "MiB",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 64.140625,
+            "unit": "MiB",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98327.55787704512,
+            "unit": "logs/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3072.73618365766,
+            "unit": "logs/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001897,
+            "unit": "seconds",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 136897.3973258064,
+            "unit": "bytes/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3044018.694370324,
+            "unit": "bytes/sec",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 44.55227821180838,
+            "unit": "bytes/log",
+            "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Egress Bytes Per Log"
           }
         ]
       }
