@@ -14,7 +14,7 @@ jobs:
       issues: write
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
@@ -23,5 +23,14 @@ jobs:
         with:
           issue-number: ${{ github.event.issue.number }}
           body: |
-            This issue is available for anyone to work on. Feel free to leave a comment if you'd like to be assigned. **Make sure to reference this issue in your pull request.**
+            This issue is available for anyone to work on.
+
+            **To avoid duplicated effort, please claim it before you start:**
+            1. Check the assignee and the comments below - if someone is already assigned or has claimed it, coordinate with them first instead of starting in parallel.
+            2. If it is unclaimed, leave a comment asking to be assigned, and **wait until you are actually assigned** before doing the work.
+            3. Once assigned, **reference this issue in your pull request** (could be draft) so progress is visible to everyone.
+            4. If you can no longer work on it, please comment so we can unassign and free it up for others.
+
+            Claims with no visible progress or update for 2 weeks may be unassigned so someone else can pick the issue up.
+
             :sparkles: Thank you for your contribution! :sparkles:

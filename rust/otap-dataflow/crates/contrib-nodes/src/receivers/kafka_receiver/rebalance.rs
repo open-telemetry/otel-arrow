@@ -33,6 +33,15 @@
 //! message simply will not have its offset committed by this consumer; the new
 //! owner re-delivers it. This is safe under at-least-once semantics and mirrors
 //! the rotel Kafka receiver's behavior.
+//!
+//! When such an in-flight message is finally acknowledged, its Ack/Nack carries
+//! the ownership **generation** it was tracked under, and
+//! `classify_offset_feedback` drops it as stale if that generation is older than
+//! the partition's current tracked *or* currently-assigned generation. Both are
+//! consulted: after a revoke/reassign the tracker may still report the old
+//! generation until a record of the new period is tracked, so comparing against
+//! the assigned generation is what rejects a stale ack during that window --
+//! before it can advance the tracker or roll back the committed offset.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -705,7 +714,7 @@ impl PartitionListFmt {
         if !self.buf.is_empty() {
             self.buf.push(',');
         }
-        let _ = write!(self.buf, "{topic}-{partition}");
+        let _ = write!(self.buf, "{topic}:{partition}");
         self.listed += 1;
     }
 
@@ -1308,7 +1317,7 @@ mod tests {
         fmt.append("traces", 0);
         fmt.append("traces", 1);
         fmt.append("metrics", 3);
-        assert_eq!(fmt.as_str(), "traces-0,traces-1,metrics-3");
+        assert_eq!(fmt.as_str(), "traces:0,traces:1,metrics:3");
         assert_eq!(fmt.count(), 3);
         assert_eq!(fmt.listed_count(), 3);
         // Nothing was dropped, so no truncation marker is present.
@@ -1344,8 +1353,8 @@ mod tests {
         assert_eq!(commas, MAX_LISTED_PARTITIONS);
         // The last listed token is the one at index `MAX_LISTED_PARTITIONS - 1`;
         // nothing past the cap leaks in.
-        assert!(rendered.contains(&format!("traces-{}", MAX_LISTED_PARTITIONS - 1)));
-        assert!(!rendered.contains(&format!("traces-{MAX_LISTED_PARTITIONS}")));
+        assert!(rendered.contains(&format!("traces:{}", MAX_LISTED_PARTITIONS - 1)));
+        assert!(!rendered.contains(&format!("traces:{MAX_LISTED_PARTITIONS}")));
     }
 
     /// Scenario: exactly the cap number of tokens are appended.

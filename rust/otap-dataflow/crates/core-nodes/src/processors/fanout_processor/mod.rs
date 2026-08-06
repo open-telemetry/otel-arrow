@@ -1180,6 +1180,7 @@ pub fn create_fanout_processor(
 
 /// Register the fan-out processor as an OTAP processor factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: FANOUT_PROCESSOR_URN,
@@ -1270,6 +1271,7 @@ mod tests {
                 "destinations": destinations_cfg,
             }),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -1330,6 +1332,7 @@ mod tests {
                 "await_ack": "primary"
             }),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -1382,6 +1385,7 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -1423,6 +1427,7 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -1457,6 +1462,7 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -1483,6 +1489,7 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -1520,6 +1527,7 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -1556,6 +1564,7 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -1605,6 +1614,7 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -1650,6 +1660,7 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -1704,6 +1715,7 @@ mod tests {
                 "await_ack": "primary"
             }),
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -2569,6 +2581,7 @@ mod tests {
             default_output: None,
             config,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,

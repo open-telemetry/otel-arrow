@@ -16,7 +16,7 @@ pub use otap_df_telemetry::common_attributes::{
     SignalRegistrationAttributes as ExportSignalAttributes,
 };
 use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc, MmscSnapshot};
+use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -59,16 +59,16 @@ pub struct AzureMonitorExporterOperationalMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterExportMetrics {
-    /// Number of items resolved by export outcome.
+    /// Number of items in completed export attempts.
     #[metric(unit = "{item}")]
     pub items: Counter<u64>,
-    /// Number of batches resolved by export outcome.
+    /// Number of completed export batches.
     #[metric(unit = "{batch}")]
     pub batches: Counter<u64>,
-    /// Number of messages resolved by export outcome.
+    /// Number of messages in completed export attempts.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
-    /// Compressed request-body bytes resolved by export outcome.
+    /// Compressed request-body bytes in completed export attempts.
     #[metric(unit = "By")]
     pub bytes: Counter<u64>,
 }
@@ -120,7 +120,7 @@ struct AzureMonitorExporterStateMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterHeartbeatMetrics {
-    /// Number of heartbeat sends resolved by outcome.
+    /// Number of completed heartbeat send attempts.
     #[metric(unit = "{heartbeat}")]
     pub sends: Counter<u64>,
 }
@@ -196,7 +196,7 @@ impl AzureMonitorExporterMetricsTracker {
 
     #[inline]
     #[must_use]
-    pub(super) fn batch_size(&self) -> MmscSnapshot {
+    pub(super) fn batch_size(&self) -> Mmsc {
         self.operational_metrics.batch_size.get()
     }
 

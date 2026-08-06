@@ -86,6 +86,7 @@ pub struct OtlpHttpExporter {
 
 /// Declare the OTLP HTTP Exporter as a local exporter factory
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_HTTP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_HTTP_EXPORTER_URN,
@@ -1120,6 +1121,7 @@ mod test {
                 Arc::new(Mutex::new(server_metrics)),
                 otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
                 None,
+                None,
                 server_cancellation_token,
             )
             .await
@@ -2109,6 +2111,7 @@ mod test {
                 ack_registry,
                 Arc::new(Mutex::new(server_metrics)),
                 otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
+                None,
                 None,
                 server_cancellation_token,
             )
