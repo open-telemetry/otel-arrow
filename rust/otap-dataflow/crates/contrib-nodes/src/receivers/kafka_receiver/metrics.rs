@@ -34,6 +34,16 @@ pub struct KafkaReceiverMetrics {
     /// Number of nacks received from downstream
     #[metric(unit = "{nack}")]
     pub nacks_received: Counter<u64>,
+    /// Current number of in-flight records: offsets that have been delivered
+    /// downstream and tracked but whose commit has not yet advanced past them
+    /// (awaiting an Ack/Nack). A point-in-time gauge refreshed each receive-loop
+    /// iteration; reflects the receiver's local outstanding depth (distinct from
+    /// [`consumer_lag`], which measures the broker-committed group lag).
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
+    #[metric(unit = "{message}")]
+    pub records_in_flight: Gauge<u64>,
 
     // -- Error Tracking --------------------------------------
     /// Number of messages that failed processing and were skipped

@@ -157,6 +157,21 @@ pub enum KafkaReceiverError {
         /// The name of the offending field.
         field: String,
     },
+
+    /// `heartbeat_interval_ms` was not strictly less than `session_timeout_ms`.
+    /// Kafka requires the heartbeat interval to be lower than the session
+    /// timeout (typically no more than one third of it); librdkafka otherwise
+    /// rejects the configuration at consumer creation.
+    #[error(
+        "invalid kafka receiver configuration: heartbeat_interval_ms ({heartbeat}) \
+         must be < session_timeout_ms ({session})"
+    )]
+    ConfigInvalidHeartbeat {
+        /// The configured `heartbeat_interval_ms`.
+        heartbeat: u64,
+        /// The configured `session_timeout_ms`.
+        session: u64,
+    },
 }
 
 impl KafkaReceiverError {

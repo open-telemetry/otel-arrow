@@ -512,6 +512,13 @@ impl KafkaReceiver {
 
         self.purge_revoked_partitions();
 
+        // Point-in-time in-flight depth: tracked-but-uncommitted offsets awaiting
+        // an Ack/Nack. Refreshed every iteration since it changes with ordinary
+        // ack/commit activity, not only on rebalances.
+        self.metrics
+            .records_in_flight
+            .set(self.offset_tracker.total_pending() as u64);
+
         let delta = self.rebalance_state.drain_metrics();
         if !delta.is_empty() {
             self.metrics.rebalances_total.add(delta.rebalances_total);
@@ -3339,6 +3346,60 @@ mod tests {
         receiver.reconcile_rebalance_state();
         assert_eq!(receiver.metrics.partitions_assigned.get(), 2);
         assert_eq!(receiver.metrics.partition_assignments.get(), 2);
+    }
+
+    /// Scenario (operational visibility): a manual-commit receiver tracks several
+    /// in-flight offsets, then acknowledges some, then has its partition revoked
+    /// and purged, reconciling after each step.
+    /// Guarantees: the `records_in_flight` gauge reflects the current count of
+    /// tracked-but-uncommitted offsets at each reconcile -- it rises as offsets
+    /// are tracked, falls as they are acked and the watermark advances, and drops
+    /// to zero when the partition is purged -- giving operators a point-in-time
+    /// view of the receiver's outstanding depth.
+    #[test]
+    fn records_in_flight_gauge_reflects_outstanding_offsets() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Own partition 0 and track three in-flight offsets under its generation.
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        receiver.rebalance_state.set_assignment_for_test(&tpl);
+        let generation = receiver.rebalance_state.current_generation("traces", 0);
+        for offset in 0..3 {
+            receiver
+                .offset_tracker
+                .track("traces", 0, offset, generation);
+        }
+        receiver.reconcile_rebalance_state();
+        assert_eq!(
+            receiver.metrics.records_in_flight.get(),
+            3,
+            "the gauge must report all three tracked in-flight offsets",
+        );
+
+        // Acknowledge the two lowest offsets; only offset 2 remains pending.
+        let _ = receiver.offset_tracker.acknowledge("traces", 0, 0);
+        let _ = receiver.offset_tracker.acknowledge("traces", 0, 1);
+        receiver.reconcile_rebalance_state();
+        assert_eq!(
+            receiver.metrics.records_in_flight.get(),
+            1,
+            "the gauge must drop as offsets are acked and the watermark advances",
+        );
+
+        // Revoke and purge the partition; nothing remains in flight.
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, generation);
+        receiver.reconcile_rebalance_state();
+        assert_eq!(
+            receiver.metrics.records_in_flight.get(),
+            0,
+            "the gauge must drop to zero once the partition's state is purged",
+        );
     }
 
     /// Scenario (consumer-group rebalancing): a single manual-commit consumer owns all partitions of a
@@ -6737,6 +6798,132 @@ mod tests {
         assert_eq!(partition, 5);
         assert_eq!(offset, 42);
         assert_eq!(generation, 0);
+    }
+
+    // ---- Security ----
+
+    /// Scenario (security): a receiver subscribed via a `^`-prefixed topic regex
+    /// (which lets a broker-supplied topic name reach the receiver's log sites)
+    /// receives a well-formed OTAP record carrying an adversarial header value
+    /// (control characters plus a large string on a configured extraction key),
+    /// followed by an undecodable OTAP record on the same topic.
+    /// Guarantees: the adversarial header value and topic name -- both of which
+    /// flow into `otel_*` log fields and into a resource attribute -- do not
+    /// crash or stall the receive loop: the good record is delivered with the
+    /// header extracted verbatim onto its resource, the poison record is counted
+    /// as a processing error rather than aborting the loop, and the receiver
+    /// still shuts down cleanly. This bounds the blast radius of adversarial
+    /// client-controlled topic/header values reaching telemetry.
+    #[tokio::test]
+    async fn adversarial_topic_and_header_values_do_not_stall_loop() {
+        const TOPIC: &str = "sec-adversarial-traces";
+        let group = "sec-adversarial-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let good = create_traces_with_spans_otap_bytes();
+                let poison = b"not-a-valid-otap-arrow-payload".to_vec();
+
+                // A control-char + oversized header value on the configured
+                // extraction key. It is client-controlled and reaches both the
+                // resource attribute and (on any parse failure) the log line.
+                let adversarial_value = format!("acme\r\n\t\x1b[31m-{}", "Z".repeat(2048));
+
+                // Good OTAP record with the adversarial header, then a poison
+                // OTAP record, both on the regex-matched topic.
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, &good)
+                            .key(b"good")
+                            .header("x-tenant-id", adversarial_value.as_bytes())
+                            .header("MessageFormat", MSG_FORMAT_OTAP),
+                    )
+                    .await
+                    .expect("send good");
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, &poison)
+                            .key(b"poison")
+                            .header("MessageFormat", MSG_FORMAT_OTAP),
+                    )
+                    .await
+                    .expect("send poison");
+
+                // Configure a `^`-regex subscription (so the broker topic name
+                // reaches the receiver) plus a header->resource-attribute
+                // extraction for the adversarial header, OTAP encoding.
+                let mut extraction = HashMap::new();
+                let _ = extraction.insert(
+                    "x-tenant-id".to_string(),
+                    HeaderExtraction {
+                        key: "tenant.id".to_string(),
+                        value_type: AttributeValueType::String,
+                    },
+                );
+                let builder = KafkaReceiverConfigBuilder::new(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "test-client",
+                )
+                .with_traces(
+                    SignalConfig::new(vec!["^sec-adversarial-.*".to_string()])
+                        .with_encoding(MessageFormat::OtapProto),
+                )
+                .with_commit(CommitConfig {
+                    mode: ConfigCommitMode::Manual,
+                    interval_ms: None,
+                })
+                .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                .with_isolation_level(IsolationLevel::ReadUncommitted)
+                .with_resource_attrs_from_headers(extraction);
+                let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // The good record must be delivered despite the adversarial
+                // header value; its value is extracted verbatim onto the resource.
+                let mut pdata = receiver.recv_pdata().await;
+                let result = otap_pdata_to_traces(&mut pdata);
+                let mut found_tenant = false;
+                for rs in &result.resource_spans {
+                    let resource = rs.resource.as_ref().expect("resource present");
+                    if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id") {
+                        if let Some(any_value::Value::StringValue(s)) =
+                            kv.value.as_ref().and_then(|v| v.value.as_ref())
+                        {
+                            assert_eq!(
+                                s, &adversarial_value,
+                                "adversarial header value is extracted verbatim",
+                            );
+                            found_tenant = true;
+                        }
+                    }
+                }
+                assert!(found_tenant, "the tenant.id attribute should be extracted");
+                receiver.ack(pdata);
+
+                // The poison record must not be forwarded (it is counted as an
+                // error), and the loop keeps running.
+                assert!(
+                    receiver
+                        .try_recv_pdata(Duration::from_secs(2))
+                        .await
+                        .is_none(),
+                    "poison record must not be forwarded, and the loop must not stall",
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                let terminal = receiver.await_terminal_state().await;
+                let mut m = FoldedMetrics::new();
+                m.fold_all(terminal.metrics());
+                assert!(
+                    m.value("processing_errors") >= 1,
+                    "the poison record must be counted as a processing error, got {}",
+                    m.value("processing_errors"),
+                );
+            },
+        )
+        .await;
     }
 
     // ---- Operational visibility ----

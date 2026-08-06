@@ -144,7 +144,6 @@ impl PartitionTracker {
     }
 
     /// Number of pending (un-acked) offsets.
-    #[cfg(test)]
     fn pending_count(&self) -> usize {
         self.pending.len()
     }
@@ -398,8 +397,12 @@ impl OffsetTracker {
             .unwrap_or(0)
     }
 
-    /// Total number of pending offsets across all partitions.
-    #[cfg(test)]
+    /// Total number of pending (tracked but un-committed) offsets across all
+    /// partitions.
+    ///
+    /// This is the receiver's in-flight depth: records that have been delivered
+    /// downstream and are awaiting an Ack/Nack whose commit has not yet advanced
+    /// past them. Exposed for the `records_in_flight` gauge.
     #[must_use]
     pub fn total_pending(&self) -> usize {
         self.partitions

@@ -163,7 +163,70 @@ Validate at-least-once (manual, default) and at-most-once (auto) semantics.
 - [x] Metric/logging categories verified to distinguish filtering, transient failures, rebalances, commit failures, and processing errors.
   - Verified by the two categorization tests above, with the recorded caveat that `processing_errors` is an aggregate superset (distinctness for filtering vs decode is drawn against the per-signal counters). Commit-failure categorization is a distinct counter but not observable end-to-end on the mock.
 - [x] Operational metrics gaps addressed or explicitly deferred, at minimum a recorded consumer-lag gauge decision -- `metrics.rs`.
-  - Consumer-lag gauge decision recorded and implemented: `consumer_lag` (`Gauge<f64>`) plus `partitions_assigned` (`Gauge<u64>`) exist; latency/in-flight/queue-depth gauges are explicitly deferred.
+  - Consumer-lag gauge decision recorded and implemented: `consumer_lag` (`Gauge<f64>`) plus `partitions_assigned` (`Gauge<u64>`) exist. An in-flight-depth gauge `records_in_flight` (`Gauge<u64>`) has since been added (see the Security & config hardening section); end-to-end latency and librdkafka queue-depth gauges remain explicitly deferred (the latter is not observable from the receiver without librdkafka statistics callbacks).
+
+## Security & config hardening
+
+This section captures receiver-side coverage for the production-readiness areas
+raised by the Kafka **exporter** tracking issue that also apply to the receiver.
+Several exporter areas do not apply to a consumer (dynamic topic routing from a
+header, partition-key derivation, delivery-future pipelining, producer poll
+thread, uncontrolled topic creation) and are intentionally omitted.
+
+- [x] Security -- adversarial client-controlled values reaching telemetry are
+  bounded in blast radius. The receiver logs a broker-supplied topic name (via a
+  `^`-regex subscription) and, on a typed-attribute parse failure, a raw header
+  value (`headers.rs` `parse_*_failed`). No credentials are logged (`security.rs`
+  / `auth.rs` / `aws.rs` contain no log sites). Covered by
+  `header_value_parse_failure_returns_none_and_is_isolated` and
+  `header_string_value_with_control_chars_is_accepted_verbatim` (unit,
+  `headers.rs`) and the end-to-end
+  `adversarial_topic_and_header_values_do_not_stall_loop` (`receiver.rs`): a
+  control-char + oversized header value on a regex-matched topic, plus an
+  undecodable record, do not crash or stall the loop -- the good record is
+  delivered (header extracted verbatim), the poison record is counted as a
+  processing error, and shutdown is clean.
+- [x] Security -- subscription topics come only from operator config
+  (`all_topics`), never from message content, so the exporter's "unconstrained
+  dynamic topic routing" concern has no receiver analog. Per-message
+  `matches_any_topic` / `matches_any_exclude` only route an already-received
+  message to a signal decoder. Covered by the existing `all_topics_*`,
+  `matches_any_topic_*`, and `topic_regex_and_exclude_topics_subscription_matching`
+  tests.
+- [x] Security -- header-value SIZE is intentionally NOT bounded. Header values
+  are copied verbatim into resource attributes; the number of attributes is
+  bounded by the operator-configured extraction map (not by the attacker), and
+  header values originate from the same trust domain as the payload. Recorded
+  decision: accept unbounded value size (no truncation). Attribute-count bounding
+  and value-verbatim behavior are characterized by the tests above.
+- [x] Configuration -- `consumer_config` escape-hatch override warning. Managed
+  keys set via the escape hatch are overwritten by first-class fields and warned
+  about at runtime (`kafka.receiver.consumer_config.override`). The detection
+  feeding that warning is covered by
+  `overridden_consumer_config_keys_flags_only_managed_keys` (only managed keys
+  are flagged, never a non-managed passthrough), complementing the existing
+  precedence test `build_client_config_builtin_overrides_custom`.
+- [x] Configuration -- consumer-group timeout validation. `session_timeout_ms`,
+  `heartbeat_interval_ms`, and `max_fetch_wait_ms` are now rejected when zero,
+  and `heartbeat_interval_ms` must be strictly less than `session_timeout_ms`
+  (a constraint librdkafka enforces at consumer creation), failing fast at config
+  construction with a clear error. Covered by `validate_default_timeouts_are_valid`,
+  `validate_session_timeout_zero_is_invalid`,
+  `validate_heartbeat_interval_zero_is_invalid`,
+  `validate_max_fetch_wait_zero_is_invalid`, and
+  `validate_heartbeat_not_less_than_session_is_invalid` (`config.rs`).
+- [x] Telemetry -- in-flight gauge. The exporter's missing in-flight/queue-depth
+  gauge has a receiver analog now filled: `records_in_flight` (`Gauge<u64>`,
+  manual-commit only) reports the count of tracked-but-uncommitted offsets,
+  refreshed each receive-loop iteration in `reconcile_rebalance_state`. Covered by
+  `records_in_flight_gauge_reflects_outstanding_offsets` (rises on track, falls on
+  ack, drops to zero on purge).
+- [x] Telemetry -- record-vs-batch counting: no defect. Unlike the exporter
+  (whose `*_exported` docs claimed "records" but counted batches), the receiver's
+  `messages_received` / `*_msgs_received` counters are honestly labelled `{msg}`
+  and count one per Kafka message (batch). A per-record (span/datapoint/log)
+  ingest counter does not exist and is explicitly deferred; there is no
+  unit-vs-count mislabel to reconcile.
 
 ## Cross-cutting: integration test suite
 

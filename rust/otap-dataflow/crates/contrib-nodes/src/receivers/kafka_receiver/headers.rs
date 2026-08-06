@@ -1023,4 +1023,98 @@ mod tests {
             );
         }
     }
+
+    // ---- Security: adversarial header values ----
+
+    /// Scenario (security): a client-controlled header value that cannot be
+    /// parsed into the configured typed attribute (a non-numeric string for an
+    /// `Int`/`Float`, a non-boolean for a `Bool`) or is invalid UTF-8 is fed to
+    /// the header-value parser for both the OTLP and OTAP paths.
+    /// Guarantees: parsing returns `None` (the attribute is dropped, not
+    /// fabricated) rather than panicking or erroring the whole extraction, so a
+    /// single adversarial header value cannot crash the receive loop or corrupt
+    /// the other extracted attributes. A well-formed value of the same type
+    /// still parses, proving the failure is isolated to the bad value.
+    #[test]
+    fn header_value_parse_failure_returns_none_and_is_isolated() {
+        // Non-numeric string for an Int attribute -> None (both paths).
+        assert!(
+            parse_any_value(
+                "x-count",
+                "count",
+                b"not-a-number",
+                &AttributeValueType::Int
+            )
+            .is_none(),
+        );
+        assert!(
+            parse_literal_value(
+                "x-count",
+                "count",
+                b"not-a-number",
+                &AttributeValueType::Int
+            )
+            .is_none(),
+        );
+
+        // Non-numeric string for a Float attribute -> None.
+        assert!(
+            parse_any_value("x-ratio", "ratio", b"NaNsense", &AttributeValueType::Float).is_none(),
+        );
+        assert!(
+            parse_literal_value("x-ratio", "ratio", b"NaNsense", &AttributeValueType::Float)
+                .is_none(),
+        );
+
+        // Non-boolean string for a Bool attribute -> None.
+        assert!(parse_any_value("x-flag", "flag", b"maybe", &AttributeValueType::Bool).is_none(),);
+        assert!(
+            parse_literal_value("x-flag", "flag", b"maybe", &AttributeValueType::Bool).is_none(),
+        );
+
+        // Invalid UTF-8 for any typed attribute -> None (no panic).
+        let invalid_utf8 = [0xff, 0xfe, 0x00, 0x80];
+        assert!(
+            parse_any_value("x-name", "name", &invalid_utf8, &AttributeValueType::String).is_none(),
+        );
+        assert!(
+            parse_literal_value("x-name", "name", &invalid_utf8, &AttributeValueType::Int)
+                .is_none(),
+        );
+
+        // A well-formed value of the same type still parses -- the failure above
+        // is isolated to the bad value, not a blanket rejection.
+        assert!(matches!(
+            parse_any_value("x-count", "count", b"42", &AttributeValueType::Int),
+            Some(any_value::Value::IntValue(42)),
+        ));
+        assert!(matches!(
+            parse_literal_value("x-count", "count", b"42", &AttributeValueType::Int),
+            Some(LiteralValue::Int(42)),
+        ));
+    }
+
+    /// Scenario (security): an adversarial header value containing control
+    /// characters and a very large string is parsed as a `String` attribute.
+    /// Guarantees: the parser accepts it verbatim as a string value without
+    /// panicking or truncating -- string attributes are copied as-is (their size
+    /// is bounded by the same trust domain as the payload) -- while the number of
+    /// attributes remains driven solely by the configured extraction, not by the
+    /// content of the value.
+    #[test]
+    fn header_string_value_with_control_chars_is_accepted_verbatim() {
+        let adversarial = format!("tenant\r\n\t\x1b[31m-{}", "A".repeat(4096));
+        let parsed = parse_any_value(
+            "x-tenant-id",
+            "tenant.id",
+            adversarial.as_bytes(),
+            &AttributeValueType::String,
+        );
+        match parsed {
+            Some(any_value::Value::StringValue(s)) => {
+                assert_eq!(s, adversarial, "string value is copied verbatim");
+            }
+            other => panic!("expected a string value, got {other:?}"),
+        }
+    }
 }

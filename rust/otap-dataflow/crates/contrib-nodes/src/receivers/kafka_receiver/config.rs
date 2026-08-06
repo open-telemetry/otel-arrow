@@ -555,6 +555,34 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             });
         }
 
+        // Consumer-group timing must be strictly positive: a zero value maps to
+        // an invalid librdkafka setting rather than a sensible default.
+        if builder.session_timeout_ms == 0 {
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "session_timeout_ms".to_string(),
+            });
+        }
+        if builder.heartbeat_interval_ms == 0 {
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "heartbeat_interval_ms".to_string(),
+            });
+        }
+        if builder.max_fetch_wait_ms == 0 {
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "max_fetch_wait_ms".to_string(),
+            });
+        }
+
+        // Kafka requires the heartbeat interval to be lower than the session
+        // timeout; librdkafka rejects the consumer otherwise. Fail fast at
+        // construction with a clear error instead of at consumer creation.
+        if builder.heartbeat_interval_ms >= builder.session_timeout_ms {
+            return Err(KafkaReceiverError::ConfigInvalidHeartbeat {
+                heartbeat: builder.heartbeat_interval_ms,
+                session: builder.session_timeout_ms,
+            });
+        }
+
         Ok(Self(builder))
     }
 }
@@ -1578,6 +1606,111 @@ mod tests {
         assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
     }
 
+    /// Scenario (construction and configuration): the default consumer-group
+    /// timing (heartbeat 3000 ms < session 10000 ms) and fetch wait are used.
+    /// Guarantees: the defaults pass validation, so an operator config that does
+    /// not set these timeouts is valid.
+    #[test]
+    fn validate_default_timeouts_are_valid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["t".to_string()],
+            ..Default::default()
+        });
+        assert!(
+            KafkaReceiverConfig::try_from(cfg).is_ok(),
+            "default heartbeat/session/fetch-wait timeouts must be valid",
+        );
+    }
+
+    /// Scenario (construction and configuration): `session_timeout_ms` is set to
+    /// zero.
+    /// Guarantees: validation fails, so a zero session timeout (an invalid
+    /// librdkafka setting) is rejected at construction rather than at consumer
+    /// creation.
+    #[test]
+    fn validate_session_timeout_zero_is_invalid() {
+        let json = json!({
+            "brokers": "kafka:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "session_timeout_ms": 0,
+        });
+        let err = serde_json::from_value::<KafkaReceiverConfig>(json)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("session_timeout_ms") && err.contains("must be > 0"),
+            "unexpected error: {err}",
+        );
+    }
+
+    /// Scenario (construction and configuration): `heartbeat_interval_ms` is set
+    /// to zero.
+    /// Guarantees: validation fails, so a zero heartbeat interval is rejected.
+    #[test]
+    fn validate_heartbeat_interval_zero_is_invalid() {
+        let json = json!({
+            "brokers": "kafka:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "heartbeat_interval_ms": 0,
+        });
+        let err = serde_json::from_value::<KafkaReceiverConfig>(json)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("heartbeat_interval_ms") && err.contains("must be > 0"),
+            "unexpected error: {err}",
+        );
+    }
+
+    /// Scenario (construction and configuration): `max_fetch_wait_ms` is set to
+    /// zero.
+    /// Guarantees: validation fails, so a zero fetch-wait is rejected.
+    #[test]
+    fn validate_max_fetch_wait_zero_is_invalid() {
+        let json = json!({
+            "brokers": "kafka:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "max_fetch_wait_ms": 0,
+        });
+        let err = serde_json::from_value::<KafkaReceiverConfig>(json)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("max_fetch_wait_ms") && err.contains("must be > 0"),
+            "unexpected error: {err}",
+        );
+    }
+
+    /// Scenario (construction and configuration): `heartbeat_interval_ms` is set
+    /// greater than or equal to `session_timeout_ms`.
+    /// Guarantees: validation fails with a dedicated heartbeat error, so an
+    /// invalid heartbeat/session relationship (which librdkafka would reject at
+    /// consumer creation) is caught up front.
+    #[test]
+    fn validate_heartbeat_not_less_than_session_is_invalid() {
+        let json = json!({
+            "brokers": "kafka:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "session_timeout_ms": 3000,
+            "heartbeat_interval_ms": 3000,
+        });
+        let err = serde_json::from_value::<KafkaReceiverConfig>(json)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("heartbeat_interval_ms") && err.contains("session_timeout_ms"),
+            "unexpected error: {err}",
+        );
+    }
+
     /// Scenario (construction and configuration): a client config is built from a default
     /// receiver config.
     /// Guarantees: the expected default librdkafka properties are set, so the consumer
@@ -1702,6 +1835,46 @@ mod tests {
         assert_eq!(
             client_config.get("bootstrap.servers"),
             Some("real-broker:9092")
+        );
+    }
+
+    /// Scenario (construction and configuration): a `consumer_config` escape-hatch
+    /// map sets several keys that are also managed by first-class config fields
+    /// (`bootstrap.servers`, `group.id`, `enable.auto.commit`) alongside a
+    /// non-managed passthrough key (`fetch.error.backoff.ms`).
+    /// Guarantees: `overridden_consumer_config_keys` reports exactly the managed
+    /// keys (which the receiver will overwrite and warn about via the runtime
+    /// `kafka.receiver.consumer_config.override` event) and never the
+    /// passthrough key, so the operator gets an accurate override warning surface
+    /// without false positives.
+    #[test]
+    fn overridden_consumer_config_keys_flags_only_managed_keys() {
+        let mut custom = HashMap::new();
+        // Managed keys (also first-class config fields).
+        let _ = custom.insert("bootstrap.servers".to_string(), "x:1".to_string());
+        let _ = custom.insert("group.id".to_string(), "shadow-group".to_string());
+        let _ = custom.insert("enable.auto.commit".to_string(), "true".to_string());
+        // Non-managed passthrough key (a legitimate escape-hatch tunable).
+        let _ = custom.insert("fetch.error.backoff.ms".to_string(), "250".to_string());
+
+        let cfg = KafkaReceiverConfig::try_from(
+            KafkaReceiverConfigBuilder::new("b", "g", "c")
+                .with_traces(SignalConfig::new(vec!["t".to_string()]))
+                .with_consumer_config(custom),
+        )
+        .expect("test config should be valid");
+
+        let mut overridden = cfg.overridden_consumer_config_keys();
+        overridden.sort_unstable();
+        assert_eq!(
+            overridden,
+            vec!["bootstrap.servers", "enable.auto.commit", "group.id"],
+            "only managed keys should be flagged as overridden, not the \
+             non-managed passthrough key",
+        );
+        assert!(
+            !overridden.contains(&"fetch.error.backoff.ms"),
+            "a non-managed passthrough key must not be flagged as overridden",
         );
     }
 
