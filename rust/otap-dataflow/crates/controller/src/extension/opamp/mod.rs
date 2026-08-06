@@ -278,6 +278,10 @@ async fn connect_websocket(
 
         match connect_result {
             Ok((stream, _response)) => {
+                otel_info!(
+                    "opamp.controller_extension.ws_connect.success",
+                    message = "Connected to OpAMP server"
+                );
                 return Some(stream);
             }
 
@@ -836,6 +840,7 @@ fn handle_server_to_agent_message(
     }
 
     if let Some(remote_config) = message.remote_config {
+        let config_hash_bytes = remote_config.config_hash.len();
         if let Some(remote_config_config) = remote_config.config {
             if Some(&remote_config.config_hash) != session_state.last_config_hash.as_ref() {
                 if let Some(config_file) = remote_config_config
@@ -849,6 +854,10 @@ fn handle_server_to_agent_message(
                         if !config_file.body.is_empty() {
                             match serde_json::from_slice::<OtelDataflowSpec>(&config_file.body) {
                                 Ok(engine_config) => {
+                                    otel_debug!(
+                                        "opamp.controller_extension.remote_config.accepted",
+                                        config_hash_bytes
+                                    );
                                     updates.engine_config = Some(EngineConfigUpdate {
                                         engine_config,
                                         config_hash: remote_config.config_hash,
@@ -869,6 +878,12 @@ fn handle_server_to_agent_message(
                                     })
                                 }
                             }
+                        } else {
+                            otel_debug!(
+                                "opamp.controller_extension.remote_config.empty",
+                                message = "Ignoring empty remote configuration body",
+                                config_hash_bytes
+                            );
                         }
                     } else {
                         let message = "Invalid content type. expected application/json".to_string();
@@ -910,6 +925,12 @@ fn handle_server_to_agent_message(
                     )
                 }
             }
+        } else {
+            otel_debug!(
+                "opamp.controller_extension.remote_config.missing",
+                message = "Remote configuration did not contain a config map",
+                config_hash_bytes
+            );
         }
     }
 
@@ -985,6 +1006,11 @@ where
 
             // update engine config & report results to server
             if let Some(engine_config) = updates.engine_config {
+                otel_info!(
+                    "opamp.controller_extension.remote_config.reconcile_start",
+                    config_hash_bytes = engine_config.config_hash.len(),
+                    delete_missing = config.reconcile.delete_missing
+                );
                 // Send message to let the server we're applying the config
                 session_state.sequence_num += 1;
                 let message = applying_message(
@@ -1011,6 +1037,34 @@ where
                             delete_timeout_secs: config.reconcile.delete_timeout_secs,
                             delete_missing: config.reconcile.delete_missing,
                         });
+
+                match &reconcile_result {
+                    Ok(status) if status.state == EngineConfigReconcileState::Succeeded => {
+                        otel_info!(
+                            "opamp.controller_extension.remote_config.reconcile_succeeded",
+                            changes = status.changes.len()
+                        );
+                    }
+                    Ok(status) => {
+                        let failure_reason = status
+                            .failure_reason
+                            .as_deref()
+                            .unwrap_or("Remote configuration reconciliation failed");
+                        otel_error!(
+                            "opamp.controller_extension.remote_config.reconcile_failed",
+                            message = failure_reason,
+                            state =? status.state,
+                            changes = status.changes.len()
+                        );
+                    }
+                    Err(error) => {
+                        otel_error!(
+                            "opamp.controller_extension.remote_config.reconcile_failed",
+                            message =
+                                format!("Remote configuration reconciliation failed: {error:?}")
+                        );
+                    }
+                }
 
                 session_state.sequence_num += 1;
                 let reconcile_result_message = applied_result_message(
