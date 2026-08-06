@@ -973,11 +973,21 @@ impl KafkaReceiver {
                                 }
                             };
 
+                            // This partition's current ownership generation.
+                            let generation =
+                                self.rebalance_state.current_generation(&topic, partition);
+
                             // Idempotency: skip duplicate messages when enabled.
+                            // The check is generation-aware: a message redelivered
+                            // under a NEWER generation (same offset, after a
+                            // revoke+reassign) belongs to a new ownership period
+                            // and must NOT be skipped as a duplicate -- it is
+                            // reprocessed, and tracking it below resets this
+                            // partition's stale old-generation state.
                             if idempotent
-                                && self
-                                    .offset_tracker
-                                    .is_known_offset(&topic, partition, offset)
+                                && self.offset_tracker.is_known_offset_for_generation(
+                                    &topic, partition, offset, generation,
+                                )
                             {
                                 self.metrics.idempotent_skips.add(1);
                                 continue;
@@ -991,11 +1001,6 @@ impl KafkaReceiver {
                                         // of an older ownership period can't purge
                                         // it, and its Ack/Nack can be recognized
                                         // as belonging to the current ownership.
-                                        // The generation is stable while the partition
-                                        // stays owned, so records tracked across
-                                        // unrelated rebalances share one generation.
-                                        let generation =
-                                            self.rebalance_state.current_generation(&topic, partition);
                                         // Track offset as in-flight
                                         self.offset_tracker
                                             .track(&topic, partition, offset, generation);
@@ -1094,10 +1099,9 @@ impl KafkaReceiver {
                                         // skips the late-ack guard -- a poison
                                         // message must be advanced past
                                         // regardless of assignment. Stamped with
-                                        // this partition's ownership generation for
-                                        // consistency with the revoke/purge path.
-                                        let generation =
-                                            self.rebalance_state.current_generation(&topic, partition);
+                                        // this partition's ownership generation
+                                        // (read once above) for consistency with
+                                        // the revoke/purge path.
                                         self.offset_tracker
                                             .track(&topic, partition, offset, generation);
                                         self.advance_offset_and_commit(
@@ -4315,13 +4319,19 @@ mod tests {
     }
 
     /// Scenario (consumer-group rebalancing): an idempotent manual-commit
-    /// receiver consumes records, then a rebalance (a joining and leaving
-    /// `RebalanceTrigger`) causes librdkafka to redeliver already-seen offsets.
-    /// Guarantees: the receiver's idempotent-skip guard recognizes the
-    /// redelivered offsets and increments `idempotent_skips`, so redelivery
-    /// across a rebalance is de-duplicated rather than reprocessed.
+    /// receiver consumes records but holds them un-acked, then a rebalance (a
+    /// joining and leaving `RebalanceTrigger`) revokes and reassigns the
+    /// partitions -- a NEW ownership generation -- and librdkafka redelivers the
+    /// uncommitted offsets under that new generation.
+    /// Guarantees: because the redelivered offsets belong to a *new* ownership
+    /// period, the generation-aware idempotency guard does NOT skip them -- they
+    /// are reprocessed (delivered again), not silently dropped, and
+    /// `idempotent_skips` is not incremented for a cross-generation redelivery.
+    /// Idempotent dedupe applies only WITHIN an ownership generation (covered by
+    /// the unit test `is_known_offset_for_generation_*`); it must never suppress
+    /// a record that a new owner is responsible for reprocessing.
     #[tokio::test]
-    async fn idempotent_dedup_skips_redelivered_records_across_rebalance() {
+    async fn idempotent_redelivery_under_new_generation_is_reprocessed_not_skipped() {
         const TOPIC: &str = "rebalance-idempotent-traces";
         let group = "rebalance-idempotent-group";
         with_cluster(
@@ -4342,8 +4352,7 @@ mod tests {
                     )
                     .await;
 
-                // Idempotent manual-commit receiver: consumed offsets are
-                // remembered so a redelivered offset is skipped.
+                // Idempotent manual-commit receiver.
                 let builder = KafkaReceiverConfigBuilder::new(
                     cluster.bootstrap_servers(),
                     group,
@@ -4373,32 +4382,42 @@ mod tests {
                 }
 
                 // A member joins (revoking partitions from the receiver) and then
-                // leaves (reassigning them back), forcing redelivery of the
-                // uncommitted offsets.
+                // leaves (reassigning them back). The reassignment allocates a new
+                // ownership generation, and the uncommitted offsets are redelivered
+                // under it.
                 let trigger =
                     RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(30))
                         .await;
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 drop(trigger);
 
-                // Drain any redelivered records within a bounded window; the
-                // idempotent guard should skip the ones already seen.
+                // Drain redelivered records within a bounded window, counting how
+                // many arrive. Under the new generation they must be reprocessed
+                // (delivered), not idempotently skipped.
+                let mut redelivered = 0usize;
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
                 while tokio::time::Instant::now() < deadline {
                     if let Some(pdata) = receiver.try_recv_pdata(Duration::from_millis(250)).await {
+                        redelivered += 1;
                         receiver.ack(pdata);
                     }
                 }
+                assert!(
+                    redelivered >= 1,
+                    "offsets redelivered under a new ownership generation must be \
+                     reprocessed (delivered again), not skipped; got {redelivered}",
+                );
 
                 receiver.shutdown(Duration::from_secs(5));
                 let terminal = receiver.await_terminal_state().await;
 
                 let mut m = FoldedMetrics::new();
                 m.fold_all(terminal.metrics());
-                assert!(
-                    m.value("idempotent_skips") >= 1,
-                    "redelivered offsets across a rebalance should be de-duplicated via the \
-                     idempotent-skip guard, got idempotent_skips={}",
+                assert_eq!(
+                    m.value("idempotent_skips"),
+                    0,
+                    "a cross-generation redelivery must not be counted as an \
+                     idempotent skip, got idempotent_skips={}",
                     m.value("idempotent_skips"),
                 );
             },

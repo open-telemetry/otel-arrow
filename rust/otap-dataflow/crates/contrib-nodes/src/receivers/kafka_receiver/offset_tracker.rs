@@ -114,6 +114,26 @@ impl PartitionTracker {
         self.pending.contains(&offset) || self.high_water_mark.is_some_and(|hwm| offset <= hwm)
     }
 
+    /// Generation-aware form of [`is_known`](Self::is_known).
+    ///
+    /// A message whose `generation` is **newer** than this partition's tracked
+    /// generation belongs to a new ownership period (the partition was revoked
+    /// and reassigned to this consumer). Its offset -- even if numerically equal
+    /// to one already seen under the old period -- must NOT be treated as a
+    /// known duplicate: the old period's `pending`/`high_water_mark` say nothing
+    /// about the new period. So a newer-generation offset is always "unknown"
+    /// (allowed through); the caller then tracks it, which resets this
+    /// partition's state to the new generation via [`track`](Self::track).
+    ///
+    /// For a same-or-older generation the ordinary [`is_known`](Self::is_known)
+    /// dedupe applies.
+    fn is_known_for_generation(&self, offset: i64, generation: u64) -> bool {
+        if generation > self.generation {
+            return false;
+        }
+        self.is_known(offset)
+    }
+
     /// The offset that should be committed for this partition.
     ///
     /// Returns the lowest pending offset if any are in-flight, otherwise
@@ -294,6 +314,31 @@ impl OffsetTracker {
             .get(topic)
             .and_then(|parts| parts.get(&partition))
             .map(|tracker| tracker.is_known(offset))
+            .unwrap_or(false)
+    }
+
+    /// Generation-aware form of [`is_known_offset`](Self::is_known_offset), used
+    /// by the idempotency dedupe on the receive path.
+    ///
+    /// Returns `false` for an offset whose `generation` is newer than the
+    /// partition's tracked generation, so a message redelivered under a new
+    /// ownership period (same offset, newer generation after a revoke+reassign)
+    /// is never skipped as a duplicate -- it is reprocessed, and tracking it
+    /// resets the partition to the new generation. For a same-or-older
+    /// generation the ordinary known-offset dedupe applies. An untracked
+    /// partition is not known.
+    #[must_use]
+    pub fn is_known_offset_for_generation(
+        &self,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+        generation: u64,
+    ) -> bool {
+        self.partitions
+            .get(topic)
+            .and_then(|parts| parts.get(&partition))
+            .map(|tracker| tracker.is_known_for_generation(offset, generation))
             .unwrap_or(false)
     }
 
@@ -1324,5 +1369,48 @@ mod tests {
             "an old-generation offset must not become known again after reassignment",
         );
         assert!(tracker.is_known_offset("traces", 0, 200));
+    }
+
+    /// Scenario (routing and payload correctness): an offset is tracked and acked
+    /// under generation 1 (so it is a known duplicate within that generation),
+    /// and `is_known_offset_for_generation` is then queried with the same offset
+    /// under an older, equal, and newer generation.
+    /// Guarantees: within the same (or an older) ownership generation the offset
+    /// is still reported as known (idempotent dedupe applies within a
+    /// generation), but under a NEWER generation it is reported as NOT known --
+    /// so a message redelivered under a new ownership period (same offset, newer
+    /// generation after a revoke+reassign) is never skipped as a duplicate and is
+    /// reprocessed instead. This is the generation-aware idempotency contract.
+    #[test]
+    fn is_known_offset_for_generation_allows_newer_generation_same_offset() {
+        let mut tracker = OffsetTracker::new();
+
+        // Generation 1: track+ack offset 100 so it is "known" within generation 1.
+        tracker.track("traces", 0, 100, 1);
+        let _ = tracker.acknowledge("traces", 0, 100);
+        assert_eq!(tracker.partition_generation("traces", 0), Some(1));
+
+        // Same generation: the offset is a known duplicate (idempotent dedupe
+        // applies within the ownership period).
+        assert!(
+            tracker.is_known_offset_for_generation("traces", 0, 100, 1),
+            "offset 100 must be known within its own generation (same-period dedupe)",
+        );
+
+        // Newer generation: the same offset belongs to a new ownership period and
+        // must NOT be treated as a known duplicate -- it is allowed through so the
+        // new owner reprocesses it.
+        assert!(
+            !tracker.is_known_offset_for_generation("traces", 0, 100, 2),
+            "offset 100 under a newer generation must not be known (reprocessed)",
+        );
+        assert!(
+            !tracker.is_known_offset_for_generation("traces", 0, 100, 5),
+            "any generation newer than the tracked one makes the offset unknown",
+        );
+
+        // An untracked partition is never known, regardless of generation.
+        assert!(!tracker.is_known_offset_for_generation("traces", 9, 100, 1));
+        assert!(!tracker.is_known_offset_for_generation("traces", 9, 100, 2));
     }
 }
