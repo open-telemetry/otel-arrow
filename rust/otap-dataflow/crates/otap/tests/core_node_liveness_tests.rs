@@ -213,8 +213,10 @@ fn run_pipeline_with_condition<F>(
             config,
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            None, // transport_headers_policy
-            None, // internal_telemetry
+            None,                              // transport_headers_policy
+            std::collections::BTreeMap::new(), // rate_limiter_policies
+            None,                              // rate_limiter_scope
+            None,                              // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
@@ -360,8 +362,10 @@ where
             config,
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            None, // transport_headers_policy
-            None, // internal_telemetry
+            None,                              // transport_headers_policy
+            std::collections::BTreeMap::new(), // rate_limiter_policies
+            None,                              // rate_limiter_scope
+            None,                              // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
