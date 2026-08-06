@@ -320,6 +320,8 @@ pub struct RuntimeCtrlMsgManager<PData> {
     control_plane_metrics_flush_interval: Duration,
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
+    /// Admission refusal metrics handles for periodic reporting.
+    admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
 
     /// Per-node metrics handles for recording consumed/produced outcomes.
     node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
@@ -351,6 +353,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         control_plane_metrics_flush_interval: Duration,
         telemetry_policy: TelemetryPolicy,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
+        admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
         terminal_metrics_deadline: TerminalMetricsDeadline,
     ) -> Self {
@@ -375,6 +378,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             metrics_reporter,
             control_plane_metrics_flush_interval,
             channel_metrics,
+            admission_metrics,
             node_metric_handles,
             telemetry: telemetry_policy,
             pending_sends: VecDeque::new(),
@@ -933,6 +937,11 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             for metrics in &self.channel_metrics {
                 if let Err(err) = metrics.report(&mut self.metrics_reporter) {
                     otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
+                }
+            }
+            for metrics in &self.admission_metrics {
+                if let Err(err) = metrics.report(&mut self.metrics_reporter) {
+                    otel_warn!("admission.metrics.reporting.fail", error = err.to_string());
                 }
             }
         }
@@ -1550,6 +1559,7 @@ mod tests {
             TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             TelemetryPolicy::default(),
             Vec::new(),
+            Vec::new(),
             empty_node_metric_handles(),
             TerminalMetricsDeadline::default(),
         );
@@ -2028,6 +2038,7 @@ mod tests {
                     metrics_reporter,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    Vec::new(),
                     Vec::new(),
                     empty_node_metric_handles(),
                     TerminalMetricsDeadline::default(),
@@ -3372,6 +3383,7 @@ mod tests {
             TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             telemetry_policy.clone(),
             Vec::new(),
+            Vec::new(),
             node_metric_handles.clone(),
             TerminalMetricsDeadline::default(),
         );
@@ -3620,6 +3632,7 @@ mod tests {
                 flow_metrics: Vec::new(),
             },
             Vec::new(),
+            Vec::new(),
             empty_node_metric_handles(),
             TerminalMetricsDeadline::default(),
         );
@@ -3698,6 +3711,7 @@ mod tests {
                 runtime_metrics: MetricLevel::None,
                 flow_metrics: Vec::new(),
             },
+            Vec::new(),
             Vec::new(),
             empty_node_metric_handles(),
             TerminalMetricsDeadline::default(),
