@@ -4009,11 +4009,12 @@ dependencies = [
 [[package]]
 name = "geneva-uploader"
 version = "0.5.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=98aa6dc8717b372ab34ebe3247262379d4e33799#98aa6dc8717b372ab34ebe3247262379d4e33799"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=75a2b0ad0e19ecb1322c3c2095dc6e69a2de7e9d#75a2b0ad0e19ecb1322c3c2095dc6e69a2de7e9d"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
  "base64",
+ "bytes",
  "chrono",
  "hex",
  "lz4_flex 0.11.6",
@@ -4025,6 +4026,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",
+ "secrecy",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -7170,6 +7172,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "otap-df-component-inventory"
+version = "0.50.0"
+dependencies = [
+ "otap-df-contrib-nodes",
+ "otap-df-core-nodes",
+ "otap-df-engine",
+ "otap-df-otap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "otap-df-component-inventory-syntax"
+version = "0.50.0"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "otap-df-config"
 version = "0.50.0"
 dependencies = [
@@ -7284,6 +7306,7 @@ dependencies = [
  "tracepoint_decode",
  "tracing",
  "tracing-subscriber",
+ "url",
  "urlencoding",
  "uuid",
  "wiremock",
@@ -7449,6 +7472,7 @@ dependencies = [
  "memory-stats",
  "nix 0.31.3",
  "otap-df-channel",
+ "otap-df-component-inventory-syntax",
  "otap-df-config",
  "otap-df-engine",
  "otap-df-engine-macros",
@@ -7474,6 +7498,7 @@ dependencies = [
 name = "otap-df-engine-macros"
 version = "0.50.0"
 dependencies = [
+ "otap-df-component-inventory-syntax",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -12446,10 +12471,13 @@ name = "xtask"
 version = "0.50.0"
 dependencies = [
  "anyhow",
+ "otap-df-component-inventory-syntax",
  "otap-df-pdata-otlp-model",
+ "proc-macro2",
  "prost-build",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "toml",
  "tonic-prost-build",
 ]

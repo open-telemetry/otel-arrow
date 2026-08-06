@@ -1,0 +1,26 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "otap-df-component-inventory"
+description = "Link-time reliability oracle for the component inventory (RFC 0001): cross-checks the compiler-resolved COMPONENT_INVENTORY slice against the committed baseline"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+otap-df-engine = { workspace = true }
+otap-df-core-nodes = { workspace = true }
+otap-df-contrib-nodes = { workspace = true }
+otap-df-otap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

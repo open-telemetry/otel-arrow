@@ -13,16 +13,10 @@ pub struct SignalAttributes {
     pub signal: SignalType,
 }
 
-/// Pdata-oriented metrics for the OTAP DebugProcessor
-#[metric_set(name = "processor.debug.pdata", measurement_attributes = SignalAttributes)]
+/// Debug-specific nested item metrics not covered by universal channel metrics.
+#[metric_set(name = "processor.debug", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct DebugPdataMetrics {
-    /// Incoming OTLP requests handled by the debug processor
-    #[metric(name = "consumed.requests", unit = "{request}")]
-    pub consumed_requests: Counter<u64>,
-    /// Primary signal items: log records, metric datapoints, or spans
-    #[metric(name = "consumed.items", unit = "{item}")]
-    pub consumed_items: Counter<u64>,
+pub struct DebugMetrics {
     /// Named log events for logs, or span events for traces
     #[metric(name = "consumed.events", unit = "{event}")]
     pub consumed_events: Counter<u64>,

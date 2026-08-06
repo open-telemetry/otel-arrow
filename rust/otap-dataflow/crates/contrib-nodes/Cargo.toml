@@ -71,6 +71,7 @@ paste = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
@@ -147,6 +148,7 @@ clickhouse-exporter = [
 geneva-exporter = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
+    "dep:url",
 ]
 azure-monitor-exporter = [
     "dep:opentelemetry-proto",
