@@ -92,6 +92,12 @@ impl RuntimeLogFilter {
         layers.push(Arc::downgrade(&filter));
         RuntimeLogFilterLayer { filter }
     }
+
+    /// Returns the most recently applied configuration value.
+    #[must_use]
+    pub fn configured_level(&self) -> LogLevel {
+        self.shared.configured_level.load().as_ref().clone()
+    }
 }
 
 impl RuntimeLogFilterHandle {

@@ -202,9 +202,6 @@ pub struct InternalTelemetrySystem {
     metrics_reporter: reporter::MetricsReporter,
 
     // === Logging Configuration ===
-    /// Log level from config.
-    log_level: LogLevel,
-
     /// Shared runtime filter installed into every tracing dispatcher.
     log_filter: RuntimeLogFilter,
 
@@ -293,7 +290,6 @@ impl InternalTelemetrySystem {
             registry: telemetry_registry,
             collector,
             metrics_reporter,
-            log_level: config.logs.level.clone(),
             log_filter,
             log_filter_handle,
             provider_modes: config.logs.providers.clone(),
@@ -341,8 +337,7 @@ impl InternalTelemetrySystem {
             },
         };
 
-        TracingSetup::new(provider, self.log_level.clone(), self.context_fn)
-            .with_log_filter(self.log_filter.clone())
+        TracingSetup::from_log_filter(provider, self.log_filter.clone(), self.context_fn)
     }
 
     /// Returns a `TracingSetup` for engine threads.
@@ -387,8 +382,8 @@ impl InternalTelemetrySystem {
 
     /// Returns the configured log level.
     #[must_use]
-    pub const fn log_level(&self) -> &LogLevel {
-        &self.log_level
+    pub fn log_level(&self) -> LogLevel {
+        self.log_filter.configured_level()
     }
 
     /// Returns the handle for applying runtime log-level configuration.
@@ -474,6 +469,20 @@ mod tests {
             None,
         )
         .expect("should create internal telemetry system")
+    }
+
+    /// Scenario: runtime reconciliation changes the shared internal log filter.
+    /// Guarantees: InternalTelemetrySystem reports the current configured level.
+    #[test]
+    fn log_level_follows_runtime_filter_updates() {
+        with_cleared_rust_log(|| {
+            let its = test_system(&TelemetryConfig::default());
+            let level: LogLevel = serde_yaml::from_str("debug").expect("valid log level");
+
+            its.log_filter_handle().apply(&level);
+
+            assert_eq!(its.log_level(), level);
+        });
     }
 
     /// Scenario: all log providers explicitly disable ITS delivery.

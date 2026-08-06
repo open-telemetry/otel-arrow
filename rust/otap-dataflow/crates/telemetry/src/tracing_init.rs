@@ -21,15 +21,13 @@ use tracing_subscriber::{Registry, layer::SubscriberExt};
 
 /// Combined tracing configuration for a thread.
 ///
-/// This struct bundles the provider setup with the log level, allowing
+/// This struct bundles the provider setup with the shared runtime filter, allowing
 /// the `InternalTelemetrySystem` to control all tracing configuration.
 /// Future enhancements may include per-thread log level overrides.
 #[derive(Clone)]
 pub struct TracingSetup {
     /// The provider mode configuration.
     pub provider: ProviderSetup,
-    /// The log level for filtering.
-    pub log_level: LogLevel,
     /// Context function.
     pub context_fn: LogContextFn,
     /// Shared runtime filter.
@@ -41,9 +39,16 @@ impl TracingSetup {
     #[must_use]
     pub fn new(provider: ProviderSetup, log_level: LogLevel, context_fn: LogContextFn) -> Self {
         let (log_filter, _handle) = RuntimeLogFilter::new(&log_level);
+        Self::from_log_filter(provider, log_filter, context_fn)
+    }
+
+    pub(crate) fn from_log_filter(
+        provider: ProviderSetup,
+        log_filter: RuntimeLogFilter,
+        context_fn: LogContextFn,
+    ) -> Self {
         Self {
             provider,
-            log_level,
             context_fn,
             log_filter,
         }
@@ -76,8 +81,9 @@ impl TracingSetup {
     where
         F: FnOnce() -> R,
     {
+        let log_level = self.log_filter.configured_level();
         self.provider
-            .with_subscriber_ignoring_env(&self.log_level, self.context_fn, f)
+            .with_subscriber_ignoring_env(&log_level, self.context_fn, f)
     }
 }
 
