@@ -96,6 +96,7 @@ use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otap_df_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_pdata_views::views::trace::{ResourceSpansView, TracesView};
+use otap_df_telemetry::common_attributes::Outcome;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -133,37 +134,45 @@ impl std::fmt::Display for RoutingKeyExpr {
     }
 }
 
-/// Outcomes for the ContentRouter processor.
+/// Specific reasons for ContentRouter outcomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
-pub enum ContentRouterOutcome {
-    /// Routed to a named port.
-    Routed,
-    /// Routed to the default output.
-    RoutedDefault,
-    /// Permanently NACKed.
-    Nacked,
-    /// Missing routing key.
-    NoRoutingKey,
-    /// Internal conversion error.
+pub enum ContentRouterReason {
+    /// Routed to a matched route.
+    MatchedRoute,
+    /// Routed to default because no configured route matched.
+    DefaultRouteNoMatch,
+    /// Routed to default because the routing key was missing.
+    DefaultRouteMissingKey,
+    /// NACKed because no configured route matched and no default was set.
+    NoMatchingRoute,
+    /// NACKed because the routing key was missing and no default was set.
+    MissingRoutingKey,
+    /// NACKed because the batch contained mixed destinations.
+    MixedBatch,
+    /// NACKed due to an internal conversion error.
     ConversionError,
-    /// Selected route was full.
-    RejectedRouteFull,
-    /// Selected route was closed.
-    RejectedRouteClosed,
+    /// NACKed because the selected route was full.
+    RouteFull,
+    /// NACKed because the selected route was closed.
+    RouteClosed,
+    /// NACKed because the node was shutting down.
+    NodeShutdown,
 }
 
 /// Attributes for ContentRouter outcome metric.
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
-pub struct ContentRouterOutcomeAttributes {
-    /// Outcome of the routing decision.
-    pub outcome: ContentRouterOutcome,
+pub struct ContentRouterAttributes {
+    /// General outcome of the routing decision.
+    pub outcome: Outcome,
+    /// Specific reason for the outcome.
+    pub reason: ContentRouterReason,
 }
 
 /// Measurement metrics for the ContentRouter processor.
 #[metric_set(
     name = "processor.content_router",
-    measurement_attributes = ContentRouterOutcomeAttributes
+    measurement_attributes = ContentRouterAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ContentRouterMeasurementMetrics {
@@ -194,10 +203,10 @@ impl ContentRouterMetrics {
         reporter.report_measurement(&mut self.metrics)
     }
 
-    /// Records a specific outcome.
-    pub fn record(&mut self, outcome: ContentRouterOutcome) {
+    /// Records a specific outcome and reason.
+    pub fn record(&mut self, outcome: Outcome, reason: ContentRouterReason) {
         self.metrics
-            .with(ContentRouterOutcomeAttributes { outcome })
+            .with(ContentRouterAttributes { outcome, reason })
             .messages
             .inc();
     }
@@ -352,7 +361,8 @@ enum RouteResolution {
 #[derive(Clone, Copy, Debug)]
 enum SelectedRouteKind {
     Matched,
-    Default,
+    DefaultNoMatch,
+    DefaultMissingKey,
 }
 
 /// The ContentRouter processor routes messages to output ports based on
@@ -597,8 +607,9 @@ impl ContentRouter {
     fn record_forwarded_route(&mut self, route_kind: SelectedRouteKind) {
         if let Some(m) = self.metrics.as_mut() {
             match route_kind {
-                SelectedRouteKind::Matched => m.record(ContentRouterOutcome::Routed),
-                SelectedRouteKind::Default => m.record(ContentRouterOutcome::RoutedDefault),
+                SelectedRouteKind::Matched => m.record(Outcome::Success, ContentRouterReason::MatchedRoute),
+                SelectedRouteKind::DefaultNoMatch => m.record(Outcome::Success, ContentRouterReason::DefaultRouteNoMatch),
+                SelectedRouteKind::DefaultMissingKey => m.record(Outcome::Success, ContentRouterReason::DefaultRouteMissingKey),
             }
         }
     }
@@ -652,8 +663,7 @@ impl ContentRouter {
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.record(ContentRouterOutcome::Nacked);
-            m.record(ContentRouterOutcome::RejectedRouteFull);
+            m.record(Outcome::Refused, ContentRouterReason::RouteFull);
         }
 
         effect_handler
@@ -674,8 +684,7 @@ impl ContentRouter {
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.record(ContentRouterOutcome::Nacked);
-            m.record(ContentRouterOutcome::RejectedRouteClosed);
+            m.record(Outcome::Refused, ContentRouterReason::RouteClosed);
         }
 
         effect_handler
@@ -698,7 +707,7 @@ impl ContentRouter {
         reason: &str,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.record(ContentRouterOutcome::Nacked);
+            m.record(Outcome::Failure, ContentRouterReason::NodeShutdown);
         }
 
         effect_handler
@@ -878,28 +887,28 @@ impl local::Processor<OtapPdata> for ContentRouter {
                         }
                     }
                     RouteResolution::NoMatch | RouteResolution::MissingKey => {
-                        if matches!(resolution, RouteResolution::MissingKey) {
-                            if let Some(m) = self.metrics.as_mut() {
-                                m.record(ContentRouterOutcome::NoRoutingKey);
-                            }
-                        }
                         // Default-route admission follows the same contract as
                         // matched-route admission once the default port has
                         // been selected.
                         if let Some(default_port) = self.default_output.clone() {
+                            let default_kind = if matches!(resolution, RouteResolution::MissingKey) {
+                                SelectedRouteKind::DefaultMissingKey
+                            } else {
+                                SelectedRouteKind::DefaultNoMatch
+                            };
                             let admission = effect_handler
                                 .try_admit_message_with_source_node_to(default_port.clone(), data)
                                 .map_err(EngineError::from)?;
                             match admission {
                                 RouteAdmission::Accepted => {
-                                    self.record_forwarded_route(SelectedRouteKind::Default);
+                                    self.record_forwarded_route(default_kind);
                                     Ok(())
                                 }
                                 RouteAdmission::RejectedFull(data) => {
                                     self.handle_selected_route_full(
                                         effect_handler,
                                         PortName::from(default_port),
-                                        SelectedRouteKind::Default,
+                                        default_kind,
                                         data,
                                     )
                                     .await
@@ -915,8 +924,13 @@ impl local::Processor<OtapPdata> for ContentRouter {
                             }
                         } else {
                             // No default output - NACK to inform upstream
+                            let reason_enum = if matches!(resolution, RouteResolution::MissingKey) {
+                                ContentRouterReason::MissingRoutingKey
+                            } else {
+                                ContentRouterReason::NoMatchingRoute
+                            };
                             if let Some(m) = self.metrics.as_mut() {
-                                m.record(ContentRouterOutcome::Nacked);
+                                m.record(Outcome::Failure, reason_enum);
                             }
                             let reason = if matches!(resolution, RouteResolution::MissingKey) {
                                 format!(
@@ -937,7 +951,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     }
                     RouteResolution::MixedBatch => {
                         if let Some(m) = self.metrics.as_mut() {
-                            m.record(ContentRouterOutcome::Nacked);
+                            m.record(Outcome::Failure, ContentRouterReason::MixedBatch);
                         }
                         let reason = format!(
                             "batch contains resources with inconsistent routing for key '{}'; \
@@ -951,8 +965,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     }
                     RouteResolution::ConversionError => {
                         if let Some(m) = self.metrics.as_mut() {
-                            m.record(ContentRouterOutcome::Nacked);
-                            m.record(ContentRouterOutcome::ConversionError);
+                            m.record(Outcome::Failure, ContentRouterReason::ConversionError);
                         }
                         let reason =
                             "internal error: failed to convert telemetry format for routing"
