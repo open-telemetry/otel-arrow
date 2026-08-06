@@ -705,7 +705,7 @@ impl PipelineConfig {
     ///
     /// Connectivity is defined by top-level `connections`:
     /// - receiver: must have at least one outgoing connection
-    /// - processor / processor_chain: must have at least one incoming and one outgoing connection
+    /// - processor: must have at least one incoming and one outgoing connection
     /// - exporter: must have at least one incoming connection
     ///
     /// Removal is iterative. Removing one node can orphan additional nodes, which are removed in
@@ -722,9 +722,7 @@ impl PipelineConfig {
                 let has_outgoing = connected.outgoing.contains(node_id);
                 let should_remove = match node_cfg.kind() {
                     NodeKind::Receiver => !has_outgoing,
-                    NodeKind::Processor | NodeKind::ProcessorChain => {
-                        !has_incoming || !has_outgoing
-                    }
+                    NodeKind::Processor => !has_incoming || !has_outgoing,
                     NodeKind::Exporter => !has_incoming,
                 };
 

@@ -109,7 +109,7 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                 .get_receiver_factory_map()
                 .get(urn_str)
                 .map(|f| f.validate_config),
-            NodeKind::Processor | NodeKind::ProcessorChain => factory
+            NodeKind::Processor => factory
                 .get_processor_factory_map()
                 .get(urn_str)
                 .map(|f| f.validate_config),
@@ -123,7 +123,7 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
             None => {
                 let kind_name = match kind {
                     NodeKind::Receiver => "receiver",
-                    NodeKind::Processor | NodeKind::ProcessorChain => "processor",
+                    NodeKind::Processor => "processor",
                     NodeKind::Exporter => "exporter",
                 };
                 return Err(std::io::Error::other(format!(

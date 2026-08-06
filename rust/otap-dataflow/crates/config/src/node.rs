@@ -200,12 +200,9 @@ pub enum NodeKind {
     Processor,
     /// A sink of signals
     Exporter,
-
     // ToDo(LQ) : Add more node kinds as needed.
     // A connector between two pipelines
     // Connector,
-    /// A merged chain of consecutive processors (experimental).
-    ProcessorChain,
 }
 
 impl From<NodeKind> for Cow<'static, str> {
@@ -214,7 +211,6 @@ impl From<NodeKind> for Cow<'static, str> {
             NodeKind::Receiver => "receiver".into(),
             NodeKind::Processor => "processor".into(),
             NodeKind::Exporter => "exporter".into(),
-            NodeKind::ProcessorChain => "processor_chain".into(),
         }
     }
 }
@@ -323,7 +319,6 @@ impl NodeUserConfig {
                     kind = match kind {
                         NodeKind::Processor => "processor",
                         NodeKind::Exporter => "exporter",
-                        NodeKind::ProcessorChain => "processor_chain",
                         NodeKind::Receiver => unreachable!(),
                     }
                 ),
@@ -338,7 +333,6 @@ impl NodeUserConfig {
                     kind = match kind {
                         NodeKind::Receiver => "receiver",
                         NodeKind::Processor => "processor",
-                        NodeKind::ProcessorChain => "processor_chain",
                         NodeKind::Exporter => unreachable!(),
                     }
                 ),
