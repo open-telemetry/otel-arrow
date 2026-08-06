@@ -49,6 +49,7 @@ config:
     min_size: 1048576
     max_size: null
     sizer: bytes
+    max_split_fragments: 100000  # Cap on fragments per oversize entry (OTLP only).
 
   # Maximum time before flushing pending data (default: 200ms).
   max_batch_duration: 500ms
@@ -66,6 +67,13 @@ Each format object contains:
 - `min_size`: non-zero flush threshold, or `null` to disable size flushing.
 - `max_size`: optional non-zero upper bound, or `null`.
 - `sizer`: one of `requests`, `items`, or `bytes`.
+- `max_split_fragments` (OTLP bytes only): non-zero cap on how many fragments a
+  single oversize resource entry may split into, or `null` for unbounded.
+  Splitting an entry that exceeds `max_size` re-encodes the resource/scope
+  headers around each fragment, so a tiny `max_size` relative to one indivisible
+  input could fan out into very many fragments. When the projected fragment
+  count exceeds this budget the entry is emitted whole (best-effort, possibly
+  exceeding `max_size`) and counted by the `split.budget.fallbacks` metric.
 
 ## Examples
 
@@ -106,6 +114,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `otap.processor.batch.batching_errors` | `{error}` | Number of batches for which errors encountered. |
 | `otap.processor.batch.nacked_inbound_slots` | `{msg}` | Number of requests nacked due to inbound slot exhaustion. |
 | `otap.processor.batch.nacked_outbound_slots` | `{msg}` | Number of requests nacked due to outbound slot exhaustion. |
+| `otap.processor.batch.split_budget_fallbacks` | `{entry}` | Number of oversize resource entries emitted whole because splitting would have exceeded `max_split_fragments`. |
 
 ### Events
 

@@ -21,6 +21,26 @@ use std::num::NonZeroU64;
 const RESOURCE_ENTRY_FIELD: u64 = 1;
 const CHILD_LIST_FIELD: u64 = 2;
 
+/// An output batch paired with its ownership weight: the number of *input* bytes
+/// it represents. Unlike the batch's own encoded length, ownership weights sum
+/// to exactly the input byte total even when wrapper headers are duplicated
+/// across split fragments. The batch processor apportions Ack/Nack ownership by
+/// this weight so every fragment of a split input is attributed back to that
+/// input (see `make_bytes_batches_owned`).
+type OwnedBatch = (OtlpProtoBytes, usize);
+
+/// Result of byte batching: the output batches (each with its ownership weight)
+/// plus the number of oversize entries that were emitted whole because their
+/// projected fragment count would have exceeded the caller's fragment budget.
+pub struct BytesBatches {
+    /// Output batches, each paired with the input-byte ownership weight it
+    /// represents. The weights sum to the input byte total.
+    pub batches: Vec<OwnedBatch>,
+    /// Number of resource entries emitted whole (best-effort) instead of split
+    /// because their projected fragment count exceeded the budget.
+    pub budget_fallbacks: u64,
+}
+
 /// Number of bytes needed to encode `v` as a protobuf varint.
 fn varint_len(mut v: u64) -> usize {
     let mut n = 1;
@@ -105,19 +125,46 @@ fn fully_parseable(buf: &[u8]) -> bool {
     true
 }
 
-/// Move the accumulated bytes in `cur` into a new output batch, if any.
-fn flush(signal: SignalType, cur: &mut Vec<u8>, batches: &mut Vec<OtlpProtoBytes>) {
+/// Move the accumulated bytes in `cur` into a new output batch, if any. A
+/// packed/opaque batch carries no duplicated headers, so its ownership weight
+/// equals its own encoded length.
+fn flush(signal: SignalType, cur: &mut Vec<u8>, batches: &mut Vec<OwnedBatch>) {
     if !cur.is_empty() {
-        batches.push(OtlpProtoBytes::new_from_bytes(signal, std::mem::take(cur)));
+        let bytes = std::mem::take(cur);
+        let weight = bytes.len();
+        batches.push((OtlpProtoBytes::new_from_bytes(signal, bytes), weight));
     }
 }
 
 /// Wrap `entry_bytes` (a resource-entry payload) in the top-level repeated
-/// field and push it as a standalone batch.
-fn emit_top(signal: SignalType, entry_bytes: &[u8], batches: &mut Vec<OtlpProtoBytes>) {
+/// field and push it as a standalone batch. Its ownership weight is its own
+/// encoded length; callers that produce header-duplicating fragments overwrite
+/// these weights afterwards via `rescale_ownership`.
+fn emit_top(signal: SignalType, entry_bytes: &[u8], batches: &mut Vec<OwnedBatch>) {
     let mut batch = Vec::with_capacity(wrapped_len(RESOURCE_ENTRY_FIELD, entry_bytes.len()));
     write_len_delimited(&mut batch, RESOURCE_ENTRY_FIELD, entry_bytes);
-    batches.push(OtlpProtoBytes::new_from_bytes(signal, batch));
+    let weight = batch.len();
+    batches.push((OtlpProtoBytes::new_from_bytes(signal, batch), weight));
+}
+
+/// Redistribute `total` input-byte ownership evenly across the batches in
+/// `frags`, so their weights sum to exactly `total` (the split entry's input
+/// size) with each fragment receiving at least one unit. Used after a split
+/// duplicates wrapper headers, which would otherwise make the fragments' own
+/// encoded lengths sum to more than the input they represent.
+fn rescale_ownership(frags: &mut [OwnedBatch], total: usize) {
+    let n = frags.len();
+    if n == 0 {
+        return;
+    }
+    // A genuine split always carries at least one record per fragment, so
+    // `total >= n` and `base >= 1`; the debug assert guards the invariant.
+    debug_assert!(total >= n, "each fragment must own at least one input byte");
+    let base = total / n;
+    let rem = total % n;
+    for (i, frag) in frags.iter_mut().enumerate() {
+        frag.1 = base + usize::from(i < rem);
+    }
 }
 
 /// Greedily place an indivisible (non-resource or unparseable) top-level unit,
@@ -128,7 +175,7 @@ fn push_opaque(
     full: &[u8],
     max_size: usize,
     cur: &mut Vec<u8>,
-    batches: &mut Vec<OtlpProtoBytes>,
+    batches: &mut Vec<OwnedBatch>,
 ) {
     if cur.len() + full.len() <= max_size {
         cur.extend_from_slice(full);
@@ -143,14 +190,18 @@ fn push_opaque(
 }
 
 /// Place a top-level resource entry, descending into it only when it cannot fit
-/// within `max_size` on its own.
+/// within `max_size` on its own. When a split occurs, the produced fragments'
+/// ownership weights are rescaled to sum to the entry's input size (`full`).
+#[allow(clippy::too_many_arguments)]
 fn push_resource_entry(
     signal: SignalType,
     full: &[u8],
     payload: &[u8],
     max_size: usize,
+    fragment_budget: usize,
     cur: &mut Vec<u8>,
-    batches: &mut Vec<OtlpProtoBytes>,
+    batches: &mut Vec<OwnedBatch>,
+    budget_fallbacks: &mut u64,
 ) {
     if cur.len() + full.len() <= max_size {
         cur.extend_from_slice(full);
@@ -163,7 +214,20 @@ fn push_resource_entry(
     }
     // A single resource entry exceeds max_size: split within it.
     flush(signal, cur, batches);
-    split_resource_entry(signal, payload, max_size, batches);
+    let start = batches.len();
+    split_resource_entry(
+        signal,
+        payload,
+        max_size,
+        fragment_budget,
+        batches,
+        budget_fallbacks,
+    );
+    // Every fragment produced by this split re-encodes the resource/scope
+    // headers, so their encoded lengths sum to more than the input entry.
+    // Reattribute the entry's input bytes across the fragments so Ack/Nack
+    // ownership sums back to the input.
+    rescale_ownership(&mut batches[start..], full.len());
 }
 
 /// Split one oversize resource entry into multiple valid resource entries,
@@ -171,11 +235,20 @@ fn push_resource_entry(
 /// into individual records). The resource header (`resource`, `schema_url` and
 /// any unknown fields) is preserved and duplicated across the produced
 /// fragments.
+///
+/// Before emitting anything, an upper bound on the fragment count is projected
+/// (worst case: one fragment per record, plus one per empty scope). If that
+/// exceeds `fragment_budget`, the entry is emitted whole (best-effort, may
+/// exceed `max_size`) and `budget_fallbacks` is incremented, so the caller can
+/// always fall back without having already emitted -- and thus duplicated --
+/// some of the entry's records.
 fn split_resource_entry(
     signal: SignalType,
     entry_payload: &[u8],
     max_size: usize,
-    batches: &mut Vec<OtlpProtoBytes>,
+    fragment_budget: usize,
+    batches: &mut Vec<OwnedBatch>,
+    budget_fallbacks: &mut u64,
 ) {
     let mut header: Vec<u8> = Vec::new();
     let mut scope_fulls: Vec<&[u8]> = Vec::new();
@@ -222,6 +295,20 @@ fn split_resource_entry(
         return;
     }
 
+    // Bound fan-out before emitting anything: project an upper bound on the
+    // fragment count (one per record, or one for an empty scope). Falling back
+    // here -- before any fragment is emitted -- avoids duplicating records that
+    // would otherwise already be in earlier fragments.
+    let projected_fragments: usize = scope_payloads
+        .iter()
+        .map(|sp| count_records(sp).max(1))
+        .sum();
+    if projected_fragments > fragment_budget {
+        emit_top(signal, entry_payload, batches);
+        *budget_fallbacks += 1;
+        return;
+    }
+
     // Greedily pack whole scopes into a resource-entry fragment.
     let mut frag: Vec<u8> = header.clone();
     for (i, scope_full) in scope_fulls.iter().enumerate() {
@@ -248,6 +335,20 @@ fn split_resource_entry(
     }
 }
 
+/// Count the record entries (repeated field 2) in a fully-parseable scope
+/// payload. Used to project an upper bound on fragment count before splitting.
+fn count_records(scope_payload: &[u8]) -> usize {
+    let mut count = 0;
+    let mut pos = 0;
+    while let Some((field, wire, _payload_start, field_end)) = next_field(scope_payload, pos) {
+        if field == CHILD_LIST_FIELD && wire == wire_types::LEN {
+            count += 1;
+        }
+        pos = field_end;
+    }
+    count
+}
+
 /// Split one oversize scope entry into multiple resource-entry fragments, each
 /// carrying `resource_header` + a scope wrapping a subset of the records. A
 /// single record that is larger than `max_size` (with minimal wrappers) is
@@ -261,7 +362,7 @@ fn split_scope_entry(
     resource_header: &[u8],
     scope_payload: &[u8],
     max_size: usize,
-    batches: &mut Vec<OtlpProtoBytes>,
+    batches: &mut Vec<OwnedBatch>,
 ) {
     let mut scope_header: Vec<u8> = Vec::new();
     let mut record_fulls: Vec<&[u8]> = Vec::new();
@@ -279,7 +380,7 @@ fn split_scope_entry(
         pos = field_end;
     }
 
-    let emit_frag = |recs: &[u8], batches: &mut Vec<OtlpProtoBytes>| {
+    let emit_frag = |recs: &[u8], batches: &mut Vec<OwnedBatch>| {
         let mut scope_inner = Vec::with_capacity(scope_header.len() + recs.len());
         scope_inner.extend_from_slice(&scope_header);
         scope_inner.extend_from_slice(recs);
@@ -323,7 +424,9 @@ fn split_scope_entry(
     }
 }
 
-/// Combines OTLP content into size-bounded batches.
+/// Combines OTLP content into size-bounded batches. Thin wrapper over
+/// [`make_bytes_batches_owned`] that discards ownership weights and applies no
+/// fragment budget; kept for callers that only need the output payloads.
 ///
 /// With no limit, inputs are concatenated into a single batch (correct because
 /// the top-level field is repeated). With a byte limit, whole resource entries
@@ -348,6 +451,33 @@ pub fn make_bytes_batches(
     max_bytes: Option<NonZeroU64>,
     inputs: Vec<OtlpProtoBytes>,
 ) -> Result<Vec<OtlpProtoBytes>> {
+    Ok(make_bytes_batches_owned(signal, max_bytes, None, inputs)?
+        .batches
+        .into_iter()
+        .map(|(batch, _weight)| batch)
+        .collect())
+}
+
+/// Like [`make_bytes_batches`] but also returns, per output, the input-byte
+/// ownership weight it represents (summing to the input total), and bounds
+/// fan-out with `fragment_budget`.
+///
+/// The batch processor uses the ownership weights -- not each batch's own
+/// encoded length -- to apportion Ack/Nack subscribers, so every fragment of a
+/// split input is attributed back to that input even though header duplication
+/// makes the fragments' encoded lengths sum to more than the input.
+///
+/// `fragment_budget` caps how many fragments a single oversize resource entry
+/// may split into. The projected fragment count is checked up front; an entry
+/// that would exceed the budget is emitted whole (best-effort) and counted in
+/// `budget_fallbacks`, so no records are ever partially emitted before falling
+/// back. `None` means unbounded.
+pub fn make_bytes_batches_owned(
+    signal: SignalType,
+    max_bytes: Option<NonZeroU64>,
+    fragment_budget: Option<NonZeroU64>,
+    inputs: Vec<OtlpProtoBytes>,
+) -> Result<BytesBatches> {
     if inputs.is_empty() {
         return Err(Error::EmptyBatch);
     }
@@ -356,34 +486,50 @@ pub fn make_bytes_batches(
         return Err(Error::EmptyBatch);
     }
 
-    let max_size = match max_bytes {
-        None => {
-            if inputs.len() == 1 {
-                return Ok(inputs);
-            }
-            return Ok(vec![OtlpProtoBytes::new_from_bytes(
-                signal,
-                inputs
-                    .into_iter()
-                    .fold(Vec::with_capacity(total_size), |mut acc, record| {
-                        acc.extend_from_slice(record.as_bytes());
-                        acc
-                    }),
-            )]);
+    // Emit a single input (or the whole concatenation) as one batch whose
+    // ownership weight equals its encoded length (no headers are duplicated).
+    let single = |inputs: Vec<OtlpProtoBytes>| -> BytesBatches {
+        if inputs.len() == 1 {
+            let batch = inputs.into_iter().next().expect("one input");
+            let weight = batch.num_bytes();
+            return BytesBatches {
+                batches: vec![(batch, weight)],
+                budget_fallbacks: 0,
+            };
         }
+        let bytes = inputs
+            .iter()
+            .fold(Vec::with_capacity(total_size), |mut acc, record| {
+                acc.extend_from_slice(record.as_bytes());
+                acc
+            });
+        let weight = bytes.len();
+        BytesBatches {
+            batches: vec![(OtlpProtoBytes::new_from_bytes(signal, bytes), weight)],
+            budget_fallbacks: 0,
+        }
+    };
+
+    let max_size = match max_bytes {
+        None => return Ok(single(inputs)),
         Some(max_nz) => max_nz.get() as usize,
     };
 
     // Fast path: a single input that already fits is returned unchanged,
-    // avoiding all parsing and copying (mirrors the `max_bytes: None` path).
+    // avoiding all parsing and copying.
     if inputs.len() == 1 && total_size <= max_size {
-        return Ok(inputs);
+        return Ok(single(inputs));
     }
 
-    let mut batches: Vec<OtlpProtoBytes> = Vec::new();
+    let fragment_budget = fragment_budget
+        .map(|n| n.get() as usize)
+        .unwrap_or(usize::MAX);
+
+    let mut batches: Vec<OwnedBatch> = Vec::new();
     // Reserve for the common top-level packing path; a batch never exceeds
     // `max_size` unless a single indivisible unit forces it.
     let mut cur: Vec<u8> = Vec::with_capacity(total_size.min(max_size));
+    let mut budget_fallbacks: u64 = 0;
 
     for input in &inputs {
         let buf = input.as_bytes();
@@ -399,8 +545,10 @@ pub fn make_bytes_batches(
                             full,
                             &buf[payload_start..field_end],
                             max_size,
+                            fragment_budget,
                             &mut cur,
                             &mut batches,
+                            &mut budget_fallbacks,
                         );
                     } else {
                         push_opaque(signal, full, max_size, &mut cur, &mut batches);
@@ -417,5 +565,8 @@ pub fn make_bytes_batches(
     }
 
     flush(signal, &mut cur, &mut batches);
-    Ok(batches)
+    Ok(BytesBatches {
+        batches,
+        budget_fallbacks,
+    })
 }
