@@ -339,6 +339,10 @@ fn split_scope_entry(
 /// (any field truncated or invalid, at the resource level or within one of its
 /// scopes), it is emitted whole and unchanged rather than reconstructed, so its
 /// original bytes and field ordering are preserved.
+///
+/// Limitation: the smallest metric unit is a whole `Metric` (all of its data
+/// points), not an individual data point, so a single metric with many points
+/// may still exceed `max_bytes`. Data point-level splitting is a follow-up.
 pub fn make_bytes_batches(
     signal: SignalType,
     max_bytes: Option<NonZeroU64>,
@@ -370,8 +374,16 @@ pub fn make_bytes_batches(
         Some(max_nz) => max_nz.get() as usize,
     };
 
+    // Fast path: a single input that already fits is returned unchanged,
+    // avoiding all parsing and copying (mirrors the `max_bytes: None` path).
+    if inputs.len() == 1 && total_size <= max_size {
+        return Ok(inputs);
+    }
+
     let mut batches: Vec<OtlpProtoBytes> = Vec::new();
-    let mut cur: Vec<u8> = Vec::new();
+    // Reserve for the common top-level packing path; a batch never exceeds
+    // `max_size` unless a single indivisible unit forces it.
+    let mut cur: Vec<u8> = Vec::with_capacity(total_size.min(max_size));
 
     for input in &inputs {
         let buf = input.as_bytes();

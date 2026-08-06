@@ -44,15 +44,31 @@ fn test_batching(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
         let outputs = make_bytes_batches(signal_type, limit, inputs_bytes.clone()).expect("ok");
         let total: usize = outputs.iter().map(|b| b.num_bytes()).sum();
 
-        // When a resource entry is split within itself, the resource/scope
-        // wrapper headers are duplicated across fragments, so the output may be
-        // larger than the input. No record is ever dropped, so it can never be
-        // smaller.
-        assert!(
-            total >= total_input_bytes,
-            "{}: output byte count {total} < input {total_input_bytes}",
-            label,
-        );
+        // A resource entry is reconstructed (and its wrapper headers duplicated)
+        // only when the limit forces a single entry to be split. When no such
+        // split can happen -- no limit, or a limit at least as large as the whole
+        // input -- the splitter only packs/concatenates whole entries, so the
+        // output must be byte-for-byte the same size as the input. Requiring
+        // exact equality here keeps the unchanged fast path honest: accidental
+        // duplication would fail the test rather than hide behind a `>=`.
+        let no_subresource_split = match limit {
+            None => true,
+            Some(l) => (l.get() as usize) >= total_input_bytes,
+        };
+        if no_subresource_split {
+            assert_eq!(
+                total, total_input_bytes,
+                "{label}: output bytes {total} must equal input {total_input_bytes} \
+                 when no resource entry is reconstructed",
+            );
+        } else {
+            // With sub-resource splitting the duplicated wrapper headers can only
+            // grow the output; records are never dropped, so it is never smaller.
+            assert!(
+                total >= total_input_bytes,
+                "{label}: output byte count {total} < input {total_input_bytes}",
+            );
+        }
 
         // Expected number of batches is tested (coarsely, because we
         // haven't carefully controlled the number of bytes per
@@ -65,10 +81,6 @@ fn test_batching(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
         // The tight upper bound only holds when the limit is large enough that
         // no single resource entry must be split (sub-resource splitting can
         // legitimately produce more batches).
-        let no_subresource_split = match limit {
-            None => true,
-            Some(l) => (l.get() as usize) >= total_input_bytes,
-        };
         if no_subresource_split {
             assert!(
                 outputs.len() <= expect_batches + 1,
@@ -588,9 +600,62 @@ fn test_split_single_resource_metrics() {
     assert_equivalent(&[data.into()], &out_msgs);
 }
 
-/// Scenario: A single oversize resource entry contains a valid scope followed
-/// by a malformed (truncated) field at the resource level, under a byte limit
-/// small enough to normally force a within-entry split.
+/// Scenario: A single ResourceMetrics holds one scope with a single Metric that
+/// carries many data points, and the byte limit is smaller than that one
+/// metric.
+/// Guarantees: The splitter's smallest metric unit is a whole `Metric` (field 2
+/// of `ScopeMetrics`), not an individual data point, so this indivisible metric
+/// is emitted as one batch that exceeds `max_size`. This documents the current
+/// limitation; data point-level splitting is tracked as a follow-up.
+#[test]
+fn test_single_metric_many_datapoints_not_split() {
+    let data_points: Vec<NumberDataPoint> = (0..500)
+        .map(|i| {
+            NumberDataPoint::build()
+                .value_double(i as f64 * 1.5)
+                .time_unix_nano(1000u64 + i as u64)
+                .finish()
+        })
+        .collect();
+    let data = MetricsData::new(vec![ResourceMetrics::new(
+        Resource::build().finish(),
+        vec![ScopeMetrics::new(
+            InstrumentationScope::build()
+                .name("scope".to_string())
+                .finish(),
+            vec![
+                Metric::build()
+                    .name("busy-gauge")
+                    .description("one gauge with many points")
+                    .unit("1")
+                    .data_gauge(Gauge::new(data_points))
+                    .finish(),
+            ],
+        )],
+    )]);
+    let input = otlp_message_to_bytes(&data.clone().into());
+    let total = input.num_bytes();
+    let max_size = (total / 4).max(1);
+
+    let outputs = make_bytes_batches(
+        SignalType::Metrics,
+        NonZeroU64::new(max_size as u64),
+        vec![input],
+    )
+    .expect("ok");
+
+    assert_eq!(
+        outputs.len(),
+        1,
+        "a single metric cannot be split by data point, so it stays one batch",
+    );
+    assert!(
+        outputs[0].num_bytes() > max_size,
+        "the indivisible metric is expected to exceed max_size",
+    );
+    let out_msgs: Vec<OtlpProtoMessage> = outputs.into_iter().map(otlp_bytes_to_message).collect();
+    assert_equivalent(&[data.into()], &out_msgs);
+}
 /// Guarantees: Rather than folding the corrupt tail into a duplicated header
 /// (which would reorder/duplicate it ahead of every fragment), the whole
 /// resource entry is emitted byte-for-byte as a single batch.
