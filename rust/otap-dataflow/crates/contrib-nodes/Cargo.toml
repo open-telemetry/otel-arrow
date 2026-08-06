@@ -46,6 +46,7 @@ data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
+tokio-util = { workspace = true, optional = true }
 xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
 hex = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
@@ -70,6 +71,7 @@ paste = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
@@ -93,6 +95,7 @@ kafka-receiver = [
     "dep:rdkafka",
     "dep:smallvec",
     "dep:regex",
+    "dep:tokio-util",
 ]
 kafka-exporter = [
     "dep:rdkafka",
@@ -144,6 +147,7 @@ clickhouse-exporter = [
 geneva-exporter = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
+    "dep:url",
 ]
 azure-monitor-exporter = [
     "dep:opentelemetry-proto",
@@ -166,6 +170,7 @@ contrib-processors = [
     "resource-validator-processor",
 ]
 condense-attributes-processor = []
+condense-attributes-processor-bench = ["condense-attributes-processor"]
 recordset-kql-processor = [
     "dep:data_engine_expressions",
     "dep:data_engine_kql_parser",
@@ -193,6 +198,7 @@ otap-df-pdata = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
 
@@ -221,6 +227,12 @@ name = "otlp_bridge_extend"
 path = "benches/processors/recordset_kql_processor/extend.rs"
 harness = false
 required-features = ["recordset-kql-processor"]
+
+[[bench]]
+name = "condense_attributes"
+path = "benches/processors/condense_attributes_processor.rs"
+harness = false
+required-features = ["condense-attributes-processor-bench"]
 
 [[test]]
 name = "otlp_kql_recordset"

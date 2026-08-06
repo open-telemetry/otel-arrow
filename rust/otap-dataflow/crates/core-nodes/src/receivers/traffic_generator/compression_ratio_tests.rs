@@ -8,16 +8,16 @@
 //!   loadgen `fresh` strategy) vs `pre_generated` (one batch reused for every
 //!   iteration, simulating the loadgen `pre_generated` strategy).
 //!
-//! These tests are primarily **informational** — run with `--nocapture` to
+//! These tests are primarily **informational** -- run with `--nocapture` to
 //! eyeball the bytes/record and compression ratios for each combination and
 //! sanity-check whether the loadgen output looks realistic. The asserts use
 //! deliberately wide bands so they don't flake on platform variance; their job
 //! is to catch order-of-magnitude regressions (e.g. `fresh` accidentally
 //! collapsing into `pre_generated`-style 300:1 compression), not exact numbers.
 //!
-//! ## Reference numbers (10 batches × 512 records, zstd level 3)
+//! ## Reference numbers (10 batches x 512 records, zstd level 3)
 //!
-//! Captured on macOS at the time of writing — your numbers should be within
+//! Captured on macOS at the time of writing -- your numbers should be within
 //! a few percent. Run with `--nocapture` to see live values.
 //!
 //! | Source     | Strategy        |       Raw | B/rec | Compressed | Ratio   |
@@ -40,9 +40,9 @@
 //!   structural repetition even though enum/single-example attribute values
 //!   within a group are constant. Neither perfectly models a real OTel
 //!   collector aggregating heterogeneous service traffic.
-//! - Adding `use_trace_context: true` to `static + fresh` drops the ratio ~4×
-//!   (41:1 → 11:1) because the 24 random bytes of trace+span ID per record are
-//!   essentially incompressible — this most closely matches the wire footprint
+//! - Adding `use_trace_context: true` to `static + fresh` drops the ratio ~4x
+//!   (41:1 -> 11:1) because the 24 random bytes of trace+span ID per record are
+//!   essentially incompressible -- this most closely matches the wire footprint
 //!   of OTel-instrumented application logs, where the SDK automatically attaches
 //!   the active span context to every emitted log. Logs ingested through
 //!   collector receivers (syslog, journald, filelog) typically lack trace
@@ -75,7 +75,7 @@ const NUM_BATCHES: usize = 10;
 /// Observed values today: static ~41:1, semconv ~26:1, static+trace_context
 /// ~11:1 (random 16-byte trace_id + 8-byte span_id per record are
 /// essentially incompressible and drag the ratio way down). Bounds are wide
-/// on purpose — they exist to catch order-of-magnitude regressions only.
+/// on purpose -- they exist to catch order-of-magnitude regressions only.
 const FRESH_RATIO_RANGE: std::ops::RangeInclusive<f64> = 3.0..=70.0;
 
 /// Floor for `pre_generated` replay across both data sources. Observed
@@ -131,8 +131,8 @@ fn load_semconv_registry() -> ResolvedRegistry {
 
 /// Generate a `static` log batch with a per-record shape chosen so its
 /// byte/record footprint roughly matches semconv-generated logs (~360 B/rec):
-/// a small bounded body (which activates the body-pool entropy path —
-/// `MIN_BODY_POOL_SIZE` unique bodies in the pool — and is the realistic
+/// a small bounded body (which activates the body-pool entropy path --
+/// `MIN_BODY_POOL_SIZE` unique bodies in the pool -- and is the realistic
 /// configuration for static-source loadgen) and 4 attributes, no trace
 /// context. Keeps the static vs semconv compression-ratio numbers
 /// apples-to-apples.
@@ -237,7 +237,7 @@ fn print_ratio(label: &str, raw: usize, compressed: usize, ratio: f64) {
     );
 }
 
-/// Print compression ratios for all six (source × strategy) combinations.
+/// Print compression ratios for all six (source x strategy) combinations.
 #[test]
 fn test_compression_ratios_across_source_and_strategy() {
     let registry = load_semconv_registry();

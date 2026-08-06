@@ -38,7 +38,6 @@
 //!
 //! Future work includes:
 //! - TODO: Complete status and health checks for pipelines
-//! - TODO: Auto-restart threads in case of panic
 //! - TODO: Live pipeline updates
 //! - TODO: Better resource control
 
@@ -56,7 +55,8 @@ use otap_df_config::pipeline::telemetry::AttributeValue;
 use otap_df_config::pipeline_group::PipelineGroupConfig;
 use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{
-    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, TelemetryPolicy,
+    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, RateLimiterPolicy,
+    RuntimeRecoveryPolicy, TelemetryPolicy,
 };
 use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
@@ -97,10 +97,10 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
     InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_error, otel_info,
-    otel_info_span, otel_warn, self_tracing::LogContext,
+    otel_info_span, otel_warn, resource_detectors, self_tracing::LogContext,
 };
 use smallvec::smallvec;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -139,12 +139,19 @@ use live_control::{
 };
 use placement::{CorePlacement, PipelinePlacement, PlacementPlanner, PlacementSnapshot};
 
+use otap_df_engine::component_inventory;
+
 /// Controller for managing pipelines in a thread-per-core model.
 ///
 /// # Thread Safety
 /// This struct is designed to be used in multi-threaded contexts. Each pipeline is run on a
 /// dedicated thread pinned to a CPU core.
 /// Intended for use as a long-lived process controller.
+#[component_inventory(
+    id = "urn:otel:controller:main",
+    category = Controller,
+    description = "Pipeline controller managing pipeline lifecycle, dynamic re-configuration, and health monitoring",
+)]
 pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     /// The pipeline factory used to build runtime pipelines.
     pipeline_factory: &'static PipelineFactory<PData>,
@@ -303,6 +310,56 @@ impl ControllerExtensionRegistry {
 pub struct ControllerRunOptions {
     /// Controller extension factories available to configured controller extensions.
     pub extensions: ControllerExtensionRegistry,
+    /// Build-time identity of the binary, used to seed default self-telemetry resource
+    /// attributes. Populate from the binary crate (e.g. `CARGO_BIN_NAME`/`CARGO_PKG_VERSION`).
+    pub build_info: BuildInfo,
+}
+
+/// Build-time identity of the collector binary.
+///
+/// Seeds `service.name`/`service.version` as the lowest-precedence self-telemetry resource
+/// defaults, so an unconfigured collector reports its own name and version. Explicit resource
+/// attributes and the `env`/`service_name` detectors override these. `None` fields are not seeded.
+#[derive(Clone, Debug, Default)]
+pub struct BuildInfo {
+    /// Default `service.name` (e.g. the binary name).
+    pub service_name: Option<String>,
+    /// Default `service.version` (e.g. the crate version).
+    pub service_version: Option<String>,
+}
+
+impl BuildInfo {
+    /// Non-empty build-info values as resource attribute pairs.
+    fn seed_attrs(&self) -> Vec<(String, AttributeValue)> {
+        [
+            ("service.name", self.service_name.as_deref()),
+            ("service.version", self.service_version.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| {
+            value
+                .filter(|v| !v.is_empty())
+                .map(|v| (key.to_string(), AttributeValue::String(v.to_string())))
+        })
+        .collect()
+    }
+}
+
+/// Layer `detected` then `build_info` defaults into `resource`, filling only keys not already
+/// present. Applied lowest-precedence-last, this yields config > detectors > build-info: the
+/// existing (config) entries win, detected attributes fill remaining gaps, and build-info
+/// defaults fill whatever is still unset.
+fn merge_resource_defaults(
+    resource: &mut HashMap<String, AttributeValue>,
+    detected: Vec<(String, AttributeValue)>,
+    build_info: &BuildInfo,
+) {
+    for (key, value) in detected {
+        let _ = resource.entry(key).or_insert(value);
+    }
+    for (key, value) in build_info.seed_attrs() {
+        let _ = resource.entry(key).or_insert(value);
+    }
 }
 
 struct PreparedControllerExtension {
@@ -1212,6 +1269,15 @@ impl<
         run_mode: RunMode,
         options: ControllerRunOptions,
     ) -> Result<(), Error> {
+        engine_config.validate().map_err(|error| match error {
+            otap_df_config::error::Error::InvalidConfiguration { errors } => {
+                Error::InvalidConfiguration { errors }
+            }
+            other => Error::InvalidConfiguration {
+                errors: vec![other],
+            },
+        })?;
+
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
@@ -1230,17 +1296,21 @@ impl<
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
 
-        // Inject auto-detected process/host resource attributes (host.id,
-        // container.id, service.instance.id) into the telemetry resource map so
-        // they surface on the OTLP Resource / Prometheus target_info. Explicit
-        // config-provided keys take precedence over auto-detected values.
-        for (key, value) in controller_ctx.resource_attributes() {
-            let _ = engine
-                .telemetry
-                .resource
-                .entry(key)
-                .or_insert_with(|| AttributeValue::String(value));
-        }
+        // Inject auto-detected resource attributes into the telemetry resource map so
+        // they surface on the OTLP Resource / Prometheus target_info. Precedence is
+        // config > detectors > build-info defaults.
+        let detected = resource_detectors::detect(&engine.telemetry.detectors).map_err(|e| {
+            Error::InvalidConfiguration {
+                errors: vec![otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!("engine.telemetry.detectors: {e}"),
+                }],
+            }
+        })?;
+        merge_resource_defaults(
+            &mut engine.telemetry.resource,
+            detected,
+            &options.build_info,
+        );
 
         // Snapshot the resolved resource map (config + auto-detected) for the admin
         // endpoint's target_info, mirroring the native ITS OTLP resource.
@@ -1630,6 +1700,8 @@ impl<
                     pipeline_entry.policies.channel_capacity.clone(),
                     pipeline_entry.policies.telemetry.clone(),
                     pipeline_entry.policies.transport_headers.clone(),
+                    pipeline_entry.policies.rate_limiters.clone(),
+                    pipeline_entry.policies.rate_limiter_scope.clone(),
                     controller_ctx.clone(),
                     metrics_reporter.clone(),
                     engine_evt_reporter.clone(),
@@ -2309,6 +2381,8 @@ impl<
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
+        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
+        rate_limiter_scope: Option<otap_df_config::policy::RateLimiterDeclarationScope>,
         controller_ctx: ControllerContext,
         metrics_reporter: MetricsReporter,
         engine_evt_reporter: ObservedEventReporter,
@@ -2369,6 +2443,8 @@ impl<
                         channel_capacity_policy,
                         telemetry_policy,
                         transport_headers_policy,
+                        rate_limiter_policies,
+                        rate_limiter_scope,
                         telemetry_reporting_interval,
                         pipeline_factory,
                         pipeline_ctx,
@@ -2456,6 +2532,8 @@ impl<
             channel_capacity_policy,
             telemetry_policy,
             None,
+            BTreeMap::new(),
+            None,
             controller_ctx.clone(),
             metrics_reporter.clone(),
             engine_evt_reporter.clone(),
@@ -2505,6 +2583,8 @@ impl<
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
+        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
+        rate_limiter_scope: Option<otap_df_config::policy::RateLimiterDeclarationScope>,
         telemetry_reporting_interval: Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -2563,6 +2643,8 @@ impl<
                     channel_capacity_policy,
                     telemetry_policy,
                     transport_headers_policy,
+                    rate_limiter_policies,
+                    rate_limiter_scope,
                     internal_telemetry_settings,
                 )
                 .map_err(|e| {
@@ -2628,7 +2710,94 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
+    /// Scenario: `BuildInfo::seed_attrs` runs with a mix of set, empty, and absent fields.
+    /// Guarantees: it yields typed pairs for non-empty values only, skipping empty and `None`.
+    #[test]
+    fn build_info_seeds_only_non_empty_values() {
+        let bi = BuildInfo {
+            service_name: Some("df_engine".to_string()),
+            service_version: Some(String::new()),
+        };
+        assert_eq!(
+            bi.seed_attrs(),
+            vec![(
+                "service.name".to_string(),
+                AttributeValue::String("df_engine".to_string())
+            )]
+        );
+        assert!(BuildInfo::default().seed_attrs().is_empty());
+    }
+
+    /// Scenario: `merge_resource_defaults` runs with a config-provided `service.name`, a detector
+    /// providing `service.version`, and build-info defaults for both.
+    /// Guarantees: config wins, a detector value wins over the build-info default, and a
+    /// detector-only key is kept (config > detectors > build-info).
+    #[test]
+    fn merge_resource_defaults_applies_config_detector_build_info_precedence() {
+        let mut resource = HashMap::new();
+        let _ = resource.insert(
+            "service.name".to_string(),
+            AttributeValue::String("configured".to_string()),
+        );
+        let detected = vec![
+            (
+                "service.instance.id".to_string(),
+                AttributeValue::String("detected-id".to_string()),
+            ),
+            (
+                "service.version".to_string(),
+                AttributeValue::String("detected-ver".to_string()),
+            ),
+        ];
+        let build_info = BuildInfo {
+            service_name: Some("df_engine".to_string()),
+            service_version: Some("9.9.9".to_string()),
+        };
+
+        merge_resource_defaults(&mut resource, detected, &build_info);
+
+        // config wins over both the detector and build-info
+        assert_eq!(
+            resource.get("service.name"),
+            Some(&AttributeValue::String("configured".to_string()))
+        );
+        // detector wins over the build-info default
+        assert_eq!(
+            resource.get("service.version"),
+            Some(&AttributeValue::String("detected-ver".to_string()))
+        );
+        // detector-only key is present
+        assert_eq!(
+            resource.get("service.instance.id"),
+            Some(&AttributeValue::String("detected-id".to_string()))
+        );
+    }
+
+    /// Scenario: `merge_resource_defaults` runs with neither config nor detectors setting the
+    /// service identity.
+    /// Guarantees: build-info defaults fill `service.name`/`service.version`.
+    #[test]
+    fn merge_resource_defaults_build_info_fills_gaps() {
+        let mut resource = HashMap::new();
+        merge_resource_defaults(
+            &mut resource,
+            vec![],
+            &BuildInfo {
+                service_name: Some("df_engine".to_string()),
+                service_version: Some("9.9.9".to_string()),
+            },
+        );
+        assert_eq!(
+            resource.get("service.name"),
+            Some(&AttributeValue::String("df_engine".to_string()))
+        );
+        assert_eq!(
+            resource.get("service.version"),
+            Some(&AttributeValue::String("9.9.9".to_string()))
+        );
+    }
+
+    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResolvedResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
     use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
     use otap_df_engine::control::NodeControlMsg;
@@ -2947,9 +3116,9 @@ groups: {{}}
             pipeline_id: pipeline_id.to_string().into(),
             pipeline: minimal_pipeline_config(),
             policies: ResolvedPolicies {
-                resources: ResourcesPolicy {
+                resources: ResolvedResourcesPolicy {
                     core_allocation,
-                    ..Default::default()
+                    memory_limiter: None,
                 },
                 ..Default::default()
             },
@@ -3227,6 +3396,7 @@ groups: {{}}
                 controller_extensions_engine_config(ORDERED_CONTROLLER_EXTENSION_URN),
                 ControllerRunOptions {
                     extensions: registry,
+                    ..Default::default()
                 },
             )
             .expect("controller should run ordered test extensions");
@@ -3236,6 +3406,44 @@ groups: {{}}
                 .lock()
                 .expect("observed order mutex should not be poisoned"),
             vec!["alpha".to_owned(), "beta".to_owned()]
+        );
+    }
+
+    /// Scenario: an embedder deserializes a config directly and starts the controller.
+    /// Guarantees: controller execution still rejects rate limiting without a memory pressure source.
+    #[test]
+    fn controller_run_validates_rate_limit_requires_memory_source() {
+        let config: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": otap_df_config::engine::ENGINE_CONFIG_VERSION_V1,
+            "policies": {
+                "resources": {
+                    "rate_limiters": {
+                        "ingress": {
+                            "mode": "enforce",
+                            "aggregation": "receiver_instance",
+                            "unit": "request_bytes",
+                            "pressure": "soft",
+                            "token_bucket": {
+                                "allow": 1000,
+                                "interval": "1s",
+                                "burst": 1000
+                            }
+                        }
+                    }
+                }
+            },
+            "groups": {}
+        }))
+        .expect("directly deserialized config should parse");
+
+        let err = Controller::new(test_pipeline_factory())
+            .run_till_shutdown(config)
+            .expect_err("controller run should reject invalid semantic config");
+
+        assert!(
+            err.to_string()
+                .contains("rate limiter policies require policies.resources.memory_limiter"),
+            "unexpected error: {err}"
         );
     }
 
@@ -3302,6 +3510,7 @@ groups: {{}}
                 controller_monitor_engine_config(""),
                 ControllerRunOptions {
                     extensions: ControllerExtensionRegistry::empty(),
+                    ..Default::default()
                 },
             )
             .expect_err("missing controller extension factory should fail startup");
@@ -3376,6 +3585,7 @@ groups: {{}}
                 ),
                 ControllerRunOptions {
                     extensions: registry,
+                    ..Default::default()
                 },
             )
             .expect_err("invalid controller extension config should fail startup");
@@ -3448,6 +3658,7 @@ groups: {{}}
                     engine_config,
                     ControllerRunOptions {
                         extensions: registry,
+                        ..Default::default()
                     },
                 )
                 .map_err(|err| err.to_string());

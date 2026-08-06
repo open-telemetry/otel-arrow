@@ -73,9 +73,10 @@ timeout, TCP keepalive, TLS, request-body compression, and static request
 
 `http.headers` is a map of header name to value applied to every outbound
 request (multi-tenant routing IDs, tracing-vendor headers, and similar). For
-request authentication, prefer a dedicated Auth extension rather than
-hard-coding an `authorization` header here. Values are sent verbatim, so treat
-any secret in the rendered config as sensitive.
+request authentication, prefer the `bearer_token_provider` capability (see
+[Authentication](#authentication)) rather than hard-coding an `authorization`
+header here. Values are sent verbatim, so treat any secret in the rendered
+config as sensitive.
 
 Validation at config load rejects:
 
@@ -87,6 +88,57 @@ Validation at config load rejects:
   `accept` and `accept-encoding`.
 
 Protocol headers always take precedence over configured headers.
+
+## Authentication
+
+The exporter can inject an OAuth `Authorization: Bearer <token>` on every
+outbound request by consuming the `bearer_token_provider` capability. Binding is
+optional and additive: without it the exporter sends no `authorization` header
+(the default); with it, the bound extension acquires and refreshes the token in
+the background so credentials rotate without restarting the exporter.
+
+Declare a provider extension (e.g.
+[`azure_identity_auth`](../../../../contrib-extensions/src/azure_identity_auth/README.md))
+in the pipeline's `extensions:` section and bind it on the exporter node via the
+node's `capabilities:` map:
+
+```yaml
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          azure_identity:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              method: managed_identity
+              scope: "https://monitor.azure.com/.default"
+
+        nodes:
+          otlp-http-exporter:
+            type: "urn:otel:exporter:otlp_http"
+            # Bind the bearer token provider to the extension declared above.
+            capabilities:
+              bearer_token_provider: azure_identity
+            config:
+              endpoint: "https://my-endpoint:4318"
+              client_pool_size: 1
+              http: {}
+```
+
+The bearer token is applied per request, so it takes precedence over any
+statically configured `authorization` header. The exporter subscribes to the
+provider's token stream and caches the built header, rebuilding it only when the
+provider refreshes the token, so credential work stays off the per-request path.
+When no usable token is cached yet -- before the provider's first publish, or in
+a degraded window where a refresh is failing and the cached token is within a
+small safety margin of expiring -- the exporter **stops accepting new batches**
+(back-pressures upstream) rather than sending an unauthenticated or soon-to-lapse
+request. It resumes as soon as a usable token arrives; nothing is dropped. (If
+buffered batches are force-drained during shutdown while no token is available,
+they are NACK'd as **retryable**.) A token is guaranteed to eventually arrive:
+the `azure_identity_auth` extension holds data-path startup until its first token
+publish, and its token stream stays live for the exporter's lifetime.
 
 ## Examples
 
@@ -128,6 +180,8 @@ by the exporter.
 | `otlp.exporter.http.shutdown` | `info` | Exporter shutdown and terminal reason. |
 | `otlp.exporter.http.zero_partial_rejected` | `debug` | A zero-length partial-success response was rejected. |
 | `otlp.exporter.http.export_error` | `warn` | An HTTP export request did not complete successfully. |
+| `otlp.exporter.http.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `Authorization` header. |
+| `otlp.exporter.http.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
 
 ## Limits
 

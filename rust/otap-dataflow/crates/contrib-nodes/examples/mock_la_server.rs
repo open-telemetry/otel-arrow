@@ -59,7 +59,7 @@ struct Cli {
     #[arg(short, long, default_value_t = 9999)]
     port: u16,
 
-    /// Fraction of requests that receive a simulated server error (0.0–1.0).
+    /// Fraction of requests that receive a simulated server error (0.0-1.0).
     /// Returns 500 by default, or 429 if --retry-after is also set.
     #[arg(long, default_value_t = 0.0)]
     fail_rate: f64,
@@ -73,7 +73,7 @@ struct Cli {
     #[arg(long, value_parser = parse_duration)]
     latency: Option<Duration>,
 
-    /// Fraction of requests that receive 401 Unauthorized (0.0–1.0).
+    /// Fraction of requests that receive 401 Unauthorized (0.0-1.0).
     #[arg(long, default_value_t = 0.0)]
     unauthorized_rate: f64,
 
@@ -148,7 +148,7 @@ async fn ingest_handler(
         if body.len() > max_size {
             println!(
                 "[mock-la] POST dcr={dcr} stream={stream} \
-                 — 413 Payload Too Large ({} > {max_size})",
+                 \u{2014} 413 Payload Too Large ({} > {max_size})",
                 body.len()
             );
             return (StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large").into_response();
@@ -161,7 +161,7 @@ async fn ingest_handler(
         if success_so_far >= fail_after {
             println!(
                 "[mock-la] POST dcr={dcr} stream={stream} \
-                 — 503 (fail-after {fail_after} reached)"
+                 \u{2014} 503 (fail-after {fail_after} reached)"
             );
             return (StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable").into_response();
         }
@@ -171,7 +171,7 @@ async fn ingest_handler(
     let mut rng = rand::rng();
 
     if state.cli.unauthorized_rate > 0.0 && rng.random::<f64>() < state.cli.unauthorized_rate {
-        println!("[mock-la] POST dcr={dcr} stream={stream} — 401 (simulated)");
+        println!("[mock-la] POST dcr={dcr} stream={stream} \u{2014} 401 (simulated)");
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
@@ -179,7 +179,7 @@ async fn ingest_handler(
         if let Some(retry_secs) = state.cli.retry_after {
             println!(
                 "[mock-la] POST dcr={dcr} stream={stream} \
-                 — 429 (simulated, Retry-After: {retry_secs}s)"
+                 \u{2014} 429 (simulated, Retry-After: {retry_secs}s)"
             );
             return (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -188,7 +188,7 @@ async fn ingest_handler(
             )
                 .into_response();
         }
-        println!("[mock-la] POST dcr={dcr} stream={stream} — 500 (simulated)");
+        println!("[mock-la] POST dcr={dcr} stream={stream} \u{2014} 500 (simulated)");
         return (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response();
     }
 
@@ -196,7 +196,7 @@ async fn ingest_handler(
     let result = match decompress_and_count(&body, &headers) {
         Ok(r) => r,
         Err(e) => {
-            println!("[mock-la] POST dcr={dcr} stream={stream} — 400 Bad Request: {e}");
+            println!("[mock-la] POST dcr={dcr} stream={stream} \u{2014} 400 Bad Request: {e}");
             return (StatusCode::BAD_REQUEST, format!("Bad Request: {e}")).into_response();
         }
     };
@@ -350,19 +350,19 @@ async fn main() {
     if cli.fail_rate > 0.0 {
         if let Some(retry_secs) = cli.retry_after {
             println!(
-                "[mock-la] Failure simulation: {:.0}% → 429 with Retry-After: {retry_secs}s",
+                "[mock-la] Failure simulation: {:.0}% \u{2192} 429 with Retry-After: {retry_secs}s",
                 cli.fail_rate * 100.0
             );
         } else {
             println!(
-                "[mock-la] Failure simulation: {:.0}% → 500",
+                "[mock-la] Failure simulation: {:.0}% \u{2192} 500",
                 cli.fail_rate * 100.0
             );
         }
     }
     if cli.unauthorized_rate > 0.0 {
         println!(
-            "[mock-la] Unauthorized simulation: {:.0}% → 401",
+            "[mock-la] Unauthorized simulation: {:.0}% \u{2192} 401",
             cli.unauthorized_rate * 100.0
         );
     }

@@ -23,6 +23,7 @@ use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValu
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
 use otap_df_telemetry::event::LogEvent;
+use otap_df_telemetry::instrument::DistributionValue;
 use otap_df_telemetry::log_tap::{LogQuery, LogQueryResult, RetainedLogEvent};
 use otap_df_telemetry::metrics::{MetricValue, MetricsIterator};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -80,8 +81,141 @@ struct MetricDataPointWithMetadata {
     /// Descriptor for retrieving metric metadata
     #[serde(flatten)]
     metadata: MetricsField,
+    /// Attributes that identify this metric data point.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    attributes: HashMap<String, AttributeValue>,
     /// Current value.
+    #[serde(serialize_with = "serialize_metric_value")]
     value: MetricValue,
+}
+
+/// Returns true for a distribution that recorded nothing this interval.
+///
+/// An empty distribution has no min, max or quantile to report -- those fields
+/// are zeros carrying no observation -- so it is omitted from the rendered
+/// output entirely. Zero-filtering in the registry is per metric-set bucket,
+/// not per field, so a set with any active field still yields its idle
+/// distribution siblings here.
+fn is_empty_distribution(value: &MetricValue) -> bool {
+    matches!(value, MetricValue::Distribution(d) if d.is_empty())
+}
+
+/// Quantiles estimated for bucketed distributions on the admin endpoints.
+///
+/// Must stay sorted in non-decreasing order and aligned with the
+/// `p50`/`p90`/`p99` fields of [`api::DistributionDetails`].
+///
+/// TODO: the Prometheus and line-protocol renderers still expose only the
+/// exact summary statistics for a distribution, so the bucket detail visible
+/// in the JSON endpoints is invisible to a scraper. Exposing it needs a
+/// format decision that JSON did not: Prometheus native histograms carry the
+/// buckets faithfully but require the protobuf exposition format, whereas
+/// classic `_bucket` series or quantile-labelled summaries fit the text
+/// format at the cost of fidelity.
+const ADMIN_QUANTILES: [f64; 3] = [0.5, 0.9, 0.99];
+
+/// Serializes a [`MetricValue`] for the JSON admin endpoints.
+///
+/// `MetricValue` has no serde implementation: a distribution's canonical wire
+/// form is the OTLP exponential histogram, which the OTLP export path emits
+/// directly. The JSON endpoints render a distribution as its min/max/sum/count
+/// summary, matching the Prometheus and line-protocol renderings, plus -- for
+/// the bucketed tiers only -- a `details` object carrying the exact-zero
+/// count, the relative error bound, and quantile estimates computed here from
+/// the live histogram.
+///
+/// The whole `details` object is one bucket walk: the quantile pass reports
+/// the zero count it recovered on the way, so nothing here scans the buckets
+/// twice. The basic tier encodes no buckets, so it emits no `details` at all.
+///
+/// The raw bucket counts are available only through the OTLP export. Sending
+/// estimates rather than buckets keeps this endpoint cheap for its
+/// human-facing consumers, but note that quantiles cannot be merged: a client
+/// holding summaries from several series cannot combine them, and the quantile
+/// set is fixed by `ADMIN_QUANTILES`. Cross-series aggregation is therefore
+/// performed here, against the histograms, before serialization.
+fn serialize_metric_value<S>(value: &MetricValue, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeStruct;
+
+    match value {
+        MetricValue::U64(v) => serializer.serialize_u64(*v),
+        MetricValue::F64(v) => serializer.serialize_f64(*v),
+        MetricValue::Distribution(d) => {
+            let (count, sum, min, max) = d.summary();
+            if count == 0 {
+                // Collectors drop empty distributions, so this is only reached
+                // for a value assembled elsewhere. min/max/sum are meaningless
+                // without an observation, so report the count alone rather than
+                // inviting a consumer to read them.
+                let mut state = serializer.serialize_struct("DistributionValue", 1)?;
+                state.serialize_field("count", &0_u64)?;
+                return state.end();
+            }
+            let details = distribution_details(d);
+            let fields = if details.is_some() { 5 } else { 4 };
+
+            let mut state = serializer.serialize_struct("DistributionValue", fields)?;
+            state.serialize_field("min", &min)?;
+            state.serialize_field("max", &max)?;
+            state.serialize_field("sum", &sum)?;
+            state.serialize_field("count", &count)?;
+            if let Some(details) = &details {
+                state.serialize_field("details", details)?;
+            }
+            state.end()
+        }
+    }
+}
+
+/// Collects the bucket-derived part of a distribution in a single pass.
+///
+/// Returns `None` for the basic tier, which encodes no buckets and so has no
+/// zero population to report and no quantiles to estimate.
+fn distribution_details(d: &DistributionValue) -> Option<api::DistributionDetails> {
+    let mut estimates = [0.0_f64; ADMIN_QUANTILES.len()];
+    // One walk over the buckets yields both the estimates and the zero count;
+    // asking for the zero count separately would repeat that walk.
+    let totals = d.quantiles(&ADMIN_QUANTILES, &mut estimates)?;
+    // NaN is not representable in JSON, so an estimate without an underlying
+    // observation is reported as an absent field rather than a misleading 0.0.
+    let finite = |v: f64| if v.is_finite() { Some(v) } else { None };
+    Some(api::DistributionDetails {
+        zero_count: totals.zero_count,
+        relative_error: d.relative_error().unwrap_or(0.0),
+        p50: finite(estimates[0]),
+        p90: finite(estimates[1]),
+        p99: finite(estimates[2]),
+    })
+}
+
+/// Serializes a name-keyed map of [`MetricValue`]s (see
+/// [`serialize_metric_value`]).
+fn serialize_metric_value_map<S>(
+    values: &HashMap<String, MetricValue>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+
+    /// Newtype that applies [`serialize_metric_value`] to a map value.
+    struct Value<'a>(&'a MetricValue);
+
+    impl Serialize for Value<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serialize_metric_value(self.0, serializer)
+        }
+    }
+
+    let mut map = serializer.serialize_map(Some(values.len()))?;
+    for (name, value) in values {
+        map.serialize_entry(name, &Value(value))?;
+    }
+    map.end()
 }
 
 /// Container of all aggregated metrics (no metadata).
@@ -95,6 +229,9 @@ struct AllMetrics {
 struct MetricSet {
     name: String,
     attributes: HashMap<String, AttributeValue>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    data_point_attributes: HashMap<String, AttributeValue>,
+    #[serde(serialize_with = "serialize_metric_value_map")]
     metrics: HashMap<String, MetricValue>,
 }
 
@@ -286,6 +423,7 @@ pub async fn get_logs(
 /// Query parameters:
 /// - `reset` (bool, default false): whether to reset metrics after reading.
 /// - `format` (string, default "prometheus"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
+/// - `keep_all_zeroes` (bool, default false): whether JSON formats include all-zero metric sets.
 async fn get_metrics(
     State(state): State<AppState>,
     Query(q): Query<MetricsQuery>,
@@ -313,9 +451,9 @@ async fn get_metrics(
         }
         OutputFormat::JsonCompact => {
             let metric_sets = if q.reset {
-                collect_compact_snapshot_and_reset(&state.metrics_registry)
+                collect_compact_snapshot_and_reset(&state.metrics_registry, q.keep_all_zeroes)
             } else {
-                collect_compact_snapshot(&state.metrics_registry)
+                collect_compact_snapshot(&state.metrics_registry, q.keep_all_zeroes)
             };
 
             let response = AllMetrics {
@@ -502,7 +640,7 @@ fn aggregate_metric_groups(
             let _ = metrics_map
                 .entry(field.name.to_string())
                 .and_modify(|existing| existing.add_in_place(value))
-                .or_insert(value);
+                .or_insert_with(|| value.clone());
         }
     };
 
@@ -543,9 +681,13 @@ fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata>
         let mut metrics = Vec::with_capacity(g.metrics.len());
         for field in g.brief.metrics.iter() {
             if let Some(val) = g.metrics.get(field.name) {
+                if is_empty_distribution(val) {
+                    continue;
+                }
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
-                    value: *val,
+                    attributes: HashMap::new(),
+                    value: val.clone(),
                 });
             }
         }
@@ -564,38 +706,47 @@ fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata>
 fn groups_without_metadata(groups: &[AggregateGroup]) -> Vec<MetricSet> {
     let mut out = Vec::with_capacity(groups.len());
     for g in groups {
+        let metrics = g
+            .metrics
+            .iter()
+            .filter(|(_, value)| !is_empty_distribution(value))
+            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .collect();
         out.push(MetricSet {
             name: g.name.clone(),
             attributes: g.attributes.clone(),
-            metrics: g.metrics.clone(),
+            data_point_attributes: HashMap::new(),
+            metrics,
         });
     }
     out
 }
 
-fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
+fn format_lp_value(value: &MetricValue, value_type: Option<MetricValueType>) -> String {
     match value {
         MetricValue::U64(_) | MetricValue::F64(_) => {
             let vtype = value_type.unwrap_or(match value {
                 MetricValue::U64(_) => MetricValueType::U64,
                 MetricValue::F64(_) => MetricValueType::F64,
-                MetricValue::Mmsc(_) => unreachable!(),
+                MetricValue::Distribution(_) => unreachable!(),
             });
             match vtype {
                 MetricValueType::U64 => {
                     let int_val = match value {
-                        MetricValue::U64(v) => v,
-                        MetricValue::F64(v) => v as u64,
-                        MetricValue::Mmsc(_) => unreachable!(),
+                        MetricValue::U64(v) => *v,
+                        MetricValue::F64(v) => *v as u64,
+                        MetricValue::Distribution(_) => unreachable!(),
                     };
                     format!("{int_val}i")
                 }
                 MetricValueType::F64 => value.to_f64().to_string(),
             }
         }
-        // MMSC values are expanded into multiple fields at the call site;
-        // this arm should not be reached.
-        MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
+        // Distribution values are expanded into multiple fields at the call
+        // site; this arm should not be reached.
+        MetricValue::Distribution(_) => {
+            unreachable!("DistributionValue values must be expanded at the call site")
+        }
     }
 }
 
@@ -617,7 +768,7 @@ struct PromMetricGroup {
 struct PromGroupedMetrics {
     /// Metric names in insertion order.
     order: Vec<String>,
-    /// Metric name → group.
+    /// Metric name -> group.
     groups: HashMap<String, PromMetricGroup>,
 }
 
@@ -667,26 +818,28 @@ impl PromGroupedMetrics {
     }
 }
 
-fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
+fn format_prom_value(value: &MetricValue, value_type: Option<MetricValueType>) -> String {
     match value {
         MetricValue::U64(_) | MetricValue::F64(_) => {
             let vtype = value_type.unwrap_or(match value {
                 MetricValue::U64(_) => MetricValueType::U64,
                 MetricValue::F64(_) => MetricValueType::F64,
-                MetricValue::Mmsc(_) => unreachable!(),
+                MetricValue::Distribution(_) => unreachable!(),
             });
             match vtype {
                 MetricValueType::U64 => match value {
                     MetricValue::U64(v) => v.to_string(),
-                    MetricValue::F64(v) => (v as u64).to_string(),
-                    MetricValue::Mmsc(_) => unreachable!(),
+                    MetricValue::F64(v) => (*v as u64).to_string(),
+                    MetricValue::Distribution(_) => unreachable!(),
                 },
                 MetricValueType::F64 => value.to_f64().to_string(),
             }
         }
-        // MMSC values are expanded into summary lines at the call site;
-        // this arm should not be reached.
-        MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
+        // Distribution values are expanded into summary lines at the call
+        // site; this arm should not be reached.
+        MetricValue::Distribution(_) => {
+            unreachable!("DistributionValue values must be expanded at the call site")
+        }
     }
 }
 
@@ -727,14 +880,17 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         &mut fields,
                         "{}={}",
                         escape_lp_field_key(fname),
-                        format_lp_value(*val, field_type)
+                        format_lp_value(val, field_type)
                     );
                 }
-                MetricValue::Mmsc(s) => {
-                    if s.count == 0 {
+                // Distribution metrics render their summary statistics only;
+                // full exponential-bucket rendering is deferred.
+                MetricValue::Distribution(d) => {
+                    let (count, sum, min, max) = d.summary();
+                    if count == 0 {
                         continue;
                     }
-                    for (suffix, fval) in [("_min", s.min), ("_max", s.max), ("_sum", s.sum)] {
+                    for (suffix, fval) in [("_min", min), ("_max", max), ("_sum", sum)] {
                         if !first {
                             fields.push(',');
                         }
@@ -755,7 +911,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         &mut fields,
                         "{}_count={}i",
                         escape_lp_field_key(fname),
-                        s.count
+                        count
                     );
                 }
             }
@@ -772,7 +928,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
 fn collect_scalar_metric(
     groups: &mut PromGroupedMetrics,
     field: &MetricsField,
-    value: MetricValue,
+    value: &MetricValue,
     base_labels: &str,
     ts_suffix: &str,
 ) {
@@ -783,25 +939,18 @@ fn collect_scalar_metric(
             Instrument::Counter => "counter",
             Instrument::UpDownCounter => "gauge",
             Instrument::Gauge => "gauge",
-            // `Instrument::Histogram` reaches this path with a scalar
-            // `U64`/`F64` value because the telemetry registry does not yet
-            // store pre-aggregated bucket data. The stored scalar is a single
-            // observation (whatever the metric set's `snapshot_values()`
-            // returns). The native OTLP bridge can place that observation in
-            // stable explicit bounds, but this admin snapshot has no
-            // bucket/sum/count state to render.
-            //
-            // Rendering as the Prometheus histogram family
-            // (`_bucket{le=...}`/`_sum`/`_count`) would require fabricating
-            // bucket data we don't have, so we emit a `gauge` reflecting the
-            // raw stored scalar. This is a known limitation: not spec-compliant
-            // for OTel Histograms (the spec mandates the histogram family) and
-            // potentially misleading because the gauge value's meaning depends
-            // on what the producer chose to put in `snapshot_values()`.
-            // Proper handling requires extending `MetricValue` with a variant
-            // carrying buckets/sum/count.
-            Instrument::Histogram => "gauge",
-            Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
+            // A distribution-valued field routed here means the descriptor
+            // and the stored value disagree. The renderer has a scalar in
+            // hand, so it emits a gauge rather than panicking the admin
+            // worker and failing the whole scrape.
+            Instrument::Mmsc | Instrument::ExponentialHistogram => {
+                debug_assert!(
+                    false,
+                    "distribution instrument {:?} carried a scalar value for metric {}",
+                    field.instrument, field.name
+                );
+                "gauge"
+            }
         };
         PromMetricMetadata {
             help: if field.brief.is_empty() {
@@ -825,15 +974,20 @@ fn collect_scalar_metric(
     group.samples.push(sample);
 }
 
-/// Collects MMSC (min/max/sum/count) sub-metrics into the grouped buffer.
-fn collect_mmsc_metric(
+/// Collects a distribution's min/max/sum/count sub-metrics into the grouped
+/// buffer.
+///
+/// Full exponential-bucket rendering is deferred; the admin endpoints expose
+/// the summary statistics only.
+fn collect_distribution_metric(
     groups: &mut PromGroupedMetrics,
     field: &MetricsField,
-    s: &otap_df_telemetry::instrument::MmscSnapshot,
+    distribution: &DistributionValue,
     base_labels: &str,
     ts_suffix: &str,
 ) {
-    if s.count == 0 {
+    let (count, sum, min, max) = distribution.summary();
+    if count == 0 {
         return;
     }
     let base_metric_name = build_prom_metric_name(field.name, field.unit, Instrument::Gauge);
@@ -845,7 +999,7 @@ fn collect_mmsc_metric(
     let unit_word = ucum_to_prometheus_unit(field.unit).map(|u| u.to_string());
 
     // _min and _max as gauges
-    for (suffix, prom_type, val) in [("_min", "gauge", s.min), ("_max", "gauge", s.max)] {
+    for (suffix, prom_type, val) in [("_min", "gauge", min), ("_max", "gauge", max)] {
         let sub_name = format!("{base_metric_name}{suffix}");
         let group = groups.get_or_insert(&sub_name, || PromMetricMetadata {
             help: brief.clone(),
@@ -876,7 +1030,7 @@ fn collect_mmsc_metric(
             &mut sample,
             &sum_name,
             base_labels,
-            &format!("{}", s.sum),
+            &format!("{sum}"),
             ts_suffix,
         );
         group.samples.push(sample);
@@ -895,7 +1049,7 @@ fn collect_mmsc_metric(
             &mut sample,
             &count_name,
             base_labels,
-            &format!("{}", s.count),
+            &format!("{count}"),
             ts_suffix,
         );
         group.samples.push(sample);
@@ -919,7 +1073,7 @@ fn emit_sample_line(
 
 /// Renders the `target_info` gauge block from resource attributes into a
 /// reusable string. Returns an empty string when `resource_attributes` is
-/// empty (per OTel→Prometheus spec, `target_info` is only emitted when there
+/// empty (per OTel->Prometheus spec, `target_info` is only emitted when there
 /// is metadata to expose). Intended to be called once at server startup; the
 /// resulting string is then prepended verbatim to every Prometheus scrape.
 ///
@@ -976,7 +1130,7 @@ fn agg_prometheus_text(
         // Base labels: `otel_scope_name` plus the merged sanitized attributes.
         // `otel_scope_version` is emitted only when a non-empty version is
         // available; the current `MetricsDescriptor` does not carry one, so
-        // the label is omitted entirely (per OTel→Prometheus spec: only
+        // the label is omitted entirely (per OTel->Prometheus spec: only
         // labels with values are emitted).
         let mut base_labels = String::new();
         if !g.name.is_empty() {
@@ -987,8 +1141,8 @@ fn agg_prometheus_text(
             );
         }
         // Scope attributes become `otel_scope_<key>` labels. Merge values
-        // for keys that collide after sanitization (per OTel→Prometheus
-        // spec). Emission order is unspecified — Prometheus treats labels as
+        // for keys that collide after sanitization (per OTel->Prometheus
+        // spec). Emission order is unspecified -- Prometheus treats labels as
         // an unordered set. Drop attribute keys whose prefixed labels collide
         // with reserved `otel_scope_*` names already emitted above to avoid
         // duplicate-label rejection by Prometheus.
@@ -1014,13 +1168,19 @@ fn agg_prometheus_text(
                         collect_scalar_metric(
                             &mut prom_groups,
                             field,
-                            *value,
+                            value,
                             &base_labels,
                             &ts_suffix,
                         );
                     }
-                    MetricValue::Mmsc(s) => {
-                        collect_mmsc_metric(&mut prom_groups, field, s, &base_labels, &ts_suffix);
+                    MetricValue::Distribution(d) => {
+                        collect_distribution_metric(
+                            &mut prom_groups,
+                            field,
+                            d,
+                            &base_labels,
+                            &ts_suffix,
+                        );
                     }
                 }
             }
@@ -1040,14 +1200,19 @@ fn collect_metrics_snapshot(
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_current_metrics_with_zeroes(
-        |descriptor, attributes, metrics_iter| {
+    telemetry_registry.visit_current_metrics_with_item_attrs(
+        |descriptor, attributes, item_attributes, metrics_iter| {
+            let data_point_attributes = data_point_attributes(item_attributes);
             let mut metrics = Vec::new();
 
             for (field, value) in metrics_iter {
+                if is_empty_distribution(value) {
+                    continue;
+                }
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
-                    value,
+                    attributes: data_point_attributes.clone(),
+                    value: value.clone(),
                 });
             }
 
@@ -1079,14 +1244,19 @@ fn collect_metrics_snapshot_and_reset(
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_admin_metrics_and_reset_with_zeroes(
-        |descriptor, attributes, metrics_iter| {
+    telemetry_registry.visit_admin_metrics_and_reset_with_item_attrs(
+        |descriptor, attributes, item_attributes, metrics_iter| {
+            let data_point_attributes = data_point_attributes(item_attributes);
             let mut metrics = Vec::new();
 
             for (field, value) in metrics_iter {
+                if is_empty_distribution(value) {
+                    continue;
+                }
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
-                    value,
+                    attributes: data_point_attributes.clone(),
+                    value: value.clone(),
                 });
             }
 
@@ -1111,29 +1281,39 @@ fn collect_metrics_snapshot_and_reset(
 }
 
 /// Compact snapshot without resetting.
-fn collect_compact_snapshot(telemetry_registry: &TelemetryRegistryHandle) -> Vec<MetricSet> {
+fn collect_compact_snapshot(
+    telemetry_registry: &TelemetryRegistryHandle,
+    keep_all_zeroes: bool,
+) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_current_metrics(|descriptor, attributes, metrics_iter| {
-        let mut metrics = HashMap::new();
-        for (field, value) in metrics_iter {
-            let _ = metrics.insert(field.name.to_string(), value);
-        }
-
-        if !metrics.is_empty() {
-            // include attributes in compact format
-            let mut attrs_map = HashMap::new();
-            for (key, value) in attributes.iter_attributes() {
-                let _ = attrs_map.insert(key.to_string(), value.clone());
+    telemetry_registry.visit_current_metrics_with_item_attrs(
+        |descriptor, attributes, item_attributes, metrics_iter| {
+            let mut metrics = HashMap::new();
+            for (field, value) in metrics_iter {
+                if is_empty_distribution(value) {
+                    continue;
+                }
+                let _ = metrics.insert(field.name.to_string(), value.clone());
             }
 
-            metric_sets.push(MetricSet {
-                name: descriptor.name.to_string(),
-                attributes: attrs_map,
-                metrics,
-            });
-        }
-    });
+            if !metrics.is_empty() {
+                // include attributes in compact format
+                let mut attrs_map = HashMap::new();
+                for (key, value) in attributes.iter_attributes() {
+                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                }
+
+                metric_sets.push(MetricSet {
+                    name: descriptor.name.to_string(),
+                    attributes: attrs_map,
+                    data_point_attributes: data_point_attributes(item_attributes),
+                    metrics,
+                });
+            }
+        },
+        keep_all_zeroes,
+    );
 
     metric_sets
 }
@@ -1141,30 +1321,50 @@ fn collect_compact_snapshot(telemetry_registry: &TelemetryRegistryHandle) -> Vec
 /// Compact snapshot with resetting.
 fn collect_compact_snapshot_and_reset(
     telemetry_registry: &TelemetryRegistryHandle,
+    keep_all_zeroes: bool,
 ) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_admin_metrics_and_reset(|descriptor, attributes, metrics_iter| {
-        let mut metrics = HashMap::new();
-        for (field, value) in metrics_iter {
-            let _ = metrics.insert(field.name.to_string(), value);
-        }
-
-        if !metrics.is_empty() {
-            let mut attrs_map = HashMap::new();
-            for (key, value) in attributes.iter_attributes() {
-                let _ = attrs_map.insert(key.to_string(), value.clone());
+    telemetry_registry.visit_admin_metrics_and_reset_with_item_attrs(
+        |descriptor, attributes, item_attributes, metrics_iter| {
+            let mut metrics = HashMap::new();
+            for (field, value) in metrics_iter {
+                if is_empty_distribution(value) {
+                    continue;
+                }
+                let _ = metrics.insert(field.name.to_string(), value.clone());
             }
 
-            metric_sets.push(MetricSet {
-                name: descriptor.name.to_string(),
-                attributes: attrs_map,
-                metrics,
-            });
-        }
-    });
+            if !metrics.is_empty() {
+                let mut attrs_map = HashMap::new();
+                for (key, value) in attributes.iter_attributes() {
+                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                }
+
+                metric_sets.push(MetricSet {
+                    name: descriptor.name.to_string(),
+                    attributes: attrs_map,
+                    data_point_attributes: data_point_attributes(item_attributes),
+                    metrics,
+                });
+            }
+        },
+        keep_all_zeroes,
+    );
 
     metric_sets
+}
+
+fn data_point_attributes(item_attributes: &[(&str, &str)]) -> HashMap<String, AttributeValue> {
+    item_attributes
+        .iter()
+        .map(|(key, value)| {
+            (
+                (*key).to_string(),
+                AttributeValue::String((*value).to_string()),
+            )
+        })
+        .collect()
 }
 
 fn format_line_protocol(
@@ -1216,11 +1416,14 @@ fn format_line_protocol(
                         format_lp_value(value, Some(field.value_type))
                     );
                 }
-                MetricValue::Mmsc(s) => {
-                    if s.count == 0 {
+                // Distribution metrics render their summary statistics only;
+                // full exponential-bucket rendering is deferred.
+                MetricValue::Distribution(d) => {
+                    let (count, sum, min, max) = d.summary();
+                    if count == 0 {
                         continue;
                     }
-                    for (suffix, fval) in [("_min", s.min), ("_max", s.max), ("_sum", s.sum)] {
+                    for (suffix, fval) in [("_min", min), ("_max", max), ("_sum", sum)] {
                         if !first {
                             fields.push(',');
                         }
@@ -1241,7 +1444,7 @@ fn format_line_protocol(
                         &mut fields,
                         "{}_count={}i",
                         escape_lp_field_key(field.name),
-                        s.count
+                        count
                     );
                 }
             }
@@ -1300,8 +1503,8 @@ fn format_prometheus_text(
                 MetricValue::U64(_) | MetricValue::F64(_) => {
                     collect_scalar_metric(&mut groups, field, value, &base_labels, &ts_suffix);
                 }
-                MetricValue::Mmsc(ref s) => {
-                    collect_mmsc_metric(&mut groups, field, s, &base_labels, &ts_suffix);
+                MetricValue::Distribution(d) => {
+                    collect_distribution_metric(&mut groups, field, d, &base_labels, &ts_suffix);
                 }
             }
         }
@@ -1460,7 +1663,7 @@ fn sanitize_prom_metric_name(s: &str) -> String {
         }
     }
     // Strip a trailing underscore so callers that append unit / `_total`
-    // suffixes don't produce double underscores (e.g. `foo.` → `foo_` →
+    // suffixes don't produce double underscores (e.g. `foo.` -> `foo_` ->
     // `foo__bytes`). If stripping leaves an empty string, fall back to
     // the placeholder name used for fully-invalid inputs.
     if collapsed.ends_with('_') {
@@ -1507,16 +1710,16 @@ fn ucum_simple_unit(unit: &str) -> Option<&'static str> {
 /// Maps UCUM unit strings to Prometheus unit words per the OTel spec.
 ///
 /// Handles:
-/// - Simple units: `"By"` → `"bytes"`
-/// - Dimensionless `"1"` and empty → `None`
-/// - Bracketed annotations are stripped: `"{packet}/s"` → `"per_second"`
-/// - Compound rate units: `"By/s"` → `"bytes_per_second"`
+/// - Simple units: `"By"` -> `"bytes"`
+/// - Dimensionless `"1"` and empty -> `None`
+/// - Bracketed annotations are stripped: `"{packet}/s"` -> `"per_second"`
+/// - Compound rate units: `"By/s"` -> `"bytes_per_second"`
 fn ucum_to_prometheus_unit(unit: &str) -> Option<&'static str> {
     if unit.is_empty() || unit == "1" {
         return None;
     }
 
-    // Strip bracketed annotation portions (e.g., `{packet}` → ``).
+    // Strip bracketed annotation portions (e.g., `{packet}` -> ``).
     let stripped = strip_curly_braces(unit);
     let stripped = stripped.trim();
     if stripped.is_empty() {
@@ -1558,9 +1761,9 @@ fn strip_curly_braces(s: &str) -> String {
 /// Returns the Prometheus unit word for compound rate units like `By/s`.
 ///
 /// Looks up the result in [`COMPOUND_RATE_CACHE`], which is generated by
-/// [`rate_entries!`] from the same word list as [`ucum_simple_unit`] — so
+/// [`rate_entries!`] from the same word list as [`ucum_simple_unit`] -- so
 /// every simple unit automatically supports second/minute/hour rates
-/// (e.g. `KiBy/h` → `kibibytes_per_hour`, `Hz/s` → `hertz_per_second`).
+/// (e.g. `KiBy/h` -> `kibibytes_per_hour`, `Hz/s` -> `hertz_per_second`).
 ///
 /// Note: the denominator only accepts time-division units (`s`, `min`, `h`).
 /// A denominator of `"m"` is the UCUM code for *meters*, not minutes
@@ -1593,9 +1796,9 @@ fn compound_rate_unit(numerator: &str, denominator: &str) -> Option<&'static str
 /// Pre-computed compound rate unit strings, keyed by `(numerator_word,
 /// denominator_word)`. Generated by [`rate_entries!`] from the list of
 /// simple-unit words in [`ucum_simple_unit`] so every simple unit
-/// automatically gains second/minute/hour rate forms (e.g. `Hz/h` →
+/// automatically gains second/minute/hour rate forms (e.g. `Hz/h` ->
 /// `hertz_per_hour`). Each value is a `&'static str` produced by `concat!`
-/// at compile time — no heap allocation on the scrape path.
+/// at compile time -- no heap allocation on the scrape path.
 ///
 /// To support a new simple unit, add the word to the list below *and* the
 /// matching UCUM mapping to [`ucum_simple_unit`].
@@ -1691,12 +1894,14 @@ fn build_prom_metric_name(base_name: &str, unit: &str, instrument: Instrument) -
     name
 }
 
-/// Returns true if `name` ends with `_<word>`. `word` is compared byte-wise
-/// (ASCII). Avoids allocating a temporary `String` for the suffix check.
+/// Returns true if `name` equals `word` or ends with `_<word>`. `word` is
+/// compared byte-wise (ASCII). Avoids allocating a temporary `String` for the
+/// suffix check.
 fn ends_with_underscore_word(name: &str, word: &str) -> bool {
-    name.len() > word.len()
-        && name.ends_with(word)
-        && name.as_bytes()[name.len() - word.len() - 1] == b'_'
+    name == word
+        || (name.len() > word.len()
+            && name.ends_with(word)
+            && name.as_bytes()[name.len() - word.len() - 1] == b'_')
 }
 
 /// Returns true if `name` already ends with `_total` as a proper suffix
@@ -1714,7 +1919,7 @@ fn has_total_suffix(name: &str) -> bool {
 
 fn sanitize_prom_label_key(s: &str) -> String {
     // Sanitize each char and collapse runs of `_` inline
-    // (per OTel spec §Metric Attributes). No intermediate allocation.
+    // (per OTel spec sec.Metric Attributes). No intermediate allocation.
     let mut out = String::with_capacity(s.len());
     let mut prev_underscore = false;
     let mut first = true;
@@ -1776,9 +1981,9 @@ fn escape_prom_help(s: &str) -> String {
 }
 
 /// Sanitizes label keys and merges values that collide after sanitization
-/// into a single entry separated by `;`, per the OTel→Prometheus spec.
+/// into a single entry separated by `;`, per the OTel->Prometheus spec.
 ///
-/// Per spec: "OpenTelemetry keys [that] map to the same Prometheus key …
+/// Per spec: "OpenTelemetry keys [that] map to the same Prometheus key ...
 /// MUST be concatenated together, separated by `;`, and ordered by the
 /// lexicographical order of the original keys." We collect and sort by
 /// original key before merging so the joined value is deterministic
@@ -1796,7 +2001,7 @@ fn escape_prom_help(s: &str) -> String {
 /// names, the conflicting attribute is dropped (Prometheus rejects duplicate
 /// label names on a single sample). Pass `&[]` when no reservation applies.
 ///
-/// Iteration order over the returned map is not specified — Prometheus
+/// Iteration order over the returned map is not specified -- Prometheus
 /// treats labels as an unordered set.
 fn sanitize_and_merge_label_pairs<'a, I>(
     attrs: I,
@@ -2337,8 +2542,9 @@ mod tests {
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsField,
         Temporality,
     };
-    use otap_df_telemetry::instrument::MmscSnapshot;
+    use otap_df_telemetry::instrument::{HistogramDetailed, HistogramNormal, Mmsc};
     use otap_df_telemetry::metrics::MetricSetHandler;
+    use std::collections::BTreeMap;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -2861,7 +3067,7 @@ mod tests {
                 let mut m = HashMap::new();
                 let _ = m.insert(
                     "request_duration".to_string(),
-                    MetricValue::Mmsc(MmscSnapshot {
+                    MetricValue::from(Mmsc {
                         min: 1.5,
                         max: 100.0,
                         sum: 250.5,
@@ -2875,7 +3081,7 @@ mod tests {
         let output = agg_prometheus_text(&groups, Some(1000), "");
 
         // Each sub-metric should have its own HELP and TYPE.
-        // Unit `ms` adds the `_milliseconds` suffix per OTel→Prometheus spec.
+        // Unit `ms` adds the `_milliseconds` suffix per OTel->Prometheus spec.
         assert!(output.contains("# HELP request_duration_milliseconds_min Request duration\n"));
         assert!(output.contains("# TYPE request_duration_milliseconds_min gauge\n"));
         assert!(output.contains(
@@ -2918,7 +3124,7 @@ mod tests {
                 let mut m = HashMap::new();
                 let _ = m.insert(
                     "request_duration".to_string(),
-                    MetricValue::Mmsc(MmscSnapshot {
+                    MetricValue::from(Mmsc {
                         min: 1.5,
                         max: 100.0,
                         sum: 250.5,
@@ -3096,6 +3302,121 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
+    // Distribution JSON rendering tests
+    // ---------------------------------------------------------------------------
+
+    /// Serializes a single `MetricValue` through the admin JSON path.
+    fn distribution_json(value: &MetricValue) -> serde_json::Value {
+        #[derive(serde::Serialize)]
+        struct Wrapper<'a> {
+            #[serde(serialize_with = "serialize_metric_value")]
+            value: &'a MetricValue,
+        }
+        serde_json::to_value(Wrapper { value })
+            .unwrap()
+            .get("value")
+            .unwrap()
+            .clone()
+    }
+
+    /// Builds a bucketed distribution over the integers 1..=n.
+    #[allow(unused_qualifications)]
+    fn normal_distribution(n: u64) -> MetricValue {
+        let mut histogram = HistogramNormal::default();
+        for i in 1..=n {
+            histogram.record(i as f64);
+        }
+        MetricValue::Distribution(histogram.get())
+    }
+
+    /// Builds an empty detailed-tier distribution.
+    #[allow(unused_qualifications)]
+    fn detailed_distribution() -> MetricValue {
+        MetricValue::Distribution(HistogramDetailed::default().get())
+    }
+
+    /// Scenario: Empty distributions of every tier are passed to the admin
+    /// JSON serializer and to the collectors' emptiness predicate.
+    /// Guarantees: the predicate reports them empty so collectors drop them,
+    /// and the serializer emits `count` alone -- never a min, max, sum or
+    /// quantile fabricated from an interval with no observation.
+    #[test]
+    fn empty_distribution_json_reports_count_only() {
+        let tiers = [
+            MetricValue::from(Mmsc::default()),
+            normal_distribution(0),
+            detailed_distribution(),
+        ];
+        for value in &tiers {
+            assert!(is_empty_distribution(value));
+            let json = distribution_json(value);
+            let obj = json.as_object().unwrap();
+            assert_eq!(obj.len(), 1, "{obj:?}");
+            assert_eq!(obj.get("count").unwrap(), 0);
+        }
+        assert!(!is_empty_distribution(&normal_distribution(1)));
+        assert!(!is_empty_distribution(&MetricValue::U64(0)));
+    }
+
+    /// Scenario: A basic-tier distribution, which encodes no buckets, is
+    /// rendered for the admin JSON endpoints.
+    /// Guarantees: only the exact mmsc statistics appear, with no `details`
+    /// object, since the tier supports neither a zero count nor quantiles.
+    #[test]
+    fn basic_tier_json_reports_only_exact_statistics() {
+        let value = MetricValue::from(Mmsc {
+            min: 1.0,
+            max: 9.0,
+            sum: 20.0,
+            count: 4,
+        });
+        let json = distribution_json(&value);
+        let obj = json.as_object().unwrap();
+
+        assert_eq!(obj.get("min").unwrap(), 1.0);
+        assert_eq!(obj.get("max").unwrap(), 9.0);
+        assert_eq!(obj.get("sum").unwrap(), 20.0);
+        assert_eq!(obj.get("count").unwrap(), 4);
+        // The basic tier keeps no bucket structure and so tracks no zero
+        // population; a zero there is an ordinary observation that lowers min.
+        assert!(!obj.contains_key("details"));
+    }
+
+    /// Scenario: A bucketed normal-tier distribution over 1..=1000 is rendered
+    /// for the admin JSON endpoints.
+    /// Guarantees: the exact statistics stay at the top level while every
+    /// bucket-derived value is grouped under a single `details` object holding
+    /// the zero count, the relative error bound, and ordered p50/p90/p99
+    /// estimates that each land within that bound of the true quantile.
+    #[test]
+    fn bucketed_tier_json_reports_quantiles_and_error_bound() {
+        let value = normal_distribution(1000);
+        let json = distribution_json(&value);
+        let obj = json.as_object().unwrap();
+
+        assert_eq!(obj.get("count").unwrap(), 1000);
+        assert!(!obj.contains_key("zero_count"), "{obj:?}");
+        assert!(!obj.contains_key("scale"), "{obj:?}");
+
+        let details = obj.get("details").unwrap().as_object().unwrap();
+        assert_eq!(details.get("zero_count").unwrap(), 0);
+        assert!(!details.contains_key("scale"), "{details:?}");
+
+        let bound = details.get("relative_error").unwrap().as_f64().unwrap();
+        assert!(bound > 0.0 && bound < 0.5, "bound = {bound}");
+
+        let p50 = details.get("p50").unwrap().as_f64().unwrap();
+        let p90 = details.get("p90").unwrap().as_f64().unwrap();
+        let p99 = details.get("p99").unwrap().as_f64().unwrap();
+        assert!(p50 <= p90 && p90 <= p99, "{p50} {p90} {p99}");
+
+        for (est, exact) in [(p50, 500.0), (p90, 900.0), (p99, 990.0)] {
+            let err = (est - exact).abs() / exact;
+            assert!(err <= bound * 1.5, "est={est} exact={exact} err={err}");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
     // WebSocket / HTTP schema alignment tests
     // ---------------------------------------------------------------------------
 
@@ -3153,7 +3474,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // OTel→Prometheus metric name & unit suffix (build_prom_metric_name)
+    // OTel->Prometheus metric name & unit suffix (build_prom_metric_name)
     // ---------------------------------------------------------------------
 
     #[test]
@@ -3161,6 +3482,16 @@ mod tests {
         assert_eq!(
             build_prom_metric_name("http_request_duration", "s", Instrument::Counter),
             "http_request_duration_seconds_total"
+        );
+    }
+
+    /// Scenario: A counter name exactly matches the Prometheus word for its UCUM unit.
+    /// Guarantees: The unit word is not duplicated before the counter `_total` suffix.
+    #[test]
+    fn test_build_prom_metric_name_counter_named_for_unit() {
+        assert_eq!(
+            build_prom_metric_name("bytes", "By", Instrument::Counter),
+            "bytes_total"
         );
     }
 
@@ -3235,11 +3566,11 @@ mod tests {
 
     #[test]
     fn test_ucum_to_prometheus_unit_bracketed_units() {
-        // Pure annotation: {packet} → None
+        // Pure annotation: {packet} -> None
         assert_eq!(ucum_to_prometheus_unit("{packet}"), None);
-        // Annotation with rate: {packet}/s → per_second (brackets stripped)
+        // Annotation with rate: {packet}/s -> per_second (brackets stripped)
         assert_eq!(ucum_to_prometheus_unit("{packet}/s"), Some("per_second"));
-        // Pure annotation: {requests} → None
+        // Pure annotation: {requests} -> None
         assert_eq!(ucum_to_prometheus_unit("{requests}"), None);
     }
 
@@ -3310,7 +3641,7 @@ mod tests {
         // A trailing non-alphanumeric character (e.g. `.`, `-`) sanitizes to
         // `_`. If left in place, downstream callers that append `_<unit>` or
         // `_total` would produce double underscores (e.g.
-        // `foo.` → `foo_` → `foo__bytes`). `sanitize_prom_metric_name` strips
+        // `foo.` -> `foo_` -> `foo__bytes`). `sanitize_prom_metric_name` strips
         // the trailing `_` so suffix-appending callers don't have to.
         assert_eq!(sanitize_prom_metric_name("foo."), "foo");
         assert_eq!(sanitize_prom_metric_name("foo___"), "foo");
@@ -3334,7 +3665,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_prom_label_key_collapses_underscores() {
-        // Per OTel spec §Metric Attributes: "Multiple consecutive _ characters
+        // Per OTel spec sec.Metric Attributes: "Multiple consecutive _ characters
         // SHOULD be replaced with a single _ character." This applies to label
         // keys, not just metric names.
         assert_eq!(sanitize_prom_label_key("foo..bar"), "foo_bar");
@@ -3345,7 +3676,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_and_merge_label_pairs_collisions_use_semicolon() {
-        // Per OTel→Prometheus spec: when two original keys collide after
+        // Per OTel->Prometheus spec: when two original keys collide after
         // sanitization, their values are concatenated with `;`.
         let merged = sanitize_and_merge_label_pairs(
             vec![
@@ -3367,10 +3698,10 @@ mod tests {
 
     #[test]
     fn test_sanitize_and_merge_label_pairs_collision_is_lex_ordered_by_original_key() {
-        // Per OTel→Prometheus spec: "values MUST be concatenated together,
+        // Per OTel->Prometheus spec: "values MUST be concatenated together,
         // separated by `;`, and ordered by the lexicographical order of the
         // original keys." This must hold regardless of caller iteration
-        // order — including `HashMap::iter()`, which is unspecified.
+        // order -- including `HashMap::iter()`, which is unspecified.
         //
         // Three keys all sanitize to `service_name`. Lex order of the raw
         // keys is: "service-name" < "service.name" < "service_name".
@@ -3430,7 +3761,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_and_merge_label_pairs_drops_reserved_keys() {
-        // Per OTel→Prometheus spec: scope attributes are prefixed with
+        // Per OTel->Prometheus spec: scope attributes are prefixed with
         // `otel_scope_`, and prefixed labels that collide with reserved scope
         // identity labels are dropped to avoid Prometheus duplicate-label
         // rejection.
@@ -3552,7 +3883,7 @@ mod tests {
         }
 
         fn needs_flush(&self) -> bool {
-            self.values.iter().any(|&v| !v.is_zero())
+            self.values.iter().any(|v| !v.is_zero())
         }
     }
 
@@ -3568,6 +3899,51 @@ mod tests {
 
         fn attribute_values(&self) -> &[AttributeValue] {
             &self.values
+        }
+    }
+
+    /// Scenario: compact JSON requests retain an unobserved all-zero metric set.
+    /// Guarantees: `keep_all_zeroes` is honored with and without resetting metrics.
+    #[tokio::test]
+    async fn metrics_handler_compact_json_honors_keep_all_zeroes() {
+        for reset in [false, true] {
+            let state = test_app_state();
+            let _metric_set =
+                state
+                    .metrics_registry
+                    .register_metric_set::<E2eMetricSet>(E2eAttributeSet {
+                        values: vec![AttributeValue::String("GET".to_string())],
+                    });
+
+            let response = get_metrics(
+                State(state),
+                Query(MetricsQuery {
+                    reset,
+                    format: Some(OutputFormat::JsonCompact),
+                    keep_all_zeroes: true,
+                }),
+            )
+            .await
+            .expect("compact JSON metrics should render");
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("compact JSON metrics body should collect");
+            let metrics: api::CompactMetricsResponse = serde_json::from_slice(&body)
+                .expect("compact JSON metrics response should deserialize");
+
+            assert_eq!(metrics.metric_sets.len(), 1);
+            assert_eq!(metrics.metric_sets[0].name, "http_server");
+            assert_eq!(
+                metrics.metric_sets[0].metrics,
+                BTreeMap::from([
+                    (
+                        "http_request_duration".to_string(),
+                        api::MetricValue::F64(0.0)
+                    ),
+                    ("http_requests".to_string(), api::MetricValue::U64(0)),
+                    ("memory_usage".to_string(), api::MetricValue::U64(0)),
+                ])
+            );
         }
     }
 
@@ -3672,6 +4048,135 @@ mod tests {
             output.matches(r#"otel_scope_foo="scope;value""#).count(),
             2,
             "scope and item collisions should merge values:\n{output}"
+        );
+    }
+
+    /// Scenario: a metric data point has measurement attributes in an admin JSON response.
+    /// Guarantees: verbose JSON preserves data point attributes separately from scope attributes.
+    #[tokio::test]
+    async fn metrics_handler_json_preserves_measurement_item_attributes() {
+        let state = test_app_state();
+        let registry = state.metrics_registry.clone();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut metrics = registry
+            .register_metric_set_with_measurement_attributes::<DatapointSignalMetrics>(
+                PrometheusScopeAttributes {
+                    foo: "scope".to_string(),
+                },
+            );
+        metrics
+            .with(DatapointSignalAttributes {
+                signal: SignalType::Logs,
+                scope_foo: DatapointCollision::Value,
+            })
+            .events
+            .add(7);
+        reporter
+            .report_measurement(&mut metrics)
+            .expect("measurement metrics should report");
+
+        while let Ok(snapshot) = receiver.try_recv() {
+            registry.accumulate_metric_set_snapshot(
+                snapshot.key(),
+                snapshot.bucket(),
+                snapshot.get_metrics(),
+            );
+        }
+
+        let response = get_metrics(
+            State(state),
+            Query(MetricsQuery {
+                format: Some(OutputFormat::Json),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("JSON metrics should render");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("JSON metrics body should collect");
+        let metrics: api::MetricsResponse =
+            serde_json::from_slice(&body).expect("JSON metrics response should deserialize");
+
+        assert_eq!(metrics.metric_sets.len(), 1);
+        assert_eq!(
+            metrics.metric_sets[0].attributes.get("foo"),
+            Some(&api::AttributeValue::String("scope".to_string()))
+        );
+        assert_eq!(metrics.metric_sets[0].metrics.len(), 1);
+        assert_eq!(
+            metrics.metric_sets[0].metrics[0].attributes.get("signal"),
+            Some(&api::AttributeValue::String("logs".to_string()))
+        );
+        assert_eq!(
+            metrics.metric_sets[0].metrics[0]
+                .attributes
+                .get("otel.scope.foo"),
+            Some(&api::AttributeValue::String("value".to_string()))
+        );
+    }
+
+    /// Scenario: a metric data point has measurement attributes in compact admin JSON.
+    /// Guarantees: compact JSON preserves data point attributes separately from scope attributes.
+    #[tokio::test]
+    async fn metrics_handler_compact_json_preserves_measurement_item_attributes() {
+        let state = test_app_state();
+        let registry = state.metrics_registry.clone();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut metrics = registry
+            .register_metric_set_with_measurement_attributes::<DatapointSignalMetrics>(
+                PrometheusScopeAttributes {
+                    foo: "scope".to_string(),
+                },
+            );
+        metrics
+            .with(DatapointSignalAttributes {
+                signal: SignalType::Logs,
+                scope_foo: DatapointCollision::Value,
+            })
+            .events
+            .add(7);
+        reporter
+            .report_measurement(&mut metrics)
+            .expect("measurement metrics should report");
+
+        while let Ok(snapshot) = receiver.try_recv() {
+            registry.accumulate_metric_set_snapshot(
+                snapshot.key(),
+                snapshot.bucket(),
+                snapshot.get_metrics(),
+            );
+        }
+
+        let response = get_metrics(
+            State(state),
+            Query(MetricsQuery {
+                format: Some(OutputFormat::JsonCompact),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("compact JSON metrics should render");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("compact JSON metrics body should collect");
+        let metrics: api::CompactMetricsResponse = serde_json::from_slice(&body)
+            .expect("compact JSON metrics response should deserialize");
+
+        assert_eq!(metrics.metric_sets.len(), 1);
+        assert_eq!(
+            metrics.metric_sets[0].attributes.get("foo"),
+            Some(&api::AttributeValue::String("scope".to_string()))
+        );
+        assert_eq!(
+            metrics.metric_sets[0].data_point_attributes.get("signal"),
+            Some(&api::AttributeValue::String("logs".to_string()))
+        );
+        assert_eq!(
+            metrics.metric_sets[0]
+                .data_point_attributes
+                .get("otel.scope.foo"),
+            Some(&api::AttributeValue::String("value".to_string()))
         );
     }
 

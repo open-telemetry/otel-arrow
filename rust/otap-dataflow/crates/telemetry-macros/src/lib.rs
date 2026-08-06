@@ -132,10 +132,19 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                         if let Some(seg) = seg_opt {
                             let ident_ty = seg.ident.to_string();
 
-                            // Handle Mmsc separately — it has no generic type parameter.
+                            // Handle Mmsc separately -- it has no generic type parameter.
                             if ident_ty == "Mmsc" {
                                 (
                                     quote!(otap_df_telemetry::descriptor::Instrument::Mmsc),
+                                    quote!(Some(otap_df_telemetry::descriptor::Temporality::Delta)),
+                                    quote!(otap_df_telemetry::descriptor::MetricValueType::F64),
+                                    ident_ty,
+                                )
+                            } else if ident_ty == "HistogramNormal"
+                                || ident_ty == "HistogramDetailed"
+                            {
+                                (
+                                    quote!(otap_df_telemetry::descriptor::Instrument::ExponentialHistogram),
                                     quote!(Some(otap_df_telemetry::descriptor::Temporality::Delta)),
                                     quote!(otap_df_telemetry::descriptor::MetricValueType::F64),
                                     ident_ty,
@@ -263,10 +272,18 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
             metric_field_value_types.push(value_type_variant);
 
             match instrument_ty_name.as_str() {
-                "Counter" | "Mmsc" => {
+                "Counter" => {
                     metric_field_clear_stmts.push(quote!( self.#field_ident.reset(); ));
                     metric_field_needs_flush_checks.push(quote!(
                         if !otap_df_telemetry::metrics::MetricValue::from(self.#field_ident.get()).is_zero() {
+                            return true;
+                        }
+                    ));
+                }
+                "Mmsc" | "HistogramNormal" | "HistogramDetailed" => {
+                    metric_field_clear_stmts.push(quote!( self.#field_ident.reset(); ));
+                    metric_field_needs_flush_checks.push(quote!(
+                        if !self.#field_ident.is_empty() {
                             return true;
                         }
                     ));

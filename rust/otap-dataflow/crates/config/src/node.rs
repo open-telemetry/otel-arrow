@@ -117,6 +117,13 @@ pub struct NodeUserConfig {
     )]
     pub capabilities: HashMap<CapabilityId, ExtensionId>,
 
+    /// Ordered names of rate limiters applied at this node's admission point.
+    ///
+    /// Omit this field or use an empty list to leave the node unbound. V1 accepts
+    /// at most one bound limiter until multi-limiter reservation semantics exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limiters: Option<Vec<String>>,
+
     /// Entity configuration for the node.
     ///
     /// Currently, we support entity::extend::identity_attributes, for example:
@@ -234,6 +241,7 @@ impl NodeUserConfig {
             entity: None,
             config: Value::Null,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -254,6 +262,7 @@ impl NodeUserConfig {
             default_output: None,
             config: Value::Null,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -274,6 +283,7 @@ impl NodeUserConfig {
             default_output: None,
             config: Value::Null,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -291,6 +301,7 @@ impl NodeUserConfig {
             default_output: None,
             config: user_config,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -405,11 +416,11 @@ pub const REDACTED_HEADER_VALUE: &str = "[REDACTED]";
 /// Two header shapes carry credentials in the OpenTelemetry ecosystem and are
 /// both handled, since node/extension `config` is opaque JSON:
 ///
-/// - **Map form** — `headers: { name: value }` (e.g. `config.headers` for
+/// - **Map form** -- `headers: { name: value }` (e.g. `config.headers` for
 ///   OTAP/gRPC, `config.http.headers` for OTLP/HTTP exporters). Every value is
 ///   masked; the keys are preserved so a snapshot still shows which headers are
 ///   configured.
-/// - **List form** — `headers: [ { key, value, ... }, ... ]` (e.g. the
+/// - **List form** -- `headers: [ { key, value, ... }, ... ]` (e.g. the
 ///   `headers_setter` schema). The static `value` of each entry is masked;
 ///   reference fields such as `from_context` / `from_attribute` are not secrets
 ///   and are left intact.

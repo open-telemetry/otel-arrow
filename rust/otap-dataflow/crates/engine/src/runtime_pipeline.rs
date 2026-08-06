@@ -23,8 +23,8 @@ use crate::entity_context::{
 };
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    FlowDurationMetrics, FlowSignalsDroppedMetrics, FlowSignalsIncomingMetrics,
-    FlowSignalsOutgoingMetrics, build_flow_metric_state,
+    FlowConsumedItemsMetrics, FlowDroppedItemsMetrics, FlowDurationMetrics,
+    FlowProducedItemsMetrics, build_flow_metric_state,
 };
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
@@ -39,7 +39,7 @@ use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -186,6 +186,8 @@ pub struct RuntimePipeline<PData: Debug> {
     nodes: NodeDefs<PData, PipeNode>,
     /// Channel metrics handles collected during build.
     channel_metrics: Vec<ChannelMetricsHandle>,
+    /// Admission refusal metrics handles collected during node construction.
+    admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
 }
@@ -328,12 +330,20 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             extensions,
             nodes,
             channel_metrics: Default::default(),
+            admission_metrics: Default::default(),
             telemetry_policy,
         }
     }
 
     pub(crate) fn set_channel_metrics(&mut self, channel_metrics: Vec<ChannelMetricsHandle>) {
         self.channel_metrics = channel_metrics;
+    }
+
+    pub(crate) fn set_admission_metrics(
+        &mut self,
+        admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
+    ) {
+        self.admission_metrics = admission_metrics;
     }
 
     /// Returns the number of nodes in the pipeline.
@@ -377,6 +387,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             extensions,
             nodes: _nodes,
             channel_metrics,
+            admission_metrics,
             telemetry_policy,
         } = self;
 
@@ -475,7 +486,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
         let mut node_telemetry_guards: Vec<NodeTelemetryGuard> = Vec::new();
 
-        // Build a name→index map from NodeDefs so we can resolve flow_metric
+        // Build a name->index map from NodeDefs so we can resolve flow_metric
         // config before processors are spawned.
         let node_name_to_index: HashMap<String, usize> = _nodes
             .iter()
@@ -497,7 +508,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             connection_edges(pipeline_config.connection_iter(), &node_name_to_index);
 
         // Build flow_metric state and per-node role assignments up front.
-        let flow_metric_state = build_flow_metric_state(
+        let mut flow_metric_state = build_flow_metric_state(
             &telemetry_policy,
             &node_name_to_index,
             &processor_indices,
@@ -625,37 +636,37 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             // Extract flow metric roles for this processor node.
             let flow_is_start = flow_metric_state.start_nodes.contains_key(&node_id.index);
             let flow_is_end = flow_metric_state.end_nodes.contains_key(&node_id.index);
-            let flow_signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>> =
+            let flow_consumed_items_metric: Option<MeasurementMetricSet<FlowConsumedItemsMetrics>> =
                 flow_metric_state
                     .start_nodes
                     .get(&node_id.index)
-                    .and_then(|&id| flow_metric_state.signals_incoming_metrics[id].clone());
-            let flow_duration_metric: Option<MetricSet<FlowDurationMetrics>> = flow_metric_state
-                .end_nodes
-                .get(&node_id.index)
-                .and_then(|&id| flow_metric_state.duration_metrics[id].clone());
-            let flow_signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>> =
+                    .and_then(|&id| flow_metric_state.consumed_items_metrics[id].take());
+            let flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>> =
                 flow_metric_state
                     .end_nodes
                     .get(&node_id.index)
-                    .and_then(|&id| flow_metric_state.signals_outgoing_metrics[id].clone());
+                    .and_then(|&id| flow_metric_state.duration_metrics[id].take());
+            let flow_produced_items_metric: Option<MeasurementMetricSet<FlowProducedItemsMetrics>> =
+                flow_metric_state
+                    .end_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_metric_state.produced_items_metrics[id].take());
             // Register per-node drop decision metric set when this
             // processor declares the drop capability and lies within a
             // flow that enables dropped. Each decision node gets its own
             // entity tagged with `flow.node.decision` = this node's name.
-            let mut flow_signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>> =
-                None;
+            let mut flow_dropped_items_metric: Option<
+                MeasurementMetricSet<FlowDroppedItemsMetrics>,
+            > = None;
             if processor.runtime_requirements().makes_drop_decisions
                 && let Some(candidate) = flow_metric_state.decision_candidates.get(&node_id.index)
             {
                 let mut attrs = candidate.attrs.clone();
                 attrs.decision = std::borrow::Cow::Owned(node_id.name.to_string());
                 let entity_key = pipeline_context.metrics_registry().register_entity(attrs);
-                flow_signals_dropped_metric = Some(
-                    pipeline_context
-                        .metrics_registry()
-                        .register_metric_set_for_entity::<FlowSignalsDroppedMetrics>(entity_key),
-                );
+                flow_dropped_items_metric = Some(FlowDroppedItemsMetrics::register(
+                    &pipeline_context.metric_set_registrar_for_entity(entity_key),
+                ));
             }
             let flow_active = flow_metric_state.is_active();
             let flow_needs_timing = flow_metric_state.needs_timing();
@@ -669,10 +680,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         completion_emission_metrics,
                         flow_is_start,
                         flow_is_end,
-                        flow_signals_incoming_metric,
+                        flow_consumed_items_metric,
                         flow_duration_metric,
-                        flow_signals_outgoing_metric,
-                        flow_signals_dropped_metric,
+                        flow_produced_items_metric,
+                        flow_dropped_items_metric,
                         flow_active,
                         flow_needs_timing,
                         processor_terminal_metrics_deadline.clone(),
@@ -801,6 +812,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let return_node_metric_handles = node_metric_handles.clone();
         let final_node_metric_handles = node_metric_handles.clone();
         let final_channel_metrics = channel_metrics.clone();
+        let final_admission_metrics = admission_metrics.clone();
         let final_metrics_reporter = metrics_reporter.clone();
         let manager_pipeline_context = pipeline_context.clone();
         let manager_metrics_reporter = metrics_reporter.clone();
@@ -823,6 +835,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 control_plane_metrics_flush_interval,
                 manager_telemetry_policy,
                 channel_metrics,
+                admission_metrics,
                 node_metric_handles,
                 manager_terminal_metrics_deadline,
             );
@@ -934,6 +947,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         final_channel_metrics
                             .iter()
                             .filter_map(ChannelMetricsHandle::snapshot),
+                    )
+                    .chain(
+                        final_admission_metrics
+                            .iter()
+                            .flat_map(|metrics| metrics.terminal_snapshots()),
                     );
                     report_metric_snapshots(
                         &final_metrics_reporter,

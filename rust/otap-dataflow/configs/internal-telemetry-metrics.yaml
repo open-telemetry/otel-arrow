@@ -13,13 +13,19 @@ engine:
     logs:
       level: "info"
       providers:
-        global: its
-        engine: its
-        internal: console_direct
-        admin: its
+        global: console_async
+        engine: console_async
+        internal: noop
+        admin: console_direct
     resource:
       service.id: 1234
       service.name: test
+    # Resource detectors auto-populate telemetry resource attributes. Defaults to
+    # [service_instance, env, service_name] when omitted; explicitly configured `resource`
+    # attributes above take precedence over attributes from detectors. Opt into
+    # host/os/process/container/k8s to probe the environment (here host.* is added); an empty
+    # list disables detection entirely.
+    detectors: [service_instance, env, service_name, host]
   observability:
     pipeline:
       policies:
@@ -38,6 +44,7 @@ engine:
         telemetry:
           type: "receiver:internal_telemetry"
           config:
+            signals: [metrics]
             metrics:
               interval: 2s
               views:
@@ -66,13 +73,13 @@ engine:
                       Uptime of the pipeline group process since last start.
                 - selector:
                     scope_name: flow
-                    instrument_name: signals.incoming
+                    instrument_name: consumed.items
                   stream:
                     name: processor_incoming_items
                     description: The count of items passed to the processor.
                 - selector:
                     scope_name: flow
-                    instrument_name: signals.outgoing
+                    instrument_name: produced.items
                   stream:
                     name: processor_outgoing_items
                     description: The count of items emitted from the processor.
@@ -82,28 +89,17 @@ engine:
                   stream:
                     name: processing_duration
                     description: Duration of the processing of the items.
-        router:
-          type: "processor:type_router"
-          outputs: ["logs", "metrics"]
-          config: {}
         metrics_debug:
           type: "processor:debug"
           config:
             verbosity: detailed
             mode: batch
             signals: [metrics]
-        console:
-          type: "exporter:console"
-          config: {}
         noop:
           type: "exporter:noop"
           config: {}
       connections:
         - from: telemetry
-          to: router
-        - from: router["logs"]
-          to: console
-        - from: router["metrics"]
           to: metrics_debug
         - from: metrics_debug
           to: noop
@@ -128,8 +124,8 @@ groups:
                   end_node: debug
                 metrics:
                   - compute_duration
-                  - signals_incoming
-                  - signals_outgoing
+                  - consumed_items
+                  - produced_items
                 purpose: manual_test
         nodes:
           generator:

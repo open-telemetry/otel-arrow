@@ -5,7 +5,7 @@
 //!
 //! Acquires and refreshes Azure access tokens and exposes them to data-path
 //! nodes through the `BearerTokenProvider` capability. See
-//! `docs/azure-identity-auth-extension.md` for the design.
+//! `design.md` for the design.
 
 mod auth;
 pub mod config;
@@ -92,6 +92,7 @@ fn create(
 
 /// Factory registration for the Azure Identity Auth extension.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Extension)]
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: AZURE_IDENTITY_AUTH_URN,

@@ -254,7 +254,7 @@ fn create_shape(cfg: &TrafficConfig) -> TrafficShape {
 
     // When signals_per_second is None (uncapped / saturation mode), use a high
     // target so the shape contains enough batches to keep the open-loop sender
-    // busy for a full 1-second run window. We use 1024 × max_batch_size which
+    // busy for a full 1-second run window. We use 1024 x max_batch_size which
     // is large enough for any realistic throughput while remaining bounded for
     // PreGenerated mode memory usage.
     //
@@ -848,7 +848,7 @@ mod tests {
         use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
         use prost::Message;
 
-        // synthetic_generator() has empty entries and rotation — no custom resource attrs.
+        // synthetic_generator() has empty entries and rotation -- no custom resource attrs.
         let mut generator = synthetic_generator();
 
         let batch_1 = generator

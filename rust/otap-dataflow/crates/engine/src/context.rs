@@ -13,6 +13,7 @@ use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
+use data_encoding::BASE32_NOPAD;
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::telemetry::TelemetryAttribute;
 use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
@@ -24,70 +25,47 @@ use otap_df_telemetry::metrics::{
 };
 use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use uuid::Uuid;
 
 /// A shared, immutable mapping from otap_df_config node names
 /// (without index numbers) to their engine-specific pipeline indices.
 pub type NodeNameIndex = Arc<HashMap<ConfigNodeId, EngineNodeId>>;
 
-// Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
-// Choose UUID v7 for better sortability in telemetry signals
-use data_encoding::BASE32_NOPAD;
-use std::borrow::Cow;
-use std::sync::LazyLock;
-use uuid::Uuid;
-
+// Generate a stable, unique identifier per process instance (base32-encoded UUID v7).
 static PROCESS_INSTANCE_ID: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
     let uuid = Uuid::now_v7();
-    let encoded = BASE32_NOPAD.encode(uuid.as_bytes());
-    Cow::Owned(encoded)
+    Cow::Owned(BASE32_NOPAD.encode(uuid.as_bytes()))
 });
 
-// Best-effort host id detection
 fn detect_host_id() -> Option<String> {
-    // Priority 1: HOSTNAME env var
-    if let Ok(h) = std::env::var("HOSTNAME") {
-        if !h.is_empty() {
-            return Some(h);
-        }
+    if let Ok(host) = std::env::var("HOSTNAME")
+        && !host.is_empty()
+    {
+        return Some(host);
     }
-    // Priority 2: /etc/hostname
-    if let Ok(s) = std::fs::read_to_string("/etc/hostname") {
-        let h = s.trim().to_string();
-        if !h.is_empty() {
-            return Some(h);
-        }
-    }
-    None
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|host| host.trim().to_owned())
+        .filter(|host| !host.is_empty())
 }
 
-// Best-effort container id detection (Docker/containerd/k8s) from /proc/self/cgroup
 fn detect_container_id() -> Option<String> {
-    let Ok(cg) = std::fs::read_to_string("/proc/self/cgroup") else {
-        return None;
-    };
-    // Look for 64-hex tokens which commonly represent container IDs
-    for line in cg.lines() {
-        // Format: hierarchy-ID:controller-list:cgroup-path
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    for line in cgroup.lines() {
         let path = line.split(':').nth(2).unwrap_or("");
         for part in path.split('/') {
             let token = part.trim();
-            if token.len() >= 32 && token.len() <= 128 {
-                // Heuristic: mostly hex
-                if token
+            if (32..=128).contains(&token.len())
+                && token
                     .chars()
-                    .all(|c| c.is_ascii_hexdigit() || c == '.' || c == '-' || c == '_')
-                {
-                    // Pick the longest plausible hex-ish token
-                    // Further refine: prefer 64-hex
-                    let hex_only: String =
-                        token.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-                    if hex_only.len() >= 32 {
-                        return Some(token.to_string());
-                    }
-                }
+                    .all(|c| c.is_ascii_hexdigit() || matches!(c, '.' | '-' | '_'))
+                && token.chars().filter(|c| c.is_ascii_hexdigit()).count() >= 32
+            {
+                return Some(token.to_owned());
             }
         }
     }
@@ -96,7 +74,6 @@ fn detect_container_id() -> Option<String> {
 
 static HOST_ID: LazyLock<Cow<'static, str>> =
     LazyLock::new(|| detect_host_id().map_or(Cow::Borrowed(""), Cow::Owned));
-
 static CONTAINER_ID: LazyLock<Cow<'static, str>> =
     LazyLock::new(|| detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned));
 
@@ -142,6 +119,7 @@ pub struct PipelineContext {
     node_urn: NodeUrn,
     node_kind: NodeKind,
     node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
+    admission: crate::admission::AdmissionBinder,
 
     /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
     /// Only the ITR factory reads this; other receivers ignore it.
@@ -171,6 +149,7 @@ pub struct EntityMetricSetRegistrar<'a> {
 
 impl ControllerContext {
     /// Creates a new `ControllerContext`.
+    #[must_use]
     pub fn new(telemetry_registry_handle: TelemetryRegistryHandle) -> Self {
         Self {
             telemetry_registry_handle,
@@ -284,25 +263,23 @@ impl ControllerContext {
             .register_entity(EngineEntityAttributeSet)
     }
 
-    /// Returns the auto-detected process/host resource attributes mapped to
-    /// OpenTelemetry semantic-convention keys. Empty values are omitted.
-    /// Keys: `host.id`, `container.id`, `service.instance.id`.
+    /// Returns auto-detected OpenTelemetry resource semantic-convention attributes.
     #[must_use]
     pub fn resource_attributes(&self) -> Vec<(String, String)> {
-        let mut out = Vec::new();
+        let mut attributes = Vec::new();
         if !self.host_id.is_empty() {
-            out.push(("host.id".to_string(), self.host_id.to_string()));
+            attributes.push(("host.id".to_owned(), self.host_id.to_string()));
         }
         if !self.container_id.is_empty() {
-            out.push(("container.id".to_string(), self.container_id.to_string()));
+            attributes.push(("container.id".to_owned(), self.container_id.to_string()));
         }
         if !self.process_instance_id.is_empty() {
-            out.push((
-                "service.instance.id".to_string(),
+            attributes.push((
+                "service.instance.id".to_owned(),
                 self.process_instance_id.to_string(),
             ));
         }
-        out
+        attributes
     }
 
     /// Returns a handle to the telemetry registry.
@@ -342,6 +319,7 @@ impl PipelineContext {
             node_urn: Default::default(),
             node_kind: Default::default(),
             node_telemetry_attrs: HashMap::new(),
+            admission: crate::admission::AdmissionBinder::none(),
             pipeline_telemetry_attrs: HashMap::new(),
             internal_telemetry: None,
             node_names: Arc::new(HashMap::new()),
@@ -404,6 +382,21 @@ impl PipelineContext {
     #[must_use]
     pub fn memory_pressure_state(&self) -> MemoryPressureState {
         self.controller_context.memory_pressure_state()
+    }
+
+    /// Returns the node's construction-time ingress admission binder.
+    ///
+    /// Participating components must bind exactly once during their factory
+    /// `create` call. The returned local or shared gate is then retained for
+    /// the component's runtime lifetime.
+    #[must_use]
+    pub const fn admission(&self) -> &crate::admission::AdmissionBinder {
+        &self.admission
+    }
+
+    /// Attaches the node's resolved admission binding before factory construction.
+    pub(crate) fn set_admission(&mut self, admission: crate::admission::AdmissionBinder) {
+        self.admission = admission;
     }
 
     /// Sets the shared node-name-to-index mapping for this pipeline context.
@@ -506,8 +499,8 @@ impl PipelineContext {
 
     /// Shared entity-resolution skeleton for the `register_*_metrics` family.
     ///
-    /// Resolves the current node's telemetry scope in priority order — active node
-    /// telemetry handle, then ambient node entity key — and registers the metric set
+    /// Resolves the current node's telemetry scope in priority order -- active node
+    /// telemetry handle, then ambient node entity key -- and registers the metric set
     /// via `for_entity`. When registering against an active node handle, the resulting
     /// metric-set key (obtained through `metric_set_key`) is tracked so the set is
     /// unregistered as part of node cleanup.
@@ -750,6 +743,7 @@ impl PipelineContext {
             node_urn,
             node_kind,
             node_telemetry_attrs,
+            admission: crate::admission::AdmissionBinder::none(),
             internal_telemetry: None,
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
@@ -1004,7 +998,7 @@ impl ExtensionContext {
     /// Registers a metric set for the given entity key.
     ///
     /// Unlike [`PipelineContext::register_metric_set_for_entity`], this does
-    /// not hook into any ambient node telemetry — extension entities own their
+    /// not hook into any ambient node telemetry -- extension entities own their
     /// own lifecycle via the per-variant `EntityTelemetryGuard`.
     #[must_use]
     pub fn register_metric_set_for_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(

@@ -23,6 +23,7 @@ otap-df-pdata = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-pdata-views = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
+otap-df-expohisto = { workspace = true }
 
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -39,6 +40,16 @@ smallvec = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
 
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-resource-detectors = { workspace = true }
+
 [dev-dependencies]
+criterion = { workspace = true }
+temp-env = { workspace = true }
 tempfile = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
+
+[[bench]]
+name = "distribution_record"
+harness = false

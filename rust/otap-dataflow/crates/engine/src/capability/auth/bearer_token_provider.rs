@@ -9,6 +9,11 @@
 //! both the shared and local execution models. Consumers depend only on
 //! the two methods below, never on how a token is produced or refreshed.
 //!
+//! Reading this capability separately from `vendor_bundle` cannot produce an
+//! atomic token-and-attributes pair. Agent-fed consumers requiring that
+//! guarantee must use
+//! [`AgentFedCredentialProvider`](super::agent_fed_credential_provider::AgentFedCredentialProvider).
+//!
 //! The `#[capability]` proc macro expands the trait into:
 //!
 //! - A `pub(crate) mod local` containing the `!Send` `BearerTokenProvider` trait variant
@@ -54,7 +59,7 @@ pub trait BearerTokenProvider {
     /// The fast path reads a cached token; on a cache miss the provider
     /// performs a credential call. A provider that shares its cache and
     /// refresh state across cloned instances can coalesce concurrent
-    /// misses into a single call — but that is a provider implementation
+    /// misses into a single call -- but that is a provider implementation
     /// detail, not a guarantee of this trait. Returns a
     /// [`CapabilityError`] if no valid token can be produced.
     ///
@@ -73,5 +78,17 @@ pub trait BearerTokenProvider {
     /// stream does not carry errors: a failed refresh does not end the
     /// subscription, and the next successful refresh still yields a token
     /// (see [`TokenStream`]).
+    ///
+    /// # Contract
+    ///
+    /// A subscription created *after* a token has already been published
+    /// MUST immediately yield the current token rather than block until the
+    /// next refresh. This lets a consumer subscribe at any point (for
+    /// example after the provider's readiness gate has fired) and obtain a
+    /// usable token without a separate [`get_token`](Self::get_token) call,
+    /// avoiding a race between reading the current token and subscribing to
+    /// updates. A `tokio::sync::watch`-backed implementation satisfies this
+    /// naturally, since a fresh receiver observes the channel's current
+    /// value on its first poll.
     fn token_stream(&self) -> TokenStream;
 }

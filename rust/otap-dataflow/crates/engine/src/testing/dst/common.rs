@@ -162,6 +162,7 @@ pub(super) fn build_manager<PData>(
             flow_metrics: Vec::new(),
         },
         Vec::new(),
+        Vec::new(),
         empty_node_metric_handles(),
         crate::terminal_state::TerminalMetricsDeadline::default(),
     );

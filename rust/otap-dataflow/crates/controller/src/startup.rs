@@ -21,12 +21,10 @@
 //! ```
 
 use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
-use otap_df_config::engine::{
-    HttpAdminSettings, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
-};
+use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::{CoreAllocation, ResourcesPolicy};
+use otap_df_config::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_engine::PipelineFactory;
 use std::fmt::Debug;
@@ -73,7 +71,7 @@ pub fn apply_cli_overrides(
             .resources()
             .cloned()
             .unwrap_or_else(ResourcesPolicy::default);
-        resources.core_allocation = core_allocation;
+        resources.core_allocation = Some(core_allocation);
         engine_cfg.policies.set_resources(resources);
     }
     if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
@@ -90,6 +88,10 @@ pub fn apply_cli_overrides(
 /// ([`OtelDataflowSpec::from_file`]).  This function adds the semantic check
 /// that all referenced components are actually compiled into the binary, and
 /// validates their node/extension-specific config statically.
+///
+/// This per-pipeline helper does not validate node rate-limiter bindings because
+/// it does not receive the effective policy catalog. Use
+/// [`validate_engine_components`] when validating a complete engine config.
 ///
 /// **Scope:** This is *static* validation only -- it checks that config values
 /// can be deserialized into the expected types.  It does **not** detect runtime
@@ -187,6 +189,45 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
     Ok(())
 }
 
+fn validate_rate_limiter_bindings(
+    pipeline_group_id: &PipelineGroupId,
+    pipeline_id: &PipelineId,
+    pipeline_cfg: &PipelineConfig,
+    policies: &ResolvedPolicies,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (node_id, node_cfg) in pipeline_cfg.node_iter() {
+        match node_cfg.rate_limiters.as_deref() {
+            None | Some([]) => {}
+            Some([limiter_name]) => {
+                if !policies.rate_limiters.contains_key(limiter_name) {
+                    return Err(std::io::Error::other(format!(
+                        "Component `{}` in pipeline_group={} pipeline={} node={}: rate limiter binding '{}' does not name an effective limiter",
+                        node_cfg.r#type.as_ref(),
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        node_id.as_ref(),
+                        limiter_name,
+                    ))
+                    .into());
+                }
+            }
+            Some(limiter_names) => {
+                return Err(std::io::Error::other(format!(
+                    "Component `{}` in pipeline_group={} pipeline={} node={}: V1 supports at most one rate limiter binding per node; found {}",
+                    node_cfg.r#type.as_ref(),
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    node_id.as_ref(),
+                    limiter_names.len(),
+                ))
+                .into());
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Validates that every node in every pipeline (including the engine
 /// observability pipeline) references a component URN registered in the
 /// given [`PipelineFactory`].
@@ -198,26 +239,20 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    for (pipeline_group_id, pipeline_group) in &engine_cfg.groups {
-        for (pipeline_id, pipeline_cfg) in &pipeline_group.pipelines {
-            validate_pipeline_components(pipeline_group_id, pipeline_id, pipeline_cfg, factory)?;
-        }
+    for resolved in engine_cfg.resolve().pipelines {
+        validate_pipeline_components(
+            &resolved.pipeline_group_id,
+            &resolved.pipeline_id,
+            &resolved.pipeline,
+            factory,
+        )?;
+        validate_rate_limiter_bindings(
+            &resolved.pipeline_group_id,
+            &resolved.pipeline_id,
+            &resolved.pipeline,
+            &resolved.policies,
+        )?;
     }
-
-    let obs_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-    let obs_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
-    let obs_pipeline_config = engine_cfg
-        .engine
-        .observability
-        .pipeline
-        .clone()
-        .into_pipeline_config();
-    validate_pipeline_components(
-        &obs_group_id,
-        &obs_pipeline_id,
-        &obs_pipeline_config,
-        factory,
-    )?;
 
     Ok(())
 }
@@ -290,7 +325,7 @@ pub fn system_info<PData: 'static + Clone + Debug>(
     let available_memory_gb = sys.available_memory() as f64 / 1_073_741_824.0;
 
     let debug_warning = if cfg!(debug_assertions) {
-        "\n\n⚠️  WARNING: This binary was compiled in debug mode.
+        "\n\n\u{26A0}\u{FE0F}  WARNING: This binary was compiled in debug mode.
    Debug builds are NOT recommended for production, benchmarks, or performance testing.
    Use 'cargo build --release' for optimal performance."
     } else {
@@ -346,6 +381,94 @@ Example configuration files can be found in the configs/ directory.{}",
 mod tests {
     use super::*;
     use otap_df_config::policy::{CoreRange, Policies};
+    use otap_df_config::{PipelineGroupId, PipelineId, node::NodeUserConfig};
+    use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
+    use otap_df_engine::context::PipelineContext;
+    use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::processor::ProcessorWrapper;
+    use otap_df_engine::receiver::ReceiverWrapper;
+    use otap_df_engine::wiring_contract::WiringContract;
+    use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
+    use std::sync::Arc;
+
+    fn test_receiver_create(
+        _pipeline_ctx: PipelineContext,
+        _node: otap_df_engine::node::NodeId,
+        _node_config: Arc<NodeUserConfig>,
+        _receiver_config: &ReceiverConfig,
+        _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+        panic!("test receiver factory should not be constructed")
+    }
+
+    fn test_exporter_create(
+        _pipeline_ctx: PipelineContext,
+        _node: otap_df_engine::node::NodeId,
+        _node_config: Arc<NodeUserConfig>,
+        _exporter_config: &ExporterConfig,
+        _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    ) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+        panic!("test exporter factory should not be constructed")
+    }
+
+    fn test_processor_create(
+        _pipeline_ctx: PipelineContext,
+        _node: otap_df_engine::node::NodeId,
+        _node_config: Arc<NodeUserConfig>,
+        _processor_config: &ProcessorConfig,
+        _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    ) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+        panic!("test processor factory should not be constructed")
+    }
+
+    fn test_factory() -> PipelineFactory<()> {
+        let receiver_factories = Box::leak(Box::new([
+            ReceiverFactory {
+                name: "urn:test:receiver:example",
+                create: test_receiver_create,
+                wiring_contract: WiringContract::UNRESTRICTED,
+                validate_config: otap_df_config::validation::no_config,
+            },
+            ReceiverFactory {
+                name: "urn:otel:receiver:internal_telemetry",
+                create: test_receiver_create,
+                wiring_contract: WiringContract::UNRESTRICTED,
+                validate_config: otap_df_config::validation::no_config,
+            },
+        ]));
+        let processor_factories = Box::leak(Box::new([ProcessorFactory {
+            name: "urn:otel:processor:type_router",
+            create: test_processor_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: otap_df_config::validation::no_config,
+        }]));
+        let exporter_factories = Box::leak(Box::new([
+            ExporterFactory {
+                name: "urn:test:exporter:example",
+                create: test_exporter_create,
+                wiring_contract: WiringContract::UNRESTRICTED,
+                validate_config: otap_df_config::validation::no_config,
+            },
+            ExporterFactory {
+                name: "urn:otel:exporter:console",
+                create: test_exporter_create,
+                wiring_contract: WiringContract::UNRESTRICTED,
+                validate_config: otap_df_config::validation::no_config,
+            },
+            ExporterFactory {
+                name: "urn:otel:exporter:noop",
+                create: test_exporter_create,
+                wiring_contract: WiringContract::UNRESTRICTED,
+                validate_config: otap_df_config::validation::no_config,
+            },
+        ]));
+        PipelineFactory::new(
+            receiver_factories,
+            processor_factories,
+            exporter_factories,
+            &[],
+        )
+    }
 
     fn minimal_engine_yaml() -> &'static str {
         r#"
@@ -368,6 +491,47 @@ groups:
           - from: receiver
             to: exporter
 "#
+    }
+
+    fn rate_limited_engine_yaml(unit: &str, binding: Option<&str>) -> String {
+        let binding = binding
+            .map(|binding| format!("            rate_limiters: {binding}\n"))
+            .unwrap_or_default();
+        format!(
+            r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: auto
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: {unit}
+        pressure: soft
+        token_bucket:
+          allow: 1
+          interval: 1s
+          burst: 1
+engine: {{}}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+{binding}            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#
+        )
     }
 
     #[test]
@@ -436,6 +600,114 @@ extensions:
             "unexpected error: {msg}"
         );
         assert!(msg.contains("not-registered"), "unexpected error: {msg}");
+    }
+
+    /// Scenario: a custom receiver is registered while a rate limiter is configured.
+    /// Guarantees: static component validation accepts the pipeline and leaves admission
+    /// dimension validation to construction-time binding by the participating component.
+    #[test]
+    fn validate_engine_components_defers_rate_dimension_to_binding() {
+        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("messages", None))
+            .expect("rate-limited config should parse");
+        let factory = test_factory();
+
+        validate_engine_components(&cfg, &factory)
+            .expect("registered components should pass static validation");
+    }
+
+    /// Scenario: a receiver binds a limiter name absent from its resolved policy scope.
+    /// Guarantees: startup validation rejects the unknown binding before pipeline construction.
+    #[test]
+    fn validate_engine_components_rejects_unknown_rate_limiter_binding() {
+        let cfg =
+            OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("messages", Some("[missing]")))
+                .expect("rate-limited config should parse");
+
+        let error = validate_engine_components(&cfg, &test_factory())
+            .expect_err("unknown limiter binding must fail static validation");
+        assert!(
+            error
+                .to_string()
+                .contains("rate limiter binding 'missing' does not name an effective limiter")
+        );
+    }
+
+    /// Scenario: a receiver selects more than one limiter in a V1 node binding.
+    /// Guarantees: startup validation rejects unsupported multi-limiter bindings before construction.
+    #[test]
+    fn validate_engine_components_rejects_multiple_rate_limiter_bindings() {
+        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml(
+            "messages",
+            Some("[ingress, other]"),
+        ))
+        .expect("rate-limited config should parse");
+
+        let error = validate_engine_components(&cfg, &test_factory())
+            .expect_err("multiple limiter bindings must fail static validation");
+        assert!(
+            error
+                .to_string()
+                .contains("V1 supports at most one rate limiter binding per node; found 2")
+        );
+    }
+
+    /// Scenario: a receiver explicitly opts out while an inherited limiter is effective.
+    /// Guarantees: startup validation accepts an empty node-level limiter binding.
+    #[test]
+    fn validate_engine_components_accepts_rate_limiter_opt_out() {
+        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("messages", Some("[]")))
+            .expect("rate-limited config should parse");
+
+        validate_engine_components(&cfg, &test_factory())
+            .expect("an explicit empty binding should pass static validation");
+    }
+
+    /// Scenario: a pipeline declares multiple limiters and a receiver explicitly binds one.
+    /// Guarantees: startup validates only the selected limiter instead of forcing every policy on every receiver.
+    #[test]
+    fn validate_engine_components_uses_explicit_receiver_binding() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: auto
+    rate_limiters:
+      bytes:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket: { allow: 1024, interval: 1s, burst: 1024 }
+      records:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: messages
+        pressure: soft
+        token_bucket: { allow: 10, interval: 1s, burst: 10 }
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            rate_limiters: [records]
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let cfg = OtelDataflowSpec::from_yaml(yaml).expect("named binding config should parse");
+        let factory = test_factory();
+
+        validate_engine_components(&cfg, &factory)
+            .expect("only the explicitly selected limiter should be validated");
     }
 
     /// Scenario: the component factory omits the built-in observability components.

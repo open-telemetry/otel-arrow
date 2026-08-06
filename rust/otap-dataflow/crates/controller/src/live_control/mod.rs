@@ -45,9 +45,10 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LivePipelinePlacement, LogicalPipelineRecord, RolloutAction, RolloutCoreProgress,
-    RolloutExecutionError, RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle,
-    RuntimeInstanceRecord, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
+    LivePipelinePlacement, LogicalPipelineRecord, PipelineOperationKind,
+    PipelineOperationReservationState, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
+    RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
+    RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
     TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile,
     is_expired, timestamp_now,
 };
@@ -86,6 +87,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     telemetry_reporting_interval: Duration,
     /// Memory-pressure signal fanout shared with pipeline runtimes.
     memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
+    /// Main controller thread unparked when recovery becomes fatal.
+    controller_thread: thread::Thread,
     /// All mutable live-control state protected by a single mutex.
     state: Mutex<ControllerRuntimeState>,
     /// Wakes global shutdown waiters when runtime instance liveness changes.
@@ -145,11 +148,15 @@ impl<
             engine_tracing_setup,
             telemetry_reporting_interval,
             memory_pressure_tx,
+            controller_thread: thread::current(),
             state: Mutex::new(ControllerRuntimeState {
                 live_config,
                 config_revision: 0,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
+                runtime_recoveries: HashMap::new(),
+                deferred_runtime_recoveries: HashMap::new(),
+                pipeline_operation_reservations: HashMap::new(),
                 pending_instance_exits: HashMap::new(),
                 rollouts: HashMap::new(),
                 active_rollouts: HashMap::new(),
@@ -165,6 +172,8 @@ impl<
                 next_shutdown_id: 0,
                 next_placement_generation: 1,
                 next_thread_id: 1,
+                next_recovery_id: 0,
+                next_pipeline_operation_reservation_id: 0,
                 first_error: None,
                 global_shutdown_requested: false,
                 global_shutdown_coordinators: 0,
@@ -232,13 +241,20 @@ impl<
         })
     }
 
-    /// Checks whether a logical pipeline still has an active rollout or shutdown.
+    /// Checks whether a logical pipeline still has an explicit or recovery owner.
     fn pipeline_has_active_operation_locked(
         state: &ControllerRuntimeState,
         pipeline_key: &PipelineKey,
     ) -> bool {
         state.active_rollouts.contains_key(pipeline_key)
             || state.active_shutdowns.contains_key(pipeline_key)
+            || state
+                .pipeline_operation_reservations
+                .contains_key(pipeline_key)
+            || state
+                .runtime_recoveries
+                .iter()
+                .any(|((key, _), recovery)| key == pipeline_key && recovery.worker_id.is_some())
     }
 
     /// Applies a terminal instance exit to controller state after the instance
@@ -252,11 +268,6 @@ impl<
             instance.lifecycle = RuntimeInstanceLifecycle::Exited(exit.clone());
         }
         state.active_instances = state.active_instances.saturating_sub(1);
-        if let RuntimeInstanceExit::Error(error) = exit {
-            if state.first_error.is_none() {
-                state.first_error = Some(error.message.clone());
-            }
-        }
         let logical_pipeline_key = PipelineKey::new(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
@@ -483,10 +494,8 @@ impl<
         pipeline_id: &str,
         request: ReconfigureRequest,
     ) -> Result<RolloutStatus, ControlPlaneError> {
-        let plan = self
-            .runtime
-            .prepare_rollout_plan(pipeline_group_id, pipeline_id, &request)?;
-        self.runtime.spawn_rollout(plan)
+        self.runtime
+            .request_reconfigure_pipeline(pipeline_group_id, pipeline_id, &request)
     }
 
     fn pipeline_details(

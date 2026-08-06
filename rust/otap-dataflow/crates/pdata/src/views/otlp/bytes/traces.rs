@@ -413,7 +413,7 @@ impl FieldRanges for SpanStatusFieldRanges {
     }
 }
 
-/* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
+/* ----------------------------- ADAPTER ITERATORS ----------------------- */
 
 /// Iterator of ResourceSpans - produces implementation of `ResourceSpans` view from byte array
 /// containing serialized `TracesData` message
@@ -516,7 +516,7 @@ impl<'a> Iterator for SpanLinkIter<'a> {
     }
 }
 
-/* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
+/* ----------------------------- TRAIT IMPLEMENTATIONS ------------------- */
 impl TracesView for RawTraceData<'_> {
     type ResourceSpans<'res>
         = RawResourceSpans<'res>

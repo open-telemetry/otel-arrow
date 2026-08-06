@@ -45,7 +45,7 @@ impl<
 
     /// Forces rollout terminal cleanup when the detached rollout worker panics.
     pub(super) fn handle_rollout_worker_panic(
-        &self,
+        self: &Arc<Self>,
         pipeline_key: &PipelineKey,
         rollout_id: &str,
         thread_name: String,
@@ -475,17 +475,21 @@ impl<
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
     ) -> Result<(), RolloutExecutionError> {
-        let Some(previous) = plan.current_record.as_ref() else {
+        let Some(_previous) = plan.current_record.as_ref() else {
             return Err(RolloutExecutionError::Failed(
                 "internal error: replace rollout missing current record".to_owned(),
             ));
         };
-        let previous_generation = previous.active_generation;
-        for core_id in &plan.current_assigned_cores {
+
+        // The committed active generation is pipeline-wide, but automatic recovery
+        // may have moved individual cores to newer generations. Seed status with
+        // the plan's per-core snapshot so cutover and rollback address the runtime
+        // that was actually serving when this rollout began.
+        for (core_id, generation) in &plan.current_serving_generations {
             self.observed_state_store.set_pipeline_serving_generation(
                 plan.pipeline_key.clone(),
                 *core_id,
-                previous_generation,
+                *generation,
             );
         }
 
@@ -608,23 +612,37 @@ impl<
                 None,
             );
 
-            let old_key = DeployedPipelineKey {
-                pipeline_group_id: plan.pipeline_group_id.clone(),
-                pipeline_id: plan.pipeline_id.clone(),
-                core_id: *core_id,
-                deployment_generation: previous_generation,
-            };
-            if let Err(reason) =
-                self.shutdown_instance(&old_key, plan.drain_timeout_secs, "rolling cutover drain")
+            if let Some(previous_generation) =
+                plan.current_serving_generations.get(core_id).copied()
             {
-                let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
-                return self.rollback_replace_rollout(
-                    plan,
-                    &switched_common_cores,
-                    &activated_added_cores,
-                    &retired_removed_cores,
-                    reason,
-                );
+                // Never derive this key from the pipeline-wide active generation:
+                // this core may be serving a generation created by recovery.
+                let old_key = DeployedPipelineKey {
+                    pipeline_group_id: plan.pipeline_group_id.clone(),
+                    pipeline_id: plan.pipeline_id.clone(),
+                    core_id: *core_id,
+                    deployment_generation: previous_generation,
+                };
+                if let Err(reason) = self.shutdown_instance(
+                    &old_key,
+                    plan.drain_timeout_secs,
+                    "rolling cutover drain",
+                ) {
+                    let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
+                    return self.rollback_replace_rollout(
+                        plan,
+                        &switched_common_cores,
+                        &activated_added_cores,
+                        &retired_removed_cores,
+                        reason,
+                    );
+                }
+                switched_common_cores.push(*core_id);
+            } else {
+                // "Common" describes the requested core allocation, not runtime
+                // liveness. With no serving predecessor, rollback must remove this
+                // candidate just like a newly added core.
+                activated_added_cores.push(*core_id);
             }
 
             self.observed_state_store.set_pipeline_serving_generation(
@@ -632,7 +650,6 @@ impl<
                 *core_id,
                 plan.target_generation,
             );
-            switched_common_cores.push(*core_id);
             self.update_rollout_core_state(
                 &plan.pipeline_key,
                 &plan.rollout.rollout_id,
@@ -651,29 +668,35 @@ impl<
                 None,
             );
 
-            let old_key = DeployedPipelineKey {
-                pipeline_group_id: plan.pipeline_group_id.clone(),
-                pipeline_id: plan.pipeline_id.clone(),
-                core_id: *core_id,
-                deployment_generation: previous_generation,
-            };
-            if let Err(reason) = self.shutdown_instance(
-                &old_key,
-                plan.drain_timeout_secs,
-                "resource policy rollout drain",
-            ) {
-                return self.rollback_replace_rollout(
-                    plan,
-                    &switched_common_cores,
-                    &activated_added_cores,
-                    &retired_removed_cores,
-                    reason,
-                );
+            if let Some(previous_generation) =
+                plan.current_serving_generations.get(core_id).copied()
+            {
+                // A removed core can also be on a recovered generation, so drain
+                // the snapshotted serving instance rather than the committed one.
+                let old_key = DeployedPipelineKey {
+                    pipeline_group_id: plan.pipeline_group_id.clone(),
+                    pipeline_id: plan.pipeline_id.clone(),
+                    core_id: *core_id,
+                    deployment_generation: previous_generation,
+                };
+                if let Err(reason) = self.shutdown_instance(
+                    &old_key,
+                    plan.drain_timeout_secs,
+                    "resource policy rollout drain",
+                ) {
+                    return self.rollback_replace_rollout(
+                        plan,
+                        &switched_common_cores,
+                        &activated_added_cores,
+                        &retired_removed_cores,
+                        reason,
+                    );
+                }
+                retired_removed_cores.push(*core_id);
             }
 
             self.observed_state_store
                 .clear_pipeline_serving_generation(plan.pipeline_key.clone(), *core_id);
-            retired_removed_cores.push(*core_id);
             self.update_rollout_core_state(
                 &plan.pipeline_key,
                 &plan.rollout.rollout_id,
@@ -783,6 +806,40 @@ impl<
         Err(RolloutExecutionError::Failed(failure_reason))
     }
 
+    /// Restores the per-core serving view captured before a replace rollout.
+    fn restore_replace_rollback_serving_generations(
+        &self,
+        plan: &CandidateRolloutPlan,
+        committed_generation: u64,
+    ) {
+        let core_ids = plan
+            .current_assigned_cores
+            .iter()
+            .chain(plan.target_assigned_cores.iter())
+            .copied()
+            .collect::<HashSet<_>>();
+        for core_id in core_ids {
+            match plan.current_serving_generations.get(&core_id).copied() {
+                Some(generation) if generation != committed_generation => {
+                    // Recovery can place one core on a generation newer than the
+                    // pipeline-wide committed config. Keep that override after
+                    // rollback or status aggregation will silently omit the core.
+                    self.observed_state_store.set_pipeline_serving_generation(
+                        plan.pipeline_key.clone(),
+                        core_id,
+                        generation,
+                    );
+                }
+                Some(_) | None => {
+                    // The committed generation is selected without an overlay,
+                    // and target-only cores have no pre-rollout serving runtime.
+                    self.observed_state_store
+                        .clear_pipeline_serving_generation(plan.pipeline_key.clone(), core_id);
+                }
+            }
+        }
+    }
+
     /// Restores the previous serving generation after a replace rollout fails.
     pub(super) fn rollback_replace_rollout(
         self: &Arc<Self>,
@@ -801,8 +858,10 @@ impl<
                 "internal error: replace rollback missing current record".to_owned(),
             ));
         };
-        let previous_generation = previous.active_generation;
 
+        // Rollback must restore the exact pre-rollout generation for each core.
+        // previous.active_generation only identifies the committed config and can
+        // be older than a core-local generation installed by runtime recovery.
         for core_id in retired_removed_cores.iter().rev() {
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -817,6 +876,15 @@ impl<
                     "internal error: replace rollback missing current placement".to_owned(),
                 )
             })?;
+            let previous_generation = plan
+                .current_serving_generations
+                .get(core_id)
+                .copied()
+                .ok_or_else(|| {
+                    RolloutExecutionError::RollbackFailed(format!(
+                        "missing previous serving generation for retired core {core_id}"
+                    ))
+                })?;
             let old_key = self
                 .launch_regular_pipeline_instance(
                     &previous.resolved,
@@ -856,6 +924,15 @@ impl<
                     "internal error: replace rollback missing current placement".to_owned(),
                 )
             })?;
+            let previous_generation = plan
+                .current_serving_generations
+                .get(core_id)
+                .copied()
+                .ok_or_else(|| {
+                    RolloutExecutionError::RollbackFailed(format!(
+                        "missing previous serving generation for switched core {core_id}"
+                    ))
+                })?;
             let old_key = self
                 .launch_regular_pipeline_instance(
                     &previous.resolved,
@@ -890,6 +967,8 @@ impl<
             );
         }
 
+        // This set includes both cores added by the rollout and allocation-common
+        // cores that had no live predecessor when execution began.
         for core_id in activated_added_cores.iter().rev() {
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -917,13 +996,7 @@ impl<
                 None,
             );
         }
-        self.clear_pipeline_serving_generations(
-            &plan.pipeline_key,
-            plan.current_assigned_cores
-                .iter()
-                .chain(plan.target_assigned_cores.iter())
-                .copied(),
-        );
+        self.restore_replace_rollback_serving_generations(plan, previous.active_generation);
         Err(RolloutExecutionError::Failed(failure_reason))
     }
 

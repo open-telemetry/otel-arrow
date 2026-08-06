@@ -169,7 +169,7 @@ impl InternalLogTapHandle {
         } else {
             state.push(RetainedLogEvent { seq, event }, estimated_bytes);
         }
-        // Write lock released here — after the send, preserving seq order.
+        // Write lock released here -- after the send, preserving seq order.
     }
 
     /// Returns a counter that tracks logs dropped before retention.
@@ -534,7 +534,7 @@ mod tests {
         }
 
         assert_eq!(seqs.len(), N, "expected {N} events, got {}", seqs.len());
-        // Seqs must be strictly increasing — no inversions allowed.
+        // Seqs must be strictly increasing -- no inversions allowed.
         for w in seqs.windows(2) {
             assert!(
                 w[0] < w[1],

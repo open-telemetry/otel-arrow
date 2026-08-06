@@ -11,7 +11,7 @@
 //!   annotations to provide metadata (e.g. unit).
 //! * more performant: a collection of metrics is encoded as a struct with fields of counter
 //!   type (no hashmap or other dynamic data structures). Several metrics that share the same
-//!   entity attributes don’t have to define those attributes multiple times.
+//!   entity attributes don't have to define those attributes multiple times.
 //! * compatible with the semantic conventions: the definition of the entities and metrics produced
 //!   by the engine will be available in the semantic convention format.
 //!
@@ -51,6 +51,7 @@ pub mod log_tap;
 pub mod metrics;
 pub mod registry;
 pub mod reporter;
+pub mod resource_detectors;
 pub mod self_tracing;
 pub mod semconv;
 /// Tokio tracing subscriber initialization.
