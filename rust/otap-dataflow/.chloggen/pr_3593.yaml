@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: Replace individual attributes_processor metrics (e.g., deleted_entries, inserted_entries, domains_signal) with new metric sets partitioned by `action` and `domain`"
+issues: [3593, 3530]
+subtext: |
+  Migration: Update dashboards, alerts, and queries to use the new `processor.attributes.modified` and `processor.attributes.transforms` metrics instead of the removed individual attributes_processor metrics.

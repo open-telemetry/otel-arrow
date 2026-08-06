@@ -1,5 +1,7 @@
 version: otel_dataflow/v1
 policies:
+  telemetry:
+    runtime_metrics: normal
   channel_capacity:
     control:
       pipeline: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
@@ -60,6 +62,9 @@ groups:
 
           perf:
             type: "urn:otel:exporter:perf"
+            policies:
+              telemetry:
+                item_counts: true
             config:
               frequency: 500
               cpu_usage: false

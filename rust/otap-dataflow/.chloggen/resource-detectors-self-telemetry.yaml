@@ -1,0 +1,12 @@
+change_type: breaking
+
+component: engine
+
+note: Self-telemetry resource attributes are now produced by configurable ResourceDetectors (`engine.telemetry.detectors`), replacing the bespoke host/container/instance detection.
+
+issues: [3177]
+
+subtext: |
+  Migration: to keep `host.id`/`container.id` on self-telemetry, add the `host`/`container`
+  detectors to `engine.telemetry.detectors`, or set them under `engine.telemetry.resource`.
+  Defaults now run only `service_instance`, `env`, and `service_name`.

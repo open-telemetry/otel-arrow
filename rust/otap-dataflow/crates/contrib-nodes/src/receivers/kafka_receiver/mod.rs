@@ -4,7 +4,7 @@
 /// Implementation of the config settings for the kafka receiver
 pub mod config;
 /// Error types for the Kafka Receiver.
-mod errors;
+pub mod error;
 /// Kafka header extraction and injection into telemetry payloads.
 pub mod headers;
 /// Implementation of the metrics to collect from the kafka receiver

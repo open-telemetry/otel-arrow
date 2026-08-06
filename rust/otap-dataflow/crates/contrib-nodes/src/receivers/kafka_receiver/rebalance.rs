@@ -33,6 +33,15 @@
 //! message simply will not have its offset committed by this consumer; the new
 //! owner re-delivers it. This is safe under at-least-once semantics and mirrors
 //! the rotel Kafka receiver's behavior.
+//!
+//! When such an in-flight message is finally acknowledged, its Ack/Nack carries
+//! the ownership **generation** it was tracked under, and
+//! `classify_offset_feedback` drops it as stale if that generation is older than
+//! the partition's current tracked *or* currently-assigned generation. Both are
+//! consulted: after a revoke/reassign the tracker may still report the old
+//! generation until a record of the new period is tracked, so comparing against
+//! the assigned generation is what rejects a stale ack during that window --
+//! before it can advance the tracker or roll back the committed offset.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -40,7 +49,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "aws")]
 use crate::common::kafka::aws::AwsMskAuthClientContext;
-use otap_df_telemetry::{otel_error, otel_warn};
+use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use rdkafka::ClientContext;
 use rdkafka::client::OAuthToken;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance};
@@ -133,6 +142,12 @@ impl AssignedPartitions {
             .get(topic)
             .and_then(|partitions| partitions.get(&partition).copied())
     }
+
+    /// Total number of partitions currently owned across all topics.
+    #[must_use]
+    pub(crate) fn len(&self) -> usize {
+        self.topics.values().map(HashMap::len).sum()
+    }
 }
 
 /// Shared state bridging the librdkafka rebalance callbacks and the
@@ -161,13 +176,16 @@ pub(crate) struct RebalanceState {
     committable: Mutex<HashMap<(String, i32), i64>>,
     /// When `true`, rebalance handling is skipped (librdkafka owns offsets).
     auto_commit: bool,
+    /// Count of consumer-group rebalance (assign) events observed
+    /// (callback-incremented once per `post_rebalance(Assign)`).
+    rebalances_total: AtomicU64,
     /// Count of partitions **newly acquired** by this consumer across rebalances
     /// (callback-incremented; retained partitions are not re-counted).
-    partitions_assigned: AtomicU64,
+    partition_assignments: AtomicU64,
     /// Count of **genuinely-owned** partitions revoked from this consumer across
     /// rebalances (callback-incremented; a revoke reported for a partition this
     /// consumer did not own is not counted).
-    partitions_revoked: AtomicU64,
+    partition_revocations: AtomicU64,
     /// Count of commit failures during pre-rebalance revoke (callback-incremented).
     rebalance_commit_errors: AtomicU64,
     /// Count of offset commits acknowledged by the broker, observed on the
@@ -183,10 +201,17 @@ pub(crate) struct RebalanceState {
 /// into the receiver's [`MetricSet`](otap_df_telemetry::metrics::MetricSet).
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct RebalanceMetricsDelta {
+    /// Rebalance (assign) events since the last drain.
+    pub(crate) rebalances_total: u64,
     /// Partitions newly acquired since the last drain.
-    pub(crate) partitions_assigned: u64,
+    pub(crate) partition_assignments: u64,
     /// Genuinely-owned partitions revoked since the last drain.
-    pub(crate) partitions_revoked: u64,
+    pub(crate) partition_revocations: u64,
+    /// Current number of partitions owned by this consumer at drain time.
+    ///
+    /// Unlike the other fields (which are counter deltas), this is a
+    /// point-in-time snapshot used to drive the `partitions_assigned` gauge.
+    pub(crate) partitions_owned: u64,
     /// Commit failures during revoke since the last drain.
     pub(crate) rebalance_commit_errors: u64,
     /// Broker-acknowledged offset commits since the last drain.
@@ -196,11 +221,17 @@ pub(crate) struct RebalanceMetricsDelta {
 }
 
 impl RebalanceMetricsDelta {
-    /// Returns `true` if every counter is zero (nothing to report).
+    /// Returns `true` if there is nothing to report.
+    ///
+    /// `partitions_owned` is a gauge snapshot, not a counter delta, so it is
+    /// deliberately excluded here: the receive loop folds the gauge only when a
+    /// rebalance actually changed the assignment (i.e. when one of the counter
+    /// deltas is non-zero), avoiding a redundant gauge write on every idle tick.
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
-        self.partitions_assigned == 0
-            && self.partitions_revoked == 0
+        self.rebalances_total == 0
+            && self.partition_assignments == 0
+            && self.partition_revocations == 0
             && self.rebalance_commit_errors == 0
             && self.offset_commits == 0
             && self.offset_commit_errors == 0
@@ -219,8 +250,9 @@ impl RebalanceState {
             revoked: Mutex::new(Vec::new()),
             committable: Mutex::new(HashMap::new()),
             auto_commit,
-            partitions_assigned: AtomicU64::new(0),
-            partitions_revoked: AtomicU64::new(0),
+            rebalances_total: AtomicU64::new(0),
+            partition_assignments: AtomicU64::new(0),
+            partition_revocations: AtomicU64::new(0),
             rebalance_commit_errors: AtomicU64::new(0),
             offset_commits: AtomicU64::new(0),
             offset_commit_errors: AtomicU64::new(0),
@@ -285,10 +317,15 @@ impl RebalanceState {
     }
 
     /// Drain accumulated rebalance metric counters into a delta.
+    ///
+    /// The counter fields are swapped to zero; `partitions_owned` is a
+    /// point-in-time read of the current assignment size (the gauge source).
     pub(crate) fn drain_metrics(&self) -> RebalanceMetricsDelta {
         RebalanceMetricsDelta {
-            partitions_assigned: self.partitions_assigned.swap(0, Ordering::Relaxed),
-            partitions_revoked: self.partitions_revoked.swap(0, Ordering::Relaxed),
+            rebalances_total: self.rebalances_total.swap(0, Ordering::Relaxed),
+            partition_assignments: self.partition_assignments.swap(0, Ordering::Relaxed),
+            partition_revocations: self.partition_revocations.swap(0, Ordering::Relaxed),
+            partitions_owned: self.lock_assigned().len() as u64,
             rebalance_commit_errors: self.rebalance_commit_errors.swap(0, Ordering::Relaxed),
             offset_commits: self.offset_commits.swap(0, Ordering::Relaxed),
             offset_commit_errors: self.offset_commit_errors.swap(0, Ordering::Relaxed),
@@ -404,7 +441,8 @@ impl RebalanceState {
         // partitions that were genuinely owned for the revoked metric, mirroring
         // the newly-added count in `set_assignment`.
         let mut revoked_tagged = Vec::with_capacity(revoked.len());
-        let mut owned_revoked = 0u64;
+        let mut revoked_list = PartitionListFmt::default();
+        let owned_after;
         {
             let mut assigned = self.lock_assigned();
             for (topic, partition) in &revoked {
@@ -412,7 +450,7 @@ impl RebalanceState {
                 // partition wasn't actually owned).
                 let generation = assigned.generation(topic, *partition).unwrap_or(0);
                 if assigned.remove_partition(topic, *partition) {
-                    owned_revoked += 1;
+                    revoked_list.append(topic, *partition);
                 }
                 revoked_tagged.push(RevokedPartition {
                     topic: topic.clone(),
@@ -420,21 +458,38 @@ impl RebalanceState {
                     generation,
                 });
             }
+            owned_after = assigned.len();
         }
+        let owned_revoked = revoked_list.count();
         {
             let mut revoked_queue = lock_ignore_poison(&self.revoked);
             revoked_queue.extend(revoked_tagged);
         }
 
         let _ = self
-            .partitions_revoked
+            .partition_revocations
             .fetch_add(owned_revoked, Ordering::Relaxed);
+
+        // Structured observability: list the genuinely-owned revoked partition
+        // IDs.
+        if owned_revoked > 0 {
+            otel_info!(
+                "kafka.rebalance.partitions_revoked",
+                partitions = %revoked_list.as_str(),
+                count = owned_revoked,
+                listed_count = revoked_list.listed_count(),
+                truncated = revoked_list.truncated(),
+            );
+            if owned_after == 0 {
+                otel_info!("kafka.assignment.became_empty");
+            }
+        }
     }
 
     /// Replace the assigned set with the *complete* assignment `full`.
     ///
     /// `full` must be the consumer's entire current assignment, not a rebalance
-    /// delta. The `partitions_assigned` metric is incremented only by the number
+    /// delta. The `partition_assignments` metric is incremented only by the number
     /// of partitions that are newly present (not previously owned), so
     /// cooperative-sticky rebalances that retain partitions don't re-count them.
     ///
@@ -445,16 +500,21 @@ impl RebalanceState {
     /// continuous ownership all share one generation. A partition reacquired
     /// after a revocation therefore gets a strictly greater generation than the
     /// revocation queued for its prior ownership period.
+    ///
+    /// Emits the `kafka.rebalance.partitions_assigned` /
+    /// `kafka.assignment.became_non_empty` observability events for the
+    /// newly-acquired partitions before returning.
     fn set_assignment(&self, full: &TopicPartitionList) {
-        let full_partitions = topic_partitions(full);
+        let elements = full.elements();
         let mut assigned = self.lock_assigned();
+        let owned_before = assigned.len();
 
-        let mut newly_added = 0u64;
         // A single generation shared by every partition acquired in this
         // rebalance, allocated lazily on the first newly-acquired partition.
         let mut rebalance_generation: Option<u64> = None;
         // Rebuild the owned set: carry over the generation for retained partitions,
-        // allocate a fresh generation for newly acquired ones.
+        // allocate a fresh generation for newly acquired ones, and build the
+        // observability log line inline from the still-borrowed topic names.
         //
         // Ordering dependency: librdkafka runs `pre_rebalance(Revoke)` (which
         // removes revoked partitions from the assigned set) *before*
@@ -462,22 +522,41 @@ impl RebalanceState {
         // and reassigned to this consumer is absent from the set at this point
         // and correctly receives a fresh, strictly-greater generation.
         let mut next = AssignedPartitions::new();
-        for (topic, partition) in &full_partitions {
-            match assigned.generation(topic, *partition) {
-                Some(existing) => next.add_partition(topic, *partition, existing),
+        let mut acquired_list = PartitionListFmt::default();
+        for elem in &elements {
+            let topic = elem.topic();
+            let partition = elem.partition();
+            match assigned.generation(topic, partition) {
+                Some(existing) => next.add_partition(topic, partition, existing),
                 None => {
-                    newly_added += 1;
+                    acquired_list.append(topic, partition);
                     let generation =
                         *rebalance_generation.get_or_insert_with(|| self.next_generation());
-                    next.add_partition(topic, *partition, generation);
+                    next.add_partition(topic, partition, generation);
                 }
             }
         }
         *assigned = next;
+        // Drop the assignment lock before logging.
+        drop(assigned);
 
+        let newly_acquired = acquired_list.count();
         let _ = self
-            .partitions_assigned
-            .fetch_add(newly_added, Ordering::Relaxed);
+            .partition_assignments
+            .fetch_add(newly_acquired, Ordering::Relaxed);
+
+        if newly_acquired > 0 {
+            otel_info!(
+                "kafka.rebalance.partitions_assigned",
+                partitions = %acquired_list.as_str(),
+                count = newly_acquired,
+                listed_count = acquired_list.listed_count(),
+                truncated = acquired_list.truncated(),
+            );
+            if owned_before == 0 {
+                otel_info!("kafka.assignment.became_non_empty");
+            }
+        }
     }
 
     /// Merge a rebalance **delta** into the current assignment without removing
@@ -492,22 +571,49 @@ impl RebalanceState {
     /// delta rather than the full set. All partitions newly added in this call
     /// share a single fresh ownership generation (allocated lazily, at most once
     /// per call); already-owned partitions keep theirs.
+    ///
+    /// Emits the same observability events as
+    /// [`set_assignment`](Self::set_assignment) on the fallback path
     fn merge_assignment(&self, delta: &TopicPartitionList) {
-        let delta_partitions = topic_partitions(delta);
+        let elements = delta.elements();
         let mut assigned = self.lock_assigned();
-        let mut newly_added = 0u64;
+        let owned_before = assigned.len();
         let mut rebalance_generation: Option<u64> = None;
-        for (topic, partition) in &delta_partitions {
-            if !assigned.contains(topic, *partition) {
-                newly_added += 1;
+        // Bounded log buffer for the `topic-partition` list, built inline (see
+        // `set_assignment`).
+        let mut acquired_list = PartitionListFmt::default();
+        for elem in &elements {
+            let topic = elem.topic();
+            let partition = elem.partition();
+            if !assigned.contains(topic, partition) {
+                acquired_list.append(topic, partition);
                 let generation =
                     *rebalance_generation.get_or_insert_with(|| self.next_generation());
-                assigned.add_partition(topic, *partition, generation);
+                assigned.add_partition(topic, partition, generation);
             }
         }
+        // Drop the assignment lock before logging.
+        drop(assigned);
+
+        let newly_acquired = acquired_list.count();
         let _ = self
-            .partitions_assigned
-            .fetch_add(newly_added, Ordering::Relaxed);
+            .partition_assignments
+            .fetch_add(newly_acquired, Ordering::Relaxed);
+
+        if newly_acquired > 0 {
+            otel_info!(
+                "kafka.rebalance.partitions_assigned",
+                partitions = %acquired_list.as_str(),
+                count = newly_acquired,
+                listed_count = acquired_list.listed_count(),
+                truncated = acquired_list.truncated(),
+            );
+            // See `set_assignment`: an assignment-size transition to non-empty,
+            // not a consumer-group join.
+            if owned_before == 0 {
+                otel_info!("kafka.assignment.became_non_empty");
+            }
+        }
     }
 
     /// Allocate the next ownership generation.
@@ -543,6 +649,12 @@ impl RebalanceState {
         base_consumer: &BaseConsumer<C>,
         tpl: &TopicPartitionList,
     ) {
+        // Count the rebalance (assign) event regardless of how the assignment is
+        // resolved below. The assignment handlers emit the per-partition
+        // observability events themselves (while their borrowed topic names are
+        // still live), so no partition data is threaded back here.
+        let _ = self.rebalances_total.fetch_add(1, Ordering::Relaxed);
+
         match base_consumer.assignment() {
             Ok(full) => self.set_assignment(&full),
             Err(e) => {
@@ -565,6 +677,62 @@ fn lock_ignore_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Maximum number of `topic-partition` listed in a single rebalance
+/// observability event.
+const MAX_LISTED_PARTITIONS: u64 = 64;
+
+#[derive(Debug, Default)]
+struct PartitionListFmt {
+    buf: String,
+    count: u64,
+    listed: u64,
+    truncated: bool,
+}
+
+impl PartitionListFmt {
+    fn append(&mut self, topic: &str, partition: i32) {
+        self.count += 1;
+
+        // Once truncated the trailing "..." is already present; keep counting only.
+        if self.truncated {
+            return;
+        }
+
+        // Entry cap: append a single trailing "..." and stop updating buf.
+        if self.listed >= MAX_LISTED_PARTITIONS {
+            self.truncated = true;
+            if !self.buf.is_empty() {
+                self.buf.push(',');
+            }
+            self.buf.push_str("...");
+            return;
+        }
+
+        use std::fmt::Write as _;
+        if !self.buf.is_empty() {
+            self.buf.push(',');
+        }
+        let _ = write!(self.buf, "{topic}:{partition}");
+        self.listed += 1;
+    }
+
+    fn count(&self) -> u64 {
+        self.count
+    }
+
+    fn listed_count(&self) -> u64 {
+        self.listed
+    }
+
+    fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    fn as_str(&self) -> &str {
+        &self.buf
+    }
 }
 
 /// Collect `(topic, partition)` pairs from a [`TopicPartitionList`].
@@ -947,7 +1115,7 @@ mod tests {
         assert!(state.current_generation("traces", 1) > g0);
 
         // Only the newly-added partition is counted.
-        assert_eq!(state.drain_metrics().partitions_assigned, 1);
+        assert_eq!(state.drain_metrics().partition_assignments, 1);
     }
 
     #[test]
@@ -963,7 +1131,7 @@ mod tests {
         // Merging a partition we already own changes nothing.
         state.merge_assignment(&initial);
         assert_eq!(state.current_generation("traces", 0), g0);
-        assert_eq!(state.drain_metrics().partitions_assigned, 0);
+        assert_eq!(state.drain_metrics().partition_assignments, 0);
     }
 
     #[test]
@@ -1007,7 +1175,7 @@ mod tests {
 
         // 2 (initial) + 1 (metrics-0 is newly added).
         let delta = state.drain_metrics();
-        assert_eq!(delta.partitions_assigned, 3);
+        assert_eq!(delta.partition_assignments, 3);
     }
 
     #[test]
@@ -1038,7 +1206,175 @@ mod tests {
 
         // Only partition 2 is newly added on the second assignment: 2 + 1.
         let delta = state.drain_metrics();
-        assert_eq!(delta.partitions_assigned, 3);
+        assert_eq!(delta.partition_assignments, 3);
+    }
+
+    /// Scenario: a full assignment is applied via `handle_assign`'s
+    /// `set_assignment` and then drained.
+    /// Guarantees: `partitions_owned` reports the current assignment size (a
+    /// gauge snapshot) even though it is delivered alongside counter deltas, so
+    /// the receiver's `partitions_assigned` gauge tracks live ownership.
+    #[test]
+    fn drain_metrics_reports_current_owned_count() {
+        let state = RebalanceState::new(false);
+
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        let _ = tpl.add_partition("traces", 1);
+        state.set_assignment(&tpl);
+
+        assert_eq!(state.drain_metrics().partitions_owned, 2);
+
+        // A subsequent full assignment that shrinks ownership is reflected.
+        let mut smaller = TopicPartitionList::new();
+        let _ = smaller.add_partition("traces", 0);
+        state.set_assignment(&smaller);
+        assert_eq!(state.drain_metrics().partitions_owned, 1);
+    }
+
+    /// Scenario: `set_assignment` counts only genuinely-new partitions while
+    /// retaining previously-owned ones.
+    /// Guarantees: the `partition_assignments` counter is bumped solely for
+    /// newly-acquired partitions (retained ones excluded) and current ownership
+    /// reflects the full set, so the metric never double-counts a retained
+    /// partition across cooperative rebalances.
+    #[test]
+    fn set_assignment_counts_only_newly_acquired_partitions() {
+        let state = RebalanceState::new(false);
+
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        state.set_assignment(&tpl);
+        // First assignment acquires one partition.
+        assert_eq!(state.drain_metrics().partition_assignments, 1);
+        assert!(state.is_assigned("traces", 0));
+
+        // Retaining 0 and gaining 1: only 1 is newly acquired.
+        let mut tpl2 = TopicPartitionList::new();
+        let _ = tpl2.add_partition("traces", 0);
+        let _ = tpl2.add_partition("traces", 1);
+        state.set_assignment(&tpl2);
+        assert_eq!(state.drain_metrics().partition_assignments, 1);
+        assert!(state.is_assigned("traces", 0));
+        assert!(state.is_assigned("traces", 1));
+    }
+
+    /// Scenario: each `handle_assign`-driven assignment increments the rebalance
+    /// event counter once.
+    /// Guarantees: `rebalances_total` counts assign events (not partitions), so
+    /// operators can distinguish rebalance frequency from partition churn.
+    #[test]
+    fn rebalances_total_counts_assign_events() {
+        let state = RebalanceState::new(false);
+        assert_eq!(state.drain_metrics().rebalances_total, 0);
+
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        // set_assignment alone does not bump the event counter; handle_assign
+        // does. Exercise the counter directly via the shared atomic path by
+        // simulating two assign events.
+        let _ = state.rebalances_total.fetch_add(1, Ordering::Relaxed);
+        state.set_assignment(&tpl);
+        let _ = state.rebalances_total.fetch_add(1, Ordering::Relaxed);
+
+        assert_eq!(state.drain_metrics().rebalances_total, 2);
+        assert_eq!(state.drain_metrics().rebalances_total, 0, "drain resets");
+    }
+
+    /// Scenario: partitions are revoked down to an empty assignment.
+    /// Guarantees: `AssignedPartitions::len` and the drained `partitions_owned`
+    /// snapshot both reach zero, which is the signal the receiver uses to emit
+    /// the `kafka.assignment.became_empty` event.
+    #[test]
+    fn owned_count_reaches_zero_after_full_revocation() {
+        let state = RebalanceState::new(false);
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        state.set_assignment(&tpl);
+        assert_eq!(state.lock_assigned().len(), 1);
+
+        // Simulate the revoke bookkeeping dropping the only owned partition.
+        {
+            let mut assigned = state.lock_assigned();
+            assert!(assigned.remove_partition("traces", 0));
+            assert_eq!(assigned.len(), 0);
+        }
+        assert_eq!(state.drain_metrics().partitions_owned, 0);
+    }
+
+    /// Scenario: partition tokens are appended to a structured-log buffer.
+    /// Guarantees: `PartitionListFmt` eagerly builds a stable, compact,
+    /// comma-separated `topic-partition` string (no leading/trailing comma, no
+    /// truncation marker when nothing was dropped) so assignment/revocation logs
+    /// are human- and machine-readable, and reports an accurate un-truncated
+    /// count/listed_count.
+    #[test]
+    fn append_partition_builds_comma_separated_list() {
+        let mut fmt = PartitionListFmt::default();
+        // An empty buffer is the empty string.
+        assert_eq!(fmt.as_str(), "");
+        assert_eq!(fmt.count(), 0);
+        fmt.append("traces", 0);
+        fmt.append("traces", 1);
+        fmt.append("metrics", 3);
+        assert_eq!(fmt.as_str(), "traces:0,traces:1,metrics:3");
+        assert_eq!(fmt.count(), 3);
+        assert_eq!(fmt.listed_count(), 3);
+        // Nothing was dropped, so no truncation marker is present.
+        assert!(!fmt.truncated());
+        assert!(!fmt.as_str().ends_with("..."));
+    }
+
+    /// Scenario: more `topic-partition` tokens are appended than the entry cap
+    /// `MAX_LISTED_PARTITIONS` permits.
+    /// Guarantees: the rendered list is capped at `MAX_LISTED_PARTITIONS`
+    /// tokens, a single trailing `...` marker signals the drop, `truncated()`
+    /// flips to `true`, `listed_count()` equals the cap, and `count()` still
+    /// reports the full total -- so a huge rebalance never emits an unbounded log
+    /// line yet the true magnitude is preserved.
+    #[test]
+    fn partition_list_fmt_truncates_beyond_cap() {
+        let mut fmt = PartitionListFmt::default();
+        let total = MAX_LISTED_PARTITIONS + 10;
+        for partition in 0..total {
+            fmt.append("traces", partition as i32);
+        }
+        assert_eq!(fmt.count(), total);
+        assert_eq!(fmt.listed_count(), MAX_LISTED_PARTITIONS);
+        assert!(fmt.truncated());
+        let rendered = fmt.as_str();
+        // Truncation appends exactly one `...` marker.
+        assert!(rendered.ends_with("..."), "rendered = {rendered}");
+        assert_eq!(rendered.matches("...").count(), 1, "exactly one marker");
+        // The rendered list contains exactly `MAX_LISTED_PARTITIONS` tokens plus
+        // the marker: one comma between each of the cap tokens and one before
+        // the marker == `MAX_LISTED_PARTITIONS` commas.
+        let commas = rendered.matches(',').count() as u64;
+        assert_eq!(commas, MAX_LISTED_PARTITIONS);
+        // The last listed token is the one at index `MAX_LISTED_PARTITIONS - 1`;
+        // nothing past the cap leaks in.
+        assert!(rendered.contains(&format!("traces:{}", MAX_LISTED_PARTITIONS - 1)));
+        assert!(!rendered.contains(&format!("traces:{MAX_LISTED_PARTITIONS}")));
+    }
+
+    /// Scenario: exactly the cap number of tokens are appended.
+    /// Guarantees: a list at the cap boundary is fully rendered with no trailing
+    /// `...` marker and `truncated()` stays `false`, so the marker has no
+    /// off-by-one at the boundary.
+    #[test]
+    fn partition_list_fmt_at_cap_is_not_truncated() {
+        let mut fmt = PartitionListFmt::default();
+        for partition in 0..MAX_LISTED_PARTITIONS {
+            fmt.append("traces", partition as i32);
+        }
+        assert_eq!(fmt.count(), MAX_LISTED_PARTITIONS);
+        assert_eq!(fmt.listed_count(), MAX_LISTED_PARTITIONS);
+        assert!(!fmt.truncated());
+        let rendered = fmt.as_str();
+        assert!(!rendered.ends_with("..."), "rendered = {rendered}");
+        // Exactly `MAX_LISTED_PARTITIONS` tokens => one fewer comma.
+        let commas = rendered.matches(',').count() as u64;
+        assert_eq!(commas, MAX_LISTED_PARTITIONS - 1);
     }
 
     #[test]

@@ -91,7 +91,7 @@ pub(super) fn metric_value_string(value: &telemetry::MetricValue) -> String {
     match value {
         telemetry::MetricValue::U64(value) => value.to_string(),
         telemetry::MetricValue::F64(value) => value.to_string(),
-        telemetry::MetricValue::Mmsc(value) => format!(
+        telemetry::MetricValue::Distribution(value) => format!(
             "min={} max={} sum={} count={}",
             value.min, value.max, value.sum, value.count
         ),
