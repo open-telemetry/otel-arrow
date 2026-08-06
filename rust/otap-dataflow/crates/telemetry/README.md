@@ -92,11 +92,13 @@ reconciliation applies changes to this field to existing tracing subscribers,
 so an OpAMP or admin control plane can temporarily increase verbosity without
 restarting the engine. Failed reconciliation preserves the active filter.
 
-The `RUST_LOG` environment variable remains a process-level override. When it
-is set, it takes precedence over both startup and reconciled `logs.level`
-values.
+At startup, a valid `RUST_LOG` environment variable takes precedence over
+`logs.level`. After startup, a successful full-engine reconciliation makes the
+reconciled `logs.level` authoritative and replaces the environment-derived
+filter. This lets an OpAMP or admin control plane reliably change verbosity
+even when the process was launched with `RUST_LOG`.
 
-### Limitation: span directives are not reloadable
+### Limitation: active span state is not reconstructed
 
 `EnvFilter` supports span-scoped directives such as
 `warn,[pipeline_thread]=debug`, which raise verbosity only while a matching
@@ -107,10 +109,11 @@ are already entered.
 Reconciliation installs a newly built `EnvFilter` into each live dispatcher.
 `EnvFilter` tracks span scopes through `on_new_span` and `on_enter`, so a
 replacement filter has no record of spans entered before it was installed and
-never pushes them onto its scope stack. Engine threads enter
-`pipeline_thread` once for the lifetime of the thread, so a reconciled span
-directive targeting it has no effect until the engine restarts. Only the
-non-span part of the reconciled `logs.level` takes effect.
+never pushes them onto its scope stack. A reconciled span directive applies to
+matching spans created after the update, including spans created by replacement
+pipeline threads. A long-lived `pipeline_thread` span that was already entered
+continues with its previous behavior until that pipeline thread is recreated.
+The non-span part of the reconciled `logs.level` takes effect immediately.
 
 There are four aspects that can be configured:
 

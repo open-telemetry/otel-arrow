@@ -25,10 +25,7 @@ pub struct RuntimeLogFilterLayer {
     filter: Arc<ArcSwap<EnvFilter>>,
 }
 
-/// Creates an `EnvFilter` from `RUST_LOG`, falling back to `level`.
-///
-/// `RUST_LOG` remains an explicit process-level override when runtime
-/// configuration updates are applied.
+/// Creates the startup `EnvFilter` from `RUST_LOG`, falling back to `level`.
 #[must_use]
 pub fn create_env_filter(level: &LogLevel) -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -110,7 +107,8 @@ impl RuntimeLogFilterHandle {
         if self.shared.configured_level.load().as_ref() == level {
             return;
         }
-        let filter = create_env_filter(level);
+        let filter =
+            EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use");
         let mut layers = self
             .shared
             .layers
@@ -307,10 +305,10 @@ mod tests {
         });
     }
 
-    /// Scenario: RUST_LOG is set while runtime configuration requests a more verbose level.
-    /// Guarantees: runtime updates retain the process-level RUST_LOG override.
+    /// Scenario: RUST_LOG sets the startup filter before runtime configuration changes.
+    /// Guarantees: a reconciled logs.level replaces the startup environment filter.
     #[test]
-    fn rust_log_override_takes_precedence_over_runtime_update() {
+    fn runtime_update_overrides_rust_log_startup_filter() {
         crate::with_rust_log(Some("error"), || {
             let count = Arc::new(AtomicUsize::new(0));
             let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
@@ -319,12 +317,14 @@ mod tests {
                 .with(CountingLayer(Arc::clone(&count)));
 
             tracing::subscriber::with_default(subscriber, || {
+                tracing::info!("RUST_LOG blocks this startup event");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 0);
+
                 handle.apply(&level("info"));
-                tracing::info!("runtime level must not override RUST_LOG");
-                tracing::error!("RUST_LOG permits this event");
+                tracing::info!("reconciled logs.level permits this event");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 1);
             });
 
-            assert_eq!(count.load(Ordering::SeqCst), 1);
             assert_eq!(handle.configured_level().as_str(), "info");
         });
     }

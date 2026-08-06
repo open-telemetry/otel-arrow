@@ -21,7 +21,8 @@ pub struct LogsConfig {
     /// specified, the default is `"info,h2=off,hyper=off"` which silences known
     /// noisy HTTP dependencies.
     ///
-    /// The `RUST_LOG` environment variable, if set, takes precedence over this field.
+    /// At startup, a valid `RUST_LOG` environment variable takes precedence over this field.
+    /// A subsequent successful full-engine reconciliation makes this field authoritative.
     ///
     /// Successful full-engine reconciliation applies changes to this field to running
     /// subscribers without restarting the engine. Reconciled span-scoped directives apply
@@ -65,6 +66,9 @@ pub struct InternalLogTapConfig {
 /// See the [`EnvFilter` directives documentation][env-filter] for the full syntax.
 ///
 /// Defaults to `"info,h2=off,hyper=off"`.
+///
+/// At startup, a valid `RUST_LOG` environment variable takes precedence over this value.
+/// A subsequent successful full-engine reconciliation makes this value authoritative.
 ///
 /// Successful full-engine reconciliation applies changes to this value to running
 /// subscribers without restarting the engine. Reconciled span-scoped directives apply
