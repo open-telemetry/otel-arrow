@@ -147,12 +147,13 @@ extensions is a future enhancement).
    - not authenticated -> `Deny(InvalidCredential)` with the API server's
      message as log-only detail;
    - request failure / missing status -> `Err` (undetermined; not cached).
-5. **Admission** (only when authenticated): the entry for the audience the API
-   server *confirmed* is selected; its allow-list / audience-only admission is
-   decided in-process, while RBAC admission issues a second API call
-   (`SubjectAccessReview`). A token whose confirmed audience has no entry is
-   `Deny(NotPermitted)`; an RBAC request failure is `Err` (undetermined; not
-   cached).
+5. **Admission** (only when authenticated): every configured entry whose
+   audience the API server *confirmed* must admit the identity (a logical AND,
+   failing closed on the first denial); each entry's allow-list / audience-only
+   admission is decided in-process, while RBAC admission issues a second API call
+   (`SubjectAccessReview`). A token whose confirmed audiences include none that
+   are configured is `Deny(NotPermitted)`; an RBAC request failure is `Err`
+   (undetermined; not cached).
 6. The reached decision (allow or deny) is cached and returned.
 
 No lock is held across the API-server awaits; the cache uses short
@@ -171,13 +172,16 @@ matched one.
 
 A token can be confirmed for **several** configured audiences at once (a
 projected token minted for multiple audiences; `TokenReview` returns the
-intersection, whose order Kubernetes does not specify). Admission requires an
-**unambiguous single match**: exactly one confirmed audience must be configured.
-If two or more configured audiences match, the request is denied
-(`NotPermitted`, "ambiguous policy") rather than nondeterministically applying
-one entry's policy -- so a token valid for two tenants is never silently admitted
-under whichever policy happens to sort first. A confirmed audience that is not
-configured is likewise denied (`NotPermitted`, "token audience is not bound").
+intersection, whose order Kubernetes does not specify). Admission then requires
+**every** matched audience's policy to admit (a logical AND), failing closed on
+the first denial. This keeps cross-tenant isolation intact -- a token that also
+carries a laxer audience can never bypass a stricter audience's policy -- while
+still admitting a token legitimately valid for multiple tenants when each
+tenant's policy accepts it. The emitted identity's `aud` claim then lists every
+audience the token was admitted for (multi-valued when more than one). A
+confirmed audience that is not configured is ignored; if **no** confirmed
+audience is configured, the request is denied (`NotPermitted`, "token audience
+is not bound").
 
 Within an entry, admission uses exactly one strategy (the two fields are
 mutually exclusive):

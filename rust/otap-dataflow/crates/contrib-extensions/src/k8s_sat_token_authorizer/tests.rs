@@ -6,7 +6,9 @@
 use std::time::{Duration, Instant};
 
 use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::capability::auth::{AuthzDecision, BearerToken, DenyReason};
+use otap_df_engine::capability::auth::{
+    AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason,
+};
 use otap_df_engine::local::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as LocalBearerTokenAuthorizer;
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
 
@@ -534,13 +536,13 @@ fn two_audience_core() -> Core {
 }
 
 /// Scenario: `TokenReview` confirms exactly one configured audience.
-/// Guarantees: that audience is selected deterministically.
+/// Guarantees: that audience is returned as the sole bound audience.
 #[test]
 fn match_audience_selects_single_bound() {
     let core = two_audience_core();
     assert_eq!(
-        core.match_audience_for_test(&["aud-tenant-a".to_string()]),
-        Ok("aud-tenant-a".to_string())
+        core.match_audiences_for_test(&["aud-tenant-a".to_string()]),
+        Ok(vec!["aud-tenant-a".to_string()])
     );
 }
 
@@ -551,7 +553,7 @@ fn match_audience_selects_single_bound() {
 #[test]
 fn match_audience_denies_unbound() {
     let core = two_audience_core();
-    let result = core.match_audience_for_test(&["aud-unconfigured".to_string()]);
+    let result = core.match_audiences_for_test(&["aud-unconfigured".to_string()]);
     assert!(matches!(
         result,
         Err(AuthzDecision::Deny {
@@ -564,41 +566,125 @@ fn match_audience_denies_unbound() {
 /// Scenario: a single token is confirmed for TWO configured audiences whose
 /// policies differ (the multi-audience case; `status.audiences` order is
 /// unspecified by Kubernetes).
-/// Guarantees: admission fails closed with `NotPermitted` rather than
-/// nondeterministically applying one tenant's policy -- preserving cross-tenant
-/// isolation.
+/// Guarantees: both bound audiences are returned in a stable, order-independent
+/// (sorted) set, so admission can require every matched audience's policy and
+/// the identity can list them all -- rather than picking one nondeterministically.
 #[test]
-fn match_audience_denies_ambiguous_multi_bound() {
+fn match_audience_returns_all_bound_sorted() {
     let core = two_audience_core();
-    // Both orders must deny identically (no dependence on response ordering).
+    // Both orders must yield the same sorted set (no dependence on response
+    // ordering).
     for confirmed in [
         vec!["aud-tenant-a".to_string(), "aud-tenant-b".to_string()],
         vec!["aud-tenant-b".to_string(), "aud-tenant-a".to_string()],
     ] {
-        let result = core.match_audience_for_test(&confirmed);
-        assert!(
-            matches!(
-                result,
-                Err(AuthzDecision::Deny {
-                    reason: DenyReason::NotPermitted,
-                    ..
-                })
-            ),
-            "a token confirmed for two bound audiences must fail closed, got {result:?}"
+        assert_eq!(
+            core.match_audiences_for_test(&confirmed),
+            Ok(vec!["aud-tenant-a".to_string(), "aud-tenant-b".to_string()]),
+            "a token confirmed for two bound audiences must return both, sorted"
         );
     }
 }
 
 /// Scenario: the confirmed-audience list repeats the same bound audience.
-/// Guarantees: a duplicated audience is deduplicated, not mistaken for an
-/// ambiguous multi-match, so a legitimate single-audience token is still
-/// admitted.
+/// Guarantees: a duplicated audience is deduplicated, so a repeated audience in
+/// the response is not counted twice.
 #[test]
 fn match_audience_dedups_repeated_audience() {
     let core = two_audience_core();
     assert_eq!(
-        core.match_audience_for_test(&["aud-tenant-a".to_string(), "aud-tenant-a".to_string()]),
-        Ok("aud-tenant-a".to_string())
+        core.match_audiences_for_test(&["aud-tenant-a".to_string(), "aud-tenant-a".to_string()]),
+        Ok(vec!["aud-tenant-a".to_string()])
+    );
+}
+
+/// Scenario: a token is confirmed for TWO configured audiences, and the SA is
+/// admitted by BOTH (each audience allow-lists it).
+/// Guarantees: admission (AND across every matched audience) allows the request,
+/// and the emitted identity carries a multi-valued `aud` listing both audiences
+/// -- so a downstream resolver sees every audience the token was admitted for.
+#[test]
+fn admit_multi_audience_allows_and_lists_all_when_all_pass() {
+    let sa = "system:serviceaccount:ns:shared".to_string();
+    let core = Core::new(
+        "test-authorizer",
+        vec![
+            AudienceConfig {
+                audience: "aud-tenant-a".to_string(),
+                allowed_service_accounts: vec![sa.clone()],
+                resource_attributes: None,
+            },
+            AudienceConfig {
+                audience: "aud-tenant-b".to_string(),
+                allowed_service_accounts: vec![sa.clone()],
+                resource_attributes: None,
+            },
+        ],
+    );
+
+    let decision = core.admit_multi_for_test(
+        Some(sa),
+        &["aud-tenant-b".to_string(), "aud-tenant-a".to_string()],
+    );
+    assert!(decision.is_allowed(), "both audiences admit -> allowed");
+
+    let identity = decision.identity().expect("allow carries identity");
+    let audience_claim = identity
+        .claim(AuthorizedIdentity::CLAIM_AUDIENCE)
+        .expect("identity carries an aud claim");
+    let mut got: Vec<&str> = audience_claim
+        .as_slice()
+        .iter()
+        .map(String::as_str)
+        .collect();
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec!["aud-tenant-a", "aud-tenant-b"],
+        "the identity must list every audience the token was admitted for"
+    );
+    // A multi-valued aud is not a scalar, so the scalar accessor is empty.
+    assert_eq!(identity.audience(), None);
+}
+
+/// Scenario: a token is confirmed for TWO configured audiences, but only ONE
+/// admits the SA (the other's allow-list omits it).
+/// Guarantees: admission fails closed with `NotPermitted` -- a laxer audience
+/// can never let a token bypass a stricter audience's policy.
+#[test]
+fn admit_multi_audience_denies_when_any_fails() {
+    let sa = "system:serviceaccount:ns:shared".to_string();
+    let core = Core::new(
+        "test-authorizer",
+        vec![
+            AudienceConfig {
+                audience: "aud-tenant-a".to_string(),
+                allowed_service_accounts: vec![sa.clone()],
+                resource_attributes: None,
+            },
+            // Tenant B does NOT admit this SA.
+            AudienceConfig {
+                audience: "aud-tenant-b".to_string(),
+                allowed_service_accounts: vec!["system:serviceaccount:ns:other".to_string()],
+                resource_attributes: None,
+            },
+        ],
+    );
+
+    let decision = core.admit_multi_for_test(
+        Some(sa),
+        &["aud-tenant-a".to_string(), "aud-tenant-b".to_string()],
+    );
+    assert!(
+        !decision.is_allowed(),
+        "a token confirmed for an audience it is not admitted for must fail closed"
+    );
+    assert_eq!(
+        decision,
+        AuthzDecision::deny_with_detail(
+            DenyReason::NotPermitted,
+            "service account not in allow-list"
+        )
     );
 }
 
@@ -1031,24 +1117,24 @@ fn it_multi_token() -> Option<String> {
 }
 
 /// Scenario: a single token minted for TWO audiences is presented while both
-/// audiences are configured entries (with differing policies) against a live
+/// audiences are configured entries that each admit the SA, against a live
 /// cluster.
-/// Guarantees: `TokenReview` confirms both audiences, and admission fails closed
-/// with a deny (ambiguous) rather than nondeterministically applying one
-/// entry's policy -- the runtime side of cross-tenant isolation.
+/// Guarantees: `TokenReview` confirms both audiences, every matched audience's
+/// policy admits (AND), so the request is allowed and the emitted identity
+/// lists both audiences in its multi-valued `aud` claim.
 #[tokio::test]
 #[ignore = "requires a live Kubernetes cluster and K8S_SAT_MULTI_TOKEN (a token minted for two audiences)"]
-async fn it_multi_audience_token_is_denied_ambiguous() {
+async fn it_multi_audience_token_admitted_when_all_pass() {
     let Some(token) = it_multi_token() else {
         eprintln!("skipping: set K8S_SAT_MULTI_TOKEN to run this integration test");
         return;
     };
     let subject = it_subject();
 
-    // Both audiences allow-list the SA, so if a single policy were (wrongly)
-    // selected the request would be admitted; the ambiguity guard must deny.
+    // Both audiences allow-list the SA, so admission (AND across all matched
+    // audiences) admits, and the identity must carry both audiences.
     let ext = SharedK8sSatTokenAuthorizer::new(
-        "it-ambiguous",
+        "it-multi-audience",
         vec![
             AudienceConfig {
                 audience: it_audience(),
@@ -1069,7 +1155,69 @@ async fn it_multi_audience_token_is_denied_ambiguous() {
         .await
         .expect("decision");
     assert!(
+        decision.is_allowed(),
+        "a token whose every confirmed audience admits must be allowed"
+    );
+    let identity = decision.identity().expect("allow carries identity");
+    let audience_claim = identity
+        .claim(AuthorizedIdentity::CLAIM_AUDIENCE)
+        .expect("identity carries an aud claim");
+    let mut got: Vec<&str> = audience_claim
+        .as_slice()
+        .iter()
+        .map(String::as_str)
+        .collect();
+    got.sort_unstable();
+    let mut want = [it_audience(), it_second_audience()];
+    want.sort_unstable();
+    assert_eq!(
+        got,
+        want.iter().map(String::as_str).collect::<Vec<_>>(),
+        "the identity must list every audience the token was admitted for"
+    );
+}
+
+/// Scenario: a single token minted for TWO audiences is presented, but only ONE
+/// of the two configured audiences admits the SA (the other's allow-list omits
+/// it), against a live cluster.
+/// Guarantees: admission requires EVERY matched audience's policy to admit, so a
+/// token that also carries an audience it is not admitted for is denied
+/// (fail closed) -- one lax audience can never bypass a stricter one.
+#[tokio::test]
+#[ignore = "requires a live Kubernetes cluster and K8S_SAT_MULTI_TOKEN (a token minted for two audiences)"]
+async fn it_multi_audience_token_denied_when_any_fails() {
+    let Some(token) = it_multi_token() else {
+        eprintln!("skipping: set K8S_SAT_MULTI_TOKEN to run this integration test");
+        return;
+    };
+    let subject = it_subject();
+
+    let ext = SharedK8sSatTokenAuthorizer::new(
+        "it-multi-audience-partial",
+        vec![
+            AudienceConfig {
+                audience: it_audience(),
+                allowed_service_accounts: vec![subject],
+                resource_attributes: None,
+            },
+            // The second audience does NOT admit this SA.
+            AudienceConfig {
+                audience: it_second_audience(),
+                allowed_service_accounts: vec![
+                    "system:serviceaccount:sat-authz-test:someone-else".to_string(),
+                ],
+                resource_attributes: None,
+            },
+        ],
+        Duration::from_secs(300),
+        1024,
+    );
+    let decision = ext
+        .authorize(&BearerToken::without_expiry(token))
+        .await
+        .expect("decision");
+    assert!(
         !decision.is_allowed(),
-        "a token confirmed for two configured audiences must fail closed (ambiguous)"
+        "a token confirmed for an audience it is not admitted for must fail closed"
     );
 }
