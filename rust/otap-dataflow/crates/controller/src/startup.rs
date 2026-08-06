@@ -24,7 +24,7 @@ use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
 use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::{CoreAllocation, ResourcesPolicy};
+use otap_df_config::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_engine::PipelineFactory;
 use std::fmt::Debug;
@@ -88,6 +88,10 @@ pub fn apply_cli_overrides(
 /// ([`OtelDataflowSpec::from_file`]).  This function adds the semantic check
 /// that all referenced components are actually compiled into the binary, and
 /// validates their node/extension-specific config statically.
+///
+/// This per-pipeline helper does not validate node rate-limiter bindings because
+/// it does not receive the effective policy catalog. Use
+/// [`validate_engine_components`] when validating a complete engine config.
 ///
 /// **Scope:** This is *static* validation only -- it checks that config values
 /// can be deserialized into the expected types.  It does **not** detect runtime
@@ -185,6 +189,45 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
     Ok(())
 }
 
+fn validate_rate_limiter_bindings(
+    pipeline_group_id: &PipelineGroupId,
+    pipeline_id: &PipelineId,
+    pipeline_cfg: &PipelineConfig,
+    policies: &ResolvedPolicies,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (node_id, node_cfg) in pipeline_cfg.node_iter() {
+        match node_cfg.rate_limiters.as_deref() {
+            None | Some([]) => {}
+            Some([limiter_name]) => {
+                if !policies.rate_limiters.contains_key(limiter_name) {
+                    return Err(std::io::Error::other(format!(
+                        "Component `{}` in pipeline_group={} pipeline={} node={}: rate limiter binding '{}' does not name an effective limiter",
+                        node_cfg.r#type.as_ref(),
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        node_id.as_ref(),
+                        limiter_name,
+                    ))
+                    .into());
+                }
+            }
+            Some(limiter_names) => {
+                return Err(std::io::Error::other(format!(
+                    "Component `{}` in pipeline_group={} pipeline={} node={}: V1 supports at most one rate limiter binding per node; found {}",
+                    node_cfg.r#type.as_ref(),
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    node_id.as_ref(),
+                    limiter_names.len(),
+                ))
+                .into());
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Validates that every node in every pipeline (including the engine
 /// observability pipeline) references a component URN registered in the
 /// given [`PipelineFactory`].
@@ -202,6 +245,12 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
             &resolved.pipeline_id,
             &resolved.pipeline,
             factory,
+        )?;
+        validate_rate_limiter_bindings(
+            &resolved.pipeline_group_id,
+            &resolved.pipeline_id,
+            &resolved.pipeline,
+            &resolved.policies,
         )?;
     }
 
@@ -444,7 +493,10 @@ groups:
 "#
     }
 
-    fn rate_limited_engine_yaml(unit: &str) -> String {
+    fn rate_limited_engine_yaml(unit: &str, binding: Option<&str>) -> String {
+        let binding = binding
+            .map(|binding| format!("            rate_limiters: {binding}\n"))
+            .unwrap_or_default();
         format!(
             r#"
 version: otel_dataflow/v1
@@ -471,7 +523,7 @@ groups:
         nodes:
           receiver:
             type: "urn:test:receiver:example"
-            config: null
+{binding}            config: null
           exporter:
             type: "urn:test:exporter:example"
             config: null
@@ -555,12 +607,59 @@ extensions:
     /// dimension validation to construction-time binding by the participating component.
     #[test]
     fn validate_engine_components_defers_rate_dimension_to_binding() {
-        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("messages"))
+        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("messages", None))
             .expect("rate-limited config should parse");
         let factory = test_factory();
 
         validate_engine_components(&cfg, &factory)
             .expect("registered components should pass static validation");
+    }
+
+    /// Scenario: a receiver binds a limiter name absent from its resolved policy scope.
+    /// Guarantees: startup validation rejects the unknown binding before pipeline construction.
+    #[test]
+    fn validate_engine_components_rejects_unknown_rate_limiter_binding() {
+        let cfg =
+            OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("messages", Some("[missing]")))
+                .expect("rate-limited config should parse");
+
+        let error = validate_engine_components(&cfg, &test_factory())
+            .expect_err("unknown limiter binding must fail static validation");
+        assert!(
+            error
+                .to_string()
+                .contains("rate limiter binding 'missing' does not name an effective limiter")
+        );
+    }
+
+    /// Scenario: a receiver selects more than one limiter in a V1 node binding.
+    /// Guarantees: startup validation rejects unsupported multi-limiter bindings before construction.
+    #[test]
+    fn validate_engine_components_rejects_multiple_rate_limiter_bindings() {
+        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml(
+            "messages",
+            Some("[ingress, other]"),
+        ))
+        .expect("rate-limited config should parse");
+
+        let error = validate_engine_components(&cfg, &test_factory())
+            .expect_err("multiple limiter bindings must fail static validation");
+        assert!(
+            error
+                .to_string()
+                .contains("V1 supports at most one rate limiter binding per node; found 2")
+        );
+    }
+
+    /// Scenario: a receiver explicitly opts out while an inherited limiter is effective.
+    /// Guarantees: startup validation accepts an empty node-level limiter binding.
+    #[test]
+    fn validate_engine_components_accepts_rate_limiter_opt_out() {
+        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("messages", Some("[]")))
+            .expect("rate-limited config should parse");
+
+        validate_engine_components(&cfg, &test_factory())
+            .expect("an explicit empty binding should pass static validation");
     }
 
     /// Scenario: a pipeline declares multiple limiters and a receiver explicitly binds one.
