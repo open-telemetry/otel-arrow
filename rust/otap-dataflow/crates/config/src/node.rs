@@ -119,8 +119,7 @@ pub struct NodeUserConfig {
 
     /// Ordered names of rate limiters applied at this node's admission point.
     ///
-    /// When omitted, V1 preserves the legacy behavior of applying the sole
-    /// effective limiter. An explicit empty list opts the node out. V1 accepts
+    /// Omit this field or use an empty list to leave the node unbound. V1 accepts
     /// at most one bound limiter until multi-limiter reservation semantics exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limiters: Option<Vec<String>>,

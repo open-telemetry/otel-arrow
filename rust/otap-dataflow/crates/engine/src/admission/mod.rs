@@ -10,7 +10,7 @@ mod gate;
 pub(crate) mod metrics;
 mod models;
 
-pub use binder::{AdmissionBinder, AdmissionBindingProvenance};
+pub use binder::AdmissionBinder;
 pub use gate::{LocalAdmissionGate, SharedAdmissionGate};
 pub use models::{
     AdmissionBindError, AdmissionContext, AdmissionDecision, AdmissionDimension,

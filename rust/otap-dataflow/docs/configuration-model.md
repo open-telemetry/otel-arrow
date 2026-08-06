@@ -321,8 +321,8 @@ At node level:
 - `header_capture` (optional): receiver-only transport header capture override
 - `header_propagation` (optional): exporter-only transport header propagation
   override
-- `rate_limiters` (optional): select one named admission limiter with `[name]`,
-  opt out with `[]`, or omit the field for implicit singleton selection
+- `rate_limiters` (optional): select one named admission limiter with `[name]`;
+  omit the field or use `[]` to leave the node unbound
 
 At connection level:
 
@@ -611,11 +611,9 @@ Rate limiter configuration:
 - `rate_limiters: {}` at a narrower policy scope disables an inherited map.
 - A node selects one effective limiter with `rate_limiters: [name]` and opts out
   with `rate_limiters: []`.
-- When exactly one limiter is effective, omitting the node field selects it
-  implicitly. Adding a second effective limiter therefore requires participating
-  nodes to select a name explicitly.
-- An explicit unknown or dimension-incompatible selection fails startup. An
-  implicit dimension mismatch is skipped because the node made no selection.
+- Omitting the node field leaves the node unbound, regardless of how many
+  limiters are effective.
+- An unknown or dimension-incompatible selection fails startup.
 - V1 creates one bucket per bound receiver instance. Reusing a declaration does
   not aggregate rate state across receivers or pipelines.
 - OTLP supports `request_bytes`; Syslog / CEF supports `messages`.

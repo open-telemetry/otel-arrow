@@ -4,7 +4,7 @@
 //! Async Pipeline Engine
 
 use crate::{
-    admission::{AdmissionBinder, AdmissionBindingProvenance},
+    admission::AdmissionBinder,
     channel_metrics::{
         CHANNEL_IMPL_FLUME, CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_PDATA,
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
@@ -117,29 +117,13 @@ fn resolve_admission_binding(
                 limiter_name.clone(),
                 declaration_scope,
                 policy,
-                AdmissionBindingProvenance::Explicit,
             ))
         }
         Some(limiter_names) => Err(format!(
             "V1 supports at most one rate limiter binding per node; found {}",
             limiter_names.len()
         )),
-        None => match policies.len() {
-            0 => Ok(AdmissionBinder::none()),
-            1 => {
-                let (limiter_name, policy) =
-                    policies.iter().next().expect("one limiter checked above");
-                Ok(AdmissionBinder::configured_at_scope(
-                    limiter_name.clone(),
-                    declaration_scope,
-                    *policy,
-                    AdmissionBindingProvenance::ImplicitSingleton,
-                ))
-            }
-            _ => Ok(AdmissionBinder::ambiguous(
-                policies.keys().cloned().collect(),
-            )),
-        },
+        None => Ok(AdmissionBinder::none()),
     }
 }
 
@@ -958,7 +942,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         let empty_capabilities = capability::registry::Capabilities::empty();
         let mut admission_bound_nodes = Vec::new();
-        let mut admission_implicitly_skipped_nodes = Vec::new();
         let mut admission_explicitly_opted_out_nodes = Vec::new();
         for (name, node_config) in config.node_iter() {
             let node_kind = node_config.kind();
@@ -1074,21 +1057,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
             if base_ctx.admission().was_bound() {
                 admission_bound_nodes.push(name.as_ref().to_owned());
-            } else if base_ctx.admission().is_implicit_unbound() {
-                admission_implicitly_skipped_nodes.push(name.as_ref().to_owned());
             } else if matches!(node_config.rate_limiters.as_deref(), Some([])) {
                 admission_explicitly_opted_out_nodes.push(name.as_ref().to_owned());
             }
         }
 
-        if !admission_bound_nodes.is_empty()
-            || !admission_implicitly_skipped_nodes.is_empty()
-            || !admission_explicitly_opted_out_nodes.is_empty()
-        {
+        if !admission_bound_nodes.is_empty() || !admission_explicitly_opted_out_nodes.is_empty() {
             otel_info!(
                 "admission.binding.summary",
                 bound_nodes = admission_bound_nodes.join(","),
-                implicitly_skipped_nodes = admission_implicitly_skipped_nodes.join(","),
                 explicitly_opted_out_nodes = admission_explicitly_opted_out_nodes.join(","),
                 message = "Resolved pipeline admission bindings"
             );
@@ -2667,9 +2644,8 @@ mod test {
         }
     }
 
-    /// Scenario: a node explicitly opts out while inherited limiters are available.
-    /// Guarantees: an empty binding list produces an unconfigured binder and never
-    /// falls back to the implicit singleton behavior.
+    /// Scenario: a node explicitly opts out while effective limiters are available.
+    /// Guarantees: an empty binding list produces an unconfigured binder.
     #[test]
     fn admission_resolution_honors_explicit_empty_opt_out() {
         let mut node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
@@ -2714,11 +2690,11 @@ mod test {
         assert!(error.contains("at most one rate limiter binding"));
     }
 
-    /// Scenario: a node omits its binding while exactly one effective limiter exists.
-    /// Guarantees: the ergonomic singleton default preserves limiter identity, scope,
-    /// and implicit provenance for binding and startup reporting.
+    /// Scenario: a node omits its binding while an effective limiter exists.
+    /// Guarantees: policy declarations remain ambient configuration until a node explicitly
+    /// selects a limiter.
     #[test]
-    fn admission_resolution_builds_implicit_singleton() {
+    fn admission_resolution_requires_explicit_binding() {
         let node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
         let policies = BTreeMap::from([(
             "ingress".to_owned(),
@@ -2727,39 +2703,24 @@ mod test {
 
         let binder =
             resolve_admission_binding(&node, &policies, Some(RateLimiterDeclarationScope::Engine))
-                .expect("singleton resolves");
+                .expect("omitted binding resolves");
 
-        assert_eq!(binder.limiter_name(), Some("ingress"));
-        assert_eq!(
-            binder.provenance(),
-            Some(AdmissionBindingProvenance::ImplicitSingleton)
-        );
-        assert_eq!(
-            binder.declaration_scope(),
-            Some(&RateLimiterDeclarationScope::Engine)
-        );
+        assert!(!binder.is_configured());
     }
 
     /// Scenario: a node omits its binding while several effective limiters exist.
-    /// Guarantees: resolution preserves ambiguity for participating components while
-    /// allowing a non-participating factory to leave the inherited policies unconsumed.
+    /// Guarantees: the node remains unbound without requiring special ambiguity handling.
     #[test]
-    fn admission_resolution_preserves_implicit_ambiguity() {
+    fn admission_resolution_ignores_unselected_limiters() {
         let node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
         let policy = admission_policy(RateLimitUnit::RequestBytes);
         let policies =
             BTreeMap::from([("first".to_owned(), policy), ("second".to_owned(), policy)]);
 
         let binder =
-            resolve_admission_binding(&node, &policies, None).expect("ambiguity is deferred");
+            resolve_admission_binding(&node, &policies, None).expect("omitted binding resolves");
 
-        assert!(binder.is_configured());
-        assert!(binder.is_implicit_unbound());
-        assert!(
-            binder
-                .validate_factory_consumption("urn:test:receiver")
-                .is_ok()
-        );
+        assert!(!binder.is_configured());
     }
 
     #[test]

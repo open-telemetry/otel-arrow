@@ -328,9 +328,9 @@ record before parsing. A normal TCP line is one record; a line that exceeds
 emitted fragment is counted separately. The current policy does not measure wire
 bytes. Named limiter declarations are preserved through policy resolution. A
 receiver can bind one limiter with `rate_limiters: [name]` or opt out with
-`rate_limiters: []`. If exactly one limiter is effective, an omitted binding
-uses that limiter for compatibility. Mixed receiver pipelines can therefore
-bind OTLP and Syslog / CEF receivers to limiters with different units.
+`rate_limiters: []`. Omitting the field also leaves the receiver unbound. Mixed
+receiver pipelines can bind OTLP and Syslog / CEF receivers to limiters with
+different units.
 
 The rate state is receiver-local and lock-free. It uses a token-bucket-equivalent
 GCRA state machine with bounded debt, so each receiver instance can continue
@@ -364,10 +364,9 @@ gRPC returns `RESOURCE_EXHAUSTED` with negative retry pushback. Configure
 during pressure.
 
 V1 supports rate limiting only for OTLP and Syslog / CEF receivers. A component
-that explicitly names a limiter must bind it during construction or startup
-fails. A non-participating component may inherit a sole limiter implicitly; it
-is skipped and included in the pipeline's `admission.binding.summary` startup
-event. `rate_limiters: []` remains an explicit opt-out.
+that names a limiter must bind it during construction or startup fails.
+Non-participating components remain unbound unless they explicitly select a
+limiter. `rate_limiters: []` is an explicit opt-out.
 
 The engine resolves the policy into a construction-time admission binder on the
 node's `PipelineContext`. A participating component binds exactly once, naming
@@ -464,7 +463,7 @@ All engine metrics are registered under the `engine` metric-set.
 | Event | Level | Description |
 | --- | --- | --- |
 | `process_memory_limiter.transition` | info/warn | Emitted on every pressure level change. `Hard` transitions log at warn level. |
-| `admission.binding.summary` | info | Emitted once per pipeline with bounded lists of nodes that bound, implicitly skipped, or explicitly opted out of admission. |
+| `admission.binding.summary` | info | Emitted once per pipeline with bounded lists of nodes that bound or explicitly opted out of admission. |
 | `process_memory_limiter.purge` | info | Emitted after a successful forced jemalloc purge. Includes pre/post usage and duration. |
 | `process_memory_limiter.purge_failed` | warn | Emitted when a purge attempt or post-purge re-sample fails. |
 | `process_memory_limiter.purge_unavailable` | warn | Emitted at startup when `purge_on_hard` is enabled but no allocator purge backend is available in this build. |

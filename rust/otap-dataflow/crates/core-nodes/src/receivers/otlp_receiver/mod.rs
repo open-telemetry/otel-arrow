@@ -862,9 +862,7 @@ mod tests {
     use otap_df_engine::Interests;
     use otap_df_engine::MessageSourceSharedEffectHandlerExtension;
     use otap_df_engine::ProducerEffectHandlerExtension;
-    use otap_df_engine::admission::{
-        AdmissionBinder, AdmissionBindingProvenance, AdmissionContext, AdmissionDecision,
-    };
+    use otap_df_engine::admission::{AdmissionBinder, AdmissionContext, AdmissionDecision};
     use otap_df_engine::clock;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NackMsg;
@@ -913,7 +911,7 @@ mod tests {
         policy: RateLimiterPolicy,
         admission_state: SharedReceiverAdmissionState,
     ) -> SharedAdmissionGate {
-        AdmissionBinder::configured("test", policy, AdmissionBindingProvenance::Explicit)
+        AdmissionBinder::configured("test", policy)
             .bind_shared(AdmissionDimension::Bytes, admission_state)
             .expect("bind test admission")
             .expect("configured test admission")

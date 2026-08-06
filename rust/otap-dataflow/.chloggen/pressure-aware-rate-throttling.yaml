@@ -18,6 +18,6 @@ issues: [3484]
 # Use pipe (|) for multiline entries.
 subtext: >-
   Configure named limiters under policies.resources.rate_limiters using
-  request_bytes or messages, then bind one with node rate_limiters: [name]. An
-  empty list opts out. V1 limits each receiver instance while memory pressure
-  is active.
+  request_bytes or messages, then explicitly bind one with node rate_limiters:
+  [name]. Omit the field or use an empty list to leave a node unbound. V1 limits
+  each receiver instance while memory pressure is active.

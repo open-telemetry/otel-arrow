@@ -25,11 +25,6 @@ pub enum AdmissionBindError {
     },
     /// The node already claimed this admission binding.
     AlreadyBound,
-    /// Several effective limiters require an explicit node selection.
-    AmbiguousBinding {
-        /// Effective limiter names available to the node.
-        candidates: Vec<String>,
-    },
     /// An explicit node binding was not consumed by its component factory.
     ExplicitBindingNotConsumed {
         /// Configured limiter name.
@@ -53,11 +48,6 @@ impl std::fmt::Display for AdmissionBindError {
                 supported.to_display_string()
             ),
             Self::AlreadyBound => f.write_str("ingress admission binding was already consumed"),
-            Self::AmbiguousBinding { candidates } => write!(
-                f,
-                "multiple effective rate limiters require an explicit node binding (available: {})",
-                candidates.join(", ")
-            ),
             Self::ExplicitBindingNotConsumed { limiter, component } => write!(
                 f,
                 "component `{component}` explicitly binds rate limiter `{limiter}` but does not consume ingress admission during construction"

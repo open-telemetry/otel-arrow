@@ -1087,9 +1087,7 @@ pub async fn serve(
 mod tests {
     use super::*;
 
-    use otap_df_engine::admission::{
-        AdmissionBinder, AdmissionBindingProvenance, AdmissionDimension,
-    };
+    use otap_df_engine::admission::{AdmissionBinder, AdmissionDimension};
     use otap_df_engine::memory_limiter::{MemoryPressureLevel, MemoryPressureState};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1099,7 +1097,7 @@ mod tests {
         policy: otap_df_config::policy::RateLimiterPolicy,
         admission: SharedReceiverAdmissionState,
     ) -> SharedAdmissionGate {
-        AdmissionBinder::configured("test", policy, AdmissionBindingProvenance::Explicit)
+        AdmissionBinder::configured("test", policy)
             .bind_shared(AdmissionDimension::Bytes, admission)
             .expect("bind test admission")
             .expect("configured test admission")

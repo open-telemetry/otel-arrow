@@ -15,8 +15,7 @@ use otap_df_config::policy::{
     RateLimiterPolicy, TokenBucketPolicy,
 };
 use otap_df_engine::admission::{
-    AdmissionBinder, AdmissionBindingProvenance, AdmissionContext, AdmissionDimension,
-    LocalAdmissionGate, SharedAdmissionGate,
+    AdmissionBinder, AdmissionContext, AdmissionDimension, LocalAdmissionGate, SharedAdmissionGate,
 };
 use otap_df_engine::memory_limiter::{
     LocalReceiverAdmissionState, MemoryPressureState, SharedReceiverAdmissionState,
@@ -74,11 +73,7 @@ fn syslog_admit(gate: &Option<LocalAdmissionGate>) {
 fn bench_admission(c: &mut Criterion) {
     let process_state = MemoryPressureState::default();
 
-    let shared_binder = AdmissionBinder::configured(
-        "otlp",
-        policy(RateLimitUnit::RequestBytes),
-        AdmissionBindingProvenance::Explicit,
-    );
+    let shared_binder = AdmissionBinder::configured("otlp", policy(RateLimitUnit::RequestBytes));
     let shared_gate = shared_binder
         .bind_shared(
             AdmissionDimension::Bytes,
@@ -87,11 +82,7 @@ fn bench_admission(c: &mut Criterion) {
         .expect("shared admission binding")
         .expect("configured shared gate");
 
-    let local_binder = AdmissionBinder::configured(
-        "syslog",
-        policy(RateLimitUnit::Messages),
-        AdmissionBindingProvenance::Explicit,
-    );
+    let local_binder = AdmissionBinder::configured("syslog", policy(RateLimitUnit::Messages));
     let local_gate = local_binder
         .bind_local(
             AdmissionDimension::Messages,

@@ -144,8 +144,7 @@ mod tests {
         RateLimiterPolicy, TokenBucketPolicy,
     };
     use otap_df_engine::admission::{
-        AdmissionBinder, AdmissionBindingProvenance, AdmissionContext, AdmissionDecision,
-        AdmissionDimension,
+        AdmissionBinder, AdmissionContext, AdmissionDecision, AdmissionDimension,
     };
     use otap_df_engine::memory_limiter::{
         MemoryPressureLevel, MemoryPressureState, SharedReceiverAdmissionState,
@@ -209,7 +208,7 @@ mod tests {
         policy: RateLimiterPolicy,
         admission: SharedReceiverAdmissionState,
     ) -> SharedAdmissionGate {
-        AdmissionBinder::configured("test", policy, AdmissionBindingProvenance::Explicit)
+        AdmissionBinder::configured("test", policy)
             .bind_shared(AdmissionDimension::Bytes, admission)
             .expect("bind test admission")
             .expect("configured test admission")

@@ -294,14 +294,10 @@ fn local_rate_gate(
     policy: otap_df_config::policy::RateLimiterPolicy,
     admission_state: LocalReceiverAdmissionState,
 ) -> LocalAdmissionGate {
-    otap_df_engine::admission::AdmissionBinder::configured(
-        "test",
-        policy,
-        otap_df_engine::admission::AdmissionBindingProvenance::Explicit,
-    )
-    .bind_local(AdmissionDimension::Messages, admission_state)
-    .expect("bind test admission")
-    .expect("configured test admission")
+    otap_df_engine::admission::AdmissionBinder::configured("test", policy)
+        .bind_local(AdmissionDimension::Messages, admission_state)
+        .expect("bind test admission")
+        .expect("configured test admission")
 }
 
 /// Add the syslog receiver to the receiver factory
