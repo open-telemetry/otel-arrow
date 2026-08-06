@@ -47,3 +47,5 @@ url = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 otap-df-test-net = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["registry"] }

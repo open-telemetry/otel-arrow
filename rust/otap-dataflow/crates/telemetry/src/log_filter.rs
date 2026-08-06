@@ -31,7 +31,9 @@ pub struct RuntimeLogFilterLayer {
 /// configuration updates are applied.
 #[must_use]
 pub fn create_env_filter(level: &LogLevel) -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level.as_str()))
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use")
+    })
 }
 
 /// A shared factory for runtime-reloadable `EnvFilter` layers.
@@ -280,6 +282,50 @@ mod tests {
             tracing::dispatcher::with_default(&second, emit_info);
             assert_eq!(first_count.load(Ordering::SeqCst), 1);
             assert_eq!(second_count.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    /// Scenario: a dispatcher is created after the runtime log level changes.
+    /// Guarantees: new dispatcher-local layers start with the latest filter template.
+    #[test]
+    fn dispatcher_created_after_update_uses_latest_filter() {
+        crate::with_cleared_rust_log(|| {
+            let count = Arc::new(AtomicUsize::new(0));
+            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+
+            handle.apply(&level("info"));
+            let dispatch = tracing::Dispatch::new(
+                Registry::default()
+                    .with(filter.layer())
+                    .with(CountingLayer(Arc::clone(&count))),
+            );
+
+            tracing::dispatcher::with_default(&dispatch, || {
+                tracing::info!("post-update dispatcher test");
+            });
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    /// Scenario: RUST_LOG is set while runtime configuration requests a more verbose level.
+    /// Guarantees: runtime updates retain the process-level RUST_LOG override.
+    #[test]
+    fn rust_log_override_takes_precedence_over_runtime_update() {
+        crate::with_rust_log(Some("error"), || {
+            let count = Arc::new(AtomicUsize::new(0));
+            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let subscriber = Registry::default()
+                .with(filter.layer())
+                .with(CountingLayer(Arc::clone(&count)));
+
+            tracing::subscriber::with_default(subscriber, || {
+                handle.apply(&level("info"));
+                tracing::info!("runtime level must not override RUST_LOG");
+                tracing::error!("RUST_LOG permits this event");
+            });
+
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            assert_eq!(handle.configured_level().as_str(), "info");
         });
     }
 

@@ -74,6 +74,15 @@ pub(crate) fn with_cleared_rust_log<F, R>(f: F) -> R
 where
     F: FnOnce() -> R + std::panic::UnwindSafe,
 {
+    with_rust_log(None, f)
+}
+
+#[cfg(test)]
+#[allow(unsafe_code)] // std::env mutation is synchronized and restored for test isolation.
+pub(crate) fn with_rust_log<F, R>(value: Option<&str>, f: F) -> R
+where
+    F: FnOnce() -> R + std::panic::UnwindSafe,
+{
     use std::env;
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
     use std::sync::{Mutex, OnceLock};
@@ -86,8 +95,13 @@ where
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let previous = env::var_os("RUST_LOG");
-    unsafe {
-        env::remove_var("RUST_LOG");
+    match value {
+        Some(value) => unsafe {
+            env::set_var("RUST_LOG", value);
+        },
+        None => unsafe {
+            env::remove_var("RUST_LOG");
+        },
     }
 
     let result = catch_unwind(AssertUnwindSafe(f));
