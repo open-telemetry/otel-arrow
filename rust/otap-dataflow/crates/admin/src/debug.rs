@@ -20,9 +20,7 @@ use std::panic::AssertUnwindSafe;
 use crate::AppState;
 
 pub(crate) fn routes() -> Router<AppState> {
-    let router = Router::new().route("/debug/pprof/heap", get(get_heap_profile));
-
-    router
+    Router::new().route("/debug/pprof/heap", get(get_heap_profile))
 }
 
 async fn get_heap_profile(
@@ -37,7 +35,7 @@ async fn get_heap_profile(
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Memory Profiling not activated".into(),
-            ))
+            ));
         }
         Err(_) => {
             return Err((
@@ -74,11 +72,9 @@ async fn get_heap_profile(
 
             Ok(resp)
         }
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not dump heap pprof: {e}"),
-            ));
-        }
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not dump heap pprof: {e}"),
+        )),
     }
 }
