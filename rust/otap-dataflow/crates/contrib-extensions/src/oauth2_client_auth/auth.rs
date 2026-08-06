@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use super::config::{Config, GrantType, SignatureAlgorithm};
 use super::error::Error;
+use super::jwt_crypto;
 use crate::common::token_refresh::TokenSource;
 
 /// URN grant type sent to the token endpoint for the JWT-bearer grant.
@@ -86,6 +87,18 @@ impl Auth {
         // The reqwest/rustls HTTP client needs a process-wide crypto provider
         // installed before any TLS request is made.
         otap_df_otap::crypto::ensure_crypto_provider();
+
+        // The JWT-bearer grant signs an assertion on every acquisition. Fail
+        // here rather than letting `jsonwebtoken` panic at the first signature
+        // when this build has no signing backend.
+        if config.grant_type == GrantType::JwtBearer {
+            if !jwt_crypto::SIGNING_AVAILABLE {
+                return Err(Error::JwtSigning {
+                    message: jwt_crypto::NO_BACKEND_MESSAGE.to_owned(),
+                });
+            }
+            jwt_crypto::ensure_provider();
+        }
 
         // OAuth 2.0 requires the token endpoint to be TLS-protected; warn (but
         // do not block) when a plaintext endpoint is configured.

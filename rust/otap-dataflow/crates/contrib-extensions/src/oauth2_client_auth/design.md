@@ -525,17 +525,17 @@ contrib-extensions = ["oauth2-client-auth-extension"]
 oauth2-client-auth-extension = [
     "dep:oauth2",
     "dep:reqwest",
+    "dep:http",
+    "dep:jsonwebtoken",
     "dep:humantime-serde",
     "dep:rand",
+    "dep:secrecy",
 ]
 
-[dependencies]
-oauth2 = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true, features = ["rustls-tls"] }
-# Human-readable durations for `expiry_buffer` / `timeout` / `startup_timeout`.
-humantime-serde = { workspace = true, optional = true }
-# Jitter for the refresh schedule and exponential-backoff retry.
-rand = { workspace = true, optional = true }
+# Assertion-signing backend, mirroring the workspace `crypto-*` selection.
+crypto-ring = ["dep:ring"]
+crypto-aws-lc = ["jsonwebtoken?/aws_lc_rs"]
+crypto-openssl = ["dep:openssl"]
 ```
 
 **Crypto provider prerequisite.** The `reqwest`/`rustls` HTTP client requires a
@@ -543,6 +543,36 @@ process-wide `rustls` crypto provider. `Auth::new()` calls
 `otap_df_otap::crypto::ensure_crypto_provider()` before constructing the client,
 and the deployed binary **must** enable exactly one `crypto-*` feature; otherwise
 token requests panic at runtime with "No provider set".
+
+#### Assertion-signing backend
+
+The JWT-bearer grant signs an assertion with `jsonwebtoken`, which is a second
+consumer of cryptography alongside TLS. `jsonwebtoken` 11 selects its algorithms
+through a pluggable `CryptoProvider` rather than linking `ring` unconditionally
+the way 9.x did, so the workspace enables no backend feature on the crate and
+supplies a provider instead. The same `crypto-*` feature that picks the rustls
+provider picks the signing backend, so a build links one cryptographic library
+rather than two - which matters where the choice of library is a compliance
+requirement rather than a preference.
+
+| Feature | Assertion-signing backend |
+|---|---|
+| `crypto-ring` | `ring` |
+| `crypto-aws-lc` | `aws-lc-rs`, through `jsonwebtoken`'s bundled provider |
+| `crypto-openssl` | `openssl` |
+| `crypto-symcrypt` | none |
+
+SymCrypt has no entry because its Rust bindings import an RSA key only as raw
+(modulus, exponent, prime) components, while `jsonwebtoken` hands a provider a
+PKCS#1 DER blob. A build with no signing backend - `crypto-symcrypt`, or no
+`crypto-*` feature at all - rejects the JWT-bearer grant when the extension is
+constructed, rather than panicking at the first signature. The
+client-credentials grant needs no signing and is unaffected.
+
+The providers implement only the RSA PKCS#1 v1.5 algorithms the grant accepts
+(RS256, RS384, RS512) and do not support JWKs. `jsonwebtoken` has no other
+consumer in the collector, so the narrower algorithm set is not observable
+elsewhere.
 
 ### Factory registration
 

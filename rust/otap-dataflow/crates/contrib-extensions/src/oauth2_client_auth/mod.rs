@@ -10,6 +10,7 @@
 mod auth;
 pub mod config;
 pub mod error;
+mod jwt_crypto;
 mod metrics;
 
 #[cfg(test)]

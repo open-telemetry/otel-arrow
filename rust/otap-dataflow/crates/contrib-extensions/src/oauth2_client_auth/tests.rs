@@ -84,7 +84,7 @@ async fn start_failing_server() -> MockServer {
 
 /// Generates a throwaway 2048-bit RSA keypair (private + public PEM) at runtime,
 /// so no key material is ever committed to the repository.
-fn generate_test_rsa_keypair() -> (String, String) {
+pub(super) fn generate_test_rsa_keypair() -> (String, String) {
     let key_pair =
         rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048)
             .expect("generate test RSA key pair");
