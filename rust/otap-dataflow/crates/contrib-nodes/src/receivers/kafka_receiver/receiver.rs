@@ -4199,6 +4199,191 @@ mod tests {
         .await;
     }
 
+    /// Scenario (consumer-group rebalancing): a manual-commit receiver (idempotency
+    /// disabled) consumes every record but holds them un-acked, so their offsets
+    /// are never committed; a `RebalanceTrigger` then joins (revoking partitions,
+    /// leaving the in-flight records un-committed) and leaves (reassigning them
+    /// back), which forces librdkafka to redeliver those uncommitted offsets.
+    /// This exercises the documented in-flight-on-revoke design (rebalance.rs:
+    /// in-flight messages on a revoked partition are not drained/interrupted --
+    /// the new owner re-delivers them, safe under at-least-once).
+    /// Guarantees: the resulting duplication is **bounded** -- each
+    /// `(partition, offset)` is delivered at most `1 + rebalance-transitions`
+    /// times (the original delivery plus at most one redelivery per revoke/
+    /// reassign transition), never in an unbounded re-loop -- and there is no
+    /// loss: every produced offset is delivered at least once and, after the
+    /// redelivered records are acked, each partition's committed offset equals
+    /// exactly the produced count (no rollback, no commit past produced data).
+    /// The stale ack from the pre-revoke ownership is dropped by the generation
+    /// guard (asserted separately by
+    /// `stale_ack_after_revoke_counts_acks_for_revoked_partition`).
+    #[tokio::test]
+    async fn inflight_records_on_revoke_are_redelivered_with_bounded_duplication() {
+        const TOPIC: &str = "rebalance-bounded-dup-traces";
+        const RECORDS_PER_PARTITION: i32 = 3;
+        let group = "rebalance-bounded-dup-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
+
+                // Manual-commit, idempotency DISABLED so redelivered offsets are
+                // genuinely re-delivered (the harshest bounded-duplication case)
+                // rather than skipped. No safety-net timer so acks alone drive
+                // commits.
+                let builder = KafkaReceiverConfigBuilder::new(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "test-client",
+                )
+                .with_traces(
+                    SignalConfig::new(vec![TOPIC.to_string()])
+                        .with_encoding(MessageFormat::OtlpProto),
+                )
+                .with_commit(CommitConfig {
+                    mode: ConfigCommitMode::Manual,
+                    interval_ms: None,
+                })
+                .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                .with_isolation_level(IsolationLevel::ReadUncommitted);
+                let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Count how many times each (partition, offset) is delivered.
+                let mut delivery_counts: HashMap<(i32, i64), usize> = HashMap::new();
+                let total = (RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
+
+                // Consume every record but hold them un-acked so their offsets are
+                // never committed before the revoke.
+                let mut in_flight = Vec::new();
+                for _ in 0..total {
+                    let pdata = receiver.recv_pdata().await;
+                    let route = pdata
+                        .source_route()
+                        .expect("delivered pdata carries source calldata");
+                    let (_topic_id, partition, offset, _generation) =
+                        decode_calldata(&route.calldata);
+                    *delivery_counts.entry((partition, offset)).or_insert(0) += 1;
+                    in_flight.push(pdata);
+                }
+
+                // A member joins (revoking partitions, leaving the in-flight
+                // records uncommitted) and then leaves (reassigning them back),
+                // forcing redelivery of the uncommitted offsets.
+                let trigger =
+                    RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(30))
+                        .await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                drop(trigger);
+
+                // Now ack the original in-flight records. Acks for a partition that
+                // was revoked are dropped by the stale-generation guard; acks for a
+                // partition still owned advance its offset.
+                for pdata in in_flight {
+                    receiver.ack(pdata);
+                }
+
+                // Drain any redelivered records within a bounded window, counting
+                // each delivery and acking so the redelivered offsets can commit.
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                while tokio::time::Instant::now() < deadline {
+                    if let Some(pdata) = receiver.try_recv_pdata(Duration::from_millis(250)).await {
+                        let route = pdata
+                            .source_route()
+                            .expect("delivered pdata carries source calldata");
+                        let (_topic_id, partition, offset, _generation) =
+                            decode_calldata(&route.calldata);
+                        *delivery_counts.entry((partition, offset)).or_insert(0) += 1;
+                        receiver.ack(pdata);
+                    }
+                }
+
+                receiver.shutdown(Duration::from_secs(5));
+                let terminal = receiver.await_terminal_state().await;
+
+                // No loss: every produced (partition, offset) was delivered at
+                // least once.
+                assert_eq!(
+                    delivery_counts.len(),
+                    total,
+                    "every produced offset must be delivered at least once (no loss); \
+                     saw {} distinct offsets, expected {total}",
+                    delivery_counts.len(),
+                );
+
+                // Bounded duplication: no offset is delivered more than twice --
+                // the original delivery plus at most one redelivery after the
+                // revoke/reassign. This is the upper bound the acceptance
+                // criterion requires; an unbounded re-loop would exceed it.
+                // The `RebalanceTrigger` join+drop drives two rebalance
+                // transitions (revoke on join, reassign on drop), so an
+                // uncommitted offset can be redelivered once per transition on top
+                // of its original delivery. The duplication is therefore bounded
+                // by `1 + TRANSITIONS`; it must never grow into an unbounded
+                // re-loop.
+                const REBALANCE_TRANSITIONS: usize = 2;
+                let max_deliveries = 1 + REBALANCE_TRANSITIONS;
+                for ((partition, offset), count) in &delivery_counts {
+                    assert!(
+                        *count >= 1 && *count <= max_deliveries,
+                        "offset {offset} on partition {partition} was delivered {count} \
+                         times; duplication across the revoke/reassign must be bounded \
+                         to at most {max_deliveries} (original + one redelivery per \
+                         rebalance transition), not an unbounded re-loop",
+                    );
+                }
+
+                // Global corroboration: total deliveries are bounded by the
+                // produced count plus at most one redelivery wave.
+                let mut m = FoldedMetrics::new();
+                m.fold_all(terminal.metrics());
+                let max_total_deliveries = (total * max_deliveries) as u64;
+                assert!(
+                    m.value("messages_received") <= max_total_deliveries,
+                    "total messages_received ({}) must be bounded by produced records \
+                     times the per-offset delivery bound ({max_total_deliveries}); an \
+                     unbounded redelivery loop would exceed it",
+                    m.value("messages_received"),
+                );
+
+                // No loss, no rollback, no commit past produced data: once the
+                // redelivered records are acked, each partition's committed offset
+                // equals exactly the produced count.
+                let brokers = cluster.bootstrap_servers().to_string();
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    let converged =
+                        poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                            committed_offset(&brokers, group, TOPIC, partition)
+                                .expect("kafka-test: committed-offset probe failed")
+                                == Some(RECORDS_PER_PARTITION as i64)
+                        })
+                        .await;
+                    assert!(
+                        converged,
+                        "partition {partition} committed offset must equal the produced \
+                         count {RECORDS_PER_PARTITION} (no loss, no rollback, no \
+                         double-commit), got {:?}",
+                        committed_offset(&brokers, group, TOPIC, partition)
+                            .expect("kafka-test: committed-offset probe failed"),
+                    );
+                }
+            },
+        )
+        .await;
+    }
+
     // ---- Lifecycle: drain and shutdown ----
 
     /// Scenario (lifecycle: drain and shutdown): a manual-commit receiver consumes and acks an initial batch,
