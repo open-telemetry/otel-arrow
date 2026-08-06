@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fmt::Debug;
+use std::{fmt::Debug, marker::PhantomData};
 
 use crate::*;
 
@@ -20,7 +20,7 @@ pub trait MapValue: Debug {
     // of support for this method
     fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
-    fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool;
+    fn get_items<'a>(&'a self, item_callback: &mut dyn KeyValueCallback<'a>) -> bool;
 
     fn to_string(&self) -> ValueString<'_> {
         let mut values = serde_json::Map::new();
@@ -34,31 +34,35 @@ pub trait MapValue: Debug {
     }
 }
 
-pub trait KeyValueCallback {
-    fn next(&mut self, key: &str, value: Value) -> bool;
+pub trait KeyValueCallback<'a> {
+    fn next(&mut self, key: &str, value: Value<'a>) -> bool;
 }
 
-pub struct KeyValueClosureCallback<F>
+pub struct KeyValueClosureCallback<'a, F>
 where
-    F: FnMut(&str, Value) -> bool,
+    F: FnMut(&str, Value<'a>) -> bool,
 {
     callback: F,
+    marker: PhantomData<&'a usize>,
 }
 
-impl<F> KeyValueClosureCallback<F>
+impl<'a, F> KeyValueClosureCallback<'a, F>
 where
-    F: FnMut(&str, Value) -> bool,
+    F: FnMut(&str, Value<'a>) -> bool,
 {
-    pub fn new(callback: F) -> KeyValueClosureCallback<F> {
-        Self { callback }
+    pub fn new(callback: F) -> KeyValueClosureCallback<'a, F> {
+        Self {
+            callback,
+            marker: Default::default(),
+        }
     }
 }
 
-impl<F> KeyValueCallback for KeyValueClosureCallback<F>
+impl<'a, F> KeyValueCallback<'a> for KeyValueClosureCallback<'a, F>
 where
-    F: FnMut(&str, Value) -> bool,
+    F: FnMut(&str, Value<'a>) -> bool,
 {
-    fn next(&mut self, key: &str, value: Value) -> bool {
+    fn next(&mut self, key: &str, value: Value<'a>) -> bool {
         (self.callback)(key, value)
     }
 }

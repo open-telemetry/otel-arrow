@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{fmt::Debug, ops::*};
+use std::{fmt::Debug, marker::PhantomData, ops::*};
 
 use crate::*;
 
@@ -18,12 +18,15 @@ pub trait ArrayValue: Debug {
     // of support for this method
     fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
-    fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut dyn IndexValueCallback<'a>) -> bool {
         self.get_item_range((..).into(), item_callback)
     }
 
-    fn get_item_range(&self, range: ArrayRange, item_callback: &mut dyn IndexValueCallback)
-    -> bool;
+    fn get_item_range<'a>(
+        &'a self,
+        range: ArrayRange,
+        item_callback: &mut dyn IndexValueCallback<'a>,
+    ) -> bool;
 
     fn to_string(&self) -> ValueString<'_> {
         let mut values = Vec::new();
@@ -122,31 +125,35 @@ impl From<RangeInclusive<usize>> for ArrayRange {
     }
 }
 
-pub trait IndexValueCallback {
-    fn next(&mut self, index: usize, value: Value) -> bool;
+pub trait IndexValueCallback<'a> {
+    fn next(&mut self, index: usize, value: Value<'a>) -> bool;
 }
 
-pub struct IndexValueClosureCallback<F>
+pub struct IndexValueClosureCallback<'a, F>
 where
-    F: FnMut(usize, Value) -> bool,
+    F: FnMut(usize, Value<'a>) -> bool,
 {
     callback: F,
+    marker: PhantomData<&'a usize>,
 }
 
-impl<F> IndexValueClosureCallback<F>
+impl<'a, F> IndexValueClosureCallback<'a, F>
 where
-    F: FnMut(usize, Value) -> bool,
+    F: FnMut(usize, Value<'a>) -> bool,
 {
-    pub fn new(callback: F) -> IndexValueClosureCallback<F> {
-        Self { callback }
+    pub fn new(callback: F) -> IndexValueClosureCallback<'a, F> {
+        Self {
+            callback,
+            marker: Default::default(),
+        }
     }
 }
 
-impl<F> IndexValueCallback for IndexValueClosureCallback<F>
+impl<'a, F> IndexValueCallback<'a> for IndexValueClosureCallback<'a, F>
 where
-    F: FnMut(usize, Value) -> bool,
+    F: FnMut(usize, Value<'a>) -> bool,
 {
-    fn next(&mut self, index: usize, value: Value) -> bool {
+    fn next(&mut self, index: usize, value: Value<'a>) -> bool {
         (self.callback)(index, value)
     }
 }

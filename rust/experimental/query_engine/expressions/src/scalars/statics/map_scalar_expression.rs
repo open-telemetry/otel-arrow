@@ -58,7 +58,7 @@ impl MapValue for MapScalarExpression {
         Ok(self.values.get(key).map(|v| v as &dyn AsStaticValue))
     }
 
-    fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut dyn KeyValueCallback<'a>) -> bool {
         for (key, value) in &self.values {
             if !item_callback.next(key, value.to_value()) {
                 return false;

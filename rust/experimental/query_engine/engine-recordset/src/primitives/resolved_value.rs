@@ -437,10 +437,10 @@ impl ArrayValue for List<'_> {
         Err("List does not support static access".to_string())
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut dyn IndexValueCallback<'a>,
     ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
             if !item_callback.next(index, value.to_value()) {
@@ -514,10 +514,10 @@ impl ArrayValue for ArraySlice<'_> {
             .get_static(self.range_start_inclusive + index)
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut dyn IndexValueCallback<'a>,
     ) -> bool {
         let start = range
             .get_start_range_inclusize()
@@ -671,10 +671,10 @@ impl ArrayValue for Sequence<'_> {
         Err("Sequence does not support static access".to_string())
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut dyn IndexValueCallback<'a>,
     ) -> bool {
         let len = self.len();
 
@@ -1042,10 +1042,10 @@ impl ArrayValue for ResolvedArrayValue<'_> {
         self.get_array().get_static(index)
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut dyn IndexValueCallback<'a>,
     ) -> bool {
         self.get_array().get_item_range(range, item_callback)
     }
@@ -1205,7 +1205,7 @@ impl MapValue for ResolvedMapValue<'_> {
         self.get_map().get_static(key)
     }
 
-    fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut dyn KeyValueCallback<'a>) -> bool {
         self.get_map().get_items(item_callback)
     }
 }
