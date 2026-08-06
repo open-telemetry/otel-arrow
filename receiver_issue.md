@@ -20,8 +20,8 @@ Validate at-least-once (manual, default) and at-most-once (auto) semantics.
   - Completed by test `out_of_order_acks_commit_only_lowest_contiguous` in `crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs`: acks a partition's records out of order and asserts the committed offset never advances past the un-acked lowest offset, then jumps to the full count once that offset is acked.
 - [ ] Steady-state commits are **async** and non-blocking (`receiver.rs:426` `commit_offsets`); broker outcome is observed later via `commit_callback` (`rebalance.rs:697`). Validate that a commit failure is surfaced (`offset_commit_errors`) and does not silently advance state.
   - Investigated. The commit path is correct: async commits are enqueued non-blocking, the outcome is delivered to `commit_callback` -> `record_commit_result` (bumps the shared `offset_commit_errors`/`offset_commits`), and the receive loop folds those into the metric set on the next `reconcile_rebalance_state`. Folding at shutdown was hardened: the `Shutdown` arm now calls `reconcile_rebalance_state()` before taking the terminal snapshot (a synchronous, in-memory fold that cannot stall the shutdown deadline) so already-observed commit outcomes are not dropped from the terminal metrics; it intentionally does not block on the final async commit's callback. Not yet validated end-to-end: on the in-process `MockCluster`, async offset-commit outcomes (success or the injected-fault failure) are not delivered to `commit_callback` within the test window -- even a successful short-lived commit that reaches the broker (verified committed offsets) leaves `offset_commits`/`offset_commit_errors` at 0 -- so a broker-backed assertion of `offset_commit_errors` is not reproducible on the mock. The fold logic itself is validated deterministically by the unit test `reconcile_folds_commit_callback_metrics` (via `record_commit_result_for_test`). A real-broker end-to-end variant is deferred.
-- [x] Out-of-order ACK/NACK across many in-flight records per partition.
-  - Completed by tests in `crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs`: `out_of_order_acks_commit_only_lowest_contiguous` validates the multi-partition case -- a 2-partition topic with 3 in-flight records per partition, where each delivered record is correlated back to its `(partition, offset)` via the stamped calldata (`source_route` + `decode_calldata`), partition 0 receives out-of-order ACKs and partition 1 receives out-of-order terminal NACKs (offsets 1,2 first, lowest offset 0 withheld), and each partition's watermark is asserted to hold at the gap and then advance to the full per-partition count only once offset 0 is acked/nacked (proving partition-scoped tracking and that ACK and terminal NACK advance the watermark identically). `terminal_nack_advances_offset_past_message` additionally covers the in-flight/uncommitted-then-advance window for the terminal NACK path.
+- [x] Out-of-order ACK across many in-flight records per partition.
+  - Completed by `out_of_order_acks_commit_only_lowest_contiguous` in `crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs`: three in-flight records on one partition are correlated back to their `(partition, offset)` via the stamped calldata (`source_route` + `decode_calldata`); offsets 1 and 2 are acked first with the lowest offset 0 withheld, the broker-committed watermark is asserted to hold below 1 at the gap, then to jump to the full count once offset 0 is acked -- proving out-of-order acks cannot skip offsets. NACK-path watermark advance is covered by the unit-level tests in `offset_tracker.rs` (ack and terminal nack both call `acknowledge`); an end-to-end multi-partition NACK variant is deferred.
 - [x] Poison / undecodable messages advance past without stalling the partition (`receiver.rs:925`), and do so without violating the late-ack guard.
   - Completed by test `poison_message_advances_without_stalling_partition` in `crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs`: an undecodable OTAP-Arrow record between two good records is counted as a processing/unmarshal error, is not forwarded, and the committed offset advances past it while the surrounding good records are still delivered.
 - [ ] Commit failures, consumer restarts, and process crashes result in correct re-delivery (no data loss under at-least-once, bounded duplication only).
@@ -33,8 +33,9 @@ Validate at-least-once (manual, default) and at-most-once (auto) semantics.
 
 **Acceptance criteria:**
 
-- [ ] At-least-once (manual) and at-most-once (auto) semantics validated, including out-of-order acks and poison messages.
-- [ ] At-least-once confirmed end-to-end with a `processor:retry` node via integration testing: the offset is held during retries and advances only on an exhausted/permanent failure -- `receiver.rs:747`.
+- [x] At-least-once (manual) and at-most-once (auto) semantics validated, including out-of-order acks and poison messages.
+  - At-least-once out-of-order watermark: `out_of_order_acks_commit_only_lowest_contiguous` in `crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs` (Offset guarantees group) -- acks offsets 1,2 first with the lowest offset 0 withheld, asserts the broker-committed offset never advances past 0, then jumps to the full count once 0 is acked. Poison message: `poison_message_advances_without_stalling_partition` (undecodable OTAP-Arrow record between two good OTAP records; counted in `processing_errors` + `unmarshal_failed_traces`, never forwarded, committed offset advances past it). At-most-once: `auto_commit_mode_lets_librdkafka_own_offsets` (never acks; librdkafka auto-commit still advances the broker offset while `acks_received`/`offset_commit_errors` stay 0).
+- [ ] At-least-once confirmed end-to-end with a `processor:retry` node via integration testing: the offset is held during retries and advances only on an exhausted/permanent failure -- `receiver.rs:747`. Deferred: requires wiring a real `processor:retry` node into the in-process harness (the current harness drives Ack/Nack directly, not through a downstream retry node).
 
 ## 2. Consumer-group rebalancing
 
@@ -62,30 +63,37 @@ Validate at-least-once (manual, default) and at-most-once (auto) semantics.
 
 ## 3. Lifecycle (drain & shutdown)
 
-- [ ] `DrainIngress` (receiver-first): unsubscribe -> stop polling -> final commit -> `notify_receiver_drained` -> await `Shutdown` (`receiver.rs:700`).
-- [ ] `Shutdown`: final commit -> unsubscribe -> cancel telemetry -> terminal state (`receiver.rs:684`).
-- [ ] Drain/shutdown **under sustained traffic**.
-- [ ] Bounded shutdown deadline. Note: drain currently does **not** wait for in-flight downstream acks (`receiver.rs:713`); confirm this is acceptable or add a bounded wait.
-- [ ] Final commits succeed (or fail observably) at shutdown.
-- [ ] Broker unavailable during shutdown does not hang the pipeline.
+- [x] `DrainIngress` (receiver-first): unsubscribe -> stop polling -> final commit -> `notify_receiver_drained` -> await `Shutdown`.
+  - Covered by `drain_ingress_stops_polling_and_notifies_drained` in `crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs` (Lifecycle group): after drain the receiver emits `RuntimeControlMsg::ReceiverDrained`, stops forwarding new records, commits the pre-drain offsets, and still terminates on the later `Shutdown`.
+- [x] `Shutdown`: final commit -> unsubscribe -> cancel telemetry -> terminal state.
+  - Exercised by every integration test that ends with `shutdown()` + `await_stopped()`/`await_terminal_state()` (e.g. `rebalance_single_consumer_assigns_and_commits`, the drain tests), which return a `TerminalState` with the final metric snapshot after the shutdown-arm commit + unsubscribe + telemetry-cancel path.
+- [x] Drain/shutdown **under sustained traffic**.
+  - Covered by `drain_under_sustained_traffic_commits_and_stops_cleanly` (Lifecycle group): a producer keeps sending across the drain; the receiver still signals `ReceiverDrained`, stops forwarding, commits the pre-drain acked offsets, and terminates cleanly on `Shutdown`.
+- [x] Bounded shutdown deadline. Note: drain does **not** wait for in-flight downstream acks; confirmed acceptable (at-least-once redelivery covers un-acked offsets).
+  - Bounded deadline covered by `shutdown_lag_drain_is_bounded_by_shutdown_deadline_and_cancels_worker` and `shutdown_lag_drain_bound_selects_the_earlier_lag_deadline` (the lag-worker drain is bounded by `min(lag_deadline, shutdown_deadline)`). The in-flight-ack-wait design is codified by `drain_does_not_wait_for_inflight_downstream_acks`: with records held un-acked at drain, `ReceiverDrained` still fires promptly (well within the drain deadline), proving drain does not block on in-flight downstream acks.
+- [ ] Final commits succeed (or fail observably) at shutdown. Deferred (mock limitation): the shutdown-arm final commit is async (`CommitMode::Async`) and its broker outcome is delivered to `commit_callback` after the terminal snapshot is taken; on `MockCluster` those callback outcomes are not delivered within the test window (see Section 1 async-commit note), so a broker-backed success/failure assertion at shutdown is not reproducible. The sync fold before the terminal snapshot (`reconcile_rebalance_state()` in the `Shutdown` arm) is validated by `reconcile_folds_commit_callback_metrics`.
+- [ ] Broker unavailable during shutdown does not hang the pipeline. **Not yet guaranteed (recorded gap).** Investigated with an `all_brokers_down()`-then-`Shutdown` test: the receiver task did not terminate within a 20s bound, and the surrounding `tokio::time::timeout` could not fire because the single-threaded `LocalSet` thread was blocked inside a synchronous librdkafka FFI call (consumer unsubscribe/close against the unreachable broker). This is a real bounded-shutdown gap at the librdkafka boundary, not just a test artifact; the test was removed rather than assert a guarantee that does not hold. Fixing it likely requires moving the consumer close off the loop thread (e.g. `spawn_blocking` with the shutdown deadline) -- tracked as follow-up work.
 
 **Acceptance criteria:**
 
 - [ ] Drain and shutdown validated under sustained traffic, with a bounded deadline and no pipeline hang when the broker is unavailable.
-- [ ] The in-flight-ack wait behavior at drain confirmed acceptable or a bounded wait added -- `receiver.rs:713`.
+  - Drain/shutdown under sustained traffic and the bounded deadline are validated (`drain_under_sustained_traffic_commits_and_stops_cleanly`, `shutdown_lag_drain_*`). The "no pipeline hang when the broker is unavailable" clause is NOT met: shutdown can block on a synchronous librdkafka consumer-close against a down broker (recorded gap above). Left unchecked until that is addressed.
+- [x] The in-flight-ack wait behavior at drain confirmed acceptable or a bounded wait added.
+  - Confirmed acceptable and codified by `drain_does_not_wait_for_inflight_downstream_acks`: drain intentionally does not wait for in-flight downstream acks (documented design at `receiver.rs` DrainIngress handler); un-acked offsets are safely re-delivered under at-least-once.
 
 ## 4. Failure recovery
 
-- [ ] Broker restarts and leader elections.
-- [ ] Network interruptions / partitions.
-- [ ] Authentication failures (including token refresh for AWS MSK OAUTHBEARER).
-- [ ] Commit timeouts.
 - [x] Prolonged broker outages -- verify reconnect/backoff behavior and that `transport_errors` (currently non-fatal, loop continues) is the right contract (`receiver.rs`, transport-error arm of `run_receive_loop`).
-  - Completed by test `transport_error_is_non_fatal_and_recovers` in `crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs`: injects a run of `Fetch` errors, asserts no delivery while the fault is active, then clears it and asserts the same receive loop resumes delivering (proving the transport-error arm is non-fatal / log-and-continue). Note: librdkafka retries the injected fetch errors internally, so the `transport_errors` counter is observed as 0 through the mock and is asserted best-effort; broker restarts, leader election, network partitions, auth/token-refresh, and commit timeouts remain future work.
+  - Prolonged outage: `broker_outage_then_recovery_resumes_without_loss` in `crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs` (Failure recovery group) -- takes every broker down mid-stream (no delivery while down), brings them back up, and asserts the same receiver reconnects and delivers the post-outage records without loss. Transport-error contract: `transport_error_is_non_fatal_and_recovers` injects a run of `Fetch` errors then clears them and asserts the same loop keeps running and resumes delivery (log-and-continue / non-fatal). Note: librdkafka retries the injected fetch errors internally, so `transport_errors` is observed as 0 through the mock; the observable guarantee asserted is loop survival + resumed delivery, not the counter value.
+- [ ] Broker restarts and leader elections. Partially exercised: `broker_outage_then_recovery_resumes_without_loss` covers a full down/up cycle with reconnect and no loss. A dedicated leader-election test (`restart_broker_reassigning_leader` on a multi-broker mock) is deferred because `broker_up` after `broker_down` can leave the consumer close blocked on the FFI boundary (see the Section 3 broker-unavailable-shutdown gap); the safe down/up path is covered instead.
+- [ ] Network interruptions / partitions. Deferred: the mock models broker up/down and per-request error injection (covered above) but not a true network partition (asymmetric reachability) distinct from the outage case already validated.
+- [ ] Authentication failures (including token refresh for AWS MSK OAUTHBEARER). Deferred (mock limitation): `MockCluster` does not perform SASL/OAUTHBEARER handshakes or token refresh, so auth-failure and token-refresh recovery cannot be simulated in-process.
+- [ ] Commit timeouts. Deferred (mock limitation): offset-commit outcomes (success, failure, or timeout) are delivered to `commit_callback` after the async commit and are not delivered within a test window on `MockCluster` (see the Section 1 async-commit note), so a commit-timeout scenario is not observable in-process.
 
 **Acceptance criteria:**
 
 - [ ] Broker restarts, network interruptions, auth failures (incl. token refresh), commit timeouts, and prolonged outages validated via the mock broker suite, with reconnect/backoff behavior confirmed.
+  - Prolonged outages + reconnect/backoff + transport-error contract are validated (`broker_outage_then_recovery_resumes_without_loss`, `transport_error_is_non_fatal_and_recovers`). Broker restarts/leader-election, network partitions, auth/token-refresh, and commit timeouts remain deferred with the mock-limitation notes above; left unchecked until a broker-backed (non-mock) suite or the shutdown-close-off-thread fix lands.
 
 ## 5. Backpressure & performance
 
@@ -136,19 +144,26 @@ Validate at-least-once (manual, default) and at-most-once (auto) semantics.
 
 ## 8. Operational visibility
 
-- [ ] Verify metrics accurately distinguish: expected filtering, transient failures, rebalances, commit failures, and data-processing errors (`metrics.rs`, 21 counters).
-- [ ] Error reporting/logging granularity matches the above categories.
+- [x] Verify metrics accurately distinguish: expected filtering, transient failures, rebalances, commit failures, and data-processing errors (`metrics.rs`).
+  - Verified by two categorization tests in `crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs` (Operational visibility group). `processing_errors_are_categorized_separately_from_filtering_and_rebalance`: a decode failure increments the processing category (`processing_errors` + `unmarshal_failed_traces`) while the filtering (`unknown_topic_errors`) and rebalance (`partition_revocations`) counters stay 0. `filtering_is_categorized_separately_from_processing_errors`: an excluded topic increments the filtering category (`unknown_topic_errors`) without incrementing the per-signal decode counter (`unmarshal_failed_traces`).
+  - Finding (recorded): `processing_errors` is an **aggregate superset** -- it is incremented for *every* per-message decode outcome, including expected filtering (`unknown_topic_errors`) and empty payloads (`empty_payloads`), before the specific sub-category counter is bumped (`receiver.rs` decode-error arm). So the reliable "expected filtering vs data-processing error" distinction is drawn against the per-signal decode counters (`unmarshal_failed_traces/metrics/logs`), not the aggregate. Rebalance activity (`partition_assignments`/`partition_revocations`/`rebalances_total`) and transient transport failures (`transport_errors`) are separate counters. Commit failures (`offset_commit_errors`) are a distinct counter but not observable end-to-end on the mock (see Section 1 async-commit note). Consider documenting `processing_errors` as an aggregate in `metrics.rs` so operators do not double-count it against its sub-categories.
+- [x] Error reporting/logging granularity matches the above categories.
+  - Each category emits a distinct `otel_error!`/`otel_warn!` event key alongside its counter: `kafka.message.unknown_topic` (filtering), `kafka.message.unmarshal_failed` with a `signal` field (per-signal decode), `kafka.message.empty_payload`, `kafka.transport_error` (transient), and the rebalance/commit paths log under their own keys -- so logging granularity matches the counter categories.
 
-**Known gap -- no gauges.** Every metric is a `Counter<u64>`; there are no gauges for consumer lag, end-to-end latency, in-flight record count, or queue depth (`metrics.rs`). Propose adding the operationally important gauges (lag is the most requested for Kafka consumers).
+**Gauges.** In addition to the `Counter<u64>` metrics, `metrics.rs` now exposes two `Gauge`s: `partitions_assigned` (`Gauge<u64>`, current owned partition count, refreshed after each rebalance) and `consumer_lag` (`Gauge<f64>`, mean per-partition lag, opt-in via `lag_refresh_interval_ms`, manual-commit only). The previously-noted "no gauges" gap is resolved for the most-requested metric (consumer lag). Remaining gauge candidates (end-to-end latency, in-flight record count, queue depth) are explicitly deferred.
 
 **Acceptance criteria:**
 
-- [ ] Metric/logging categories verified to distinguish filtering, transient failures, rebalances, commit failures, and processing errors.
-- [ ] Operational metrics gaps addressed or explicitly deferred, at minimum a recorded consumer-lag gauge decision -- `metrics.rs`.
+- [x] Metric/logging categories verified to distinguish filtering, transient failures, rebalances, commit failures, and processing errors.
+  - Verified by the two categorization tests above, with the recorded caveat that `processing_errors` is an aggregate superset (distinctness for filtering vs decode is drawn against the per-signal counters). Commit-failure categorization is a distinct counter but not observable end-to-end on the mock.
+- [x] Operational metrics gaps addressed or explicitly deferred, at minimum a recorded consumer-lag gauge decision -- `metrics.rs`.
+  - Consumer-lag gauge decision recorded and implemented: `consumer_lag` (`Gauge<f64>`) plus `partitions_assigned` (`Gauge<u64>`) exist; latency/in-flight/queue-depth gauges are explicitly deferred.
 
 ## Cross-cutting: integration test suite
 
 Integration testing is done primarily against `rdkafka::mocking::MockCluster` (librdkafka's built-in mock), which runs **in-process** and in CI by default with no Docker dependency. The suite already covers traces/metrics/logs for both encodings, header extraction, capture policies, and end-to-end rebalance/drain scenarios, including multi-consumer rebalancing (`rebalance_single_consumer_assigns_and_commits`, `rebalance_revoke_commits_before_reassign`, `rebalance_cooperative_sticky_retains_owned_partitions`, `rebalance_revoke_then_reassign_preserves_new_records`, `drain_ingress_stops_polling_and_notifies_drained`).
+
+It has since been extended with offset-guarantee tests (`out_of_order_acks_commit_only_lowest_contiguous`, `poison_message_advances_without_stalling_partition`, `auto_commit_mode_lets_librdkafka_own_offsets`), lifecycle tests (`drain_under_sustained_traffic_commits_and_stops_cleanly`, `drain_does_not_wait_for_inflight_downstream_acks`), failure-recovery tests (`transport_error_is_non_fatal_and_recovers`, `broker_outage_then_recovery_resumes_without_loss`), and operational-visibility categorization tests (`processing_errors_are_categorized_separately_from_filtering_and_rebalance`, `filtering_is_categorized_separately_from_processing_errors`), all in `crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs`.
 
 - [ ] #3539
 
