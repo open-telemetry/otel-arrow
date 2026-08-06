@@ -40,6 +40,11 @@ pub struct KafkaReceiverMetrics {
     /// iteration; reflects the receiver's local outstanding depth (distinct from
     /// [`consumer_lag`], which measures the broker-committed group lag).
     ///
+    /// Scoped to the latest ownership generation per partition: when a partition
+    /// is revoked and reassigned, in-flight offsets from the old generation are
+    /// dropped from the tracker and are not counted here (only offsets tracked
+    /// under the current generation contribute).
+    ///
     /// Manual commit mode only (`commit.mode: manual`); stays `0` under
     /// auto-commit.
     #[metric(unit = "{message}")]
