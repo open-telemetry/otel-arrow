@@ -45,6 +45,7 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::{otel_info, otel_warn};
 
 const TERMINAL_CONTROL_PLANE_PERMITS: usize = 1;
+const HEAP_PROFILE_PERMITS: usize = 1;
 
 /// Control-plane error surfaced to admin handlers.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -225,6 +226,10 @@ struct AppState {
     /// from async HTTP handlers.
     terminal_control_plane_permits: Arc<Semaphore>,
 
+    /// Limits concurrent heap profile dumps to one at a time. Excess
+    /// requests are rejected immediately with HTTP 429.
+    heap_profile_permits: Arc<Semaphore>,
+
     /// Optional internal log tap for querying retained internal logs.
     log_tap: Option<InternalLogTapHandle>,
 
@@ -325,6 +330,7 @@ pub async fn run(
         metrics_registry,
         controller,
         terminal_control_plane_permits: Arc::new(Semaphore::new(TERMINAL_CONTROL_PLANE_PERMITS)),
+        heap_profile_permits: Arc::new(Semaphore::new(HEAP_PROFILE_PERMITS)),
         log_tap,
         memory_pressure_state,
         target_info,
