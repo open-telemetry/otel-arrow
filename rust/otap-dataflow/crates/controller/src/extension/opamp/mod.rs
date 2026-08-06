@@ -837,7 +837,6 @@ fn handle_server_to_agent_message(
     }
 
     if let Some(remote_config) = message.remote_config {
-        let config_hash_bytes = remote_config.config_hash.len();
         if let Some(remote_config_config) = remote_config.config {
             if Some(&remote_config.config_hash) != session_state.last_config_hash.as_ref() {
                 if let Some(config_file) = remote_config_config
@@ -852,8 +851,7 @@ fn handle_server_to_agent_message(
                             match serde_json::from_slice::<OtelDataflowSpec>(&config_file.body) {
                                 Ok(engine_config) => {
                                     otel_debug!(
-                                        "opamp.controller_extension.remote_config.accepted",
-                                        config_hash_bytes
+                                        "opamp.controller_extension.remote_config.accepted"
                                     );
                                     updates.engine_config = Some(EngineConfigUpdate {
                                         engine_config,
@@ -861,9 +859,7 @@ fn handle_server_to_agent_message(
                                     })
                                 }
                                 Err(e) => {
-                                    let message =
-                                        "Could not deserialize JSON encoded engine config"
-                                            .to_string();
+                                    let message = "Remote configuration was rejected; the current engine configuration remains active".to_string();
                                     otel_error!(
                                         "opamp.controller_extension.message.invalid_config_json",
                                         message = message,
@@ -878,8 +874,7 @@ fn handle_server_to_agent_message(
                         } else {
                             otel_debug!(
                                 "opamp.controller_extension.remote_config.empty",
-                                message = "Ignoring empty remote configuration body",
-                                config_hash_bytes
+                                message = "Ignoring empty remote configuration body"
                             );
                         }
                     } else {
@@ -923,10 +918,7 @@ fn handle_server_to_agent_message(
                 }
             }
         } else {
-            otel_debug!(
-                "opamp.controller_extension.remote_config.missing",
-                config_hash_bytes
-            );
+            otel_debug!("opamp.controller_extension.remote_config.missing");
         }
     }
 
@@ -1004,7 +996,6 @@ where
             if let Some(engine_config) = updates.engine_config {
                 otel_info!(
                     "opamp.controller_extension.remote_config.reconcile_start",
-                    config_hash_bytes = engine_config.config_hash.len(),
                     delete_missing = config.reconcile.delete_missing
                 );
                 // Send message to let the server we're applying the config
@@ -1916,7 +1907,10 @@ mod test {
         let applied = &requests[1];
         let status = applied.remote_config_status.as_ref().unwrap();
         assert_eq!(status.status, RemoteConfigStatuses::Failed as i32);
-        assert!(status.error_message.contains("Could not deserialize JSON"));
+        assert_eq!(
+            status.error_message,
+            "Remote configuration was rejected; the current engine configuration remains active"
+        );
     }
 
     #[tokio::test]
