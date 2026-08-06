@@ -388,26 +388,30 @@ mod tests {
     /// Guarantees: dead registrations are pruned without waiting for an update.
     #[test]
     fn layer_creation_prunes_dropped_dispatchers() {
-        let (filter, _handle) = RuntimeLogFilter::new(&level("warn"));
-        let first = filter.layer();
-        assert_eq!(filter.shared.layers.lock().unwrap().len(), 1);
-        drop(first);
+        crate::with_cleared_rust_log(|| {
+            let (filter, _handle) = RuntimeLogFilter::new(&level("warn"));
+            let first = filter.layer();
+            assert_eq!(filter.shared.layers.lock().unwrap().len(), 1);
+            drop(first);
 
-        let _second = filter.layer();
-        assert_eq!(filter.shared.layers.lock().unwrap().len(), 1);
+            let _second = filter.layer();
+            assert_eq!(filter.shared.layers.lock().unwrap().len(), 1);
+        });
     }
 
     /// Scenario: reconciliation reapplies the currently configured log level.
     /// Guarantees: an unchanged level preserves the existing dispatcher filter instance.
     #[test]
     fn unchanged_level_does_not_replace_filters() {
-        let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
-        let layer = filter.layer();
-        let before = layer.filter.load_full();
+        crate::with_cleared_rust_log(|| {
+            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let layer = filter.layer();
+            let before = layer.filter.load_full();
 
-        handle.apply(&level("warn"));
+            handle.apply(&level("warn"));
 
-        let after = layer.filter.load_full();
-        assert!(Arc::ptr_eq(&before, &after));
+            let after = layer.filter.load_full();
+            assert!(Arc::ptr_eq(&before, &after));
+        });
     }
 }
