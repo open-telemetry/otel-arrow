@@ -278,10 +278,7 @@ async fn connect_websocket(
 
         match connect_result {
             Ok((stream, _response)) => {
-                otel_info!(
-                    "opamp.controller_extension.ws_connect.success",
-                    message = "Connected to OpAMP server"
-                );
+                otel_info!("opamp.controller_extension.ws_connect.success");
                 return Some(stream);
             }
 
@@ -928,7 +925,6 @@ fn handle_server_to_agent_message(
         } else {
             otel_debug!(
                 "opamp.controller_extension.remote_config.missing",
-                message = "Remote configuration did not contain a config map",
                 config_hash_bytes
             );
         }
@@ -1046,10 +1042,9 @@ where
                         );
                     }
                     Ok(status) => {
-                        let failure_reason = status
-                            .failure_reason
-                            .as_deref()
-                            .unwrap_or("Remote configuration reconciliation failed");
+                        let failure_reason = status.failure_reason.as_deref().unwrap_or(
+                            "Controller returned a non-success status without a failure reason",
+                        );
                         otel_error!(
                             "opamp.controller_extension.remote_config.reconcile_failed",
                             message = failure_reason,
@@ -1060,8 +1055,7 @@ where
                     Err(error) => {
                         otel_error!(
                             "opamp.controller_extension.remote_config.reconcile_failed",
-                            message =
-                                format!("Remote configuration reconciliation failed: {error:?}")
+                            message =? error
                         );
                     }
                 }
