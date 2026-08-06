@@ -30,13 +30,14 @@
 //! Each WAL entry has this layout:
 //!
 //! ```text
-//! +----------+----------------+-----------------+----------+
-//! | len (4)  | entry_hdr (25) | slot_data (var) | crc (4)  |
-//! +----------+----------------+-----------------+----------+
+//! +----------+--------------------+-----------------+----------+
+//! | len (4)  | entry_hdr (25/41)  | slot_data (var) | crc (4)  |
+//! +----------+--------------------+-----------------+----------+
 //! ```
 //!
 //! - **len**: Size of `entry_hdr + slot_data` (excludes len and crc fields)
-//! - **entry_hdr**: Type (1), timestamp (8), sequence (8), slot_bitmap (8)
+//! - **entry_hdr**: Type (1), timestamp (8), sequence (8), slot_bitmap (8),
+//!   followed by an idempotency key (16) for version 2 bundle entries
 //! - **slot_data**: For each set bit: slot_id (2), fingerprint (32), rows (4),
 //!   payload_len (4), Arrow IPC bytes (payload_len)
 //! - **crc**: CRC32 over `entry_hdr + slot_data`
@@ -66,12 +67,13 @@ use std::path::{Path, PathBuf};
 use crc32fast::Hasher;
 
 use crate::logging::{otel_error, otel_warn};
-use crate::record_bundle::{SchemaFingerprint, SlotId};
+use crate::record_bundle::{IDEMPOTENCY_KEY_LEN, IdempotencyKey, SchemaFingerprint, SlotId};
 
 use super::header::WalHeader;
 use super::{
-    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, MAX_ROTATION_TARGET_BYTES, SCHEMA_FINGERPRINT_LEN,
-    SLOT_HEADER_LEN, WalError, WalOffset, WalResult,
+    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, ENTRY_TYPE_RECORD_BUNDLE_V2,
+    MAX_ROTATION_TARGET_BYTES, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN, WalError, WalOffset,
+    WalResult,
 };
 
 /// Maximum allowed entry size, derived from [`MAX_ROTATION_TARGET_BYTES`].
@@ -473,6 +475,7 @@ pub(crate) struct WalRecordBundle {
     pub ingestion_ts_nanos: i64,
     pub sequence: u64,
     pub slot_bitmap: u64,
+    pub idempotency_key: Option<IdempotencyKey>,
     pub slots: Vec<DecodedWalSlot>,
 }
 
@@ -619,13 +622,25 @@ fn decode_entry(
     let mut cursor = 0;
     let entry_type = body[cursor];
     cursor += 1;
-    if entry_type != ENTRY_TYPE_RECORD_BUNDLE {
+    if !matches!(
+        entry_type,
+        ENTRY_TYPE_RECORD_BUNDLE | ENTRY_TYPE_RECORD_BUNDLE_V2
+    ) {
         return Err(WalError::UnsupportedEntry(entry_type));
     }
 
     let ingestion_ts_nanos = read_i64(body, &mut cursor, "ingestion timestamp")?;
     let sequence = read_u64(body, &mut cursor, "sequence")?;
     let slot_bitmap = read_u64(body, &mut cursor, "slot bitmap")?;
+    let idempotency_key = if entry_type == ENTRY_TYPE_RECORD_BUNDLE_V2 {
+        let key: IdempotencyKey =
+            slice_bytes(body, &mut cursor, IDEMPOTENCY_KEY_LEN, "idempotency key")?
+                .try_into()
+                .expect("idempotency key slice has the configured length");
+        Some(key)
+    } else {
+        None
+    };
 
     let expected_slots = slot_bitmap.count_ones() as usize;
     let mut slots = Vec::with_capacity(expected_slots);
@@ -675,6 +690,7 @@ fn decode_entry(
         ingestion_ts_nanos,
         sequence,
         slot_bitmap,
+        idempotency_key,
         slots,
     })
 }

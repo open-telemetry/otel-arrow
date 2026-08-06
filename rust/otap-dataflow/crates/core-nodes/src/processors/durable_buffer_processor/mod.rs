@@ -953,6 +953,7 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let (context, payload) = data.into_parts();
+        let idempotency_key = context.idempotency_key();
 
         // Capture signal type before consuming the payload
         let signal_type = payload.signal_type();
@@ -990,6 +991,7 @@ impl DurableBuffer {
                         // (protobuf wire-format scan, no full deserialization) and cached.
                         match OtlpBytesAdapter::new(otlp_bytes) {
                             Ok(adapter) => {
+                                let adapter = adapter.with_idempotency_key(idempotency_key);
                                 let num_items = adapter.cached_item_count();
                                 let result = match engine.ingest(&adapter).await {
                                     Ok(()) => Ok(()),
@@ -1029,7 +1031,8 @@ impl DurableBuffer {
                             Ok(records) => {
                                 // Count items from Arrow data (cheap - just num_rows)
                                 let num_items = records.num_items() as u64;
-                                let adapter = OtapRecordBundleAdapter::new(records);
+                                let adapter = OtapRecordBundleAdapter::new(records)
+                                    .with_idempotency_key(idempotency_key);
                                 let result = match engine.ingest(&adapter).await {
                                     Ok(()) => Ok(()),
                                     // Ingest failed: NACK with the Arrow records we tried to store
@@ -1065,7 +1068,8 @@ impl DurableBuffer {
             OtapPayload::OtapArrowRecords(records) => {
                 // Native Arrow data: count items (cheap) and store directly.
                 let num_items = records.num_items() as u64;
-                let adapter = OtapRecordBundleAdapter::new(records);
+                let adapter =
+                    OtapRecordBundleAdapter::new(records).with_idempotency_key(idempotency_key);
                 let result = match engine.ingest(&adapter).await {
                     Ok(()) => Ok(()),
                     Err(e) => Err((e, OtapPayload::OtapArrowRecords(adapter.into_inner()))),

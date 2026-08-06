@@ -14,7 +14,8 @@ use arrow_array::{Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 
 use crate::record_bundle::{
-    BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
+    BundleDescriptor, IdempotencyKey, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor,
+    SlotId,
 };
 
 /// Creates a standard test schema with `id: Int32` and `name: Utf8` columns.
@@ -92,6 +93,7 @@ pub fn slot_descriptors() -> Vec<SlotDescriptor> {
 pub struct TestBundle {
     descriptor: BundleDescriptor,
     payloads: HashMap<SlotId, (SchemaFingerprint, RecordBatch)>,
+    idempotency_key: Option<IdempotencyKey>,
 }
 
 impl TestBundle {
@@ -101,7 +103,15 @@ impl TestBundle {
         Self {
             descriptor: BundleDescriptor::new(slots),
             payloads: HashMap::new(),
+            idempotency_key: None,
         }
+    }
+
+    /// Attaches an idempotency key to the test bundle.
+    #[must_use]
+    pub const fn with_idempotency_key(mut self, idempotency_key: IdempotencyKey) -> Self {
+        self.idempotency_key = Some(idempotency_key);
+        self
     }
 
     /// Adds a payload to the bundle for the specified slot.
@@ -124,6 +134,10 @@ impl RecordBundle for TestBundle {
 
     fn ingestion_time(&self) -> SystemTime {
         SystemTime::now()
+    }
+
+    fn idempotency_key(&self) -> Option<IdempotencyKey> {
+        self.idempotency_key
     }
 
     fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {

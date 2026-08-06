@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use arrow_array::types::UInt32Type;
 
-use crate::record_bundle::{ArrowPrimitive, SchemaFingerprint, SlotId};
+use crate::record_bundle::{ArrowPrimitive, IdempotencyKey, SchemaFingerprint, SlotId};
 
 use super::error::SegmentError;
 
@@ -23,7 +23,10 @@ use super::error::SegmentError;
 pub(super) const SEGMENT_MAGIC: &[u8; 8] = b"QUIVER\0S";
 
 /// Current segment file format version.
-pub(super) const SEGMENT_VERSION: u16 = 1;
+pub(super) const SEGMENT_VERSION: u16 = 2;
+
+/// Oldest segment file format version supported by the reader.
+pub(super) const MIN_SUPPORTED_SEGMENT_VERSION: u16 = 1;
 
 /// Size of the fixed trailer at the end of the segment file.
 /// Layout: footer_size (4) + magic (8) + crc32 (4) = 16 bytes
@@ -299,6 +302,8 @@ impl SlotChunkRef {
 pub struct ManifestEntry {
     /// Zero-based index of this bundle within the segment.
     pub bundle_index: u32,
+    /// Stable idempotency key for this bundle, when available.
+    idempotency_key: Option<IdempotencyKey>,
     /// Number of logical data items in this bundle.
     ///
     /// For Arrow bundles this is `num_rows()`, for OTLP pass-through
@@ -313,11 +318,28 @@ impl ManifestEntry {
     /// Creates a new manifest entry for the given bundle index and item count.
     #[must_use]
     pub fn new(bundle_index: u32, item_count: u64) -> Self {
+        Self::new_with_idempotency_key(bundle_index, item_count, None)
+    }
+
+    /// Creates a manifest entry with an optional stable idempotency key.
+    #[must_use]
+    pub fn new_with_idempotency_key(
+        bundle_index: u32,
+        item_count: u64,
+        idempotency_key: Option<IdempotencyKey>,
+    ) -> Self {
         Self {
             bundle_index,
+            idempotency_key,
             item_count,
             slot_refs: HashMap::new(),
         }
+    }
+
+    /// Returns the stable idempotency key for this bundle, when available.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> Option<IdempotencyKey> {
+        self.idempotency_key
     }
 
     /// Returns the number of logical data items in this bundle.
@@ -427,7 +449,7 @@ impl std::fmt::Display for SegmentSeq {
 // Footer
 // -----------------------------------------------------------------------------
 
-/// Segment file footer structure (version 1).
+/// Segment file footer structure shared by versions 1 and 2.
 ///
 /// The footer contains metadata needed to locate and interpret the segment's
 /// stream directory and batch manifest. Future versions may add additional
@@ -480,7 +502,7 @@ impl Footer {
         buf
     }
 
-    /// Decodes a version 1 footer from bytes.
+    /// Decodes a supported segment footer from bytes.
     ///
     /// # Errors
     ///
@@ -493,7 +515,7 @@ impl Footer {
         }
 
         let version = u16::from_le_bytes([buf[0], buf[1]]);
-        if version != SEGMENT_VERSION {
+        if !(MIN_SUPPORTED_SEGMENT_VERSION..=SEGMENT_VERSION).contains(&version) {
             return Err(SegmentError::InvalidFormat {
                 message: format!("unsupported segment version: {}", version),
             });
@@ -766,22 +788,29 @@ mod tests {
     // ManifestEntry tests
     // -------------------------------------------------------------------------
 
+    /// Scenario: An empty manifest entry is created without durable identity.
+    /// Guarantees: Its counters, identity, and slot collection start empty.
     #[test]
     fn manifest_entry_empty() {
         let entry = ManifestEntry::new(0, 0);
         assert_eq!(entry.bundle_index, 0);
+        assert_eq!(entry.idempotency_key(), None);
         assert_eq!(entry.item_count(), 0);
         assert!(entry.is_empty());
         assert_eq!(entry.slot_count(), 0);
     }
 
+    /// Scenario: Slots are added to a manifest entry carrying a stable identity.
+    /// Guarantees: Identity, item count, and every slot reference remain retrievable.
     #[test]
     fn manifest_entry_add_and_get_slot() {
-        let mut entry = ManifestEntry::new(5, 42);
+        let key = [0xAB; 16];
+        let mut entry = ManifestEntry::new_with_idempotency_key(5, 42, Some(key));
         entry.add_slot(SlotId::new(0), StreamId::new(1), ChunkIndex::new(2));
         entry.add_slot(SlotId::new(1), StreamId::new(3), ChunkIndex::new(0));
 
         assert!(!entry.is_empty());
+        assert_eq!(entry.idempotency_key(), Some(key));
         assert_eq!(entry.slot_count(), 2);
 
         let slot0 = entry.get_slot(SlotId::new(0)).unwrap();
@@ -795,6 +824,8 @@ mod tests {
         assert!(entry.get_slot(SlotId::new(99)).is_none());
     }
 
+    /// Scenario: A manifest entry exposes all populated slots through iterators.
+    /// Guarantees: Both slot-only and slot-reference iterators cover every slot.
     #[test]
     fn manifest_entry_slots_iterator() {
         let mut entry = ManifestEntry::new(0, 0);
@@ -810,6 +841,8 @@ mod tests {
         assert_eq!(slots.len(), 2);
     }
 
+    /// Scenario: The same slot is added to a manifest entry more than once.
+    /// Guarantees: The latest reference replaces the earlier reference.
     #[test]
     fn manifest_entry_overwrite_slot() {
         let mut entry = ManifestEntry::new(0, 0);

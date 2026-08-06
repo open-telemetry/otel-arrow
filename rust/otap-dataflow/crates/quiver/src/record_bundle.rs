@@ -205,6 +205,15 @@ impl BundleDescriptor {
 /// Stable fingerprint for a payload schema (currently 256 bits).
 pub type SchemaFingerprint = [u8; 32];
 
+/// Size in bytes of an opaque idempotency key.
+pub const IDEMPOTENCY_KEY_LEN: usize = 16;
+
+/// Opaque idempotency key identifying one logical bundle occurrence.
+///
+/// Quiver persists this key without interpreting its contents. Producers may
+/// use UUIDs or another 128-bit identifier.
+pub type IdempotencyKey = [u8; IDEMPOTENCY_KEY_LEN];
+
 /// Borrowed view into a payload slot; callers reuse their in-memory `RecordBatch`
 /// instances to avoid copies.
 pub struct PayloadRef<'a> {
@@ -220,6 +229,13 @@ pub trait RecordBundle {
     fn descriptor(&self) -> &BundleDescriptor;
     /// Wall-clock timestamp for retention metrics.
     fn ingestion_time(&self) -> SystemTime;
+    /// Returns the stable idempotency key for this bundle, when available.
+    ///
+    /// Legacy data and bundle implementations that do not provide durable
+    /// identity return `None`.
+    fn idempotency_key(&self) -> Option<IdempotencyKey> {
+        None
+    }
     /// Returns the payload for the requested slot if it is populated.
     fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>>;
     /// Returns the number of logical data items in this bundle.

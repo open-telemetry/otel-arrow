@@ -17,7 +17,8 @@ use crc32fast::Hasher;
 use tempfile::tempdir;
 
 use crate::record_bundle::{
-    BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
+    BundleDescriptor, IdempotencyKey, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor,
+    SlotId,
 };
 
 use super::cursor_sidecar::{CURSOR_SIDECAR_FILENAME, CursorSidecar};
@@ -26,8 +27,8 @@ use super::reader::test_support::{self, ReadFailure};
 use super::writer::FlushPolicy;
 use super::writer::test_support as writer_test_support;
 use super::{
-    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, WalConsumerCursor,
-    WalError, WalReader, WalWriter, WalWriterOptions,
+    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, ENTRY_TYPE_RECORD_BUNDLE_V2,
+    SCHEMA_FINGERPRINT_LEN, WalConsumerCursor, WalError, WalReader, WalWriter, WalWriterOptions,
 };
 
 /// Helper to get the header size for a test WAL file.
@@ -70,6 +71,7 @@ impl FixtureSlot {
 struct FixtureBundle {
     descriptor: BundleDescriptor,
     ingestion_time: SystemTime,
+    idempotency_key: Option<IdempotencyKey>,
     slots: Vec<FixtureSlot>,
 }
 
@@ -78,8 +80,14 @@ impl FixtureBundle {
         Self {
             descriptor,
             ingestion_time: UNIX_EPOCH + Duration::from_secs(42),
+            idempotency_key: None,
             slots,
         }
+    }
+
+    fn with_idempotency_key(mut self, idempotency_key: IdempotencyKey) -> Self {
+        self.idempotency_key = Some(idempotency_key);
+        self
     }
 
     fn with_ingestion_time(mut self, ts: SystemTime) -> Self {
@@ -95,6 +103,10 @@ impl RecordBundle for FixtureBundle {
 
     fn ingestion_time(&self) -> SystemTime {
         self.ingestion_time
+    }
+
+    fn idempotency_key(&self) -> Option<IdempotencyKey> {
+        self.idempotency_key
     }
 
     fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
@@ -327,6 +339,8 @@ impl Drop for FailureGuard {
     }
 }
 
+/// Scenario: A keyed record bundle is written to and decoded from the WAL.
+/// Guarantees: Payloads, slot metadata, and the idempotency key round-trip together.
 #[tokio::test]
 async fn wal_writer_reader_roundtrip_recovers_payloads() {
     let (_dir, wal_path) = temp_wal("roundtrip.wal");
@@ -338,13 +352,15 @@ async fn wal_writer_reader_roundtrip_recovers_payloads() {
         slot_descriptor(2, "ScopeAttrs"),
     ]);
 
+    let idempotency_key = [0x5A; 16];
     let bundle = FixtureBundle::new(
         descriptor,
         vec![
             FixtureSlot::new(SlotId::new(0), 0x11, &[1, 2, 3]),
             FixtureSlot::new(SlotId::new(2), 0x33, &[99]),
         ],
-    );
+    )
+    .with_idempotency_key(idempotency_key);
 
     let options = WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate);
     let mut writer = WalWriter::open(options).await.expect("writer");
@@ -367,6 +383,7 @@ async fn wal_writer_reader_roundtrip_recovers_payloads() {
     let expected_bitmap = (1u64 << 0) | (1u64 << 2);
     assert_eq!(record.slot_bitmap, expected_bitmap);
     assert_eq!(record.sequence, 0);
+    assert_eq!(record.idempotency_key, Some(idempotency_key));
     assert_eq!(record.offset.position, 0); // WAL position: first entry starts at 0
     assert_eq!(record.slots.len(), 2);
 
@@ -407,6 +424,47 @@ async fn wal_writer_reader_roundtrip_recovers_payloads() {
         .map(|value| value.expect("non-null"))
         .collect();
     assert_eq!(collected2, vec![99]);
+}
+
+/// Scenario: A bundle carries an opaque idempotency key whose 128 bits are all zero.
+/// Guarantees: The keyed WAL format preserves the value instead of decoding it as absent.
+#[tokio::test]
+async fn wal_roundtrip_preserves_zero_idempotency_key() {
+    let (_dir, wal_path) = temp_wal("zero-idempotency-key.wal");
+    let bundle =
+        FixtureBundle::new(BundleDescriptor::new(vec![]), vec![]).with_idempotency_key([0; 16]);
+    let mut writer = open_test_writer(wal_path.clone(), [0; 16]).await;
+    let _ = writer.append_bundle(&bundle).await.unwrap();
+    drop(writer);
+
+    let bytes = std::fs::read(&wal_path).unwrap();
+    assert_eq!(
+        bytes[test_header_size() as usize + 4],
+        ENTRY_TYPE_RECORD_BUNDLE_V2
+    );
+    let mut reader = WalReader::open(&wal_path).unwrap();
+    let record = reader.iter_from(0).unwrap().next().unwrap().unwrap();
+    assert_eq!(record.idempotency_key, Some([0; 16]));
+}
+
+/// Scenario: A generic RecordBundle without an idempotency key is appended to the WAL.
+/// Guarantees: The writer uses the legacy entry encoding and the reader returns no key.
+#[tokio::test]
+async fn wal_without_idempotency_key_uses_legacy_entry() {
+    let (_dir, wal_path) = temp_wal("legacy-unkeyed-entry.wal");
+    let bundle = FixtureBundle::new(BundleDescriptor::new(vec![]), vec![]);
+    let mut writer = open_test_writer(wal_path.clone(), [0; 16]).await;
+    let _ = writer.append_bundle(&bundle).await.unwrap();
+    drop(writer);
+
+    let bytes = std::fs::read(&wal_path).unwrap();
+    assert_eq!(
+        bytes[test_header_size() as usize + 4],
+        ENTRY_TYPE_RECORD_BUNDLE
+    );
+    let mut reader = WalReader::open(&wal_path).unwrap();
+    let record = reader.iter_from(0).unwrap().next().unwrap().unwrap();
+    assert_eq!(record.idempotency_key, None);
 }
 
 #[tokio::test]
@@ -1260,6 +1318,23 @@ async fn wal_reader_rejects_unsupported_entry_type() {
     match iter.next() {
         Some(Err(WalError::UnsupportedEntry(ty))) => assert_eq!(ty, 0xAA),
         other => panic!("expected unsupported entry, got {:?}", other),
+    }
+}
+
+/// Scenario: A keyed WAL entry ends before its required 16-byte idempotency key.
+/// Guarantees: Replay rejects the malformed entry instead of treating it as an unkeyed bundle.
+#[tokio::test]
+async fn wal_reader_rejects_truncated_idempotency_key() {
+    let body = encode_entry_header(ENTRY_TYPE_RECORD_BUNDLE_V2, 0);
+    let (_dir, wal_path) = write_single_entry(&body);
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iterator");
+
+    match iter.next() {
+        Some(Err(WalError::InvalidEntry(message))) => {
+            assert_eq!(message, "idempotency key")
+        }
+        other => panic!("expected truncated idempotency key error, got {:?}", other),
     }
 }
 

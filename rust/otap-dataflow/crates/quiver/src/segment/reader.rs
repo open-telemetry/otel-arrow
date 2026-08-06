@@ -44,11 +44,12 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use arrow_array::cast::AsArray;
-use arrow_array::{Array, RecordBatch};
+use arrow_array::{Array, FixedSizeBinaryArray, RecordBatch};
 use arrow_buffer::Buffer;
 use arrow_ipc::convert::fb_to_schema;
 use arrow_ipc::reader::{FileDecoder, read_footer_length};
 use arrow_ipc::{Block, root_as_footer};
+use arrow_schema::DataType;
 use crc32fast::Hasher;
 
 use super::error::SegmentError;
@@ -57,7 +58,7 @@ use super::types::{
     MAX_DICTIONARIES_PER_STREAM, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
     StreamId, StreamMetadata, TRAILER_SIZE, Trailer,
 };
-use crate::record_bundle::{ArrowPrimitive, SlotId};
+use crate::record_bundle::{ArrowPrimitive, IDEMPOTENCY_KEY_LEN, IdempotencyKey, SlotId};
 
 // -----------------------------------------------------------------------------
 // ReconstructedBundle
@@ -76,6 +77,8 @@ use crate::record_bundle::{ArrowPrimitive, SlotId};
 pub struct ReconstructedBundle {
     /// The bundle index from the manifest.
     bundle_index: u32,
+    /// Stable idempotency key for this bundle, when available.
+    idempotency_key: Option<IdempotencyKey>,
     /// Payload batches by slot ID.
     payloads: HashMap<SlotId, RecordBatch>,
     /// Keeps the backing buffer alive (may be mmap or heap allocation).
@@ -89,6 +92,7 @@ impl ReconstructedBundle {
     pub fn empty() -> Self {
         Self {
             bundle_index: 0,
+            idempotency_key: None,
             payloads: HashMap::new(),
             _backing: Arc::new(Buffer::from_vec(Vec::<u8>::new())),
         }
@@ -98,6 +102,12 @@ impl ReconstructedBundle {
     #[must_use]
     pub const fn bundle_index(&self) -> u32 {
         self.bundle_index
+    }
+
+    /// Returns the stable idempotency key for this bundle, when available.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> Option<IdempotencyKey> {
+        self.idempotency_key
     }
 
     /// Returns the payload batches by slot ID.
@@ -518,6 +528,7 @@ impl SegmentReader {
             &buffer,
             footer.manifest_offset as usize,
             footer.manifest_length as usize,
+            footer.version,
         )?;
 
         Ok(Self {
@@ -636,6 +647,7 @@ impl SegmentReader {
 
         Ok(ReconstructedBundle {
             bundle_index: entry.bundle_index,
+            idempotency_key: entry.idempotency_key(),
             payloads,
             _backing: Arc::clone(&self.buffer),
         })
@@ -901,6 +913,7 @@ impl SegmentReader {
     ///
     /// - `bundle_index`: UInt32
     /// - `item_count`: UInt64 (optional; defaults to 0 for legacy segments)
+    /// - `idempotency_key`: FixedSizeBinary(16) (optional for version 1 segments)
     /// - `slot_refs`: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
     ///
     /// Each row represents one [`ManifestEntry`] describing which stream chunks
@@ -911,6 +924,7 @@ impl SegmentReader {
         buffer: &Buffer,
         offset: usize,
         length: usize,
+        version: u16,
     ) -> Result<Vec<ManifestEntry>, SegmentError> {
         let ipc_buffer = buffer.slice_with_length(offset, length);
         let decoder = StreamDecoder::new(ipc_buffer)?;
@@ -934,6 +948,44 @@ impl SegmentReader {
         // item_count is optional for backward compatibility with legacy segments.
         let item_counts: Option<Vec<u64>> =
             Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "item_count").ok();
+
+        // Version 1 predates bundle identity; version 2 requires the nullable column.
+        let idempotency_keys = match (version, batch.column_by_name("idempotency_key")) {
+            (1, None) => None,
+            (1, Some(_)) => {
+                return Err(SegmentError::InvalidFormat {
+                    message: "version 1 manifest must not contain idempotency_key".to_string(),
+                });
+            }
+            (2, None) => {
+                return Err(SegmentError::InvalidFormat {
+                    message: "version 2 manifest missing column: idempotency_key".to_string(),
+                });
+            }
+            (2, Some(column))
+                if column.data_type() != &DataType::FixedSizeBinary(IDEMPOTENCY_KEY_LEN as i32) =>
+            {
+                return Err(SegmentError::InvalidFormat {
+                    message: format!(
+                        "idempotency_key column has type {:?}, expected FixedSizeBinary(16)",
+                        column.data_type()
+                    ),
+                });
+            }
+            (2, Some(column)) => Some(
+                column
+                    .as_any()
+                    .downcast_ref::<FixedSizeBinaryArray>()
+                    .ok_or_else(|| SegmentError::InvalidFormat {
+                        message: "idempotency_key column is not FixedSizeBinary".to_string(),
+                    })?,
+            ),
+            _ => {
+                return Err(SegmentError::InvalidFormat {
+                    message: format!("unsupported manifest version: {}", version),
+                });
+            }
+        };
 
         // Get the slot_refs list column
         let slot_refs_col =
@@ -966,7 +1018,18 @@ impl SegmentReader {
         let mut entries = Vec::with_capacity(batch.num_rows());
         for (i, &bundle_index) in bundle_indices.iter().enumerate() {
             let item_count = item_counts.as_ref().map(|counts| counts[i]).unwrap_or(0);
-            let mut entry = ManifestEntry::new(bundle_index, item_count);
+            let idempotency_key = idempotency_keys
+                .filter(|keys| !keys.is_null(i))
+                .map(|keys| {
+                    keys.value(i)
+                        .try_into()
+                        .map_err(|_| SegmentError::InvalidFormat {
+                            message: "idempotency_key value does not contain 16 bytes".to_string(),
+                        })
+                })
+                .transpose()?;
+            let mut entry =
+                ManifestEntry::new_with_idempotency_key(bundle_index, item_count, idempotency_key);
 
             // Get the struct array for this bundle's slot refs
             let slot_refs_for_bundle = slot_refs_list.value(i);
@@ -1066,7 +1129,7 @@ impl SegmentReader {
 
         let arr = col
             .as_any()
-            .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
+            .downcast_ref::<FixedSizeBinaryArray>()
             .ok_or_else(|| SegmentError::InvalidFormat {
                 message: format!("column {} is not FixedSizeBinary", name),
             })?;
@@ -1132,10 +1195,12 @@ mod tests {
 
             let mut open_segment = OpenSegment::new();
 
-            let bundle1 =
-                TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch1);
-            let bundle2 =
-                TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch2);
+            let bundle1 = TestBundle::new(slot_descriptors())
+                .with_payload(SlotId::new(0), fp, batch1)
+                .with_idempotency_key([0x11; 16]);
+            let bundle2 = TestBundle::new(slot_descriptors())
+                .with_payload(SlotId::new(0), fp, batch2)
+                .with_idempotency_key([0x22; 16]);
 
             let _ = open_segment.append(&bundle1);
             let _ = open_segment.append(&bundle2);
@@ -1158,6 +1223,8 @@ mod tests {
         }
     }
 
+    /// Scenario: A newly written version 2 segment is opened by the reader.
+    /// Guarantees: Stream, bundle, and format metadata match the written segment.
     #[tokio::test]
     async fn reader_opens_valid_segment() {
         let seg = TestSegment::new().await;
@@ -1166,7 +1233,7 @@ mod tests {
 
         assert_eq!(reader.stream_count(), seg.stream_count);
         assert_eq!(reader.bundle_count(), seg.bundle_count);
-        assert_eq!(reader.version(), 1);
+        assert_eq!(reader.version(), 2);
     }
 
     #[tokio::test]
@@ -1194,6 +1261,8 @@ mod tests {
         assert_eq!(manifest[1].bundle_index, 1);
     }
 
+    /// Scenario: A bundle carrying an idempotency key is reconstructed from qseg v2.
+    /// Guarantees: Payload slots and the per-bundle key survive the segment round trip.
     #[tokio::test]
     async fn reader_reads_bundle() {
         let seg = TestSegment::new().await;
@@ -1204,6 +1273,7 @@ mod tests {
         let bundle = reader.read_bundle(&entry).expect("read_bundle");
 
         assert_eq!(bundle.bundle_index(), 0);
+        assert_eq!(bundle.idempotency_key(), Some([0x11; 16]));
         assert_eq!(bundle.slot_count(), 1);
         assert!(bundle.payload(SlotId::new(0)).is_some());
         assert_eq!(
@@ -1215,6 +1285,120 @@ mod tests {
         let payloads = bundle.payloads();
         assert_eq!(payloads.len(), 1);
         assert!(payloads.contains_key(&SlotId::new(0)));
+    }
+
+    /// Scenario: A qseg v2 manifest omits the required bundle identity column.
+    /// Guarantees: The reader rejects the malformed v2 segment instead of treating it as v1.
+    #[test]
+    fn version_2_manifest_requires_idempotency_key_column() {
+        use std::io::Cursor;
+
+        use arrow_ipc::reader::FileReader;
+        use arrow_ipc::writer::FileWriter;
+
+        let entries = vec![ManifestEntry::new(0, 1)];
+        let bytes = SegmentWriter::encode_manifest_for_test(&entries).unwrap();
+        let mut reader = FileReader::try_new(Cursor::new(bytes), None).unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("bundle_index", DataType::UInt32, false),
+            Field::new("item_count", DataType::UInt64, false),
+            batch.schema().field_with_name("slot_refs").unwrap().clone(),
+        ]));
+        let malformed = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::clone(batch.column(0)),
+                Arc::clone(batch.column(1)),
+                Arc::clone(batch.column(3)),
+            ],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut writer = FileWriter::try_new(&mut bytes, &schema).unwrap();
+            writer.write(&malformed).unwrap();
+            writer.finish().unwrap();
+        }
+        let length = bytes.len();
+        let buffer = Buffer::from_vec(bytes);
+
+        let result = SegmentReader::read_manifest(&buffer, 0, length, 2);
+
+        assert!(
+            matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("version 2 manifest missing column: idempotency_key"))
+        );
+    }
+
+    /// Scenario: A qseg v2 manifest declares an idempotency key with the wrong byte width.
+    /// Guarantees: The reader returns an invalid-format error without panicking.
+    #[test]
+    fn version_2_manifest_rejects_wrong_idempotency_key_width() {
+        use std::io::Cursor;
+
+        use arrow_ipc::reader::FileReader;
+        use arrow_ipc::writer::FileWriter;
+
+        let entries = vec![ManifestEntry::new_with_idempotency_key(
+            0,
+            1,
+            Some([0x5A; 16]),
+        )];
+        let bytes = SegmentWriter::encode_manifest_for_test(&entries).unwrap();
+        let mut reader = FileReader::try_new(Cursor::new(bytes), None).unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("bundle_index", DataType::UInt32, false),
+            Field::new("item_count", DataType::UInt64, false),
+            Field::new("idempotency_key", DataType::FixedSizeBinary(8), true),
+            batch.schema().field_with_name("slot_refs").unwrap().clone(),
+        ]));
+        let wrong_width = FixedSizeBinaryArray::try_from_iter(std::iter::once([0x5A; 8])).unwrap();
+        let malformed = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::clone(batch.column(0)),
+                Arc::clone(batch.column(1)),
+                Arc::new(wrong_width),
+                Arc::clone(batch.column(3)),
+            ],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut writer = FileWriter::try_new(&mut bytes, &schema).unwrap();
+            writer.write(&malformed).unwrap();
+            writer.finish().unwrap();
+        }
+        let length = bytes.len();
+        let buffer = Buffer::from_vec(bytes);
+
+        let result = SegmentReader::read_manifest(&buffer, 0, length, 2);
+
+        assert!(
+            matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("expected FixedSizeBinary(16)"))
+        );
+    }
+
+    /// Scenario: A qseg v1 file written by the previous format is opened by the current reader.
+    /// Guarantees: Legacy payloads remain readable and reconstruct without an idempotency key.
+    #[test]
+    fn version_1_fixture_remains_readable() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("version-1.qseg");
+        std::fs::write(&path, include_bytes!("fixtures/version-1.qseg").as_slice()).unwrap();
+
+        let reader = SegmentReader::open(&path).unwrap();
+        assert_eq!(reader.version(), 1);
+        assert_eq!(reader.bundle_count(), 1);
+        let reconstructed = reader.read_bundle(&reader.manifest()[0]).unwrap();
+        assert_eq!(reconstructed.idempotency_key(), None);
+        assert_eq!(
+            reconstructed
+                .payload(SlotId::new(0))
+                .map(RecordBatch::num_rows),
+            Some(3)
+        );
     }
 
     #[tokio::test]
