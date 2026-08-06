@@ -78,16 +78,23 @@ config:
 These tables list telemetry emitted directly by this node. Common engine
 runtime metric sets may also be attached by the pipeline telemetry policy.
 
+Request and primary signal item throughput are reported by the engine's
+universal `node.consumer` metrics instead of being duplicated by this
+processor. Use `node.consumer.consumed.messages` for requests and enable item
+counts to use `node.consumer.consumed.items`.
+
+Named events and span links remain debug processor metrics because they are
+nested signal details, not the primary log records, metric data points, or
+spans counted by universal channel item metrics.
+
 ### Metric Sets
 
-#### `processor.debug.pdata`
+#### `processor.debug`
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.debug.pdata.consumed.requests` | `{request}` | Incoming OTLP Export*ServiceRequest payloads handled by the debug processor, by `signal`. |
-| `processor.debug.pdata.consumed.items` | `{item}` | Primary signal items (log records, metric datapoints, or spans) consumed, by `signal`. |
-| `processor.debug.pdata.consumed.events` | `{event}` | Named log events for logs, or span events for traces. |
-| `processor.debug.pdata.consumed.links` | `{link}` | Span links. |
+| `processor.debug.consumed.events` | `{event}` | Named log events for logs, or span events for traces. |
+| `processor.debug.consumed.links` | `{link}` | Span links. |
 
 ### Events
 
@@ -104,6 +111,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ## Related Docs
 
 - [Configuration model](../../../../../docs/configuration-model.md)
+- [Node and flow metrics](../../../../../docs/node-and-flow-metrics.md)
 - [Processor taxonomy](../../../../../docs/processors.md)
 - [Core node catalog](../../../README.md)
 

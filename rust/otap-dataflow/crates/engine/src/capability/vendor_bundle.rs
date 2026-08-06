@@ -8,13 +8,20 @@
 //! interprets the contents; each consumer defines and reads its own keys.
 //! Supplied by an agent-fed extension; token-only scopes do not provide it.
 //!
-//! The host publishes the bundle and bearer token as one atomically-swapped
-//! record, but a consumer reads them through two separate capability calls, so a
-//! swap between the reads can transiently pair a stale token with fresh routing
-//! (or vice versa). That mismatch is acceptable: the backend rejects the bad pair
-//! and the consumer converges on the next refresh.
+//! Reading this capability separately from `bearer_token_provider` cannot
+//! produce an atomic token-and-attributes pair. For consumers whose backend
+//! safely rejects mismatched generations, a transient stale-token/fresh-routing
+//! pair can be an acceptable eventually-consistent model because the consumer
+//! converges on the next refresh. Consumers requiring generation consistency
+//! must use
+//! [`AgentFedCredentialProvider`](super::auth::agent_fed_credential_provider::AgentFedCredentialProvider).
 //!
-//! Like [`bearer_token_provider`](super::bearer_token_provider), the trait is
+//! Extensions exposing both capabilities from one configured instance must
+//! ensure that per-consumer clones share the same underlying snapshot, typically
+//! through an `Arc`-backed state object. The extension ID alone does not enforce
+//! shared state across capability handles.
+//!
+//! Like [`bearer_token_provider`](super::auth::bearer_token_provider), the trait is
 //! expanded by the `#[capability]` proc macro into `local` (!Send) and `shared`
 //! (Send) variants, a `SharedAsLocal` adapter, a zero-sized registration
 //! handle, and a `KNOWN_CAPABILITIES` distributed-slice entry.

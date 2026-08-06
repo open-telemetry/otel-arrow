@@ -81,6 +81,27 @@ config:
       listening_addr: "127.0.0.1:4318"
 ```
 
+### Pressure-aware rate admission
+
+Bind one named limiter at the receiver node with `rate_limiters: [name]`.
+Use `rate_limiters: []` to opt out of an inherited limiter. With several
+effective limiters, an explicit single-name binding is required.
+
+```yaml
+otlp:
+  type: receiver:otlp
+  rate_limiters: [ingress]
+  config:
+    protocols:
+      grpc:
+        listening_addr: "127.0.0.1:4317"
+```
+
+The limiter observes request bytes while memory is normal. Under configured
+pressure, `observe_only` reports `would_throttle` without rejecting, while
+`enforce` rejects over-limit requests. V1 creates one bucket per receiver
+instance; it does not implement tenant or group-wide fairness.
+
 ## Telemetry
 
 These tables list telemetry emitted directly by this node. Common engine
@@ -102,6 +123,13 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- | --- |
 | `receiver.otlp.rejections.requests` | `{request}` | `protocol`, `error.type` | Number of requests rejected before pipeline admission. |
 
+Rate-admission outcomes are reported by the engine metric set
+`admission.rate_limiter`. Its `refusals` counter uses the bounded attributes
+`dimension=bytes` and `refusal=would_throttle|throttle|oversized`. The metric is
+scoped to the configured node entity, but tenant or request identities are
+never measurement attributes. Protocol-specific enforced rejections remain in
+`receiver.otlp.rejections`.
+
 #### `receiver.otlp.acknowledgements`
 
 | Metric | Unit | Attributes | Description |
@@ -117,7 +145,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
 `protocol` is `grpc` or `http`; `outcome` is `success`, `failure`, or
 `refused`; and `error.type` is `memory_pressure`, `concurrency_limit`,
-`payload_too_large`, `invalid_request`, or `internal`.
+`rate_limit`, `payload_too_large`, `invalid_request`, or `internal`.
 
 ### Events
 
@@ -133,6 +161,14 @@ Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
 - At least one of `protocols.grpc` or `protocols.http` is required.
 - HTTP request body limits apply to both compressed and decompressed payload
   size.
+- V1 rate limiting measures decompressed request bytes. A request larger than
+  the configured burst is rejected as non-retryable while pressure gating is
+  active: HTTP returns 413 without `Retry-After`, and gRPC sends negative retry
+  pushback.
+- An exhausted receiver may reject before decompressed request weight is known.
+  This early HTTP 503 or gRPC `RESOURCE_EXHAUSTED` response has no retry hint.
+  Exact retry guidance or non-retryable oversized classification is available
+  only after the weighted admission point.
 - `wait_for_result` reflects the immediate downstream node, not necessarily the
   final exporter.
 
