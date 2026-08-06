@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785979788546,
+  "lastUpdate": 1785992051296,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -7333,6 +7333,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 99.1,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "74ca909c3a2f17d9c233c9698bec7cafb3f85bb6",
+          "message": "feat: Add pressure-aware receiver rate throttling (#3529)\n\n# Change Summary\n\nImplements RFC 0002 pressure-aware receiver rate throttling.\n\nThis adds engine-owned, receiver-instance admission gates activated by\nthe existing process memory-pressure signal. V1 supports:\n\n- OTLP `request_bytes`, measured using decompressed OTLP payload size\n- Syslog / CEF `messages`, charged per UDP datagram or emitted TCP/TLS\nfragment\n- named rate-limiter declarations and receiver bindings\n- `receiver_instance` aggregation\n- activation at `soft` pressure and above\n- `enforce` and `observe_only` modes\n- lock-free GCRA state and bounded refusal telemetry\n\nRate throttling is pressure-aware rather than always active. While\nmemory pressure is Normal, the gate observes traffic and maintains\nbucket history but does not refuse requests. Enforcement begins when the\nconfigured pressure\ncondition becomes active.\n\n## Architecture\n\nThe engine owns:\n\n- rate-policy interpretation\n- GCRA bucket construction and state\n- memory-pressure integration\n- common admission telemetry\n- binding and consumption validation\n\n`PipelineContext` supplies an `AdmissionBinder`. Participating receivers\nbind once during construction and receive either:\n\n- `LocalAdmissionGate` for a thread-confined receiver such as Syslog /\nCEF\n- `SharedAdmissionGate` for OTLP, where one receiver-instance bucket is\nshared across HTTP, gRPC, signals, and service clones\n\nReceivers remain responsible for selecting the request weight, choosing\nthe admission point, and translating generic decisions into\nprotocol-native responses.\n\nV1 does not provide tenant fairness, group-wide or process-wide\naggregation, multiple limiter composition, or custom admission\nproviders.\n\n## Configuration\n\nNamed limiters are declared under:\n\n```yaml\npolicies:\n  resources:\n    memory_limiter:\n      # process-wide memory limiter configuration\n    rate_limiters:\n      ingress:\n        enforcement: enforce\n        aggregation: receiver_instance\n        unit: request_bytes\n        pressure: soft\n        token_bucket:\n          allow: 10MiB\n          interval: 1s\n          burst: 20MiB\n```\n\nA node may explicitly select one limiter:\n\n```yaml\nrate_limiters: [ingress]\n```\n\nA node may explicitly opt out:\n\n```yaml\nrate_limiters: []\n```\n\nWhen exactly one limiter is effective, an omitted node binding\nimplicitly selects it. If multiple limiters are effective, participating\nnodes must select one explicitly.\n\nAn explicit unknown or dimension-incompatible binding fails startup. An\nimplicitly inherited limiter with an incompatible dimension is skipped,\nwhich allows mixed-receiver pipelines to inherit a shared policy scope\nsafely.\n\nAn explicit empty policy map, `rate_limiters: {}`, disables inheritance\nof the rate-limiter family at that scope.\n\nAny non-empty rate-limiter declaration requires a top-level\n`policies.resources.memory_limiter`, because process memory pressure is\nthe activation signal.\n\nEach bound receiver instance owns independent rate capacity. Reusing a\nnamed declaration does not combine rate state across pipelines, receiver\ninstances, or runtime cores.\n\n## Protocol behavior\n\n### OTLP HTTP\n\n- An early weight-blind saturation refusal returns HTTP 503 without\n`Retry-After`.\n- Once decompressed request weight is known, a temporary weighted\nrefusal returns HTTP 503 with a GCRA-derived `Retry-After`.\n- A request larger than the configured burst returns HTTP 413 without\n`Retry-After`.\n\n### OTLP gRPC\n\n- An early weight-blind saturation refusal returns `RESOURCE_EXHAUSTED`\nwithout retry pushback.\n- Once request weight is known, a temporary weighted refusal returns\n`RESOURCE_EXHAUSTED` with positive `grpc-retry-pushback-ms`.\n- A request larger than the configured burst returns\n`RESOURCE_EXHAUSTED` with negative pushback.\n\nThe early checks protect concurrency, body collection, decoding, and\ndecompression when the receiver-instance bucket is completely saturated.\nBecause the request weight is not yet known, they intentionally provide\nno\nrequest-specific retry guidance.\n\nThe authoritative weighted checks occur after decompressed payload size\nis available. This means the first request crossing the limit may\nalready have been buffered and decompressed within the receiver's\nconfigured request-size\nbound.\n\n### Syslog / CEF\n\nOver-limit UDP messages and TCP/TLS fragments are dropped while the\nconnection remains usable. TCP/TLS emits a bounded warning instead of\nclosing the connection. Hard memory-pressure behavior remains unchanged.\n\n## Recovery behavior\n\nThe bucket continues observing traffic while memory pressure is Normal\nso enforcement does not begin with an artificially full bucket.\n\nObserved debt is bounded. At pressure onset, an admissible weighted\nrequest may require up to one burst window plus the rate cost of that\nrequest to recover. The worst case is therefore two burst windows.\n\nOperators should avoid long limiter intervals unless the corresponding\npressure-onset recovery period is acceptable.\n\nMemory-pressure recovery remains driven by process RSS and configured\nhysteresis. Exporter drainage permits recovery only when RSS falls below\nthe configured recovery boundary; allocator-retained memory can keep the\nprocess under pressure when thresholds are set below its realistic\npost-drain floor.\n\n## Related configuration changes\n\nThis PR also includes these related changes:\n\n- Members under `policies.resources` now inherit independently. A\npipeline-level `core_allocation` no longer hides an engine-level\n`memory_limiter`.\n- The named `rate_limiters` map resolves as one resource-policy member\nand replaces a broader map rather than deep-merging individual entries.\n- Live reconfiguration rejects changes to the process-wide memory\nlimiter because its monitoring task is created at startup and cannot\ncurrently be replaced safely.\n- Controller startup performs semantic validation even when\nconfiguration is constructed directly instead of through YAML loading\nhelpers.\n\n## What issue does this PR close?\n\n- Closes #3484\n\n## How are these changes tested?\n\nUnit and integration coverage includes:\n\n- weighted GCRA admission and retry calculation\n- burst and oversized-request handling\n- bounded observed debt and exact recovery boundaries\n- refusal paths publishing no additional debt\n- concurrent shared-bucket capacity enforcement\n- enforce and observe-only behavior\n- Normal, Soft, and Hard pressure transitions\n- weight-blind early refusal without retry guidance\n- weighted HTTP `Retry-After` and gRPC retry pushback\n- non-retryable oversized HTTP and gRPC responses\n- decompressed-byte charging\n- OTLP HTTP/gRPC shared-bucket behavior\n- Syslog UDP and TCP/TLS admission\n- Syslog fragment charging and continuation discard\n- named selection, implicit singleton binding, explicit opt-out,\nambiguity,\n  and dimension mismatch\n- one-shot binding across cloned construction contexts\n- member-wise resource-policy inheritance\n- live memory-limiter mutation rejection\n- common refusal telemetry and bounded attributes\n\n### Dedicated VM performance characterization\n\nThe dedicated-VM benchmark compared PR (revision\n`29aa98cf589517e78ca9fb67b12cc0050e71b872`) against upstream baseline\n`a956ea9c21e62d7e83b77ccf3604394ac440ca5c`.\n\n_**Environment and method:**_\n\n- Intel Xeon 6973P-C\n- 24 physical cores / 48 logical CPUs\n- 188 GiB memory, no swap\n- Ubuntu 24.04, Linux 6.17.0-1018-azure\n- Rust/Cargo 1.96.0\n- four pipeline cores pinned to CPUs 0-7\n- eight OTLP threads or four Syslog threads pinned to CPUs 16-23\n- five 10-second observations per comparative case\n- alternating revision order\n- independently built release worktrees and Cargo target directories\n\n_**Disabled-path results:**_\n\n| Workload | Main | PR | Paired delta | Paired 95% CI |\n| --- | ---: | ---: | ---: | ---: |\n| OTLP gRPC, 1 log/request | 11,338 logs/s | 11,294 logs/s | -0.36% |\n-2.95% to +2.22% |\n| OTLP gRPC, 100 logs/request | 853,256 logs/s | 857,812 logs/s | +0.54%\n| -1.84% to +2.91% |\n| Syslog UDP, receiver-observed | 67,382 messages/s | 67,060 messages/s\n| -0.21% | -10.13% to +9.71% |\n\nThe tests found no measurable disabled-path regression. This is not a\nclaim of zero overhead: participating receivers retain an optional-gate\nbranch.\n\n**_Enabled healthy-path characterization on the PR revision:_**\n\n| Workload | Pressure | Mean throughput | Admission refusals |\n| --- | --- | ---: | ---: |\n| OTLP gRPC, 1 log/request | Normal | 11,246 logs/s | 0 |\n| OTLP gRPC, 1 log/request | Soft, within limit | 11,363 logs/s | 0 |\n| Syslog UDP, receiver-observed | Normal | 67,038 messages/s | 0 |\n| Syslog UDP, receiver-observed | Soft, within limit | 67,700 messages/s\n| 0 |\n\nThe enabled healthy path performs the expected pressure read, monotonic\nclock read, and bucket CAS. Its observed transport throughput remained\nwithin the ordinary variance of the disabled runs.\n\n**_Isolated admission hot-path characterization:_**\n\n| Operation | Mean estimate | 95% estimate interval |\n| --- | ---: | ---: |\n| Disabled optional-gate check | 0.526 ns | 0.524-0.528 ns |\n| Shared OTLP gate, enabled, Normal pressure | 30.900 ns | 30.761-31.048\nns |\n| Local Syslog gate, enabled, Normal pressure | 29.851 ns |\n29.731-29.985 ns |\n\nThese are isolated gate costs, not end-to-end request latency. The\nenabled cost includes maintaining bucket history while pressure is\nNormal.\n\n**_Overload tests confirmed:_**\n\n- expected OTLP capacity across four independent receiver-instance\nbuckets\n- shared HTTP/gRPC state within one OTLP receiver instance\n- Syslog receiver-instance locality under uneven `SO_REUSEPORT`\ndistribution\n- bounded refusal telemetry\n\nNo performance blocker was found in the tested disabled or healthy\nenabled\npaths. Shared-bucket contention at higher OTLP worker counts than the\nfour-core\ncharacterization remains useful follow-up evidence.\n\n### End-to-end VM validation\n\nThe dedicated VM validation ran 17 scenarios through the actual OTLP\ngRPC, OTLP\nHTTP, Syslog UDP, and Syslog TCP receiver paths. All 17 passed.\n\n**_Coverage included:_**\n\n- missing, implicit, explicit, and empty limiter bindings\n- disabled and opt-out behavior\n- Normal and Soft pressure\n- within-limit and over-limit traffic\n- enforce and observe-only modes\n- weighted and oversized OTLP requests\n- decompressed-byte charging\n- HTTP/gRPC bucket sharing\n- Syslog UDP drops\n- Syslog TCP connection retention\n- common admission telemetry\n\n**_Separate recovery tests verified:_**\n\n- Soft pressure returned automatically to Normal after exporter drainage\nand RSS crossed the hysteresis boundary\n- Hard pressure transitioned through Soft to Normal without restarting\nthe process, pipeline, or receiver\n- deliberately unrealistic low thresholds did not recover when\nallocator- retained RSS remained above the configured boundary\n\n## Are there any user-facing changes?\n\nYes.\n\nThis adds:\n\n- pressure-aware rate throttling for OTLP and Syslog / CEF\n- named rate-limiter configuration and node binding\n- protocol-native OTLP refusal behavior\n- common admission telemetry\n- documented Syslog rate-drop behavior\n\nIt also changes resource-policy inheritance to resolve members\nindependently and rejects unsupported live memory-limiter mutations.\n\nNo public component-provider ABI or\n`ReceiverFactory::supported_rate_units` field is introduced. Dimension\ncompatibility is validated when a participating component binds its\nengine-provided admission gate.\n\n### Changelog\n\n- [x] Added `.chloggen/*.yaml` entries\n- [ ] This PR is a `chore` (indicated in title)\n- [ ] This is a documentation-only PR\n\n---------\n\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-08-06T03:51:28Z",
+          "tree_id": "805911a4ac758f58eecb08ed4d8c6200d9299956",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/74ca909c3a2f17d9c233c9698bec7cafb3f85bb6"
+        },
+        "date": 1785992037028,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 80.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.9,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 68.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.41,
             "unit": "MB"
           }
         ]
