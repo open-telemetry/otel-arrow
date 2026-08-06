@@ -235,6 +235,33 @@ impl From<Guid> for CanonicalGuid {
     }
 }
 
+impl std::fmt::Display for CanonicalGuid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let b = &self.0;
+        write!(
+            f,
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-\
+             {:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            b[0],
+            b[1],
+            b[2],
+            b[3],
+            b[4],
+            b[5],
+            b[6],
+            b[7],
+            b[8],
+            b[9],
+            b[10],
+            b[11],
+            b[12],
+            b[13],
+            b[14],
+            b[15]
+        )
+    }
+}
+
 /// Lightweight snapshot of an ETW event captured in the `ProcessTrace` callback.
 ///
 /// Because the `EVENT_RECORD` pointer is only valid for the duration of the
@@ -318,34 +345,6 @@ fn parse_guid(s: &str) -> Result<Guid, Error> {
     })?;
 
     Ok(Guid::from_u128(val))
-}
-
-/// Format a resolved [`Guid`] as `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` for
-/// diagnostics, using the same byte order (from [`Guid::to_bytes`]) that the
-/// Arrow encoder emits for provider GUIDs, so a GUID shown in an error matches
-/// the one seen on decoded records.
-fn guid_to_hyphenated(guid: &Guid) -> String {
-    let b = guid.to_bytes();
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-\
-         {:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0],
-        b[1],
-        b[2],
-        b[3],
-        b[4],
-        b[5],
-        b[6],
-        b[7],
-        b[8],
-        b[9],
-        b[10],
-        b[11],
-        b[12],
-        b[13],
-        b[14],
-        b[15]
-    )
 }
 
 /// Map the receiver's [`TraceLevel`] to the `one_collect` ETW level constant.
@@ -1107,7 +1106,7 @@ fn spawn_etw_session(
                     error: format!(
                         "multiple ETW providers resolve to the same GUID {}; \
                          remove the duplicate provider entry",
-                        guid_to_hyphenated(guid)
+                        CanonicalGuid::from(*guid)
                     ),
                 },
             )));
@@ -1750,6 +1749,18 @@ mod tests {
     fn parse_guid_invalid_length() {
         let result = parse_guid("22fb2cd6-0e7b");
         assert!(result.is_err());
+    }
+
+    /// Scenario: A canonical GUID is formatted for diagnostics.
+    /// Guarantees: Display renders the canonical dashed-lower-hex form used by
+    /// ETW and Arrow records, so error messages match emitted provider IDs.
+    #[test]
+    fn canonical_guid_display_renders_standard_hyphenated_form() {
+        let guid = Guid::from_u128(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716);
+        assert_eq!(
+            CanonicalGuid::from(guid).to_string(),
+            "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
+        );
     }
 
     // -- Provider name -> GUID resolution --
