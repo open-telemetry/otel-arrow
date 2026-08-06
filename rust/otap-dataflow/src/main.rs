@@ -428,6 +428,8 @@ groups: {{}}
         assert!(args.validate_and_exit);
     }
 
+    /// Scenario: validation encounters a receiver URN absent from the binary inventory.
+    /// Guarantees: semantic startup validation rejects the pipeline before runtime construction.
     #[test]
     fn validate_unknown_component_rejected() {
         use otap_df_config::pipeline::PipelineConfig;

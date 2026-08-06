@@ -92,6 +92,7 @@ fn create(
 
 /// Factory registration for the Azure Identity Auth extension.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Extension)]
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: AZURE_IDENTITY_AUTH_URN,
