@@ -495,6 +495,8 @@ mod tests {
     use prost::Message;
     use std::collections::BTreeMap;
 
+    // ---- Shared test helpers ----
+
     /// Build a string-valued `KeyValue` for test assertions.
     fn string_kv(key: &str, value: &str) -> KeyValue {
         KeyValue {
@@ -621,8 +623,12 @@ mod tests {
         ExportTraceServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP traces")
     }
 
-    // ---- OTLP traces tests ----
+    // ---- Routing and payload correctness: header extraction ----
 
+    /// Scenario (routing and payload correctness): a single header-derived attribute is
+    /// applied to an OTLP traces request.
+    /// Guarantees: the attribute is added to every resource (and not to spans), so
+    /// header-to-resource extraction works for OTLP traces.
     #[test]
     fn apply_otlp_traces_attribute_added_to_resource() {
         let request = create_traces_with_spans();
@@ -685,6 +691,10 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): several header-derived attributes are
+    /// applied to an OTLP traces request.
+    /// Guarantees: all attributes are added to every resource, so multi-attribute header
+    /// extraction works for OTLP traces.
     #[test]
     fn apply_otlp_traces_multiple_attributes() {
         let request = create_traces_with_spans();
@@ -716,6 +726,10 @@ mod tests {
         }
     }
 
+    /// Scenario (routing and payload correctness): a header-derived attribute collides with
+    /// an existing resource attribute in an OTLP traces request.
+    /// Guarantees: the existing value is upserted (replaced), so header extraction
+    /// overrides rather than duplicates a resource attribute.
     #[test]
     fn apply_otlp_traces_upserts_existing_resource_attribute() {
         let request = create_traces_with_spans();
@@ -755,6 +769,10 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): header extraction is applied to an empty
+    /// OTLP traces request.
+    /// Guarantees: extraction is a no-op that does not error, so an empty batch is handled
+    /// gracefully.
     #[test]
     fn apply_otlp_traces_empty_request_does_not_fail() {
         let request = ExportTraceServiceRequest {
@@ -772,8 +790,10 @@ mod tests {
         assert!(result.is_ok(), "should succeed even with empty request");
     }
 
-    // ---- OTLP metrics tests ----
-
+    /// Scenario (routing and payload correctness): a header-derived attribute is applied to
+    /// an OTLP metrics request.
+    /// Guarantees: the attribute is added to every resource, so header-to-resource
+    /// extraction works for OTLP metrics.
     #[test]
     fn apply_otlp_metrics_attribute_added_to_resource() {
         let request = create_metrics_request();
@@ -811,8 +831,10 @@ mod tests {
         }
     }
 
-    // ---- OTLP logs tests ----
-
+    /// Scenario (routing and payload correctness): a header-derived attribute is applied to
+    /// an OTLP logs request.
+    /// Guarantees: the attribute is added to every resource, so header-to-resource
+    /// extraction works for OTLP logs.
     #[test]
     fn apply_otlp_logs_attribute_added_to_resource() {
         let request = create_logs_request();
@@ -858,8 +880,10 @@ mod tests {
         }
     }
 
-    // ---- has_any tests ----
-
+    /// Scenario (routing and payload correctness): `HeaderExtractions` is queried for
+    /// whether any OTLP or OTAP extraction is configured.
+    /// Guarantees: `has_any()` is false only when neither is set, so the receiver can
+    /// cheaply skip extraction when nothing is configured.
     #[test]
     fn header_extractions_has_any() {
         let empty = HeaderExtractions {
@@ -886,8 +910,10 @@ mod tests {
         assert!(with_otap_attributes.has_any());
     }
 
-    // ---- OTAP Arrow traces tests ----
-
+    /// Scenario (routing and payload correctness): header extraction is applied to an empty
+    /// OTAP-Arrow traces batch.
+    /// Guarantees: extraction is a no-op that does not error, so an empty OTAP batch is
+    /// handled gracefully.
     #[test]
     fn apply_otap_traces_empty_does_not_fail() {
         let otap_bytes = arrow_records_to_bytes(&mut OtapArrowRecords::Traces(Traces::default()));
@@ -906,6 +932,10 @@ mod tests {
         assert!(result.is_ok(), "should handle empty OTAP traces gracefully");
     }
 
+    /// Scenario (routing and payload correctness): a header-derived attribute is applied to
+    /// an OTAP-Arrow traces batch.
+    /// Guarantees: the attribute lands on the resource via the Arrow attributes transform,
+    /// so header extraction works for OTAP traces.
     #[test]
     fn apply_otap_traces_attribute_added_to_resource() {
         let otap_bytes = create_traces_otap_bytes();
@@ -954,6 +984,10 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): several header-derived attributes are
+    /// applied to an OTAP-Arrow traces batch.
+    /// Guarantees: all attributes land on the resource via the Arrow attributes transform,
+    /// so multi-attribute extraction works for OTAP traces.
     #[test]
     fn apply_otap_traces_multiple_attributes() {
         let otap_bytes = create_traces_otap_bytes();

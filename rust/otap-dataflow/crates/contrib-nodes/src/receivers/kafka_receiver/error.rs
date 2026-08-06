@@ -184,7 +184,9 @@ mod tests {
 
     // ==================== Decode Error Tests ====================
 
-    /// Scenario: each decode variant is constructed with an inner EngineError.
+    // ---- Construction and configuration ----
+
+    /// Scenario (construction and configuration): each decode variant is constructed with an inner EngineError.
     /// Guarantees: inner() returns the wrapped EngineError for decode variants.
     #[test]
     fn decode_error_inner_returns_engine_error() {
@@ -214,7 +216,7 @@ mod tests {
 
     // ==================== Configuration Error Tests ====================
 
-    /// Scenario: config variants carry no EngineError source.
+    /// Scenario (construction and configuration): config variants carry no EngineError source.
     /// Guarantees: inner() returns None for configuration variants.
     #[test]
     fn config_error_has_no_inner_engine_error() {
@@ -224,7 +226,7 @@ mod tests {
         assert!(err.inner().is_none());
     }
 
-    /// Scenario: an empty required field is reported.
+    /// Scenario (construction and configuration): an empty required field is reported.
     /// Guarantees: the Display string names the field and keeps the invalid prefix.
     #[test]
     fn config_empty_field_message() {
@@ -237,7 +239,7 @@ mod tests {
         );
     }
 
-    /// Scenario: topics overlap across signals.
+    /// Scenario (construction and configuration): topics overlap across signals.
     /// Guarantees: the Display string mentions overlap for operator diagnosis.
     #[test]
     fn config_overlapping_topics_message() {
@@ -245,7 +247,7 @@ mod tests {
         assert!(err.to_string().contains("overlap"));
     }
 
-    /// Scenario: no signal has topics configured.
+    /// Scenario (construction and configuration): no signal has topics configured.
     /// Guarantees: the Display string mentions the at-least-one-signal rule.
     #[test]
     fn config_no_signal_topics_message() {
@@ -253,7 +255,7 @@ mod tests {
         assert!(err.to_string().contains("at least one signal"));
     }
 
-    /// Scenario: max_fetch_bytes is smaller than min_fetch_bytes.
+    /// Scenario (construction and configuration): max_fetch_bytes is smaller than min_fetch_bytes.
     /// Guarantees: the Display string reports both configured values.
     #[test]
     fn config_invalid_fetch_bytes_message() {
@@ -264,7 +266,7 @@ mod tests {
         );
     }
 
-    /// Scenario: a positive-only field is set to zero.
+    /// Scenario (construction and configuration): a positive-only field is set to zero.
     /// Guarantees: the Display string names the field and the > 0 rule.
     #[test]
     fn config_non_positive_value_message() {
@@ -279,7 +281,7 @@ mod tests {
 
     // ==================== Trait Tests ====================
 
-    /// Scenario: KafkaReceiverError is used across Send and !Send contexts.
+    /// Scenario (construction and configuration): KafkaReceiverError is used across Send and !Send contexts.
     /// Guarantees: the error type is Send + Sync.
     #[test]
     fn error_is_send_sync() {
@@ -287,7 +289,7 @@ mod tests {
         assert_send_sync::<KafkaReceiverError>();
     }
 
-    /// Scenario: the error is treated as a std error for source chaining.
+    /// Scenario (construction and configuration): the error is treated as a std error for source chaining.
     /// Guarantees: KafkaReceiverError implements std::error::Error.
     #[test]
     fn error_implements_std_error() {

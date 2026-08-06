@@ -768,6 +768,12 @@ impl KafkaReceiver {
                                         error = %e,
                                     );
                                 }
+                                // Fold any commit-callback outcomes that have
+                                // already been recorded on the shared rebalance
+                                // state (from steady-state async commits serviced
+                                // earlier in the loop) into the metric set so the
+                                // terminal snapshot reflects them.
+                                self.reconcile_rebalance_state();
                             }
                             // Drain any in-flight consumer-lag worker so we do not
                             // abandon a running `spawn_blocking` task. send a cancellation
@@ -3270,6 +3276,325 @@ mod tests {
                          {per_partition_total} (no rollback, no commit past produced data)",
                     );
                 }
+            },
+        )
+        .await;
+    }
+
+    /// Runs two same-group manual-commit receivers against a 2-partition topic
+    /// under the given eager assignment `strategy` and asserts the group
+    /// distributes both partitions and commits every record with no loss.
+    ///
+    /// Shared body for the `range` and `roundrobin` strategy tests: the receiver
+    /// rebalance logic is strategy-agnostic for the eager protocols, so both
+    /// strategies must produce the same distribute-and-commit outcome.
+    async fn run_two_member_strategy_rebalance(topic: &'static str, strategy: RebalanceStrategy) {
+        let group = "rebalance-strategy-group";
+        let per_partition_total = REBALANCE_RECORDS_PER_PARTITION;
+        let total = (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(topic, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+                let brokers = cluster.bootstrap_servers().to_string();
+
+                producer
+                    .produce_per_partition(
+                        topic,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
+
+                // Two members join the same group under the configured strategy.
+                let cfg_a = manual_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    topic,
+                    500,
+                    Some(strategy),
+                );
+                let cfg_b = manual_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    topic,
+                    500,
+                    Some(strategy),
+                );
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster, cfg_a);
+                let mut receiver_b = KafkaReceiverHarness::start(&cluster, cfg_b);
+
+                // True once every partition's committed offset reaches the
+                // produced total (no loss, no rollback, no double-commit).
+                let all_committed = |b: &str| {
+                    (0..REBALANCE_TEST_PARTITIONS).all(|p| {
+                        committed_offset(b, group, topic, p)
+                            .expect("kafka-test: committed-offset probe failed")
+                            == Some(per_partition_total as i64)
+                    })
+                };
+
+                // Drain both members concurrently until every partition is
+                // committed to the produced total, bounded by a deadline so a
+                // failure to distribute fails loudly instead of hanging.
+                let mut delivered = 0usize;
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                while tokio::time::Instant::now() < deadline && !all_committed(&brokers) {
+                    if let Some(pdata) = receiver_a.try_recv_pdata(Duration::from_millis(200)).await
+                    {
+                        receiver_a.ack(pdata);
+                        delivered += 1;
+                    }
+                    if let Some(pdata) = receiver_b.try_recv_pdata(Duration::from_millis(200)).await
+                    {
+                        receiver_b.ack(pdata);
+                        delivered += 1;
+                    }
+                }
+
+                assert!(
+                    all_committed(&brokers),
+                    "under {strategy:?} the group did not commit every partition to the produced \
+                     total {per_partition_total} (delivered {delivered} of {total}); committed \
+                     offsets did not converge",
+                );
+
+                receiver_a.shutdown(Duration::from_secs(5));
+                let terminal_a = receiver_a.await_terminal_state().await;
+                receiver_b.shutdown(Duration::from_secs(5));
+                let terminal_b = receiver_b.await_terminal_state().await;
+
+                let mut fa = FoldedMetrics::new();
+                fa.fold_all(terminal_a.metrics());
+                let mut fb = FoldedMetrics::new();
+                fb.fold_all(terminal_b.metrics());
+
+                // Distribution: together the two members acquired every partition
+                // over their lifetimes.
+                assert!(
+                    fa.value("partition_assignments") + fb.value("partition_assignments")
+                        >= REBALANCE_TEST_PARTITIONS as u64,
+                    "under {strategy:?} the group should acquire all {REBALANCE_TEST_PARTITIONS} \
+                     partitions across the two members (A={}, B={})",
+                    fa.value("partition_assignments"),
+                    fb.value("partition_assignments"),
+                );
+
+                // No commit failures on either member.
+                assert_eq!(
+                    fa.value("offset_commit_errors") + fb.value("offset_commit_errors"),
+                    0,
+                    "no offset commit errors expected under {strategy:?}",
+                );
+
+                // No loss: every produced record delivered at least once and
+                // durably retained on the broker.
+                assert!(
+                    delivered >= total,
+                    "under {strategy:?} the group should deliver every produced record at least \
+                     once: delivered {delivered} of {total}",
+                );
+                let inspector = cluster.inspect();
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    assert_eq!(
+                        inspector.message_count(topic, partition),
+                        per_partition_total as i64,
+                        "partition {partition} should durably retain all produced records",
+                    );
+                }
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (consumer-group rebalancing): two same-group receivers configured
+    /// with the `range` assignment strategy join against a 2-partition topic.
+    /// Guarantees: the group distributes both partitions across the two members
+    /// and commits every produced record with no loss and no commit errors, so
+    /// the `range` eager strategy assigns and commits correctly end-to-end.
+    #[tokio::test]
+    async fn rebalance_strategy_range_assigns_and_commits() {
+        run_two_member_strategy_rebalance("rebalance-range-traces", RebalanceStrategy::Range).await;
+    }
+
+    /// Scenario (consumer-group rebalancing): two same-group receivers configured
+    /// with the `roundrobin` assignment strategy join against a 2-partition
+    /// topic.
+    /// Guarantees: the group distributes both partitions across the two members
+    /// and commits every produced record with no loss and no commit errors, so
+    /// the `roundrobin` eager strategy assigns and commits correctly end-to-end.
+    #[tokio::test]
+    async fn rebalance_strategy_roundrobin_assigns_and_commits() {
+        run_two_member_strategy_rebalance(
+            "rebalance-roundrobin-traces",
+            RebalanceStrategy::RoundRobin,
+        )
+        .await;
+    }
+
+    /// Scenario (consumer-group rebalancing): a manual-commit receiver holds an
+    /// un-acked in-flight record on a partition that is then stolen by a second
+    /// group member (a `RebalanceTrigger`), after which the test acks the now
+    /// stale record.
+    /// Guarantees: the late ack for the revoked partition is classified as a
+    /// stale/late ack -- it increments `acks_for_revoked_partition` and is not
+    /// committed -- so an ack that arrives after a partition is revoked can never
+    /// advance a partition this consumer no longer owns.
+    #[tokio::test]
+    async fn stale_ack_after_revoke_counts_acks_for_revoked_partition() {
+        const TOPIC: &str = "rebalance-stale-ack-traces";
+        let group = "rebalance-stale-ack-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                // One record per partition so the receiver has in-flight work on
+                // every partition it owns.
+                producer
+                    .produce_per_partition(TOPIC, REBALANCE_TEST_PARTITIONS, 1, &bytes)
+                    .await;
+
+                let cfg =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // The receiver owns every partition initially; consume the
+                // in-flight records but hold them un-acked so their offsets stay
+                // pending across the revoke.
+                let mut in_flight = Vec::new();
+                for _ in 0..REBALANCE_TEST_PARTITIONS {
+                    in_flight.push(receiver.recv_pdata().await);
+                }
+
+                // A second member joins and steals at least one partition,
+                // forcing a revoke on the receiver.
+                let trigger =
+                    RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(30))
+                        .await;
+
+                // Give the receiver's loop time to observe and reconcile the
+                // revoke before the stale acks arrive.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                // Ack the in-flight records now that at least one of their
+                // partitions has been revoked. The acks for revoked partitions
+                // must be dropped by the late-ack/stale-generation guard.
+                for pdata in in_flight {
+                    receiver.ack(pdata);
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                let terminal = receiver.await_terminal_state().await;
+                drop(trigger);
+
+                let mut m = FoldedMetrics::new();
+                m.fold_all(terminal.metrics());
+                assert!(
+                    m.value("acks_for_revoked_partition") >= 1,
+                    "at least one ack for a revoked partition should be counted and dropped, got {}",
+                    m.value("acks_for_revoked_partition"),
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (consumer-group rebalancing): an idempotent manual-commit
+    /// receiver consumes records, then a rebalance (a joining and leaving
+    /// `RebalanceTrigger`) causes librdkafka to redeliver already-seen offsets.
+    /// Guarantees: the receiver's idempotent-skip guard recognizes the
+    /// redelivered offsets and increments `idempotent_skips`, so redelivery
+    /// across a rebalance is de-duplicated rather than reprocessed.
+    #[tokio::test]
+    async fn idempotent_dedup_skips_redelivered_records_across_rebalance() {
+        const TOPIC: &str = "rebalance-idempotent-traces";
+        let group = "rebalance-idempotent-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                let records_per_partition = 3;
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        records_per_partition,
+                        &bytes,
+                    )
+                    .await;
+
+                // Idempotent manual-commit receiver: consumed offsets are
+                // remembered so a redelivered offset is skipped.
+                let builder = KafkaReceiverConfigBuilder::new(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "test-client",
+                )
+                .with_traces(
+                    SignalConfig::new(vec![TOPIC.to_string()])
+                        .with_encoding(MessageFormat::OtlpProto),
+                )
+                .with_commit(CommitConfig {
+                    mode: ConfigCommitMode::Manual,
+                    interval_ms: Some(500),
+                })
+                .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                .with_isolation_level(IsolationLevel::ReadUncommitted)
+                .with_enable_idempotency(true);
+                let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Consume the initial records but hold them un-acked so their
+                // offsets are never committed; when the partition is reassigned
+                // back, librdkafka redelivers from the (uncommitted) start.
+                let total = (records_per_partition * REBALANCE_TEST_PARTITIONS) as usize;
+                let mut seen = Vec::new();
+                for _ in 0..total {
+                    seen.push(receiver.recv_pdata().await);
+                }
+
+                // A member joins (revoking partitions from the receiver) and then
+                // leaves (reassigning them back), forcing redelivery of the
+                // uncommitted offsets.
+                let trigger =
+                    RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(30))
+                        .await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                drop(trigger);
+
+                // Drain any redelivered records within a bounded window; the
+                // idempotent guard should skip the ones already seen.
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                while tokio::time::Instant::now() < deadline {
+                    if let Some(pdata) = receiver.try_recv_pdata(Duration::from_millis(250)).await {
+                        receiver.ack(pdata);
+                    }
+                }
+
+                receiver.shutdown(Duration::from_secs(5));
+                let terminal = receiver.await_terminal_state().await;
+
+                let mut m = FoldedMetrics::new();
+                m.fold_all(terminal.metrics());
+                assert!(
+                    m.value("idempotent_skips") >= 1,
+                    "redelivered offsets across a rebalance should be de-duplicated via the \
+                     idempotent-skip guard, got idempotent_skips={}",
+                    m.value("idempotent_skips"),
+                );
             },
         )
         .await;
