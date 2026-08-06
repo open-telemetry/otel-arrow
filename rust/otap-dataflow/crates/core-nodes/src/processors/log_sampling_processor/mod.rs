@@ -82,9 +82,12 @@ impl LogSamplingProcessor {
         config.validate()?;
 
         let sampler = sampler_from_config(&config.policy);
-        let metrics = LogSamplingMetrics::register(&pipeline_ctx, &LogSamplingRegistrationAttributes {
-            signal: SignalType::Logs,
-        });
+        let metrics = LogSamplingMetrics::register(
+            &pipeline_ctx,
+            &LogSamplingRegistrationAttributes {
+                signal: SignalType::Logs,
+            },
+        );
 
         Ok(Self {
             sampler,
