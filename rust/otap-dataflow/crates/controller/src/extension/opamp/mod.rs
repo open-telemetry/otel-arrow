@@ -1046,7 +1046,8 @@ where
                     Err(error) => {
                         otel_error!(
                             "opamp.controller_extension.remote_config.reconcile_failed",
-                            message =? error
+                            message = "Remote configuration was not committed",
+                            error =? error
                         );
                     }
                 }
@@ -1872,6 +1873,8 @@ mod test {
         assert!(status.error_message.contains("error happen"));
     }
 
+    /// Scenario: the OpAMP server sends a remote configuration containing malformed JSON.
+    /// Guarantees: the agent reports the configuration as failed without reconciling it.
     #[tokio::test]
     async fn test_unparsable_config() {
         let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
@@ -1913,6 +1916,8 @@ mod test {
         );
     }
 
+    /// Scenario: the agent has successfully applied a remote configuration.
+    /// Guarantees: a later heartbeat reports health and pipeline status with a new sequence number.
     #[tokio::test]
     async fn test_heartbeat_sent_after_applied_config() {
         let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
