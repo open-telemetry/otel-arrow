@@ -2675,6 +2675,104 @@ pub mod test_support {
                 }],
             };
             let mut bytes = req.encode_to_vec();
+            corrupt_marker_bytes(&mut bytes, marker);
+            bytes
+        }
+
+        /// Builds an [`ExportTraceServiceRequest`] whose single span carries an
+        /// array attribute nesting invalid UTF-8, so the OTAP conversion fails
+        /// deterministically (the traces analogue of
+        /// [`logs_request_bytes_invalid_utf8_array`]).
+        fn traces_request_bytes_invalid_utf8_array() -> Vec<u8> {
+            use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+            use otap_df_pdata::proto::opentelemetry::common::v1::{
+                AnyValue, ArrayValue, KeyValue, any_value,
+            };
+            use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+
+            let marker = "\u{0001}MARKER\u{0001}";
+            let req = ExportTraceServiceRequest {
+                resource_spans: vec![ResourceSpans {
+                    scope_spans: vec![ScopeSpans {
+                        spans: vec![Span {
+                            name: "span-1".to_string(),
+                            attributes: vec![KeyValue {
+                                key: "k".to_string(),
+                                value: Some(AnyValue {
+                                    value: Some(any_value::Value::ArrayValue(ArrayValue {
+                                        values: vec![AnyValue {
+                                            value: Some(any_value::Value::StringValue(
+                                                marker.to_string(),
+                                            )),
+                                        }],
+                                    })),
+                                }),
+                            }],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            let mut bytes = req.encode_to_vec();
+            corrupt_marker_bytes(&mut bytes, marker);
+            bytes
+        }
+
+        /// Builds an [`ExportMetricsServiceRequest`] whose single gauge data
+        /// point carries an array attribute nesting invalid UTF-8, so the OTAP
+        /// conversion fails deterministically (the metrics analogue of
+        /// [`logs_request_bytes_invalid_utf8_array`]).
+        fn metrics_request_bytes_invalid_utf8_array() -> Vec<u8> {
+            use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+            use otap_df_pdata::proto::opentelemetry::common::v1::{
+                AnyValue, ArrayValue, KeyValue, any_value,
+            };
+            use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+                Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric,
+            };
+
+            let marker = "\u{0001}MARKER\u{0001}";
+            let req = ExportMetricsServiceRequest {
+                resource_metrics: vec![ResourceMetrics {
+                    scope_metrics: vec![ScopeMetrics {
+                        metrics: vec![Metric {
+                            name: "m1".to_string(),
+                            data: Some(metric::Data::Gauge(Gauge {
+                                data_points: vec![NumberDataPoint {
+                                    attributes: vec![KeyValue {
+                                        key: "k".to_string(),
+                                        value: Some(AnyValue {
+                                            value: Some(any_value::Value::ArrayValue(ArrayValue {
+                                                values: vec![AnyValue {
+                                                    value: Some(any_value::Value::StringValue(
+                                                        marker.to_string(),
+                                                    )),
+                                                }],
+                                            })),
+                                        }),
+                                    }],
+                                    ..Default::default()
+                                }],
+                            })),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            let mut bytes = req.encode_to_vec();
+            corrupt_marker_bytes(&mut bytes, marker);
+            bytes
+        }
+
+        /// Overwrites the interior bytes of `marker` (found in `bytes`) with
+        /// `0xFF`, turning the nested string into invalid UTF-8. prost cannot
+        /// hold invalid UTF-8 in a `String`, so the corruption is applied after
+        /// encoding.
+        fn corrupt_marker_bytes(bytes: &mut [u8], marker: &str) {
             let pos = bytes
                 .windows(marker.len())
                 .position(|w| w == marker.as_bytes())
@@ -2682,7 +2780,6 @@ pub mod test_support {
             for b in &mut bytes[pos + 1..pos + marker.len() - 1] {
                 *b = 0xFF;
             }
-            bytes
         }
 
         /// Scenario: an OTAP-encoded signal whose OTLP bytes cannot be converted
@@ -3890,6 +3987,415 @@ pub mod test_support {
                         1,
                         "snapshot should record the rejected export as a failure"
                     );
+                },
+            )
+            .await;
+        }
+
+        // ---- Routing & payload correctness / failure recovery (receiver-issue parity) ----
+
+        /// Wraps OTLP traces bytes into an [`OtapPdata`].
+        fn traces_pdata_from(bytes: Vec<u8>) -> OtapPdata {
+            let proto = OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes));
+            OtapPdata::new(Context::default(), proto.into())
+        }
+
+        /// Wraps OTLP metrics bytes into an [`OtapPdata`].
+        fn metrics_pdata_from(bytes: Vec<u8>) -> OtapPdata {
+            let proto = OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes));
+            OtapPdata::new(Context::default(), proto.into())
+        }
+
+        /// Scenario: a single exporter is configured for all three signals on
+        /// distinct topics and one batch of each signal is exported in one run.
+        /// Guarantees: each signal is produced to its own topic with the correct
+        /// message-format header, and the terminal snapshot records exactly one
+        /// success per signal -- so a mixed-signal configuration routes and
+        /// counts each signal independently without cross-talk.
+        #[tokio::test]
+        async fn exports_all_three_signals_to_distinct_topics() {
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
+            let traces_topic = "it-mixed-traces";
+            let metrics_topic = "it-mixed-metrics";
+            let logs_topic = "it-mixed-logs";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(traces_topic)
+                    .topic(metrics_topic)
+                    .topic(logs_topic),
+                |cluster| async move {
+                    let traces_consumer = cluster.consumer().subscribe(&[traces_topic]);
+                    let metrics_consumer = cluster.consumer().subscribe(&[metrics_topic]);
+                    let logs_consumer = cluster.consumer().subscribe(&[logs_topic]);
+
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_traces(SignalConfig::new(
+                                traces_topic.into(),
+                                MessageFormat::OtlpProto,
+                            ))
+                            .with_metrics(SignalConfig::new(
+                                metrics_topic.into(),
+                                MessageFormat::OtlpProto,
+                            ))
+                            .with_logs(SignalConfig::new(
+                                logs_topic.into(),
+                                MessageFormat::OtlpProto,
+                            ))
+                            .try_into()
+                            .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let (traces, traces_payload) = traces_pdata();
+                    let (metrics, metrics_payload) = metrics_pdata();
+                    let logs_payload = logs_request_bytes();
+                    exporter.send_pdata(traces).await.expect("send traces");
+                    exporter.send_pdata(metrics).await.expect("send metrics");
+                    exporter
+                        .send_pdata(logs_pdata(logs_payload.clone(), None))
+                        .await
+                        .expect("send logs");
+
+                    let _ = traces_consumer
+                        .recv()
+                        .await
+                        .assert_topic(traces_topic)
+                        .assert_payload(&traces_payload)
+                        .assert_format_otlp();
+                    let _ = metrics_consumer
+                        .recv()
+                        .await
+                        .assert_topic(metrics_topic)
+                        .assert_payload(&metrics_payload)
+                        .assert_format_otlp();
+                    let _ = logs_consumer
+                        .recv()
+                        .await
+                        .assert_topic(logs_topic)
+                        .assert_payload(&logs_payload)
+                        .assert_format_otlp();
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert_eq!(kafka_exports(snaps, "traces", "success"), 1);
+                    assert_eq!(kafka_exports(snaps, "metrics", "success"), 1);
+                    assert_eq!(kafka_exports(snaps, "logs", "success"), 1);
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: a malformed payload (invalid UTF-8 nested in an array
+        /// attribute) is exported on the OTAP wire format for each signal, then
+        /// a valid batch is exported on the same running exporter.
+        /// Guarantees: each malformed batch fails to encode and increments
+        /// `messages{signal,failure}` (never `success`) without reaching the
+        /// broker, and the event loop survives -- a subsequent valid batch on
+        /// the same signal still delivers and increments `messages{signal,
+        /// success}` -- so a poison payload cannot stall the exporter.
+        #[tokio::test]
+        async fn encoding_failure_increments_failure_metric_per_signal() {
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
+
+            // (signal name, topic, malformed pdata, valid pdata builder)
+            async fn run_case(
+                signal: &'static str,
+                topic: &'static str,
+                malformed: OtapPdata,
+                valid: OtapPdata,
+            ) {
+                with_cluster(KafkaTestCluster::builder().topic(topic), |cluster| {
+                    async move {
+                        let consumer = cluster.consumer().subscribe(&[topic]);
+                        // OTAP wire so the OTLP->OtapArrowRecords conversion runs
+                        // and fails on the corrupted payload.
+                        let mut builder =
+                            KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it");
+                        builder = match signal {
+                            "traces" => builder.with_traces(SignalConfig::new(
+                                topic.into(),
+                                MessageFormat::OtapProto,
+                            )),
+                            "metrics" => builder.with_metrics(SignalConfig::new(
+                                topic.into(),
+                                MessageFormat::OtapProto,
+                            )),
+                            _ => builder.with_logs(SignalConfig::new(
+                                topic.into(),
+                                MessageFormat::OtapProto,
+                            )),
+                        };
+                        let cfg = builder.try_into().expect("config should be valid");
+                        let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                        // Poison batch: fails to encode, never sent.
+                        exporter
+                            .send_pdata(malformed)
+                            .await
+                            .expect("send malformed");
+                        // Valid batch on the same exporter: proves the loop
+                        // survived the encode failure.
+                        exporter.send_pdata(valid).await.expect("send valid");
+
+                        // The valid OTAP batch is delivered.
+                        let _ = consumer
+                            .recv()
+                            .await
+                            .assert_topic(topic)
+                            .assert_format_otap();
+
+                        exporter.shutdown(Duration::from_secs(5)).await;
+                        let ts = exporter.await_terminal_state().await;
+                        let snaps = ts.metrics();
+                        assert_eq!(
+                            kafka_exports(snaps, signal, "failure"),
+                            1,
+                            "{signal}: an encode failure increments the failure bucket"
+                        );
+                        assert_eq!(
+                            kafka_exports(snaps, signal, "success"),
+                            1,
+                            "{signal}: the following valid batch still succeeds"
+                        );
+                    }
+                })
+                .await;
+            }
+
+            run_case(
+                "logs",
+                "it-malformed-logs",
+                logs_pdata(logs_request_bytes_invalid_utf8_array(), None),
+                logs_pdata(logs_request_bytes(), None),
+            )
+            .await;
+            run_case(
+                "traces",
+                "it-malformed-traces",
+                traces_pdata_from(traces_request_bytes_invalid_utf8_array()),
+                traces_pdata().0,
+            )
+            .await;
+            run_case(
+                "metrics",
+                "it-malformed-metrics",
+                metrics_pdata_from(metrics_request_bytes_invalid_utf8_array()),
+                metrics_pdata().0,
+            )
+            .await;
+        }
+
+        /// Scenario: `build_kafka_headers` runs with a header-propagation policy
+        /// configured on the effect handler and a pdata context carrying
+        /// transport headers.
+        /// Guarantees: the produced Kafka headers include the message-format
+        /// header AND the propagated transport header, and a propagated header
+        /// whose name collides with the format-header key is skipped -- so
+        /// transport-header propagation reaches the record without clobbering
+        /// the format header.
+        #[test]
+        fn build_kafka_headers_propagates_transport_headers_under_policy() {
+            use crate::common::kafka::MSG_FORMAT_HEADER;
+            use otap_df_config::transport_headers_policy::{
+                HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
+                PropagationSelectorType,
+            };
+            use otap_df_engine::local::exporter::EffectHandler;
+            use otap_df_engine::testing::test_node;
+            use otap_df_telemetry::reporter::MetricsReporter;
+            use rdkafka::message::Headers;
+
+            // Context with two transport headers, one of which collides with the
+            // format-header key and must be skipped.
+            let mut transport = TransportHeaders::new();
+            transport.push(TransportHeader {
+                name: "x-tenant-id".to_string(),
+                wire_name: "X-Tenant-Id".to_string(),
+                value_kind: ValueKind::Text,
+                value: b"acme".to_vec(),
+            });
+            transport.push(TransportHeader {
+                name: MSG_FORMAT_HEADER.to_string(),
+                wire_name: MSG_FORMAT_HEADER.to_string(),
+                value_kind: ValueKind::Text,
+                value: b"attacker-override".to_vec(),
+            });
+            let mut context = Context::default();
+            context.set_transport_headers(transport);
+
+            // Propagate all captured headers, preserving wire names.
+            let policy = HeaderPropagationPolicy::new(
+                PropagationDefault {
+                    selector: PropagationSelector {
+                        selector_type: PropagationSelectorType::AllCaptured,
+                        named: None,
+                    },
+                    ..Default::default()
+                },
+                vec![],
+            );
+            let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
+            let mut eh: EffectHandler<OtapPdata> =
+                EffectHandler::new(test_node("hdr-test"), reporter);
+            eh.set_propagation_policy(Some(policy));
+
+            let headers = KafkaExporter::build_kafka_headers(
+                MessageFormat::OtlpProto,
+                MSG_FORMAT_HEADER,
+                &context,
+                Some(&eh),
+            );
+
+            // Collect the produced (key, value) pairs.
+            let mut found: Vec<(String, Vec<u8>)> = Vec::new();
+            for i in 0..headers.count() {
+                let h = headers.get(i);
+                found.push((
+                    h.key.to_string(),
+                    h.value.map(<[u8]>::to_vec).unwrap_or_default(),
+                ));
+            }
+
+            // Exactly one format header, carrying the real format value (not the
+            // attacker override), and one propagated tenant header.
+            let format_headers: Vec<_> = found
+                .iter()
+                .filter(|(k, _)| k == MSG_FORMAT_HEADER)
+                .collect();
+            assert_eq!(
+                format_headers.len(),
+                1,
+                "the format header must not be duplicated by a colliding propagated header"
+            );
+            assert_eq!(
+                format_headers[0].1, MSG_FORMAT_OTLP,
+                "the colliding transport header must not override the format value"
+            );
+            assert!(
+                found
+                    .iter()
+                    .any(|(k, v)| k == "X-Tenant-Id" && v == b"acme"),
+                "the tenant transport header should be propagated onto the record"
+            );
+        }
+
+        /// Scenario: `build_kafka_headers` runs with no propagation policy
+        /// configured (the default).
+        /// Guarantees: only the message-format header is written and no
+        /// transport headers leak onto the record, pinning the default
+        /// no-propagation behavior.
+        #[test]
+        fn build_kafka_headers_writes_only_format_header_without_policy() {
+            use crate::common::kafka::MSG_FORMAT_HEADER;
+            use otap_df_engine::local::exporter::EffectHandler;
+            use otap_df_engine::testing::test_node;
+            use otap_df_telemetry::reporter::MetricsReporter;
+            use rdkafka::message::Headers;
+
+            let mut transport = TransportHeaders::new();
+            transport.push(TransportHeader {
+                name: "x-tenant-id".to_string(),
+                wire_name: "X-Tenant-Id".to_string(),
+                value_kind: ValueKind::Text,
+                value: b"acme".to_vec(),
+            });
+            let mut context = Context::default();
+            context.set_transport_headers(transport);
+
+            let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
+            let eh: EffectHandler<OtapPdata> =
+                EffectHandler::new(test_node("hdr-test-none"), reporter);
+
+            let headers = KafkaExporter::build_kafka_headers(
+                MessageFormat::OtlpProto,
+                MSG_FORMAT_HEADER,
+                &context,
+                Some(&eh),
+            );
+
+            assert_eq!(
+                headers.count(),
+                1,
+                "only the format header should be present"
+            );
+            let h = headers.get(0);
+            assert_eq!(h.key, MSG_FORMAT_HEADER);
+            assert_eq!(h.value, Some(MSG_FORMAT_OTLP));
+        }
+
+        /// Scenario: the broker rejects a bounded run of consecutive produce
+        /// requests (a prolonged outage), after which produce succeeds again;
+        /// the exporter keeps draining its queue across the transition.
+        /// Guarantees: each rejected produce increments `messages{logs,failure}`
+        /// and the first post-outage send is delivered and consumed
+        /// (`messages{logs,success} == 1`), so the exporter recovers after a
+        /// sustained outage without stalling -- and no rejected produce
+        /// persists (`success` count equals the delivered record count).
+        #[tokio::test]
+        async fn recovers_after_prolonged_produce_outage() {
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
+            use rdkafka::types::RDKafkaRespErr;
+            let topic = "it-prolonged-outage";
+            // Inject exactly OUTAGE_SENDS non-retriable produce errors; the mock
+            // consumes one per produce request, so the first OUTAGE_SENDS sends
+            // fail and every later send succeeds. This models a bounded outage
+            // followed by recovery without needing to synchronize a mid-stream
+            // fault-clear against the exporter's fire-and-forget send queue.
+            const OUTAGE_SENDS: usize = 5;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    cluster.faults().fail_produce(
+                        &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION; OUTAGE_SENDS],
+                    );
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(1500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Drive the outage: OUTAGE_SENDS batches that are all
+                    // rejected, bounded by timeout_ms so none can hang.
+                    for _ in 0..OUTAGE_SENDS {
+                        exporter
+                            .send_pdata(logs_pdata(logs_request_bytes(), None))
+                            .await
+                            .expect("send during outage");
+                    }
+                    // First post-outage batch: the injected errors are exhausted,
+                    // so this one is accepted and delivered.
+                    let payload = logs_request_bytes();
+                    exporter
+                        .send_pdata(logs_pdata(payload.clone(), None))
+                        .await
+                        .expect("send after recovery");
+
+                    // The post-recovery record is delivered and consumable.
+                    let _ = consumer
+                        .recv()
+                        .await
+                        .assert_topic(topic)
+                        .assert_payload(&payload);
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert_eq!(
+                        kafka_exports(snaps, "logs", "failure"),
+                        OUTAGE_SENDS as u64,
+                        "each outage send counts as a failure"
+                    );
+                    assert_eq!(
+                        kafka_exports(snaps, "logs", "success"),
+                        1,
+                        "exactly the post-recovery send succeeds"
+                    );
+                    // Broker persisted exactly the one recovered record; no
+                    // rejected produce persisted.
+                    let _ = cluster.inspect().assert_message_count(topic, 0, 1);
                 },
             )
             .await;
