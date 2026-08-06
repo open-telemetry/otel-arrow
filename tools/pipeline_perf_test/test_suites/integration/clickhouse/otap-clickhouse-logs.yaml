@@ -67,10 +67,7 @@ tests:
         clickhouse_database: protocol_otap_100k
         clickhouse_async_insert: false
         loadgen_exporter_type: otap
-        # Load generator wire batch size only; it does not size ClickHouse
-        # inserts. The insert batch is set by the batch processor in
-        # engine_config_template (8192 logs / 200ms).
-        max_batch_size: 512
+        max_batch_size: 8192
         signals_per_second: 100000
         observation_interval: 60
         validation_file: OTAP-IN-BATCHED-100K.csv
@@ -85,10 +82,7 @@ tests:
         loadgen_exporter_type: otlp
         exporter_extra_config:
           max_in_flight: 256
-        # Load generator wire batch size only; it does not size ClickHouse
-        # inserts. The insert batch is set by the batch processor in
-        # engine_config_template (~8192 logs / 200ms).
-        max_batch_size: 512
+        max_batch_size: 8192
         signals_per_second: 100000
         observation_interval: 60
         validation_file: OTLP-IN-BATCHED-100K.csv

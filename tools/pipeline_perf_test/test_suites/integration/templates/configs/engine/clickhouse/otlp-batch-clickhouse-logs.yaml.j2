@@ -23,16 +23,6 @@ groups:
                   request_compression: gzip
                   # The ClickHouse exporter does not yet propagate OTLP result contexts.
                   wait_for_result: false
-          batch:
-            type: urn:otel:processor:batch
-            config:
-              format: preserve
-              otlp:
-                # Approximately 8192 logs for the semantic-convention generator payload.
-                min_size: 3145728
-                max_size: 3145728
-                sizer: bytes
-              max_batch_duration: 200ms
           transform:
             type: urn:otel:processor:attribute
             config:
@@ -51,8 +41,6 @@ groups:
               async_insert: false
         connections:
           - from: receiver
-            to: batch
-          - from: batch
             to: transform
           - from: transform
             to: exporter

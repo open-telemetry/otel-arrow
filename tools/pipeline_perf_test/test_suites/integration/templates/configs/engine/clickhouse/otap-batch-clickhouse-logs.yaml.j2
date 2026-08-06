@@ -20,18 +20,6 @@ groups:
               listening_addr: 0.0.0.0:4317
               response_stream_channel_size: 100
               compression_method: zstd
-          batch:
-            type: urn:otel:processor:batch
-            config:
-              format: otap
-              otap:
-                # ClickHouse insert batch size. Kept aligned with the OTLP
-                # template's byte target and otelcol's send_batch_size so all
-                # three pipelines commit comparable batches.
-                min_size: 8192
-                max_size: 8192
-                sizer: items
-              max_batch_duration: 200ms
           transform:
             type: urn:otel:processor:attribute
             config:
@@ -50,8 +38,6 @@ groups:
               async_insert: false
         connections:
           - from: receiver
-            to: batch
-          - from: batch
             to: transform
           - from: transform
             to: exporter

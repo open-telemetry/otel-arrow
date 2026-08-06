@@ -50,8 +50,8 @@ steps:
               template_path: './test_suites/integration/templates/configs/loadgen/config.yaml.j2'
               output_path: ./test_suites/integration/configs/loadgen/config.rendered.yaml
               variables:
-                # Load generator wire batch size only; ClickHouse insert
-                # batching is configured in engine_config_template.
+                # The engine does not re-batch, so this also sizes ClickHouse
+                # inserts (except for the final partial batch each second).
                 max_batch_size: {{max_batch_size | default(512)}}
                 signals_per_second: {{signals_per_second | default(100000)}}
                 generation_strategy: pre_generated
