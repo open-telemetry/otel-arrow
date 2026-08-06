@@ -2940,6 +2940,96 @@ mod tests {
         assert_eq!(client_config.get("sasl.password"), Some("pass"));
     }
 
+    /// Scenario (compatibility): SASL SCRAM-SHA-256 auth is configured with no TLS.
+    /// Guarantees: `build_client_config` sets `security.protocol` to
+    /// SASL_PLAINTEXT and `sasl.mechanism` to SCRAM-SHA-256 with the supplied
+    /// credentials, so the SCRAM-256 mechanism in the auth matrix is wired
+    /// through to librdkafka correctly.
+    #[test]
+    fn build_client_config_scram_sha_256_sets_sasl_plaintext() {
+        let json = json!({
+            "brokers": "kafka:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "auth": {
+                "sasl": {
+                    "mechanism": "SCRAM-SHA-256",
+                    "username": "user",
+                    "password": "pass"
+                }
+            }
+        });
+        let cfg: KafkaReceiverConfig = serde_json::from_value(json).unwrap();
+        let client_config = cfg.build_client_config();
+        assert_eq!(
+            client_config.get("security.protocol"),
+            Some("SASL_PLAINTEXT")
+        );
+        assert_eq!(client_config.get("sasl.mechanism"), Some("SCRAM-SHA-256"));
+        assert_eq!(client_config.get("sasl.username"), Some("user"));
+        assert_eq!(client_config.get("sasl.password"), Some("pass"));
+    }
+
+    /// Scenario (compatibility): SASL SCRAM-SHA-512 auth is configured over TLS.
+    /// Guarantees: `build_client_config` sets `security.protocol` to SASL_SSL
+    /// (SASL over TLS) and `sasl.mechanism` to SCRAM-SHA-512 alongside the TLS
+    /// CA path, so the SCRAM-512 mechanism combined with TLS is wired through
+    /// correctly.
+    #[test]
+    fn build_client_config_scram_sha_512_over_tls_sets_sasl_ssl() {
+        let json = json!({
+            "brokers": "kafka:9093",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "tls": {"ca_file": "/certs/ca.pem"},
+            "auth": {
+                "sasl": {
+                    "mechanism": "SCRAM-SHA-512",
+                    "username": "user",
+                    "password": "pass"
+                }
+            }
+        });
+        let cfg: KafkaReceiverConfig = serde_json::from_value(json).unwrap();
+        let client_config = cfg.build_client_config();
+        assert_eq!(client_config.get("security.protocol"), Some("SASL_SSL"));
+        assert_eq!(client_config.get("sasl.mechanism"), Some("SCRAM-SHA-512"));
+        assert_eq!(client_config.get("sasl.username"), Some("user"));
+        assert_eq!(client_config.get("sasl.password"), Some("pass"));
+        assert_eq!(client_config.get("ssl.ca.location"), Some("/certs/ca.pem"));
+    }
+
+    /// Scenario (compatibility): mutual TLS is configured with a CA, client
+    /// certificate, client key, and an encrypted-key password.
+    /// Guarantees: `build_client_config` sets `security.protocol` to SSL and
+    /// wires all four mTLS paths -- including `ssl.key.password` -- so an
+    /// encrypted client key can be used for mutual TLS.
+    #[test]
+    fn build_client_config_mtls_sets_key_password() {
+        let tls = TlsConfig::new(
+            "/certs/ca.pem".to_string(),
+            "/certs/client.pem".to_string(),
+            "/certs/client-key.pem".to_string(),
+            Some("key-secret".to_string()),
+            false,
+        );
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_tls(tls);
+        let client_config = cfg.build_client_config();
+        assert_eq!(client_config.get("security.protocol"), Some("SSL"));
+        assert_eq!(client_config.get("ssl.ca.location"), Some("/certs/ca.pem"));
+        assert_eq!(
+            client_config.get("ssl.certificate.location"),
+            Some("/certs/client.pem")
+        );
+        assert_eq!(
+            client_config.get("ssl.key.location"),
+            Some("/certs/client-key.pem")
+        );
+        assert_eq!(client_config.get("ssl.key.password"), Some("key-secret"));
+    }
+
     // ---- Operational visibility ----
 
     /// Scenario (operational visibility): the lag-refresh interval is left unset.

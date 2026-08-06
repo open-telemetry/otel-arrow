@@ -786,9 +786,31 @@ impl KafkaReceiver {
                                     lag_deadline.min(tokio::time::Instant::from_std(deadline));
                                 let _ = tokio::time::timeout_at(bound, handle).await;
                             }
-                            consumer.unsubscribe();
+                            // Close the consumer off the loop thread, bounded by
+                            // the shutdown deadline. Both `unsubscribe()` and the
+                            // consumer's `Drop` (leave-group/close) are synchronous
+                            // librdkafka FFI calls that can block indefinitely when
+                            // the broker is unreachable; running them inline (or
+                            // dropping the last `Arc` on this thread) would stall
+                            // this single-threaded runtime and hang the pipeline
+                            // past its deadline. We take the snapshot first, then
+                            // move the loop's `consumer` handle into a blocking task
+                            // so the final `Arc` drop (and thus the blocking close)
+                            // happens on the blocking pool, and wait only until the
+                            // deadline. If the close outruns the deadline the task
+                            // is left to finish on its own thread while the receiver
+                            // returns its terminal state.
                             let snapshot = self.metrics.snapshot();
                             _ = telemetry_cancel_handle.cancel().await;
+                            let close_handle = tokio::task::spawn_blocking(move || {
+                                consumer.unsubscribe();
+                                drop(consumer);
+                            });
+                            let _ = tokio::time::timeout_at(
+                                tokio::time::Instant::from_std(deadline),
+                                close_handle,
+                            )
+                            .await;
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         },
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
@@ -2743,6 +2765,244 @@ mod tests {
         .await;
     }
 
+    /// Scenario (offset guarantees): a manual-commit receiver consumes a record
+    /// and holds it in-flight (un-acked) while a downstream retry would be in
+    /// progress, then the record receives a terminal permanent Nack (the outcome
+    /// a `processor:retry` node forwards once its retries are exhausted or the
+    /// failure is permanent).
+    /// Guarantees: the offset stays uncommitted while the record is in-flight
+    /// (the committed watermark does not advance past it), and advances to the
+    /// full count only once the terminal permanent Nack arrives -- proving the
+    /// receiver holds the offset during retries and advances only on a
+    /// terminal/permanent outcome. Transient-retry logic itself lives in and is
+    /// tested by the `processor:retry` node (see `retry_processor` tests
+    /// `test_retry_processor_permanent_error_not_retried`,
+    /// `test_retry_processor_nacks_then_timeout`,
+    /// `test_retry_processor_nacks_then_limit`).
+    #[tokio::test]
+    async fn terminal_nack_advances_offset_past_message() {
+        const TOPIC: &str = "offset-terminal-nack-traces";
+        let group = "offset-terminal-nack-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                // A single record on the single partition.
+                producer
+                    .send_full(SendRecord::new(TOPIC, &bytes).key(b"rec-0"))
+                    .await
+                    .expect("send record");
+
+                let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Consume the record but hold it un-acked: this models the window
+                // where a downstream `processor:retry` is still retrying, so no
+                // terminal outcome has reached the receiver yet.
+                let pdata = receiver.recv_pdata().await;
+
+                // While the record is in-flight the offset must NOT be committed.
+                let brokers = cluster.bootstrap_servers().to_string();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let committed_in_flight = committed_offset(&brokers, group, TOPIC, 0)
+                    .expect("kafka-test: committed-offset probe failed");
+                assert!(
+                    committed_in_flight.is_none_or(|o| o < 1),
+                    "offset must stay uncommitted while the record is in-flight \
+                     (retries in progress), got {committed_in_flight:?}",
+                );
+
+                // The retry node exhausts/permanently-fails and forwards a
+                // terminal permanent Nack to the receiver.
+                receiver.nack_permanent("retries exhausted", pdata);
+
+                // The terminal Nack advances the offset past the message.
+                let advanced =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= 1)
+                    })
+                    .await;
+                assert!(
+                    advanced,
+                    "a terminal permanent Nack must advance the committed offset \
+                     past the message, got {:?}",
+                    committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed"),
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (offset guarantees): two records are consumed from one partition;
+    /// the first is terminated with a transient (non-permanent) Nack and the
+    /// second with a permanent Nack.
+    /// Guarantees: the receiver treats every Nack as terminal regardless of the
+    /// `permanent` flag -- both advance the committed offset identically -- which
+    /// confirms transient-retry is delegated out-of-process to `processor:retry`
+    /// and the receiver never itself retries a nacked record.
+    #[tokio::test]
+    async fn transient_and_permanent_nack_both_advance_offset() {
+        const TOPIC: &str = "offset-nack-parity-traces";
+        const RECORDS: usize = 2;
+        let group = "offset-nack-parity-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                for i in 0..RECORDS {
+                    let key = format!("rec-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send record");
+                }
+
+                let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Correlate each delivered record to its offset so the nacks are
+                // issued lowest-offset-first (the watermark only advances on the
+                // contiguous lowest offset).
+                let mut by_offset: HashMap<i64, OtapPdata> = HashMap::new();
+                for _ in 0..RECORDS {
+                    let pdata = receiver.recv_pdata().await;
+                    let route = pdata
+                        .source_route()
+                        .expect("delivered pdata carries source calldata");
+                    let (_topic_id, _partition, offset, _generation) =
+                        decode_calldata(&route.calldata);
+                    let _ = by_offset.insert(offset, pdata);
+                }
+
+                // Offset 0 gets a transient Nack; offset 1 gets a permanent Nack.
+                // Both must advance the watermark identically.
+                receiver.nack_transient(
+                    "transient failure",
+                    by_offset.remove(&0).expect("offset 0 delivered"),
+                );
+                receiver.nack_permanent(
+                    "permanent failure",
+                    by_offset.remove(&1).expect("offset 1 delivered"),
+                );
+
+                let brokers = cluster.bootstrap_servers().to_string();
+                let advanced =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= RECORDS as i64)
+                    })
+                    .await;
+                assert!(
+                    advanced,
+                    "both a transient and a permanent Nack must advance the \
+                     committed offset to the full count {RECORDS}, got {:?}",
+                    committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed"),
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (offset guarantees): a manual-commit receiver consumes records
+    /// but never acks them (so nothing is committed), then is fully shut down;
+    /// a second receiver is started in the same consumer group on the same
+    /// cluster (a consumer restart).
+    /// Guarantees: because the first receiver committed nothing, the broker
+    /// retains no progress and the restarted receiver re-receives the
+    /// uncommitted records -- proving at-least-once redelivery with no data loss
+    /// across a consumer restart.
+    #[tokio::test]
+    async fn restart_redelivers_uncommitted_offsets() {
+        const TOPIC: &str = "offset-restart-traces";
+        const RECORDS: usize = 3;
+        let group = "offset-restart-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                for i in 0..RECORDS {
+                    let key = format!("rec-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send record");
+                }
+
+                // First receiver: consume every record but NEVER ack, so no
+                // offset is ever committed.
+                let cfg_a =
+                    manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster, cfg_a);
+                for _ in 0..RECORDS {
+                    let _ = receiver_a.recv_pdata().await;
+                }
+
+                // Nothing was acked, so the broker must hold no committed offset.
+                let brokers = cluster.bootstrap_servers().to_string();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let committed_before = committed_offset(&brokers, group, TOPIC, 0)
+                    .expect("kafka-test: committed-offset probe failed");
+                assert!(
+                    committed_before.is_none_or(|o| o < RECORDS as i64),
+                    "no offset should be committed before restart (records were \
+                     never acked), got {committed_before:?}",
+                );
+
+                // Fully stop the first receiver (a restart).
+                receiver_a.shutdown(Duration::from_secs(5));
+                receiver_a.await_stopped().await;
+
+                // Second receiver in the SAME group: it must re-receive the
+                // uncommitted records (at-least-once redelivery, no loss).
+                let cfg_b =
+                    manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
+                let mut receiver_b = KafkaReceiverHarness::start(&cluster, cfg_b);
+                let mut redelivered = 0usize;
+                for _ in 0..RECORDS {
+                    if receiver_b
+                        .try_recv_pdata(Duration::from_secs(15))
+                        .await
+                        .is_some()
+                    {
+                        redelivered += 1;
+                    }
+                }
+                assert_eq!(
+                    redelivered, RECORDS,
+                    "restarted receiver must re-receive all {RECORDS} uncommitted \
+                     records, got {redelivered}",
+                );
+
+                receiver_b.shutdown(Duration::from_secs(5));
+                receiver_b.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
     // ---- Consumer-group rebalancing ----
 
     /// Scenario (consumer-group rebalancing): a revoked partition is queued and then
@@ -4406,14 +4666,99 @@ mod tests {
         .await;
     }
 
+    /// Scenario (lifecycle: drain and shutdown): a manual-commit receiver with
+    /// tracked, un-committed offsets is shut down while every broker is marked
+    /// down, so the shutdown-time consumer unsubscribe/close cannot reach the
+    /// broker.
+    /// Guarantees: the receiver still reaches its terminal state within a
+    /// bounded wait rather than hanging the pipeline on an unreachable broker --
+    /// the synchronous librdkafka close runs off the loop thread bounded by the
+    /// shutdown deadline, so it cannot stall termination.
+    #[tokio::test]
+    async fn shutdown_with_broker_unavailable_does_not_hang() {
+        const TOPIC: &str = "shutdown-broker-down-traces";
+        const RECORDS: usize = 3;
+        let group = "shutdown-broker-down-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                for i in 0..RECORDS {
+                    let key = format!("rec-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send record");
+                }
+
+                let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Consume and ack every record so there are tracked offsets to
+                // commit at shutdown.
+                for _ in 0..RECORDS {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
+                }
+
+                // Make the broker slow to respond so the shutdown-time close
+                // (unsubscribe + consumer drop) is delayed well past the shutdown
+                // deadline. A large per-request round-trip delay stands in for an
+                // unreachable broker but -- unlike marking the broker fully down --
+                // still lets the off-thread close eventually complete, so the test
+                // does not orphan a permanently-blocked librdkafka FFI thread that
+                // would stall runtime teardown.
+                cluster.faults().round_trip_time(1, Duration::from_secs(30));
+
+                // Shutdown with a short (1s) deadline while the broker is
+                // effectively unavailable. The receiver's off-loop-thread close is
+                // bounded by this deadline, so the receiver task must return well
+                // within the generous outer bound below even though the broker is
+                // not responding -- a regression that ran the blocking close on the
+                // loop thread would exceed it and fail the test deterministically.
+                let shutdown_at = tokio::time::Instant::now();
+                receiver.shutdown(Duration::from_secs(1));
+                let terminated =
+                    tokio::time::timeout(Duration::from_secs(5), receiver.await_terminal_state())
+                        .await;
+                assert!(
+                    terminated.is_ok(),
+                    "receiver must terminate within the bounded deadline even when \
+                     the broker is unavailable at shutdown",
+                );
+                assert!(
+                    shutdown_at.elapsed() < Duration::from_secs(5),
+                    "termination should be bounded by the shutdown deadline, not the \
+                     30s broker round-trip delay; took {:?}",
+                    shutdown_at.elapsed(),
+                );
+
+                // Restore normal broker latency so the (deadline-exceeded)
+                // off-thread close can finish and its blocking thread joins,
+                // keeping test teardown clean.
+                cluster
+                    .faults()
+                    .round_trip_time(1, Duration::from_millis(1));
+            },
+        )
+        .await;
+    }
+
     // ---- Failure recovery ----
 
-    /// Scenario (failure recovery): a run of fetch errors is injected while a
-    /// manual-commit receiver is consuming; the fault is then cleared.
-    /// Guarantees: the injected transport errors are non-fatal -- the receive
-    /// loop keeps running (log-and-continue) rather than terminating -- and once
-    /// the fault clears the same loop resumes delivering records, proving the
-    /// transport-error arm's recover-and-continue contract.
+    /// Scenario (failure recovery): a long run of fetch errors is injected
+    /// before a manual-commit receiver starts, held active long enough to
+    /// observe that the receiver cannot make progress, and only then cleared.
+    /// Guarantees: while the transport fault is active the receiver encounters
+    /// the failure and delivers no records (the fetch path keeps erroring), yet
+    /// the receive loop is non-fatal -- it keeps running rather than
+    /// terminating -- and once the fault clears the same loop reconnects and
+    /// delivers every record, proving the transport-error arm's
+    /// encounter-then-recover contract (not merely post-clear delivery).
     #[tokio::test]
     async fn transport_error_is_non_fatal_and_recovers() {
         const TOPIC: &str = "failure-transport-traces";
@@ -4435,27 +4780,43 @@ mod tests {
                         .expect("send record");
                 }
 
-                // Inject a run of fetch errors before the receiver starts so its
-                // initial fetches fail transiently.
-                cluster.faults().fail_fetch(&[
-                    RDKafkaRespErr::RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT,
-                    RDKafkaRespErr::RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT,
-                    RDKafkaRespErr::RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT,
-                ]);
+                // Inject a LONG run of fetch errors (consumed one-per-request in
+                // order) so the fault stays active across the whole observation
+                // window below -- long enough that it cannot be silently
+                // exhausted before the receiver would otherwise deliver. This is
+                // what forces the receiver to actually encounter the transport
+                // failure rather than sailing past a couple of quickly-retried
+                // errors.
+                let fetch_errors = vec![RDKafkaRespErr::RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT; 512];
+                cluster.faults().fail_fetch(&fetch_errors);
 
                 let cfg =
                     manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
                 let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
+                // While the fault is active the receiver must encounter the
+                // failure and make no progress: no record is delivered within a
+                // generous window. This proves a failure was hit *before* the
+                // fault is cleared, not just that delivery works afterward.
+                assert!(
+                    receiver
+                        .try_recv_pdata(Duration::from_secs(3))
+                        .await
+                        .is_none(),
+                    "receiver delivered a record while the fetch fault was active; \
+                     the transport failure was not actually encountered",
+                );
+
                 // Clear the fault so fetches can succeed. librdkafka retries the
                 // injected fetch errors internally, so rather than assert on the
                 // (best-effort, mock-timing-dependent) `transport_errors` counter,
-                // the observable guarantee is that the loop survives the errors
-                // and resumes delivery once they clear.
+                // the observable guarantee is that the loop survived the errors
+                // (it did not terminate during the window above) and resumes
+                // delivery once they clear.
                 cluster.faults().clear_fetch_failures();
 
-                // The receive loop must still deliver every record after the
-                // transient fault -- it was not killed by the errors.
+                // The same receive loop must now deliver every record -- it was
+                // not killed by the sustained transport errors.
                 for _ in 0..RECORDS {
                     let pdata = receiver.recv_pdata().await;
                     receiver.ack(pdata);
