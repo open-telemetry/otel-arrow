@@ -12,7 +12,7 @@ mod metrics;
 mod samplers;
 
 use self::config::Config;
-use self::metrics::LogSamplingMetrics;
+use self::metrics::{LogSamplingMetrics, LogSamplingRegistrationAttributes};
 use self::samplers::{Sampler, sampler_from_config};
 
 use arrow::array::BooleanBufferBuilder;
@@ -82,7 +82,9 @@ impl LogSamplingProcessor {
         config.validate()?;
 
         let sampler = sampler_from_config(&config.policy);
-        let metrics = LogSamplingMetrics::register(&pipeline_ctx);
+        let metrics = LogSamplingMetrics::register(&pipeline_ctx, &LogSamplingRegistrationAttributes {
+            signal: SignalType::Logs,
+        });
 
         Ok(Self {
             sampler,

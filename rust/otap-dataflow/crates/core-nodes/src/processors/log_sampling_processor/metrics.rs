@@ -4,10 +4,21 @@
 //! Telemetry metrics for the log sampling processor.
 
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry_macros::{attribute_set, metric_set};
+
+use otap_df_config::SignalType;
+
+#[attribute_set(item, registration)]
+#[derive(Debug, Clone, Copy)]
+pub struct LogSamplingRegistrationAttributes {
+    pub signal: SignalType,
+}
 
 /// Metrics for the log sampling processor.
-#[metric_set(name = "processor.log_sampling")]
+#[metric_set(
+    name = "processor.log_sampling",
+    registration_attributes = LogSamplingRegistrationAttributes
+)]
 #[derive(Debug, Default, Clone)]
 pub struct LogSamplingMetrics {
     /// Log records dropped by sampling.
