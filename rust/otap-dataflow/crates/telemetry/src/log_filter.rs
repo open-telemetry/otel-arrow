@@ -141,6 +141,7 @@ impl RuntimeLogFilterHandle {
     }
 }
 
+// Delegate to the dispatcher-local EnvFilter currently selected by ArcSwap.
 impl<S: Subscriber> Layer<S> for RuntimeLogFilterLayer {
     fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
         let filter = self.filter.load();
