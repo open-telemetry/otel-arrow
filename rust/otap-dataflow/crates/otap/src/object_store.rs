@@ -8,8 +8,10 @@ use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(feature = "azure", feature = "aws"))]
+#[cfg(feature = "aws")]
 use crate::cloud_auth;
+
+use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider;
 
 #[cfg(any(feature = "azure", feature = "aws"))]
 use object_store::path::Path;
@@ -159,7 +161,7 @@ impl RetryOptions {
 
 /// Supported object storage types
 #[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageType {
     /// File storage
     File {
@@ -176,14 +178,6 @@ pub enum StorageType {
         /// - Fabric: `https://<account>.dfs.fabric.microsoft.com`
         /// - More: See [object_store::azure::MicrosoftAzureBuilder::with_url]
         base_uri: String,
-
-        /// Optional storage scope to request tokens for, mostly useful for
-        /// operating in azure clouds other than public. Defaults to
-        /// [azure::DEFAULT_STORAGE_SCOPE] if not provided.
-        storage_scope: Option<String>,
-
-        /// The auth settings, see [cloud_auth::azure::AuthMethod]
-        auth: cloud_auth::azure::AuthMethod,
     },
 
     /// AWS S3 storage
@@ -210,6 +204,19 @@ pub enum StorageType {
         /// The auth settings, see [cloud_auth::aws::AuthMethod]
         auth: cloud_auth::aws::AuthMethod,
     },
+}
+
+impl StorageType {
+    /// Whether this storage backend obtains credentials from a bearer token capability.
+    #[must_use]
+    pub const fn requires_bearer_token_provider(&self) -> bool {
+        #[cfg(feature = "azure")]
+        if matches!(self, Self::Azure { .. }) {
+            return true;
+        }
+
+        false
+    }
 }
 
 /// Extract the path prefix from a cloud storage URI that builders discard.
@@ -297,6 +304,18 @@ pub fn from_storage_type_with_retry(
     storage: &StorageType,
     retry: Option<&RetryOptions>,
 ) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
+    from_storage_type_with_retry_and_token_provider(storage, retry, None)
+}
+
+/// Fetch an object store and use the supplied bearer token provider for Azure storage.
+pub fn from_storage_type_with_retry_and_token_provider(
+    storage: &StorageType,
+    retry: Option<&RetryOptions>,
+    token_provider: Option<Box<dyn BearerTokenProvider>>,
+) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
+    #[cfg(not(feature = "azure"))]
+    let _ = token_provider;
+
     if let Some(retry) = retry {
         retry.validate()?;
     }
@@ -315,24 +334,14 @@ pub fn from_storage_type_with_retry(
         }
 
         #[cfg(feature = "azure")]
-        StorageType::Azure {
-            base_uri,
-            storage_scope,
-            auth,
-        } => {
-            use azure_core::credentials::TokenCredential;
+        StorageType::Azure { base_uri } => {
             use object_store::azure::MicrosoftAzureBuilder;
 
-            let token_credential: Arc<dyn TokenCredential> =
-                cloud_auth::azure::from_auth_method(auth.clone()).map_err(|e| {
-                    object_store::Error::Generic {
-                        store: "Azure",
-                        source: Box::new(e),
-                    }
-                })?;
-
-            let credential_provider =
-                azure::AzureTokenCredentialProvider::new(token_credential, storage_scope.clone());
+            let token_provider = token_provider.ok_or_else(|| object_store::Error::Generic {
+                store: "Azure",
+                source: "Azure storage requires a bound bearer_token_provider capability".into(),
+            })?;
+            let credential_provider = azure::AzureTokenCredentialProvider::new(token_provider);
 
             let mut builder = MicrosoftAzureBuilder::new()
                 .with_url(base_uri)
@@ -686,35 +695,29 @@ mod test {
         assert!(from_storage_type(&storage).is_ok());
     }
 
+    /// Scenario: Azure storage is constructed without a bearer token capability.
+    /// Guarantees: Construction fails before any unauthenticated storage client is returned.
     #[test]
     #[cfg(feature = "azure")]
-    fn test_get_azure_storage() {
+    fn test_get_azure_storage_requires_token_provider() {
         crate::crypto::ensure_crypto_provider();
         let storage = StorageType::Azure {
             base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
-            storage_scope: None,
-            auth: cloud_auth::azure::AuthMethod::AzureCli {
-                subscription: None,
-                tenant_id: None,
-            },
         };
-        assert!(from_storage_type(&storage).is_ok());
+        assert!(from_storage_type(&storage).is_err());
     }
 
+    /// Scenario: Azure storage with retry settings lacks a bearer token capability.
+    /// Guarantees: Retry configuration does not bypass the required auth capability.
     #[test]
     #[cfg(feature = "azure")]
     fn test_get_azure_storage_with_retry() {
         crate::crypto::ensure_crypto_provider();
         let storage = StorageType::Azure {
             base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
-            storage_scope: None,
-            auth: cloud_auth::azure::AuthMethod::AzureCli {
-                subscription: None,
-                tenant_id: None,
-            },
         };
         let retry = valid_retry_options();
-        assert!(from_storage_type_with_retry(&storage, Some(&retry)).is_ok());
+        assert!(from_storage_type_with_retry(&storage, Some(&retry)).is_err());
     }
 
     #[test]
@@ -771,85 +774,40 @@ mod test {
         test_deserialize(&json, expected);
     }
 
+    /// Scenario: Azure storage config contains only its blob storage URI.
+    /// Guarantees: Identity configuration is not required inside the exporter storage block.
     #[test]
     #[cfg(feature = "azure")]
-    fn test_azure_config_with_azure_cli() {
+    fn test_azure_config() {
         let json = json!({
             "azure": {
-                "base_uri": "https://mystorageaccount.blob.core.windows.net/container",
-                "auth": {
-                    "type": "azure_cli"
-                }
+                "base_uri": "https://mystorageaccount.blob.core.windows.net/container"
             }
         })
         .to_string();
 
         let expected = StorageType::Azure {
             base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
-            storage_scope: None,
-            auth: cloud_auth::azure::AuthMethod::AzureCli {
-                subscription: None,
-                tenant_id: None,
-            },
         };
         test_deserialize(&json, expected);
     }
 
+    /// Scenario: Azure storage config uses the removed inline auth block.
+    /// Guarantees: Legacy credentials are rejected instead of being silently ignored.
     #[test]
     #[cfg(feature = "azure")]
-    fn test_azure_config_with_managed_identity() {
+    fn test_azure_config_rejects_inline_auth() {
         let json = json!({
             "azure": {
                 "base_uri": "https://mystorageaccount.blob.core.windows.net/container",
-                "storage_scope": "https://storage.azure.com/.default",
                 "auth": {
-                    "type": "managed_identity",
-                    "user_assigned_id": {
-                        "client_id": "test-client-id"
-                    }
+                    "type": "managed_identity"
                 }
             }
         })
         .to_string();
 
-        let expected = StorageType::Azure {
-            base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
-            storage_scope: Some("https://storage.azure.com/.default".to_string()),
-            auth: cloud_auth::azure::AuthMethod::ManagedIdentity {
-                user_assigned_id: Some(cloud_auth::azure::UserAssignedId::ClientId(
-                    "test-client-id".to_string(),
-                )),
-            },
-        };
-        test_deserialize(&json, expected);
-    }
-
-    #[test]
-    #[cfg(feature = "azure")]
-    fn test_azure_config_with_workload_identity() {
-        let json = json!({
-            "azure": {
-                "base_uri": "https://mystorageaccount.blob.core.windows.net/container",
-                "auth": {
-                    "type": "workload_identity",
-                    "client_id": "test-client-id",
-                    "tenant_id": "test-tenant-id",
-                    "token_file_path": "/var/run/secrets/token"
-                }
-            }
-        })
-        .to_string();
-
-        let expected = StorageType::Azure {
-            base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
-            storage_scope: None,
-            auth: cloud_auth::azure::AuthMethod::WorkloadIdentity {
-                client_id: Some("test-client-id".to_string()),
-                tenant_id: Some("test-tenant-id".to_string()),
-                token_file_path: Some("/var/run/secrets/token".into()),
-            },
-        };
-        test_deserialize(&json, expected);
+        assert!(serde_json::from_str::<StorageType>(&json).is_err());
     }
 
     #[test]

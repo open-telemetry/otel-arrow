@@ -3,49 +3,36 @@
 
 use std::sync::Arc;
 
-use azure_core::credentials::{AccessToken, TokenCredential};
 use object_store::{CredentialProvider, azure::AzureCredential};
-use std::sync::Mutex;
+use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider;
+use tokio::sync::Mutex;
 
-/// The default resource storage scope to request tokens for. This is
-/// used in public cloud, but may need to be overridden for other clouds
-/// such as Azure China or Azure Government.
-///
-/// See: <https://learn.microsoft.com/en-us/azure/storage/blobs/authorize-access-azure-active-directory#microsoft-authentication-library-msal>
-pub const DEFAULT_STORAGE_SCOPE: &str = "https://storage.azure.com/.default";
-
-/// [CredentialProvider] implementation that works with a [TokenCredential]
-/// from the azure SDK.
-///
-/// object_store provides their own implementations of many credentials like
-/// ManagedIdentityCredential or WorkloadIdentityCredential, however those
-/// implementations are limited in functionality and do not support all options
-/// like overriding storage scope. See [DEFAULT_STORAGE_SCOPE].
-#[derive(Debug)]
+/// Bridges the engine's bearer token capability to object_store Azure credentials.
 pub struct AzureTokenCredentialProvider {
-    token_cred: Arc<dyn TokenCredential>,
-    storage_scope: String,
+    token_provider: Mutex<Box<dyn BearerTokenProvider>>,
     state: Mutex<Option<TokenProviderState>>,
 }
 
 #[derive(Debug)]
 struct TokenProviderState {
-    /// The last obtained token from [Self::token_cred]
-    current_access_token: AccessToken,
-    /// The object store representation of [Self::current_access_token]
+    current_token: String,
     current_object_store_cred: Arc<AzureCredential>,
 }
 
+impl std::fmt::Debug for AzureTokenCredentialProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AzureTokenCredentialProvider")
+            .finish_non_exhaustive()
+    }
+}
+
 impl AzureTokenCredentialProvider {
-    /// Create a new provider based on the given [TokenCredential].
-    /// If you are operating in an azure cloud other than public
-    /// (the normal one), you may want to provide a different scope.
-    ///
-    /// See [DEFAULT_STORAGE_SCOPE].
-    pub fn new(cred: Arc<dyn TokenCredential>, scope: Option<String>) -> Self {
+    /// Create a provider backed by a resolved bearer token capability.
+    #[must_use]
+    pub fn new(token_provider: Box<dyn BearerTokenProvider>) -> Self {
         Self {
-            token_cred: cred,
-            storage_scope: scope.unwrap_or(DEFAULT_STORAGE_SCOPE.to_string()),
+            token_provider: Mutex::new(token_provider),
             state: Mutex::new(None),
         }
     }
@@ -55,76 +42,45 @@ impl AzureTokenCredentialProvider {
 impl CredentialProvider for AzureTokenCredentialProvider {
     type Credential = AzureCredential;
 
-    /// Get an [AzureCredential] based on the  underlying [TokenCredential].
-    ///
-    /// This has a bunch of machinery because [AzureCredential] and
-    /// [TokenCredential] have different underlying representations.
-    ///
-    /// [TokenCredentials] typically have the responsibility of caching and
-    /// refreshing tokens themselves and are based on `Cow<str>`, so they're
-    /// cheapyly clonable.
-    ///
-    /// [AzureCredential::BearerToken] on the other hand is just a String and
-    /// needs to be wrapped in Arc (hence the trait signature).
-    ///
-    /// The goal here is to delegate caching to the underlying [TokenCredential]
-    /// while avoiding allocating a String on every call to this function by
-    /// caching the [AzureCredential] representation of the current token and
-    /// updating it as needed.
+    /// Get an [AzureCredential] from the extension-managed token cache.
     async fn get_credential(&self) -> object_store::Result<Arc<AzureCredential>> {
-        // First, get a token from the underlying credential, this is "free" if
-        // there's a valid cached token.
-        let maybe_new_token = self
-            .token_cred
-            .get_token(&[&self.storage_scope], None)
+        let token = self
+            .token_provider
+            .lock()
+            .await
+            .get_token()
             .await
             .map_err(|e| object_store::Error::Generic {
                 store: "Azure",
                 source: Box::new(e),
             })?;
+        let token = token.expose_token();
 
-        // If state is not initialized, then this is the first time we're called.
-        // Initialize the state and return early.
-        let mut state = self.state.lock().expect("Lock is not poisoned.");
-        if state.is_none() {
-            let object_store_cred = Arc::new(AzureCredential::BearerToken(
-                maybe_new_token.token.secret().to_owned(),
-            ));
-
-            *state = Some(TokenProviderState {
-                current_access_token: maybe_new_token,
-                current_object_store_cred: object_store_cred.clone(),
-            });
-
-            return Ok(object_store_cred);
+        let mut state = self.state.lock().await;
+        if let Some(state) = state.as_ref()
+            && state.current_token == token
+        {
+            return Ok(state.current_object_store_cred.clone());
         }
 
-        // If the secret from the currently cached token matches the new one,
-        // then we can reuse the cached [AzureCredential]. Otherwise we update.
-        let state = state.as_mut().expect("State is initialized.");
-        let current_token = &state.current_access_token;
-        let cred = if current_token.token.secret() == maybe_new_token.token.secret() {
-            state.current_object_store_cred.clone()
-        } else {
-            let object_store_cred = Arc::new(AzureCredential::BearerToken(
-                maybe_new_token.token.secret().to_owned(),
-            ));
-            state.current_access_token = maybe_new_token;
-            state.current_object_store_cred = object_store_cred.clone();
-            object_store_cred
-        };
-
-        Ok(cred)
+        let credential = Arc::new(AzureCredential::BearerToken(token.to_owned()));
+        *state = Some(TokenProviderState {
+            current_token: token.to_owned(),
+            current_object_store_cred: credential.clone(),
+        });
+        Ok(credential)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
-    use time::OffsetDateTime;
-
     use super::*;
+    use otap_df_engine::capability::CapabilityError;
+    use otap_df_engine::capability::auth::BearerToken;
+    use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
 
+    /// Scenario: The capability returns repeated and refreshed token values.
+    /// Guarantees: The bridge reuses credentials for equal tokens and replaces them on refresh.
     #[tokio::test]
     async fn test_same_different_same() {
         let provider = setup_provider(vec![
@@ -144,6 +100,8 @@ mod test {
         assert!(Arc::ptr_eq(&cred3, &cred4));
     }
 
+    /// Scenario: A token value returns after a different token was observed.
+    /// Guarantees: Credential identity follows refresh events rather than token text history.
     #[tokio::test]
     async fn test_same_text_diff_token() {
         let provider = setup_provider(vec![
@@ -157,6 +115,8 @@ mod test {
         assert!(!Arc::ptr_eq(&cred1, &cred3));
     }
 
+    /// Scenario: Consecutive capability reads return the same token.
+    /// Guarantees: The bridge avoids reallocating the object-store credential.
     #[tokio::test]
     async fn test_same_token() {
         let provider = setup_provider(vec!["token1".to_string(), "token1".to_string()]);
@@ -166,16 +126,15 @@ mod test {
     }
 
     fn setup_provider(tokens: Vec<String>) -> AzureTokenCredentialProvider {
-        let cred = Arc::new(TestTokenCredential::new(tokens));
-        AzureTokenCredentialProvider::new(cred, None)
+        AzureTokenCredentialProvider::new(Box::new(TestTokenProvider::new(tokens)))
     }
 
     #[derive(Debug)]
-    struct TestTokenCredential {
+    struct TestTokenProvider {
         tokens: Mutex<Vec<String>>,
     }
 
-    impl TestTokenCredential {
+    impl TestTokenProvider {
         fn new(mut tokens: Vec<String>) -> Self {
             // Reverse so popping from the end gives the correct order.
             tokens.reverse();
@@ -186,17 +145,14 @@ mod test {
     }
 
     #[async_trait::async_trait]
-    impl TokenCredential for TestTokenCredential {
-        async fn get_token(
-            &self,
-            _scopes: &[&str],
-            _options: Option<azure_core::credentials::TokenRequestOptions<'_>>,
-        ) -> azure_core::Result<AccessToken> {
-            let token = self.tokens.lock().unwrap().pop().unwrap();
-            Ok(AccessToken::new(
-                token,
-                OffsetDateTime::now_utc() + Duration::from_secs(3600),
-            ))
+    impl BearerTokenProvider for TestTokenProvider {
+        async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
+            let token = self.tokens.lock().await.pop().unwrap();
+            Ok(BearerToken::without_expiry(token))
+        }
+
+        fn token_stream(&self) -> TokenStream {
+            Box::pin(futures::stream::empty())
         }
     }
 }

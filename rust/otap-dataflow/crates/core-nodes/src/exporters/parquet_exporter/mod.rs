@@ -47,6 +47,7 @@ use futures_timer::Delay;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
+use otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
@@ -73,6 +74,9 @@ const PARQUET_EXPORTER_URN: &str = "urn:otel:exporter:parquet";
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
     config: config::Config,
+    token_provider: Option<
+        Box<dyn otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider>,
+    >,
     pdata_metrics: Option<MeasurementMetricSet<ExporterExportMetrics>>,
     io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
 }
@@ -90,9 +94,19 @@ pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             capabilities: &otap_df_engine::capability::registry::Capabilities| {
+        let mut exporter = ParquetExporter::from_config(pipeline, &node_config.config)?;
+        if exporter.config.storage.requires_bearer_token_provider() {
+            exporter.token_provider = Some(
+                capabilities
+                    .require_shared::<BearerTokenProvider>()
+                    .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                        error: e.to_string(),
+                    })?,
+            );
+        }
         Ok(ExporterWrapper::local(
-            ParquetExporter::from_config(pipeline, &node_config.config)?,
+            exporter,
             node,
             node_config,
             exporter_config,
@@ -110,6 +124,7 @@ impl ParquetExporter {
         // Prefer using from_config in the factory path so metrics are properly wired.
         Self {
             config,
+            token_provider: None,
             pdata_metrics: None,
             io_metrics: None,
         }
@@ -131,6 +146,7 @@ impl ParquetExporter {
 
         Ok(ParquetExporter {
             config,
+            token_provider: None,
             pdata_metrics: Some(pdata_metrics),
             io_metrics: Some(io_metrics),
         })
@@ -176,19 +192,21 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 message = "parquet exporter retry settings are not applied to local file storage (invalid values will still be rejected)"
             );
         }
-        let object_store = otap_df_otap::object_store::from_storage_type_with_retry(
-            &self.config.storage,
-            self.config.retry.as_ref(),
-        )
-        .map_err(|e| {
-            let source_detail = format_error_sources(&e);
-            Error::ExporterError {
-                exporter: exporter_id.clone(),
-                kind: ExporterErrorKind::Configuration,
-                error: format!("error initializing object store {e}"),
-                source_detail,
-            }
-        })?;
+        let object_store =
+            otap_df_otap::object_store::from_storage_type_with_retry_and_token_provider(
+                &self.config.storage,
+                self.config.retry.as_ref(),
+                self.token_provider.take(),
+            )
+            .map_err(|e| {
+                let source_detail = format_error_sources(&e);
+                Error::ExporterError {
+                    exporter: exporter_id.clone(),
+                    kind: ExporterErrorKind::Configuration,
+                    error: format!("error initializing object store {e}"),
+                    source_detail,
+                }
+            })?;
 
         let writer_options = self.config.writer_options.unwrap_or_default();
 
