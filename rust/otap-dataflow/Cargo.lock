@@ -7170,6 +7170,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "otap-df-component-inventory"
+version = "0.50.0"
+dependencies = [
+ "otap-df-contrib-nodes",
+ "otap-df-core-nodes",
+ "otap-df-engine",
+ "otap-df-otap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "otap-df-component-inventory-syntax"
+version = "0.50.0"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "otap-df-config"
 version = "0.50.0"
 dependencies = [
@@ -7449,6 +7469,7 @@ dependencies = [
  "memory-stats",
  "nix 0.31.3",
  "otap-df-channel",
+ "otap-df-component-inventory-syntax",
  "otap-df-config",
  "otap-df-engine",
  "otap-df-engine-macros",
@@ -7474,9 +7495,17 @@ dependencies = [
 name = "otap-df-engine-macros"
 version = "0.50.0"
 dependencies = [
+ "otap-df-component-inventory-syntax",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "otap-df-expohisto"
+version = "0.50.0"
+dependencies = [
+ "criterion",
 ]
 
 [[package]]
@@ -7735,11 +7764,13 @@ version = "0.50.0"
 dependencies = [
  "bytes",
  "chrono",
+ "criterion",
  "flume",
  "opentelemetry",
  "opentelemetry-resource-detectors",
  "opentelemetry_sdk",
  "otap-df-config",
+ "otap-df-expohisto",
  "otap-df-pdata",
  "otap-df-pdata-views",
  "otap-df-telemetry-macros",
@@ -12437,10 +12468,13 @@ name = "xtask"
 version = "0.50.0"
 dependencies = [
  "anyhow",
+ "otap-df-component-inventory-syntax",
  "otap-df-pdata-otlp-model",
+ "proc-macro2",
  "prost-build",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "toml",
  "tonic-prost-build",
 ]

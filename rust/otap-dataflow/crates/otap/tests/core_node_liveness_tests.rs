@@ -318,7 +318,7 @@ fn capture_batch_metrics(
                     .unwrap_or_default();
 
                 for (field, value) in iter {
-                    if let otap_df_telemetry::metrics::MetricValue::Mmsc(_) = value {
+                    if let otap_df_telemetry::metrics::MetricValue::Distribution(_) = value {
                         continue;
                     }
 
