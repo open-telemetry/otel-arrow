@@ -810,7 +810,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         self.validate_connection_wiring_contracts(&config)?;
 
-        let channel_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
+        let basic_runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
 
         // First pass: allocate all node IDs from the build_state.
         let mut receiver_count = 0usize;
@@ -904,7 +904,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 ext_id.clone(),
                 &ext_ctx,
                 &mut build_state.channel_metrics,
-                channel_metrics_enabled,
+                basic_runtime_metrics_enabled,
             );
             bundle
                 .register_into(factory.capabilities.as_ref(), &mut capability_registry)
@@ -993,7 +993,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         &base_ctx,
                         NodeType::Receiver,
                         node_id.clone(),
-                        channel_metrics_enabled,
+                        basic_runtime_metrics_enabled,
                         || {
                             self.create_receiver(
                                 &base_ctx,
@@ -1014,7 +1014,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         &base_ctx,
                         NodeType::Processor,
                         node_id.clone(),
-                        channel_metrics_enabled,
+                        basic_runtime_metrics_enabled,
                         || {
                             self.create_processor(
                                 &base_ctx,
@@ -1034,7 +1034,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         &base_ctx,
                         NodeType::Exporter,
                         node_id.clone(),
-                        channel_metrics_enabled,
+                        basic_runtime_metrics_enabled,
                         || {
                             self.create_exporter(
                                 &base_ctx,
@@ -1249,7 +1249,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     &pipeline,
                     &mut build_state,
                     buffer_size,
-                    channel_metrics_enabled,
+                    basic_runtime_metrics_enabled,
                     &pipeline_group_id,
                     &pipeline_id,
                     core_id,
@@ -1364,7 +1364,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         base_ctx: &PipelineContext,
         node_type: NodeType,
         node_id: NodeId,
-        channel_metrics_enabled: bool,
+        basic_runtime_metrics_enabled: bool,
         create_wrapper: F,
     ) -> Result<W, Error>
     where
@@ -1388,11 +1388,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 let wrapper = wrapper.with_control_channel_metrics(
                     base_ctx,
                     &mut build_state.channel_metrics,
-                    channel_metrics_enabled,
+                    basic_runtime_metrics_enabled,
                 );
-                if let Some(handle) = base_ctx.admission().metrics_handle(base_ctx) {
-                    build_state.admission_metrics.register(handle);
-                }
+                build_state
+                    .admission_metrics
+                    .register_if_enabled(basic_runtime_metrics_enabled, || {
+                        base_ctx.admission().metrics_handle(base_ctx)
+                    });
                 Ok(wrapper)
             })?;
         Ok(wrapper

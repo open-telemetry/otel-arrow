@@ -197,8 +197,16 @@ pub(crate) struct AdmissionMetricsRegistry {
 }
 
 impl AdmissionMetricsRegistry {
-    pub(crate) fn register(&mut self, handle: AdmissionMetricsHandle) {
-        self.handles.push(handle);
+    pub(crate) fn register_if_enabled<F>(
+        &mut self,
+        basic_runtime_metrics_enabled: bool,
+        make_handle: F,
+    ) where
+        F: FnOnce() -> Option<AdmissionMetricsHandle>,
+    {
+        if basic_runtime_metrics_enabled && let Some(handle) = make_handle() {
+            self.handles.push(handle);
+        }
     }
 
     pub(crate) fn into_handles(self) -> Vec<AdmissionMetricsHandle> {
@@ -287,5 +295,36 @@ mod tests {
             Some("throttle")
         );
         assert!(handle.terminal_snapshots().is_empty());
+    }
+
+    /// Scenario: admission metric handles are registered at basic runtime telemetry but not none.
+    /// Guarantees: disabling runtime metrics suppresses both periodic and terminal rate-limiter
+    /// snapshots by leaving the runtime admission registry empty.
+    #[test]
+    fn registration_respects_runtime_metrics_gate() {
+        let (pipeline_ctx, _registry) = crate::testing::test_pipeline_ctx();
+        let counters = Arc::new(RefusalCounters::default());
+        let disabled_handle_was_requested = std::cell::Cell::new(false);
+        let mut disabled = AdmissionMetricsRegistry::default();
+        disabled.register_if_enabled(false, || {
+            disabled_handle_was_requested.set(true);
+            Some(AdmissionMetricsHandle::new(
+                &pipeline_ctx,
+                AdmissionDimension::Messages,
+                Arc::clone(&counters),
+            ))
+        });
+        assert!(!disabled_handle_was_requested.get());
+        assert!(disabled.into_handles().is_empty());
+
+        let mut enabled = AdmissionMetricsRegistry::default();
+        enabled.register_if_enabled(true, || {
+            Some(AdmissionMetricsHandle::new(
+                &pipeline_ctx,
+                AdmissionDimension::Messages,
+                counters,
+            ))
+        });
+        assert_eq!(enabled.into_handles().len(), 1);
     }
 }
