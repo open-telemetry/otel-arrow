@@ -3489,5 +3489,410 @@ pub mod test_support {
             )
             .await;
         }
+
+        // ---- Telemetry (section 7) ----
+
+        /// Builds an [`ExportLogsServiceRequest`] carrying `k` log records in a
+        /// single batch, so a test can distinguish per-record from per-batch
+        /// metric counting.
+        fn logs_request_bytes_n(k: usize) -> Vec<u8> {
+            use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+            use otap_df_pdata::proto::opentelemetry::logs::v1::{
+                LogRecord, ResourceLogs, ScopeLogs,
+            };
+
+            let log_records = (0..k)
+                .map(|i| LogRecord {
+                    time_unix_nano: (i as u64) + 1,
+                    ..Default::default()
+                })
+                .collect();
+            let req = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            req.encode_to_vec()
+        }
+
+        /// Returns the `unit` string declared for field `field` in the metric
+        /// set named `set_name`, across a terminal state's snapshots (or `None`
+        /// if that set/field was not emitted). `field` accepts either the Rust
+        /// identifier (`acks_received`) or the emitted dotted form
+        /// (`acks.received`); underscores are normalized to dots before lookup.
+        fn metric_unit<'a>(
+            snapshots: &'a [otap_df_telemetry::metrics::MetricSetSnapshot],
+            set_name: &str,
+            field: &str,
+        ) -> Option<&'a str> {
+            let wanted = field.replace('_', ".");
+            snapshots
+                .iter()
+                .find(|s| s.descriptor().name == set_name)
+                .and_then(|s| {
+                    s.descriptor()
+                        .metrics
+                        .iter()
+                        .find(|f| f.name == wanted)
+                        .map(|f| f.unit)
+                })
+        }
+
+        /// Scenario: after a successful export and graceful shutdown, inspect the
+        /// terminal metric snapshots' schema.
+        /// Guarantees: both node metric sets are present -- the operational
+        /// `exporter.kafka` set and the measurement `exporter.kafka.exports`
+        /// set -- with the migrated units (`exports.messages` is `{message}`;
+        /// operational counters are `{batch}`), pinning the post-migration
+        /// telemetry schema (names + units) against accidental regressions.
+        #[tokio::test]
+        async fn terminal_snapshot_exposes_both_metric_sets_with_expected_units() {
+            let topic = "it-telemetry-schema";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes(), None))
+                        .await
+                        .expect("send pdata");
+                    let _ = consumer.recv().await.assert_topic(topic);
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+
+                    // Both metric sets are represented in the terminal snapshot.
+                    assert!(
+                        snaps
+                            .iter()
+                            .any(|s| s.descriptor().name == "exporter.kafka"),
+                        "operational set exporter.kafka should be present"
+                    );
+                    assert!(
+                        snaps
+                            .iter()
+                            .any(|s| s.descriptor().name == "exporter.kafka.exports"),
+                        "measurement set exporter.kafka.exports should be present"
+                    );
+
+                    // Migrated units: exports are per-message, operational are
+                    // per-batch.
+                    assert_eq!(
+                        metric_unit(snaps, "exporter.kafka.exports", "messages"),
+                        Some("{message}"),
+                        "exports.messages unit"
+                    );
+                    assert_eq!(
+                        metric_unit(snaps, "exporter.kafka", "acks_received"),
+                        Some("{batch}"),
+                        "acks_received unit"
+                    );
+                    assert_eq!(
+                        metric_unit(snaps, "exporter.kafka", "topic_from_header"),
+                        Some("{batch}"),
+                        "topic_from_header unit"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: export a single pdata batch that contains many log records.
+        /// Guarantees: the export counter increments exactly once for the batch
+        /// (`messages{signal=logs,outcome=success} == 1`), documenting that the
+        /// exporter counts per pdata/batch -- not per record -- so the recorded
+        /// per-batch counting semantics do not silently change.
+        #[tokio::test]
+        async fn export_counts_one_per_batch_regardless_of_record_count() {
+            use crate::common::kafka::node_harness::node_metrics::kafka_exports;
+            let topic = "it-telemetry-per-batch";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // One pdata carrying 25 log records.
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes_n(25), None))
+                        .await
+                        .expect("send pdata");
+                    let _ = consumer.recv().await.assert_topic(topic);
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert_eq!(
+                        kafka_exports(snaps, "logs", "success"),
+                        1,
+                        "a multi-record batch counts as exactly one exported batch"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: a downstream node acknowledges a batch (a
+        /// `NodeControlMsg::Ack` reaches the exporter).
+        /// Guarantees: the operational `acks_received` counter increments once
+        /// and `nacks_received` stays zero, validating the exporter's
+        /// ack-accounting path end-to-end.
+        #[tokio::test]
+        async fn acks_received_counter_increments_on_downstream_ack() {
+            use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+            let topic = "it-telemetry-ack";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    exporter
+                        .send_ack(logs_pdata(logs_request_bytes(), None))
+                        .await;
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let mut m = FoldedMetrics::new();
+                    m.fold_all(ts.metrics());
+                    assert_eq!(m.value("acks_received"), 1, "one downstream ack observed");
+                    assert_eq!(m.value("nacks_received"), 0);
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: a downstream node refuses a batch (a `NodeControlMsg::Nack`
+        /// with a benign reason reaches the exporter).
+        /// Guarantees: the operational `nacks_received` counter increments once
+        /// and `acks_received` stays zero, validating the exporter's
+        /// nack-accounting path end-to-end.
+        #[tokio::test]
+        async fn nacks_received_counter_increments_on_downstream_nack() {
+            use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+            let topic = "it-telemetry-nack";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    exporter
+                        .send_nack("downstream refused", logs_pdata(logs_request_bytes(), None))
+                        .await;
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let mut m = FoldedMetrics::new();
+                    m.fold_all(ts.metrics());
+                    assert_eq!(m.value("nacks_received"), 1, "one downstream nack observed");
+                    assert_eq!(m.value("acks_received"), 0);
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: a downstream nack carries an adversarial reason string
+        /// (embedded control characters and an overlong value), which the
+        /// exporter logs after sanitizing.
+        /// Guarantees: the exporter still counts the nack (`nacks_received ==
+        /// 1`) and shuts down cleanly, so client-influenced nack reasons cannot
+        /// crash, hang, or corrupt the telemetry path (the sanitizer's exact
+        /// output is pinned separately by the `sanitize_for_log` unit tests).
+        #[tokio::test]
+        async fn nack_reason_with_control_characters_is_handled_safely() {
+            use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+            let topic = "it-telemetry-nack-adversarial";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Control characters (newline, carriage return, tab, NUL,
+                    // bell) plus an overlong tail to exercise escape+truncation.
+                    let adversarial = format!("bad\n\r\t\0\x07reason {}", "A".repeat(200));
+                    exporter
+                        .send_nack(adversarial, logs_pdata(logs_request_bytes(), None))
+                        .await;
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let mut m = FoldedMetrics::new();
+                    m.fold_all(ts.metrics());
+                    assert_eq!(
+                        m.value("nacks_received"),
+                        1,
+                        "an adversarial nack reason is still counted and handled safely"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: one batch is routed via a transport header while another is
+        /// routed via the static per-signal topic.
+        /// Guarantees: the topic-source operational counters reflect the routing
+        /// decision end-to-end (`topic_from_header == 1`,
+        /// `topic_from_static_config == 1`), so the router's telemetry is wired
+        /// through to the terminal snapshot.
+        #[tokio::test]
+        async fn topic_source_counters_reflect_header_vs_static_routing() {
+            use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+            let static_topic = "it-telemetry-static";
+            let dynamic_topic = "it-telemetry-dynamic";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(static_topic)
+                    .topic(dynamic_topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[static_topic, dynamic_topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
+                            .with_topic_from_transport_header("x-target-topic"),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Header-routed batch -> dynamic topic.
+                    exporter
+                        .send_pdata(logs_pdata(
+                            logs_request_bytes(),
+                            Some(("X-Target-Topic", dynamic_topic)),
+                        ))
+                        .await
+                        .expect("send header-routed pdata");
+                    // Static-routed batch -> no header, falls back to static.
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes(), None))
+                        .await
+                        .expect("send static-routed pdata");
+
+                    let _ = consumer.recv_n(2).await;
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let mut m = FoldedMetrics::new();
+                    m.fold_all(ts.metrics());
+                    assert_eq!(
+                        m.value("topic_from_header"),
+                        1,
+                        "one batch routed from a transport header"
+                    );
+                    assert_eq!(
+                        m.value("topic_from_static_config"),
+                        1,
+                        "one batch routed from static config"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: a mixed run of successful exports, one broker-rejected
+        /// export, and one downstream ack, followed by graceful shutdown.
+        /// Guarantees: the final terminal snapshot reflects all activity up to
+        /// shutdown -- `messages{success} == N`, `messages{failure} == 1`, and
+        /// `acks_received == 1` -- so the shutdown snapshot is a complete record
+        /// of the node's counters, not a partial or reset view.
+        #[tokio::test]
+        async fn final_snapshot_reflects_all_activity_up_to_shutdown() {
+            use crate::common::kafka::node_harness::node_metrics::{FoldedMetrics, kafka_exports};
+            use rdkafka::types::RDKafkaRespErr;
+            const N: usize = 3;
+            let ok_topic = "it-telemetry-final-ok";
+            let fail_topic = "it-telemetry-final-fail";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(ok_topic)
+                    .topic(fail_topic),
+                |cluster| async move {
+                    // N successful exports on the ok topic.
+                    let consumer = cluster.consumer().subscribe(&[ok_topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(ok_topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+                    for _ in 0..N {
+                        exporter
+                            .send_pdata(logs_pdata(logs_request_bytes(), None))
+                            .await
+                            .expect("send ok pdata");
+                    }
+                    let _ = consumer.recv_n(N).await;
+                    // One downstream ack.
+                    exporter
+                        .send_ack(logs_pdata(logs_request_bytes(), None))
+                        .await;
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    let mut m = FoldedMetrics::new();
+                    m.fold_all(snaps);
+                    assert_eq!(
+                        kafka_exports(snaps, "logs", "success"),
+                        N as u64,
+                        "snapshot should record every successful export"
+                    );
+                    assert_eq!(
+                        m.value("acks_received"),
+                        1,
+                        "snapshot should record the ack"
+                    );
+
+                    // One broker-rejected export on a second exporter counts as a
+                    // failure in that node's snapshot.
+                    cluster
+                        .faults()
+                        .fail_produce(&[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION; 8]);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(
+                            fail_topic.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        .with_timeout_ms(1500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let fail_exporter = KafkaExporterHarness::start(&cluster, cfg);
+                    fail_exporter
+                        .send_pdata(logs_pdata(logs_request_bytes(), None))
+                        .await
+                        .expect("send fail pdata");
+                    fail_exporter.shutdown(Duration::from_secs(5)).await;
+                    let fail_ts = fail_exporter.await_terminal_state().await;
+                    assert_eq!(
+                        kafka_exports(fail_ts.metrics(), "logs", "failure"),
+                        1,
+                        "snapshot should record the rejected export as a failure"
+                    );
+                },
+            )
+            .await;
+        }
     }
 }

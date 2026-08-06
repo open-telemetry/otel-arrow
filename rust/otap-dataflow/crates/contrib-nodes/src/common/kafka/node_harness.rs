@@ -219,7 +219,7 @@ mod exporter_harness {
     use otap_df_engine::Interests;
     use otap_df_engine::config::ExporterConfig;
     use otap_df_engine::control::{
-        Controllable, NackMsg, NodeControlMsg, PipelineCompletionMsg,
+        AckMsg, Controllable, NackMsg, NodeControlMsg, PipelineCompletionMsg,
         PipelineCompletionMsgReceiver, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
     use otap_df_engine::error::Error as EngineError;
@@ -361,6 +361,27 @@ mod exporter_harness {
                 .send(NodeControlMsg::Config { config })
                 .await
                 .expect("send config to exporter");
+        }
+
+        /// Delivers a downstream `NodeControlMsg::Ack` to the running exporter,
+        /// standing in for a downstream node acknowledging a batch. Drives the
+        /// exporter's ack-accounting path (`acks_received`).
+        pub(crate) async fn send_ack(&self, pdata: OtapPdata) {
+            self.control_tx
+                .send(NodeControlMsg::Ack(AckMsg::new(pdata)))
+                .await
+                .expect("send ack to exporter");
+        }
+
+        /// Delivers a downstream `NodeControlMsg::Nack` (with `reason`) to the
+        /// running exporter, standing in for a downstream node refusing a batch.
+        /// Drives the exporter's nack-accounting and reason-sanitizing path
+        /// (`nacks_received`).
+        pub(crate) async fn send_nack(&self, reason: impl Into<String>, pdata: OtapPdata) {
+            self.control_tx
+                .send(NodeControlMsg::Nack(NackMsg::new(reason.into(), pdata)))
+                .await
+                .expect("send nack to exporter");
         }
 
         /// Receives one Ack/Nack unwind message within `timeout`, or `None` on
