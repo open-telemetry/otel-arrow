@@ -116,11 +116,13 @@ Policies are scoped runtime controls. Top-level policies provide defaults,
 group policies override those defaults for a group, and pipeline policies
 override them for a single pipeline.
 
-Precedence applies by policy family instead of deep-merging nested fragments.
-This avoids ambiguous partial inheritance and keeps the resolved runtime shape
-deterministic. Some policies are intentionally constrained to specific scopes;
-for example, the memory limiter is process-wide and only supported at top-level
-`policies.resources`.
+Precedence normally applies by policy family instead of deep-merging nested
+fragments. The `resources` family is the deliberate exception: its
+`core_allocation`, `memory_limiter`, and `rate_limiters` members resolve
+independently, while the named `rate_limiters` map resolves as one member rather
+than being merged entry by entry. Some policies are intentionally constrained
+to specific scopes; for example, the memory limiter is process-wide and only
+supported at top-level `policies.resources`.
 
 ### Topics
 
@@ -319,6 +321,8 @@ At node level:
 - `header_capture` (optional): receiver-only transport header capture override
 - `header_propagation` (optional): exporter-only transport header propagation
   override
+- `rate_limiters` (optional): select one named admission limiter with `[name]`;
+  omit the field or use `[]` to leave the node unbound
 
 At connection level:
 
@@ -513,6 +517,16 @@ policies:
       source: auto
       soft_limit: 7 GiB
       hard_limit: 8 GiB
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket:
+          allow: 10485760
+          interval: 1s
+          burst: 10485760
   runtime_recovery:
     enabled: true
     max_restarts: 5
@@ -586,6 +600,26 @@ Memory limiter configuration:
 - Detailed runtime behavior and rollout guidance are documented in
   [memory-limiter-phase1.md](memory-limiter-phase1.md).
 
+Rate limiter configuration:
+
+- Named limiters are declared under `policies.resources.rate_limiters`.
+- Any non-empty rate-limiter declaration requires a top-level
+  `policies.resources.memory_limiter`, which supplies the process pressure
+  signal that activates enforcement.
+- A declaration may appear at top-level, group, or pipeline policy scope. The
+  nearest declared map replaces the broader map; entries are not deep-merged.
+- `rate_limiters: {}` at a narrower policy scope disables an inherited map.
+- A node selects one effective limiter with `rate_limiters: [name]` and opts out
+  with `rate_limiters: []`.
+- Omitting the node field leaves the node unbound, regardless of how many
+  limiters are effective.
+- An unknown or dimension-incompatible selection fails startup.
+- V1 creates one bucket per bound receiver instance. Reusing a declaration does
+  not aggregate rate state across receivers or pipelines.
+- OTLP supports `request_bytes`; Syslog / CEF supports `messages`.
+- Detailed runtime behavior and limits are documented in
+  [memory-limiter-phase1.md](memory-limiter-phase1.md).
+
 Control channel keys:
 
 - `node`: per-node control inboxes
@@ -610,9 +644,12 @@ Telemetry policy notes:
 Resolution semantics:
 
 - precedence is applied at policy-family level (`channel_capacity`, `health`,
-  `telemetry`, `resources`)
+  `telemetry`, and others)
 - selected lower scope replaces upper scope for that family
 - no cross-scope deep merge of nested fields
+- `resources` is the exception: `core_allocation`, `memory_limiter`, and
+  `rate_limiters` resolve independently across scopes; the selected
+  `rate_limiters` map still replaces the broader map as a whole
 - policy objects are default-filled: if a lower-scope `policies` block exists,
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)

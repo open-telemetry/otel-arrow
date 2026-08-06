@@ -30,7 +30,10 @@
 use async_trait::async_trait;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
+use otap_df_config::policy::{
+    ChannelCapacityPolicy, RateLimitAggregation, RateLimitEnforcement, RateLimitPressure,
+    RateLimitUnit, RateLimiterPolicy, TelemetryPolicy, TokenBucketPolicy,
+};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::ExtensionFactory;
@@ -1946,10 +1949,142 @@ fn build_test_runtime_pipeline(
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
             None,
+            std::collections::BTreeMap::new(),
+            None,
             None,
         )
         .expect("pipeline builds");
     (runtime_pipeline, pipeline_ctx, entity_key, telemetry_system)
+}
+
+fn build_test_pipeline_with_unconsumed_explicit_binding(
+    yaml: &str,
+) -> Result<otap_df_engine::runtime_pipeline::RuntimePipeline<()>, EngineError> {
+    let config = PipelineConfig::from_yaml("test-group".into(), "test-pipeline".into(), yaml)
+        .expect("yaml config parses + validates");
+    let (pipeline_ctx, _telemetry_system, _entity_key) = fresh_pipeline_env();
+    let policy = RateLimiterPolicy {
+        enforcement: RateLimitEnforcement::Enforce,
+        aggregation: RateLimitAggregation::ReceiverInstance,
+        unit: RateLimitUnit::RequestBytes,
+        pressure: RateLimitPressure::Soft,
+        token_bucket: TokenBucketPolicy {
+            allow: 10,
+            interval: Duration::from_secs(1),
+            burst: Some(10),
+        },
+    };
+    TEST_PIPELINE_FACTORY.build(
+        pipeline_ctx,
+        config,
+        ChannelCapacityPolicy::default(),
+        TelemetryPolicy::default(),
+        None,
+        std::collections::BTreeMap::from([("ingress".to_owned(), policy)]),
+        None,
+        None,
+    )
+}
+
+/// Scenario: a receiver explicitly binds a limiter but its factory never consumes it.
+/// Guarantees: the receiver construction path rejects the configuration at startup.
+#[test]
+fn explicit_receiver_admission_binding_must_be_consumed() {
+    let _probe = make_probe("admission-receiver", CallSequence::None);
+    let result = build_test_pipeline_with_unconsumed_explicit_binding(
+        r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:probe"
+    rate_limiters: [ingress]
+    config: { probe_key: admission-receiver }
+  exporter:
+    type: "urn:test:exporter:noop"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    );
+    let Err(error) = result else {
+        panic!("unconsumed receiver binding must fail");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not consume ingress admission"),
+        "unexpected error: {error}"
+    );
+}
+
+/// Scenario: a processor explicitly binds a limiter but its factory never consumes it.
+/// Guarantees: the processor construction path applies the same startup contract as a receiver.
+#[test]
+fn explicit_processor_admission_binding_must_be_consumed() {
+    let _probe = make_probe("admission-processor", CallSequence::None);
+    let result = build_test_pipeline_with_unconsumed_explicit_binding(
+        r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:probe"
+    config: { probe_key: admission-processor }
+  processor:
+    type: "urn:test:processor:probe"
+    rate_limiters: [ingress]
+    config: null
+  exporter:
+    type: "urn:test:exporter:noop"
+    config: null
+connections:
+  - from: receiver
+    to: processor
+  - from: processor
+    to: exporter
+"#,
+    );
+    let Err(error) = result else {
+        panic!("unconsumed processor binding must fail");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not consume ingress admission"),
+        "unexpected error: {error}"
+    );
+}
+
+/// Scenario: an exporter explicitly binds a limiter but its factory never consumes it.
+/// Guarantees: the exporter construction path applies the same startup contract as other nodes.
+#[test]
+fn explicit_exporter_admission_binding_must_be_consumed() {
+    let _probe = make_probe("admission-exporter", CallSequence::None);
+    let result = build_test_pipeline_with_unconsumed_explicit_binding(
+        r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:probe"
+    config: { probe_key: admission-exporter }
+  exporter:
+    type: "urn:test:exporter:noop"
+    rate_limiters: [ingress]
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    );
+    let Err(error) = result else {
+        panic!("unconsumed exporter binding must fail");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not consume ingress admission"),
+        "unexpected error: {error}"
+    );
 }
 
 struct ReceiverProbeHandles {
@@ -4228,6 +4363,8 @@ fn build_runtime_pipeline_with_ready_gate(
             config,
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
+            None,
+            std::collections::BTreeMap::new(),
             None,
             None,
         )

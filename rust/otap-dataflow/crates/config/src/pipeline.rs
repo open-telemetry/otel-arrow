@@ -1172,6 +1172,7 @@ impl PipelineConfigBuilder {
                     default_output: None,
                     config: config.unwrap_or(Value::Null),
                     capabilities: HashMap::new(),
+                    rate_limiters: None,
                     header_capture: None,
                     header_propagation: None,
                     policies: None,

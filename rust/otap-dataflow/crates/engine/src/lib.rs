@@ -4,6 +4,7 @@
 //! Async Pipeline Engine
 
 use crate::{
+    admission::AdmissionBinder,
     channel_metrics::{
         CHANNEL_IMPL_FLUME, CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_PDATA,
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
@@ -37,7 +38,9 @@ use otap_df_config::{
     engine::INTERNAL_TELEMETRY_RECEIVER_URN,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
-    policy::{ChannelCapacityPolicy, TelemetryPolicy},
+    policy::{
+        ChannelCapacityPolicy, RateLimiterDeclarationScope, RateLimiterPolicy, TelemetryPolicy,
+    },
     transport_headers_policy::{
         HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
     },
@@ -49,10 +52,11 @@ use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::OnceLock,
 };
 
+pub mod admission;
 pub mod capability;
 #[doc(hidden)]
 pub mod clock;
@@ -98,6 +102,31 @@ pub mod wiring_contract;
 pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
 pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};
 pub use route_admission::RouteAdmission;
+
+fn resolve_admission_binding(
+    node_config: &NodeUserConfig,
+    policies: &BTreeMap<String, RateLimiterPolicy>,
+    declaration_scope: Option<RateLimiterDeclarationScope>,
+) -> Result<AdmissionBinder, String> {
+    match node_config.rate_limiters.as_deref() {
+        Some([]) => Ok(AdmissionBinder::none()),
+        Some([limiter_name]) => {
+            let policy = policies.get(limiter_name).copied().ok_or_else(|| {
+                format!("rate limiter binding '{limiter_name}' does not name an effective limiter")
+            })?;
+            Ok(AdmissionBinder::configured_at_scope(
+                limiter_name.clone(),
+                declaration_scope,
+                policy,
+            ))
+        }
+        Some(limiter_names) => Err(format!(
+            "V1 supports at most one rate limiter binding per node; found {}",
+            limiter_names.len()
+        )),
+        None => Ok(AdmissionBinder::none()),
+    }
+}
 
 /// Trait for factory types that expose a name.
 ///
@@ -727,6 +756,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
+        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
+        rate_limiter_scope: Option<RateLimiterDeclarationScope>,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
@@ -780,7 +811,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         self.validate_connection_wiring_contracts(&config)?;
 
-        let channel_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
+        let basic_runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
 
         // First pass: allocate all node IDs from the build_state.
         let mut receiver_count = 0usize;
@@ -874,7 +905,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 ext_id.clone(),
                 &ext_ctx,
                 &mut build_state.channel_metrics,
-                channel_metrics_enabled,
+                basic_runtime_metrics_enabled,
             );
             bundle
                 .register_into(factory.capabilities.as_ref(), &mut capability_registry)
@@ -911,15 +942,35 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // so we look them up from `node_ids` instead of calling `next_node_id`.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         let empty_capabilities = capability::registry::Capabilities::empty();
+        let mut admission_bound_nodes = Vec::new();
+        let mut admission_explicitly_opted_out_nodes = Vec::new();
         for (name, node_config) in config.node_iter() {
             let node_kind = node_config.kind();
             let node_id = node_ids.get(name).expect("allocated in first pass").clone();
-            let base_ctx = pipeline_ctx.with_node_context(
+            let mut base_ctx = pipeline_ctx.with_node_context(
                 name.clone(),
                 node_config.r#type.clone(),
                 node_kind,
                 node_config.identity_attributes(),
             );
+            let invalid_binding = |error: String| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "Component `{}` in pipeline_group={} pipeline={} node={}: {error}",
+                        node_config.r#type.as_ref(),
+                        pipeline_ctx.pipeline_group_id().as_ref(),
+                        pipeline_ctx.pipeline_id().as_ref(),
+                        name.as_ref(),
+                    ),
+                }))
+            };
+            let admission = resolve_admission_binding(
+                node_config,
+                &rate_limiter_policies,
+                rate_limiter_scope.clone(),
+            )
+            .map_err(invalid_binding)?;
+            base_ctx.set_admission(admission);
             // Per-node Capabilities resolved in the build-time pass above.
             // Falls back to empty for nodes that declared no bindings (the
             // resolver populates the map for every node, including those
@@ -932,7 +983,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 otap_df_config::node::NodeKind::Receiver => {
                     // Inject internal telemetry settings into context if this is the ITR node.
                     // The ITR factory will extract these settings during construction.
-                    let mut base_ctx = base_ctx;
                     if node_config.r#type.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
                         if let Some(ref settings) = internal_telemetry {
                             base_ctx.set_internal_telemetry(settings.clone());
@@ -944,7 +994,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         &base_ctx,
                         NodeType::Receiver,
                         node_id.clone(),
-                        channel_metrics_enabled,
+                        basic_runtime_metrics_enabled,
                         || {
                             self.create_receiver(
                                 &base_ctx,
@@ -965,7 +1015,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         &base_ctx,
                         NodeType::Processor,
                         node_id.clone(),
-                        channel_metrics_enabled,
+                        basic_runtime_metrics_enabled,
                         || {
                             self.create_processor(
                                 &base_ctx,
@@ -985,7 +1035,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         &base_ctx,
                         NodeType::Exporter,
                         node_id.clone(),
-                        channel_metrics_enabled,
+                        basic_runtime_metrics_enabled,
                         || {
                             self.create_exporter(
                                 &base_ctx,
@@ -1005,6 +1055,21 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     unreachable!("rejected in first pass");
                 }
             }
+
+            if base_ctx.admission().was_bound() {
+                admission_bound_nodes.push(name.as_ref().to_owned());
+            } else if matches!(node_config.rate_limiters.as_deref(), Some([])) {
+                admission_explicitly_opted_out_nodes.push(name.as_ref().to_owned());
+            }
+        }
+
+        if !admission_bound_nodes.is_empty() || !admission_explicitly_opted_out_nodes.is_empty() {
+            otel_info!(
+                "admission.binding.summary",
+                bound_nodes = admission_bound_nodes.join(","),
+                explicitly_opted_out_nodes = admission_explicitly_opted_out_nodes.join(","),
+                message = "Resolved pipeline admission bindings"
+            );
         }
 
         // -- Decide which extension variants to keep --------------------
@@ -1185,7 +1250,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     &pipeline,
                     &mut build_state,
                     buffer_size,
-                    channel_metrics_enabled,
+                    basic_runtime_metrics_enabled,
                     &pipeline_group_id,
                     &pipeline_id,
                     core_id,
@@ -1198,6 +1263,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             wiring.apply(&mut pipeline, &pipeline_group_id, &pipeline_id, core_id)?;
         }
         pipeline.set_channel_metrics(build_state.channel_metrics.into_handles());
+        pipeline.set_admission_metrics(build_state.admission_metrics.into_handles());
 
         Ok(pipeline)
     }
@@ -1299,7 +1365,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         base_ctx: &PipelineContext,
         node_type: NodeType,
         node_id: NodeId,
-        channel_metrics_enabled: bool,
+        basic_runtime_metrics_enabled: bool,
         create_wrapper: F,
     ) -> Result<W, Error>
     where
@@ -1320,11 +1386,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let wrapper =
             with_node_telemetry_handle(node_telemetry_handle.clone(), || -> Result<W, Error> {
                 let wrapper = create_wrapper()?;
-                Ok(wrapper.with_control_channel_metrics(
+                let wrapper = wrapper.with_control_channel_metrics(
                     base_ctx,
                     &mut build_state.channel_metrics,
-                    channel_metrics_enabled,
-                ))
+                    basic_runtime_metrics_enabled,
+                );
+                build_state
+                    .admission_metrics
+                    .register_if_enabled(basic_runtime_metrics_enabled, || {
+                        base_ctx.admission().metrics_handle(base_ctx)
+                    });
+                Ok(wrapper)
             })?;
         Ok(wrapper
             .with_node_telemetry_guard(node_guard.take().expect("node telemetry guard missing")))
@@ -1815,8 +1887,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let factory = self
             .get_receiver_factory_map()
             .get(normalized.as_str())
-            .ok_or(Error::UnknownReceiver {
-                plugin_urn: normalized,
+            .ok_or_else(|| Error::UnknownReceiver {
+                plugin_urn: normalized.clone(),
             })?;
         let runtime_config = ReceiverConfig::with_channel_capacities(
             name.clone(),
@@ -1836,6 +1908,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_capture_policy(capture_policy);
+        pipeline_ctx
+            .admission()
+            .validate_factory_consumption(normalized.as_str())
+            .map_err(|error| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: error.to_string(),
+                }))
+            })?;
 
         otel_debug!(
             "receiver.create.complete",
@@ -1882,7 +1962,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .get_processor_factory_map()
             .get(normalized.as_str())
             .ok_or(Error::UnknownProcessor {
-                plugin_urn: normalized,
+                plugin_urn: normalized.clone(),
             })?;
         let processor_config = ProcessorConfig::with_channel_capacities(
             name.clone(),
@@ -1899,6 +1979,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
+        pipeline_ctx
+            .admission()
+            .validate_factory_consumption(normalized.as_str())
+            .map_err(|error| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: error.to_string(),
+                }))
+            })?;
 
         validate_local_wakeup_requirements(&node_id, processor.runtime_requirements())?;
 
@@ -1948,7 +2036,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .get_exporter_factory_map()
             .get(normalized.as_str())
             .ok_or(Error::UnknownExporter {
-                plugin_urn: normalized,
+                plugin_urn: normalized.clone(),
             })?;
         let exporter_config = ExporterConfig::with_channel_capacities(
             name.clone(),
@@ -1968,6 +2056,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_propagation_policy(propagation_policy);
+        pipeline_ctx
+            .admission()
+            .validate_factory_consumption(normalized.as_str())
+            .map_err(|error| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: error.to_string(),
+                }))
+            })?;
 
         otel_debug!(
             "exporter.create.complete",
@@ -2100,6 +2196,7 @@ struct BuildState<PData> {
     nodes: NodeDefs<PData, PipeNode>,
     registry: HashMap<NodeName, NodeRegistration>,
     channel_metrics: ChannelMetricsRegistry,
+    admission_metrics: admission::metrics::AdmissionMetricsRegistry,
 }
 
 impl<PData> BuildState<PData> {
@@ -2108,6 +2205,7 @@ impl<PData> BuildState<PData> {
             nodes: NodeDefs::default(),
             registry: HashMap::new(),
             channel_metrics: ChannelMetricsRegistry::default(),
+            admission_metrics: admission::metrics::AdmissionMetricsRegistry::default(),
         }
     }
 
@@ -2525,10 +2623,108 @@ fn stable_hash64(value: &str) -> u64 {
 #[cfg(test)]
 mod test {
     use super::*;
+    use otap_df_config::policy::{
+        RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+        TokenBucketPolicy,
+    };
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
         PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
     };
+    use std::time::Duration;
+
+    fn admission_policy(unit: RateLimitUnit) -> RateLimiterPolicy {
+        RateLimiterPolicy {
+            enforcement: RateLimitEnforcement::Enforce,
+            aggregation: RateLimitAggregation::ReceiverInstance,
+            unit,
+            pressure: RateLimitPressure::Soft,
+            token_bucket: TokenBucketPolicy {
+                allow: 10,
+                interval: Duration::from_secs(1),
+                burst: Some(10),
+            },
+        }
+    }
+
+    /// Scenario: a node explicitly opts out while effective limiters are available.
+    /// Guarantees: an empty binding list produces an unconfigured binder.
+    #[test]
+    fn admission_resolution_honors_explicit_empty_opt_out() {
+        let mut node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        node.rate_limiters = Some(Vec::new());
+        let policies = BTreeMap::from([(
+            "ingress".to_owned(),
+            admission_policy(RateLimitUnit::RequestBytes),
+        )]);
+
+        let binder = resolve_admission_binding(&node, &policies, None).expect("opt out resolves");
+
+        assert!(!binder.is_configured());
+    }
+
+    /// Scenario: a node explicitly names a limiter absent from its effective policy map.
+    /// Guarantees: resolution fails at startup instead of silently disabling admission.
+    #[test]
+    fn admission_resolution_rejects_unknown_explicit_name() {
+        let mut node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        node.rate_limiters = Some(vec!["missing".to_owned()]);
+
+        let error = resolve_admission_binding(&node, &BTreeMap::new(), None)
+            .expect_err("unknown limiter must fail");
+
+        assert!(error.contains("does not name an effective limiter"));
+    }
+
+    /// Scenario: a node explicitly names two otherwise valid limiters.
+    /// Guarantees: V1 rejects multi-limiter composition rather than applying only one
+    /// or charging two buckets without atomic reservation semantics.
+    #[test]
+    fn admission_resolution_rejects_multiple_explicit_names() {
+        let mut node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        node.rate_limiters = Some(vec!["first".to_owned(), "second".to_owned()]);
+        let policy = admission_policy(RateLimitUnit::RequestBytes);
+        let policies =
+            BTreeMap::from([("first".to_owned(), policy), ("second".to_owned(), policy)]);
+
+        let error = resolve_admission_binding(&node, &policies, None)
+            .expect_err("multiple bindings must fail");
+
+        assert!(error.contains("at most one rate limiter binding"));
+    }
+
+    /// Scenario: a node omits its binding while an effective limiter exists.
+    /// Guarantees: policy declarations remain ambient configuration until a node explicitly
+    /// selects a limiter.
+    #[test]
+    fn admission_resolution_requires_explicit_binding() {
+        let node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        let policies = BTreeMap::from([(
+            "ingress".to_owned(),
+            admission_policy(RateLimitUnit::RequestBytes),
+        )]);
+
+        let binder =
+            resolve_admission_binding(&node, &policies, Some(RateLimiterDeclarationScope::Engine))
+                .expect("omitted binding resolves");
+
+        assert!(!binder.is_configured());
+    }
+
+    /// Scenario: a node omits its binding while several effective limiters exist.
+    /// Guarantees: the node remains unbound without requiring special ambiguity handling.
+    #[test]
+    fn admission_resolution_ignores_unselected_limiters() {
+        let node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        let policy = admission_policy(RateLimitUnit::RequestBytes);
+        let policies =
+            BTreeMap::from([("first".to_owned(), policy), ("second".to_owned(), policy)]);
+
+        let binder =
+            resolve_admission_binding(&node, &policies, None).expect("omitted binding resolves");
+
+        assert!(!binder.is_configured());
+    }
 
     #[test]
     fn test_interests() {
