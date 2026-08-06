@@ -8,6 +8,7 @@ mod record_json;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
+use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
@@ -35,6 +36,8 @@ use otap_df_telemetry::output_service::{Frame, OutputService, StreamHandle};
 use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
 use std::io::Write;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use self::record_json::RecordJsonFormatter;
@@ -165,8 +168,17 @@ const fn default_record_json_scope() -> bool {
 /// Console exporter that prints OTLP data to stdout.
 pub struct ConsoleExporter {
     formatter: ConsoleFormatter,
-    /// Overrides the process-wide stdout handle; only tests supply one.
-    output: Option<StreamHandle>,
+    /// Overrides the resolved stream; only tests supply one.
+    #[cfg(test)]
+    output: Option<TestOutput>,
+}
+
+/// Test-only stream override that also counts how often it was resolved.
+#[cfg(test)]
+#[derive(Clone)]
+struct TestOutput {
+    handle: StreamHandle,
+    resolutions: Arc<AtomicUsize>,
 }
 
 impl ConsoleExporter {
@@ -183,6 +195,7 @@ impl ConsoleExporter {
         };
         Self {
             formatter,
+            #[cfg(test)]
             output: None,
         }
     }
@@ -191,23 +204,45 @@ impl ConsoleExporter {
     #[cfg(test)]
     #[must_use]
     fn with_output(config: ConsoleExporterConfig, output: StreamHandle) -> Self {
-        Self {
-            output: Some(output),
+        Self::with_counted_output(config, output).0
+    }
+
+    /// Creates an exporter bound to a test stream, returning the resolution counter.
+    #[cfg(test)]
+    #[must_use]
+    fn with_counted_output(
+        config: ConsoleExporterConfig,
+        output: StreamHandle,
+    ) -> (Self, Arc<AtomicUsize>) {
+        let resolutions = Arc::new(AtomicUsize::new(0));
+        let exporter = Self {
+            output: Some(TestOutput {
+                handle: output,
+                resolutions: Arc::clone(&resolutions),
+            }),
             ..Self::new(config)
-        }
+        };
+        (exporter, resolutions)
     }
 
     /// Returns the stream this exporter writes to.
     ///
-    /// Pretty output is human readable, so it follows the diagnostics stream and
-    /// steps aside once any exporter claims stdout for machine-readable records.
+    /// Pretty output is this exporter's product rather than engine prose, so it
+    /// uses stdout until another exporter claims stdout for machine-readable
+    /// records.
     fn output_handle(&self) -> StreamHandle {
-        if let Some(output) = self.output.clone() {
-            return output;
+        #[cfg(test)]
+        if let Some(output) = self.output.as_ref() {
+            let _ = output.resolutions.fetch_add(1, Ordering::Relaxed);
+            return output.handle.clone();
         }
         match self.formatter {
-            ConsoleFormatter::Pretty(_) => OutputService::diagnostics(),
-            ConsoleFormatter::RecordJson(_) => OutputService::stdout(),
+            ConsoleFormatter::Pretty(_) if OutputService::structured_stdout() => {
+                OutputService::stderr()
+            }
+            ConsoleFormatter::Pretty(_) | ConsoleFormatter::RecordJson(_) => {
+                OutputService::stdout()
+            }
         }
     }
 }
@@ -226,10 +261,7 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             .map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse console exporter config: {}", e),
             })?;
-        if config.format == ConsoleOutputFormat::RecordJson {
-            // Claims stdout for records, which moves all prose to stderr.
-            OutputService::mark_structured_stdout();
-        }
+        require_structured_stdout_claim(config.format, OutputService::structured_stdout())?;
         Ok(ExporterWrapper::local(
             ConsoleExporter::new(config),
             node,
@@ -240,6 +272,61 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::validate_typed_config::<ConsoleExporterConfig>,
 };
+
+/// Claims stdout for records when `engine_cfg` deploys a `record_json` console exporter.
+///
+/// Pipelines are built on their own threads, so an exporter created late cannot
+/// stop an earlier `pretty` exporter from having already written to stdout. The
+/// process host calls this once a configuration is accepted and before any
+/// pipeline starts, which keeps `pretty` output on stderr from its first
+/// payload. Validation stays free of side effects so a rejected candidate
+/// configuration never reroutes a running exporter.
+pub fn claim_structured_stdout(engine_cfg: &OtelDataflowSpec) {
+    if config_emits_records(engine_cfg) {
+        OutputService::mark_structured_stdout();
+    }
+}
+
+/// Returns true when any console exporter in `engine_cfg` emits record JSON.
+///
+/// The engine's own observability pipeline carries a console exporter too, so it
+/// is scanned alongside the configured groups.
+fn config_emits_records(engine_cfg: &OtelDataflowSpec) -> bool {
+    let observability = engine_cfg
+        .engine
+        .observability
+        .pipeline
+        .clone()
+        .into_pipeline_config();
+    engine_cfg
+        .groups
+        .values()
+        .flat_map(|group| group.pipelines.values())
+        .chain(std::iter::once(&observability))
+        .flat_map(|pipeline| pipeline.node_iter())
+        .any(|(_, node)| {
+            node.r#type.as_str() == CONSOLE_EXPORTER_URN
+                && match serde_json::from_value::<ConsoleExporterConfig>(node.config.clone()) {
+                    Ok(config) => config.format == ConsoleOutputFormat::RecordJson,
+                    // The host normally validates first. An embedder that does not
+                    // gets the safe failure direction: prose moves off stdout.
+                    Err(_) => true,
+                }
+        })
+}
+
+/// Rejects a record exporter that was not claimed before pipelines started.
+fn require_structured_stdout_claim(
+    format: ConsoleOutputFormat,
+    structured_stdout: bool,
+) -> Result<(), ConfigError> {
+    if format == ConsoleOutputFormat::RecordJson && !structured_stdout {
+        return Err(ConfigError::InvalidUserConfig {
+            error: "record_json console output was not claimed before pipeline startup; call claim_structured_stdout on the accepted engine configuration".to_owned(),
+        });
+    }
+    Ok(())
+}
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for ConsoleExporter {
@@ -1109,7 +1196,7 @@ mod tests {
 
         let encoded = logs_with_full_resource_and_scope().encode_to_vec();
         let sink = RecordingSink::new();
-        let mut stream = OutputStream::start(StreamId::Stdout, 8, true, Box::new(sink.clone()))
+        let stream = OutputStream::start(StreamId::Stdout, 8, true, Box::new(sink.clone()))
             .expect("writer thread spawns");
         let handle = stream.handle();
 
@@ -1156,7 +1243,7 @@ mod tests {
         let encoded = logs_with_full_resource_and_scope().encode_to_vec();
         let bytes = OtlpProtoBytes::ExportLogsRequest(encoded.into());
         let sink = RecordingSink::new();
-        let mut stream = OutputStream::start(StreamId::Stdout, 1, true, Box::new(sink.clone()))
+        let stream = OutputStream::start(StreamId::Stdout, 1, true, Box::new(sink.clone()))
             .expect("writer thread spawns");
         let handle = stream.handle();
         assert!(stream.shutdown(Duration::from_secs(5)).drained);
@@ -1179,7 +1266,7 @@ mod tests {
         const SUBSCRIBER_NODE_ID: usize = 4242;
 
         let sink = RecordingSink::new();
-        let mut stream = OutputStream::start(StreamId::Stdout, 1, true, Box::new(sink.clone()))
+        let stream = OutputStream::start(StreamId::Stdout, 1, true, Box::new(sink.clone()))
             .expect("writer thread spawns");
         let handle = stream.handle();
         assert!(stream.shutdown(Duration::from_secs(5)).drained);
@@ -1235,6 +1322,106 @@ mod tests {
                 assert_eq!(handle.stats().frames_enqueue_failed, 1);
                 assert!(sink.contents().is_empty());
             });
+    }
+
+    /// Scenario: an exporter's message loop handles several payloads in one run.
+    /// Guarantees: the target stream is resolved once per payload, so a stdout claim
+    /// that lands mid-run is honored instead of being fixed when the loop starts.
+    #[test]
+    fn output_stream_is_resolved_for_every_payload() {
+        const PAYLOADS: usize = 3;
+
+        let sink = RecordingSink::new();
+        let stream = OutputStream::start(StreamId::Stdout, 8, true, Box::new(sink.clone()))
+            .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        let (exporter, resolutions) = ConsoleExporter::with_counted_output(
+            ConsoleExporterConfig {
+                format: ConsoleOutputFormat::RecordJson,
+                ..ConsoleExporterConfig::default()
+            },
+            handle,
+        );
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(CONSOLE_EXPORTER_URN));
+        let wrapper = ExporterWrapper::local(
+            exporter,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let observed = Arc::clone(&resolutions);
+        test_runtime
+            .set_exporter(wrapper)
+            .run_test(|ctx| async move {
+                for _ in 0..PAYLOADS {
+                    ctx.send_pdata(create_test_pdata())
+                        .await
+                        .expect("exporter accepts the payload");
+                }
+                ctx.send_shutdown(Instant::now() + Duration::from_secs(1), "test complete")
+                    .await
+                    .expect("exporter accepts shutdown");
+            })
+            .run_validation(move |_ctx, result| async move {
+                result.expect("exporter terminates cleanly");
+                assert_eq!(
+                    observed.load(Ordering::Relaxed),
+                    PAYLOADS,
+                    "the stream must be resolved once per payload, not once per run"
+                );
+            });
+    }
+
+    /// Scenario: an accepted or malformed configuration is scanned for record exporters.
+    /// Guarantees: record JSON and malformed console configs claim stdout conservatively,
+    /// while a configuration whose only console exporter is pretty does not.
+    #[test]
+    fn config_scan_claims_only_safe_cases() {
+        let records = engine_config_with_console(r#"{ "format": "record_json" }"#);
+        let pretty_only = engine_config_with_console(r#"{ "format": "pretty" }"#);
+        let malformed = engine_config_with_console(r#"{ "format": "invalid" }"#);
+
+        assert!(config_emits_records(&records));
+        assert!(!config_emits_records(&pretty_only));
+        assert!(config_emits_records(&malformed));
+    }
+
+    /// Scenario: a record exporter is created without the process host preclaiming stdout.
+    /// Guarantees: unsafe startup and live-control transitions are rejected before the
+    /// exporter can emit JSON into a stdout that may already contain pretty output.
+    #[test]
+    fn record_json_requires_a_prestartup_claim() {
+        assert!(require_structured_stdout_claim(ConsoleOutputFormat::Pretty, false).is_ok());
+        assert!(require_structured_stdout_claim(ConsoleOutputFormat::RecordJson, true).is_ok());
+        let error = require_structured_stdout_claim(ConsoleOutputFormat::RecordJson, false)
+            .expect_err("an unclaimed record exporter must be rejected");
+        assert!(error.to_string().contains("before pipeline startup"));
+    }
+
+    fn engine_config_with_console(config: &str) -> OtelDataflowSpec {
+        OtelDataflowSpec::from_json(&format!(
+            r#"{{
+                "version": "otel_dataflow/v1",
+                "groups": {{
+                    "g1": {{
+                        "pipelines": {{
+                            "p1": {{
+                                "nodes": {{
+                                    "console": {{
+                                        "type": "urn:otel:exporter:console",
+                                        "config": {config}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#
+        ))
+        .expect("engine config parses")
     }
 
     /// Scenario: a pretty exporter already exists when another exporter claims stdout

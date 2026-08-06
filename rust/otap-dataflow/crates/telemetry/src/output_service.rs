@@ -27,7 +27,7 @@
 use crate::otel_error;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -251,6 +251,8 @@ pub struct ShutdownOutcome {
     pub drained: bool,
     /// Whether a writer stopped on an I/O error rather than running out of time.
     pub writer_failed: bool,
+    /// Whether the deadline elapsed while a writer could still be running.
+    pub deadline_expired: bool,
     /// Accepted frames still unwritten when the operation returned.
     pub frames_pending: u64,
 }
@@ -260,6 +262,7 @@ impl Default for ShutdownOutcome {
         Self {
             drained: true,
             writer_failed: false,
+            deadline_expired: false,
             frames_pending: 0,
         }
     }
@@ -270,6 +273,7 @@ impl ShutdownOutcome {
     fn merge(&mut self, other: Self) {
         self.drained &= other.drained;
         self.writer_failed |= other.writer_failed;
+        self.deadline_expired |= other.deadline_expired;
         self.frames_pending = self.frames_pending.saturating_add(other.frames_pending);
     }
 }
@@ -566,7 +570,9 @@ pub struct OutputStream {
     shared: Arc<StreamShared>,
     sender: flume::Sender<Command>,
     done: flume::Receiver<WriterExit>,
-    worker: Option<thread::JoinHandle<()>>,
+    // Behind a lock so the process-wide service, which only ever holds a shared
+    // reference, can still join the writer during terminal shutdown.
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl OutputStream {
@@ -609,7 +615,7 @@ impl OutputStream {
             shared,
             sender,
             done,
-            worker: Some(worker),
+            worker: Mutex::new(Some(worker)),
         })
     }
 
@@ -652,7 +658,7 @@ impl OutputStream {
     ///
     /// Returns once the writer finishes or the deadline expires, whichever comes
     /// first, so a stalled console pipe cannot block the caller indefinitely.
-    pub fn shutdown(&mut self, deadline: Duration) -> ShutdownOutcome {
+    pub fn shutdown(&self, deadline: Duration) -> ShutdownOutcome {
         let started = Instant::now();
         self.shared.close_admission();
         // Stop must be the last command queued, otherwise a frame that already
@@ -667,7 +673,11 @@ impl OutputStream {
 
         // A timed-out writer is still running, so it cannot be joined here.
         if !matches!(exit, Err(flume::RecvTimeoutError::Timeout))
-            && let Some(worker) = self.worker.take()
+            && let Some(worker) = self
+                .worker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
         {
             let _ = worker.join();
         }
@@ -686,14 +696,29 @@ impl OutputStream {
 
     /// Reports the frames that were accepted but are not on the stream yet.
     fn pending_outcome(&self) -> ShutdownOutcome {
+        let writer_failed = self.shared.unavailable.load(Ordering::Acquire);
         ShutdownOutcome {
             drained: false,
             // The writer latches this before it exits, including on panic, so it
             // separates an I/O failure from a deadline that simply expired.
-            writer_failed: self.shared.unavailable.load(Ordering::Acquire),
+            writer_failed,
+            deadline_expired: !writer_failed,
             frames_pending: self.shared.frames_pending(),
         }
     }
+}
+
+/// Applies one deadline across both streams and preserves each outcome for tests.
+fn shutdown_streams(
+    stdout: &OutputStream,
+    stderr: &OutputStream,
+    deadline: Duration,
+) -> (ShutdownOutcome, ShutdownOutcome) {
+    let started = Instant::now();
+    let stdout_outcome = stdout.shutdown(deadline);
+    let remaining = deadline.saturating_sub(started.elapsed());
+    let stderr_outcome = stderr.shutdown(remaining);
+    (stdout_outcome, stderr_outcome)
 }
 
 /// Drains the queue and writes each frame contiguously.
@@ -805,7 +830,7 @@ fn report_failure(id: StreamId, shared: &StreamShared, error: &io::Error) {
             error = ?error,
             message = "Console writer stopped after a write or flush error"
         ),
-        // Diagnostics normally go to stderr, which is the stream that just died.
+        // Diagnostics go to stderr, which is the stream that just died.
         StreamId::Stderr => report_dead_stderr_on_stdout(error),
     }
 }
@@ -814,7 +839,8 @@ fn report_failure(id: StreamId, shared: &StreamShared, error: &io::Error) {
 ///
 /// Skipped when stdout carries records, because a prose line there would break
 /// the guarantee this service exists to provide. The failure stays visible in
-/// `write_errors` and in [`ShutdownOutcome::writer_failed`].
+/// `write_errors`, in [`ShutdownOutcome::writer_failed`], and in the run result
+/// the controller returns.
 fn report_dead_stderr_on_stdout(error: &io::Error) {
     if OutputService::structured_stdout() {
         return;
@@ -825,7 +851,12 @@ fn report_dead_stderr_on_stdout(error: &io::Error) {
     if stdout.is_direct() {
         return;
     }
-    let _ = stdout.try_submit(Frame::line(&format!(
+    write_stderr_failure_notice(&stdout, error);
+}
+
+/// Submits the dead-stderr notice to an already-vetted fallback stream.
+fn write_stderr_failure_notice(fallback: &StreamHandle, error: &io::Error) {
+    let _ = fallback.try_submit(Frame::line(&format!(
         "otap: stderr console writer stopped after a write or flush error: {error}"
     )));
 }
@@ -887,17 +918,15 @@ impl OutputService {
         )
     }
 
-    /// Returns the handle human-readable diagnostics must use.
+    /// Returns the handle human-readable engine diagnostics must use.
     ///
-    /// While stdout carries machine-readable records, prose moves to stderr so a
-    /// structured stream never gains a line that does not parse.
+    /// Diagnostics always use stderr. Exporters are built while pipelines start,
+    /// so a stdout claim can arrive after the first diagnostics are emitted;
+    /// keeping prose off stdout unconditionally is what makes stdout parseable
+    /// no matter when that claim lands.
     #[must_use]
     pub fn diagnostics() -> StreamHandle {
-        if Self::structured_stdout() {
-            Self::stderr()
-        } else {
-            Self::stdout()
-        }
+        Self::stderr()
     }
 
     /// Writes and flushes everything accepted so far on both streams.
@@ -913,6 +942,22 @@ impl OutputService {
         let mut outcome = service.stdout.drain(deadline);
         let remaining = deadline.saturating_sub(started.elapsed());
         outcome.merge(service.stderr.drain(remaining));
+        outcome
+    }
+
+    /// Stops both writers, draining and flushing what they already accepted.
+    ///
+    /// This is the terminal operation: it closes admission, waits for the queued
+    /// frames, and joins the writer threads. Only the process host may call it,
+    /// because the streams do not accept frames afterwards. An engine run that
+    /// shares the process with later runs uses [`OutputService::drain`] instead.
+    pub fn shutdown(deadline: Duration) -> ShutdownOutcome {
+        let Some(service) = SERVICE.get() else {
+            return ShutdownOutcome::default();
+        };
+        let (stdout, stderr) = shutdown_streams(&service.stdout, &service.stderr, deadline);
+        let mut outcome = stdout;
+        outcome.merge(stderr);
         outcome
     }
 
@@ -1061,7 +1106,7 @@ mod tests {
         const FRAMES_PER_PRODUCER: usize = 64;
 
         let sink = TestSink::new();
-        let mut stream = start(&sink, 16);
+        let stream = start(&sink, 16);
         let handle = stream.handle();
 
         let workers: Vec<_> = (0..PRODUCERS)
@@ -1104,7 +1149,7 @@ mod tests {
     #[tokio::test]
     async fn oversized_record_is_written_contiguously() {
         let sink = TestSink::new();
-        let mut stream = start(&sink, 4);
+        let stream = start(&sink, 4);
         let handle = stream.handle();
 
         let body = "a".repeat(3 * 1024 * 1024);
@@ -1127,7 +1172,7 @@ mod tests {
         const BOUNDARY: usize = 2 * 1024 * 1024;
 
         let sink = TestSink::new();
-        let mut stream = start(&sink, 8);
+        let stream = start(&sink, 8);
         let handle = stream.handle();
 
         for offset in [BOUNDARY - 1, BOUNDARY, BOUNDARY + 1] {
@@ -1159,7 +1204,7 @@ mod tests {
     #[tokio::test]
     async fn multi_record_frame_keeps_record_order() {
         let sink = TestSink::new();
-        let mut stream = start(&sink, 4);
+        let stream = start(&sink, 4);
         let handle = stream.handle();
 
         let mut payload = String::new();
@@ -1191,7 +1236,7 @@ mod tests {
         const FRAMES: usize = 40;
 
         let sink = TestSink::new().with_delay(Duration::from_millis(1));
-        let mut stream = OutputStream::start(
+        let stream = OutputStream::start(
             StreamId::Stdout,
             CAPACITY,
             true,
@@ -1228,7 +1273,7 @@ mod tests {
         // under test: a dead stderr writer is reported on stdout, and a dead
         // stdout writer is reported through otel_error! to stderr.
         let sink = TestSink::new().failing_after(1);
-        let mut stream =
+        let stream =
             OutputStream::start(StreamId::Stderr, 4, true, Box::new(sink.clone())).expect("spawn");
         let handle = stream.handle();
 
@@ -1263,7 +1308,7 @@ mod tests {
     #[tokio::test]
     async fn flush_error_reports_a_failed_drain() {
         let sink = TestSink::new().failing_flush();
-        let mut stream = OutputStream::start(StreamId::Stderr, 4, false, Box::new(sink.clone()))
+        let stream = OutputStream::start(StreamId::Stderr, 4, false, Box::new(sink.clone()))
             .expect("writer thread spawns");
         let handle = stream.handle();
 
@@ -1290,7 +1335,7 @@ mod tests {
         const PRODUCERS: usize = 16;
 
         let sink = TestSink::new();
-        let mut stream = start(&sink, 4);
+        let stream = start(&sink, 4);
         let handle = stream.handle();
         let keep_going = Arc::new(AtomicBool::new(true));
 
@@ -1339,7 +1384,7 @@ mod tests {
     async fn cancelled_submit_releases_its_admission_slot() {
         let stalled = Arc::new(AtomicBool::new(true));
         let sink = TestSink::new().stalling(Arc::clone(&stalled));
-        let mut stream = start(&sink, 1);
+        let stream = start(&sink, 1);
         let handle = stream.handle();
 
         // One frame reaches the stalled writer, the next fills the single queue slot.
@@ -1463,7 +1508,7 @@ mod tests {
         const FRAMES: usize = 16;
 
         let sink = TestSink::new().with_delay(Duration::from_millis(2));
-        let mut stream = start(&sink, FRAMES);
+        let stream = start(&sink, FRAMES);
         let handle = stream.handle();
 
         for index in 0..FRAMES {
@@ -1489,7 +1534,7 @@ mod tests {
     async fn shutdown_gives_up_on_a_stalled_sink() {
         let stalled = Arc::new(AtomicBool::new(true));
         let sink = TestSink::new().stalling(Arc::clone(&stalled));
-        let mut stream = start(&sink, 8);
+        let stream = start(&sink, 8);
         let handle = stream.handle();
 
         for index in 0..4 {
@@ -1511,6 +1556,58 @@ mod tests {
             outcome.frames_pending
         );
         stalled.store(false, Ordering::Release);
+    }
+
+    /// Scenario: both standard streams are stalled under one terminal deadline.
+    /// Guarantees: stdout cannot consume more than the shared budget, stderr sees
+    /// the exhausted budget, and both outcomes identify writers that may still run.
+    #[tokio::test]
+    async fn shutdown_splits_one_deadline_across_both_streams() {
+        let stdout_stalled = Arc::new(AtomicBool::new(true));
+        let stderr_stalled = Arc::new(AtomicBool::new(true));
+        let stdout_sink = TestSink::new().stalling(Arc::clone(&stdout_stalled));
+        let stderr_sink = TestSink::new().stalling(Arc::clone(&stderr_stalled));
+        let stdout = OutputStream::start(StreamId::Stdout, 4, true, Box::new(stdout_sink.clone()))
+            .expect("stdout writer spawns");
+        let stderr = OutputStream::start(StreamId::Stderr, 4, true, Box::new(stderr_sink.clone()))
+            .expect("stderr writer spawns");
+
+        stdout
+            .handle()
+            .submit(Frame::line("stdout stuck"))
+            .await
+            .expect("stdout frame accepted");
+        stderr
+            .handle()
+            .submit(Frame::line("stderr stuck"))
+            .await
+            .expect("stderr frame accepted");
+
+        let started = Instant::now();
+        let (stdout_outcome, stderr_outcome) =
+            shutdown_streams(&stdout, &stderr, Duration::from_millis(200));
+
+        assert!(stdout_outcome.deadline_expired);
+        assert!(stderr_outcome.deadline_expired);
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        stdout_stalled.store(false, Ordering::Release);
+        stderr_stalled.store(false, Ordering::Release);
+        let _ = stdout.shutdown(Duration::from_secs(5));
+        let _ = stderr.shutdown(Duration::from_secs(5));
+    }
+
+    /// Scenario: the process host shuts down before the global service was initialized.
+    /// Guarantees: the no-service path is a completed no-op rather than a timeout or
+    /// writer failure, so a CLI without initialized writers does not fail spuriously.
+    #[test]
+    fn uninitialized_service_shutdown_is_a_completed_no_op() {
+        let outcome = OutputService::shutdown(Duration::from_millis(1));
+
+        assert!(outcome.drained);
+        assert!(!outcome.writer_failed);
+        assert!(!outcome.deadline_expired);
+        assert_eq!(outcome.frames_pending, 0);
     }
 
     /// Scenario: a handle is requested while the process-wide service was never initialized.
@@ -1598,17 +1695,39 @@ mod tests {
         assert!(!timed_out.writer_failed);
     }
 
-    /// Scenario: engine prose is emitted while stdout carries machine-readable records.
-    /// Guarantees: the diagnostics handle moves to stderr, so `record_json` stdout
-    /// never gains a human-readable line that does not parse.
+    /// Scenario: engine prose is emitted before and after stdout starts carrying records.
+    /// Guarantees: diagnostics always resolve to stderr, so a stdout claim that lands
+    /// after startup cannot leave earlier prose on a machine-readable stdout.
     #[test]
-    fn diagnostics_move_to_stderr_while_stdout_is_structured() {
-        // The latch is process-wide and monotonic, so this test owns the transition.
-        assert_eq!(OutputService::diagnostics().stream_id(), StreamId::Stdout);
+    fn diagnostics_always_use_stderr() {
+        assert_eq!(OutputService::diagnostics().stream_id(), StreamId::Stderr);
 
         OutputService::mark_structured_stdout();
 
         assert_eq!(OutputService::diagnostics().stream_id(), StreamId::Stderr);
+    }
+
+    /// Scenario: the stderr writer dies and the notice is routed to a live stdout stream.
+    /// Guarantees: the fallback actually submits the failure line, so a dead stderr
+    /// writer is reported somewhere a reader can see it.
+    #[test]
+    fn stderr_failure_notice_reaches_the_fallback_stream() {
+        let sink = TestSink::new();
+        let fallback = start(&sink, 4);
+
+        write_stderr_failure_notice(
+            &fallback.handle(),
+            &io::Error::other("simulated console failure"),
+        );
+        assert!(fallback.shutdown(Duration::from_secs(5)).drained);
+
+        let contents = String::from_utf8(sink.contents()).expect("utf8 output");
+        assert_eq!(contents.lines().count(), 1);
+        assert!(
+            contents.starts_with("otap: stderr console writer stopped"),
+            "unexpected notice: {contents}"
+        );
+        assert!(contents.ends_with("simulated console failure\n"));
     }
 
     /// Scenario: a frame is built from a plain message, as `EffectHandler::info` does.

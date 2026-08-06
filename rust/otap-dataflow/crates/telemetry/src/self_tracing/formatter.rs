@@ -602,14 +602,10 @@ impl StyledBufWriter<'_> {
 impl ConsoleWriter {
     /// Select the stream a log line at this level belongs on.
     ///
-    /// Human-readable diagnostics move to stderr whenever stdout carries
-    /// machine-readable records, so they cannot corrupt that stream.
-    fn target_stream(level: &Level) -> StreamId {
-        if matches!(*level, Level::ERROR | Level::WARN) {
-            StreamId::Stderr
-        } else {
-            OutputService::diagnostics().stream_id()
-        }
+    /// Every level uses the diagnostics stream: prose must stay off stdout even
+    /// before an exporter has claimed stdout for machine-readable records.
+    fn target_stream(_level: &Level) -> StreamId {
+        OutputService::diagnostics().stream_id()
     }
 
     /// Hand a formatted log line to the process-wide writer.
@@ -968,21 +964,18 @@ mod tests {
 
     /// Scenario: log lines are routed by level, with the structured-stdout policy owned
     /// by the output service.
-    /// Guarantees: ERROR and WARN always reach stderr, and lower levels always follow
-    /// the engine's diagnostics stream instead of pinning themselves to stdout.
+    /// Guarantees: every level reaches stderr, so no log line can land on stdout even
+    /// during startup, before any exporter has claimed stdout for records.
     #[test]
     fn console_writer_routes_levels_to_the_expected_stream() {
-        assert_eq!(
-            ConsoleWriter::target_stream(&Level::ERROR),
-            StreamId::Stderr
-        );
-        assert_eq!(ConsoleWriter::target_stream(&Level::WARN), StreamId::Stderr);
-
-        // Read once and compared, so this stays correct even if another test has
-        // structured stdout enabled while it runs.
-        let diagnostics = OutputService::diagnostics().stream_id();
-        for level in [Level::INFO, Level::DEBUG, Level::TRACE] {
-            assert_eq!(ConsoleWriter::target_stream(&level), diagnostics);
+        for level in [
+            Level::ERROR,
+            Level::WARN,
+            Level::INFO,
+            Level::DEBUG,
+            Level::TRACE,
+        ] {
+            assert_eq!(ConsoleWriter::target_stream(&level), StreamId::Stderr);
         }
     }
 

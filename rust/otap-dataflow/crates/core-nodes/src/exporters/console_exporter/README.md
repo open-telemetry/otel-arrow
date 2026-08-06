@@ -24,9 +24,10 @@ Each payload is formatted into one complete frame and handed to the engine's
 process-wide console writer. The exporter ACKs the message once that handoff
 attempt resolves, including when the handoff fails.
 
-An ACK therefore means only "handed to the process-wide writer". It does not
-mean the bytes reached the terminal, were consumed by a downstream logging
-agent, were persisted, or were delivered durably.
+An ACK therefore means only "the handoff attempt finished". The attempt may have
+failed, and even a successful one does not mean the bytes reached the terminal,
+were consumed by a downstream logging agent, were persisted, or were delivered
+durably.
 
 ## Console Output Serialization
 
@@ -48,23 +49,43 @@ stderr, a flush whenever the queue goes idle, and a 5 second drain deadline at
 shutdown. When an engine run ends, accepted frames are written and flushed
 before it returns; anything still queued when that deadline expires is reported
 instead of waited on. The writer threads are process-wide and stay running, so
-another engine run in the same process keeps its console output.
+another engine run in the same process keeps its console output. The process
+itself stops the writers on exit, which drains, flushes, and joins them.
 
 A console that never accepts writes is a separate case. Because the queue
 applies backpressure by design, producers wait once it fills, and the pipeline
 stops making progress until the console drains. The drain deadline bounds the
 final flush, not that upstream stall.
 
-While any console exporter in the process is configured with
-`format: record_json`, stdout is treated as a machine-readable stream for the
-rest of the run: human-readable engine diagnostics and the output of any
-`pretty` console exporter are routed to stderr instead, so they cannot corrupt
-it.
+Human-readable engine diagnostics always use stderr. Exporters are created while
+pipelines start, so a `record_json` exporter may claim stdout after the first
+diagnostics have already been emitted; keeping prose off stdout unconditionally
+is what makes stdout parseable regardless of when that claim lands.
 
-That claim is made when each exporter is created, and pipelines are built
-concurrently. A `pretty` exporter that emits during the startup window, before
-any `record_json` exporter has been created, can still reach stdout. Configure
-one console output format per process when stdout must be machine readable.
+This exporter's own `pretty` output is its product rather than engine prose, so
+it uses stdout until another exporter claims stdout for machine-readable
+records, and moves to stderr from then on. The engine binary applies that claim
+to the accepted configuration before any pipeline starts, so a `pretty` exporter
+configured alongside a `record_json` one writes to stderr from its first
+payload. An embedder driving `Controller` directly should call
+`claim_structured_stdout` on its validated configuration to get the same
+guarantee. A `record_json` exporter created without that prestartup claim is
+rejected rather than allowed to append JSON to a stdout that may already
+contain pretty output. Live control therefore cannot introduce the first
+`record_json` exporter into a running pretty-only process; start a new process
+with the desired format instead. Prefer a single console output format per
+process: mixing them means the `pretty` output you configured does not appear
+on stdout.
+
+The claim helper treats an invalid console config conservatively as structured
+stdout. The normal binary validates first and reports the configuration error;
+an embedder that reverses those calls still keeps prose off stdout.
+
+When a writer stops on an I/O error, the failure is reported off the failed
+stream, and the engine run returns an error carrying the number of frames that
+were never written, so lost output stays visible even when no console stream is
+left to report on. A drain that merely runs out of time is not an error: the
+writer is still running and its queued frames can still land.
 
 The integrity guarantee covers output submitted through this writer only. It
 excludes writers that bypass it: raw file descriptors, inherited child

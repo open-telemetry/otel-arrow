@@ -7104,6 +7104,7 @@ dependencies = [
  "otap-df-core-nodes",
  "otap-df-engine",
  "otap-df-otap",
+ "otap-df-telemetry",
  "tikv-jemallocator",
 ]
 

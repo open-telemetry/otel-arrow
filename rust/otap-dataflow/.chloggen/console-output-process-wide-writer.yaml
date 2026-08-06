@@ -20,5 +20,5 @@ issues: [3624]
 # characters and subtext to 300 characters.
 subtext: |
   Every record_json line now parses independently, including payloads larger than 2 MiB.
-  A bounded queue slows producers down instead of dropping data, and a console exporter ACK
-  now explicitly means the payload was handed to that writer, not that it was delivered.
+  Human-readable engine diagnostics now always go to stderr, and a console exporter ACK
+  now means only that the handoff attempt finished, not that the payload was delivered.

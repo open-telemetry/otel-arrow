@@ -15,11 +15,10 @@ use otap_df_contrib_extensions as _;
 use otap_df_contrib_nodes as _;
 use otap_df_controller::startup;
 use otap_df_controller::{BuildInfo, Controller, ControllerRunOptions};
-// Keep this side-effect import so the crate is linked and its `linkme`
-// distributed-slice registrations (core nodes) are visible
-// in `OTAP_PIPELINE_FACTORY` at runtime.
-use otap_df_core_nodes as _;
+// This item import also links the crate so its `linkme` registrations are visible.
+use otap_df_core_nodes::exporters::console_exporter::claim_structured_stdout;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otap_df_telemetry::output_service::{OutputService, OutputServiceConfig, ShutdownOutcome};
 /// Project license text (Apache-2.0), embedded at compile time.
 const LICENSE_TEXT: &str = include_str!("../LICENSE");
 
@@ -33,6 +32,31 @@ fn memory_allocator_name() -> &'static str {
         "jemalloc"
     } else {
         "system"
+    }
+}
+
+/// Chooses a process exit code and an optional status that is safe to write.
+fn terminal_status<E: std::fmt::Display>(
+    result: &Result<(), E>,
+    output: ShutdownOutcome,
+) -> (i32, Option<String>) {
+    if output.deadline_expired {
+        // At least one writer may still hold its stream lock.
+        return (1, None);
+    }
+    if !output.drained {
+        let status = match result {
+            Ok(()) => format!(
+                "Console output was incomplete: {} frame(s) were not written",
+                output.frames_pending
+            ),
+            Err(error) => format!("Pipeline failed to run: {error}"),
+        };
+        return (1, Some(status));
+    }
+    match result {
+        Ok(()) => (0, Some("Pipeline run successfully".to_owned())),
+        Err(error) => (1, Some(format!("Pipeline failed to run: {error}"))),
     }
 }
 
@@ -271,8 +295,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
-    // Diagnostics go to stderr: stdout may be a machine-readable record stream.
-    eprintln!(
+    println!(
         "{}",
         startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name())
     );
@@ -298,6 +321,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
+    // Applied to the accepted configuration before any pipeline starts, so a
+    // `pretty` console exporter never reaches a stdout that carries records.
+    claim_structured_stdout(&engine_cfg);
+
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
     let result = controller.run_forever_with_options(engine_cfg, run_options);
     #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))]
@@ -305,21 +332,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dhat_finish();
     }
 
-    match result {
-        Ok(_) => {
-            eprintln!("Pipeline run successfully");
-            std::process::exit(0);
-        }
-        Err(e) => {
-            eprintln!("Pipeline failed to run: {e}");
-            std::process::exit(1);
-        }
+    // This process owns the console writers, so it stops them here: the
+    // controller only drains, because another run may follow it.
+    let output = OutputService::shutdown(OutputServiceConfig::default().shutdown_drain_deadline);
+
+    // A timed-out writer may still hold the stream lock, so only joined writers
+    // permit a final direct diagnostic.
+    let (exit_code, status) = terminal_status(&result, output);
+    if let Some(status) = status {
+        eprintln!("{status}");
     }
+    std::process::exit(exit_code);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: the process host maps run and writer outcomes to its final status.
+    /// Guarantees: success is reported only after a complete drain, joined failures
+    /// remain visible, and any possibly running writer suppresses direct output.
+    #[test]
+    fn terminal_status_respects_writer_lifetime() {
+        let drained = ShutdownOutcome::default();
+        assert_eq!(
+            terminal_status::<&str>(&Ok(()), drained),
+            (0, Some("Pipeline run successfully".to_owned()))
+        );
+        assert_eq!(
+            terminal_status(&Err("engine failed"), drained),
+            (1, Some("Pipeline failed to run: engine failed".to_owned()))
+        );
+
+        let writer_failed = ShutdownOutcome {
+            drained: false,
+            writer_failed: true,
+            deadline_expired: false,
+            frames_pending: 3,
+        };
+        assert_eq!(
+            terminal_status::<&str>(&Ok(()), writer_failed),
+            (
+                1,
+                Some("Console output was incomplete: 3 frame(s) were not written".to_owned())
+            )
+        );
+        assert_eq!(
+            terminal_status(&Err("engine failed"), writer_failed),
+            (1, Some("Pipeline failed to run: engine failed".to_owned()))
+        );
+
+        let timed_out = ShutdownOutcome {
+            drained: false,
+            writer_failed: false,
+            deadline_expired: true,
+            frames_pending: 2,
+        };
+        assert_eq!(terminal_status::<&str>(&Ok(()), timed_out), (1, None));
+
+        let mixed = ShutdownOutcome {
+            writer_failed: true,
+            ..timed_out
+        };
+        assert_eq!(terminal_status(&Err("engine failed"), mixed), (1, None));
+    }
 
     #[test]
     fn parse_core_range_ok() {

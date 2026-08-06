@@ -91,7 +91,7 @@ use otap_df_engine::topic::{
 };
 use otap_df_state::store::{ObservedStateHandle, ObservedStateStore};
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
-use otap_df_telemetry::output_service::{OutputService, OutputServiceConfig};
+use otap_df_telemetry::output_service::{OutputService, OutputServiceConfig, ShutdownOutcome};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
@@ -1258,6 +1258,82 @@ impl<
         run_mode: RunMode,
         options: ControllerRunOptions,
     ) -> Result<(), Error> {
+        // Start the process-wide console writers before any pipeline or tracing
+        // output exists, so every engine-owned frame is written contiguously and
+        // no core thread performs blocking console I/O.
+        let output_service_config = OutputServiceConfig::default();
+        let _ = OutputService::init(output_service_config).map_err(|error| {
+            Error::PipelineRuntimeError {
+                source: Box::new(error),
+            }
+        })?;
+
+        let result = self.run_pipelines(engine_config, run_mode, options);
+
+        // Drained on every exit path, including the early error returns above the
+        // normal shutdown sequence: a frame the writer already accepted must still
+        // reach the terminal when a run ends early.
+        let outcome = OutputService::drain(output_service_config.shutdown_drain_deadline);
+        Self::finish_console_output(result, outcome)
+    }
+
+    /// Reports an incomplete drain and folds a writer failure into the run result.
+    fn finish_console_output(
+        result: Result<(), Error>,
+        outcome: ShutdownOutcome,
+    ) -> Result<(), Error> {
+        if outcome.drained {
+            return result;
+        }
+        if outcome.writer_failed {
+            otel_warn!(
+                "controller.console_output_writer_failed",
+                frames_pending = outcome.frames_pending,
+                message = "A console writer stopped on an I/O error; queued console output was not written"
+            );
+        } else {
+            otel_warn!(
+                "controller.console_output_drain_timeout",
+                frames_pending = outcome.frames_pending,
+                message = "Timed out draining console output; some queued frames may not have been written"
+            );
+        }
+        // The report above is itself console output, so give it a chance to land.
+        let _ = OutputService::drain(Duration::from_secs(1));
+
+        Self::fold_console_output_result(result, outcome)
+    }
+
+    /// Combines the engine result with an already-observed console outcome.
+    fn fold_console_output_result(
+        result: Result<(), Error>,
+        outcome: ShutdownOutcome,
+    ) -> Result<(), Error> {
+        match result {
+            // The engine failure stays the displayed cause, but the console loss
+            // travels with it instead of being dropped.
+            Err(error) if outcome.writer_failed => Err(Error::RunFailedWithConsoleOutputLoss {
+                frames_pending: outcome.frames_pending,
+                source: Box::new(error),
+            }),
+            Err(error) => Err(error),
+            // A failed writer may have no console stream left to report on, so the
+            // run result is the only channel that always survives.
+            Ok(()) if outcome.writer_failed => Err(Error::ConsoleOutputWriterFailed {
+                frames_pending: outcome.frames_pending,
+            }),
+            // A timeout leaves the writer running, so queued frames can still land
+            // for a caller that keeps the process alive.
+            Ok(()) => Ok(()),
+        }
+    }
+
+    fn run_pipelines(
+        &self,
+        engine_config: OtelDataflowSpec,
+        run_mode: RunMode,
+        options: ControllerRunOptions,
+    ) -> Result<(), Error> {
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
@@ -1269,16 +1345,6 @@ impl<
             })?;
         let num_pipelines = pipelines.len();
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
-
-        // Start the process-wide console writers before any pipeline or tracing
-        // output exists, so every engine-owned frame is written contiguously and
-        // no core thread performs blocking console I/O.
-        let output_service_config = OutputServiceConfig::default();
-        let _ = OutputService::init(output_service_config).map_err(|error| {
-            Error::PipelineRuntimeError {
-                source: Box::new(error),
-            }
-        })?;
 
         // Create the shared telemetry registry first - it is used by both the
         // observed state store and the internal telemetry system, and by the
@@ -1784,28 +1850,6 @@ impl<
         metrics_agg_handle.shutdown_and_join()?;
         obs_state_join_handle.shutdown_and_join()?;
         drop(telemetry_system);
-
-        // Drained last so late diagnostics still reach the terminal. The writer
-        // threads stay up: they are process-wide, and another engine run in this
-        // process must keep its console output.
-        let output_outcome = OutputService::drain(output_service_config.shutdown_drain_deadline);
-        if !output_outcome.drained {
-            if output_outcome.writer_failed {
-                otel_warn!(
-                    "controller.console_output_writer_failed",
-                    frames_pending = output_outcome.frames_pending,
-                    message = "A console writer stopped on an I/O error; queued console output was not written"
-                );
-            } else {
-                otel_warn!(
-                    "controller.console_output_drain_timeout",
-                    frames_pending = output_outcome.frames_pending,
-                    message = "Timed out draining console output; some queued frames may not have been written"
-                );
-            }
-            // The report above is itself console output, so give it a chance to land.
-            let _ = OutputService::drain(Duration::from_secs(1));
-        }
 
         if let Some(err) = controller_extension_error {
             return Err(err);
@@ -2459,6 +2503,66 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::node::NodeUserConfig;
+
+    /// Scenario: engine success or failure is combined with every console drain outcome.
+    /// Guarantees: clean and timeout outcomes preserve the engine result, while writer
+    /// failures return the single- or dual-failure variant without losing the cause.
+    #[test]
+    fn console_output_result_preserves_all_failure_information() {
+        let drained = ShutdownOutcome::default();
+        assert!(Controller::<()>::fold_console_output_result(Ok(()), drained).is_ok());
+
+        let engine_error = || Error::PipelineRuntimeError {
+            source: Box::new(std::io::Error::other("engine failed")),
+        };
+        let engine_only = Controller::<()>::fold_console_output_result(
+            Err(engine_error()),
+            ShutdownOutcome::default(),
+        )
+        .expect_err("engine error must survive a clean drain");
+        assert!(matches!(engine_only, Error::PipelineRuntimeError { .. }));
+
+        let writer_failed = ShutdownOutcome {
+            drained: false,
+            writer_failed: true,
+            deadline_expired: false,
+            frames_pending: 7,
+        };
+        let writer_only = Controller::<()>::fold_console_output_result(Ok(()), writer_failed)
+            .expect_err("writer failure must fail the run");
+        assert!(matches!(
+            writer_only,
+            Error::ConsoleOutputWriterFailed { frames_pending: 7 }
+        ));
+
+        let dual = Controller::<()>::fold_console_output_result(Err(engine_error()), writer_failed)
+            .expect_err("both failures must be preserved");
+        assert!(matches!(
+            dual,
+            Error::RunFailedWithConsoleOutputLoss {
+                frames_pending: 7,
+                ..
+            }
+        ));
+        assert!(dual.to_string().contains("engine failed"));
+        assert!(dual.to_string().contains("7 accepted frame(s) not written"));
+        assert!(std::error::Error::source(&dual).is_some());
+
+        let timed_out = ShutdownOutcome {
+            drained: false,
+            writer_failed: false,
+            deadline_expired: true,
+            frames_pending: 2,
+        };
+        assert!(Controller::<()>::fold_console_output_result(Ok(()), timed_out).is_ok());
+        let timed_out_engine =
+            Controller::<()>::fold_console_output_result(Err(engine_error()), timed_out)
+                .expect_err("timeout must not hide an engine error");
+        assert!(matches!(
+            timed_out_engine,
+            Error::PipelineRuntimeError { .. }
+        ));
+    }
 
     /// Scenario: `BuildInfo::seed_attrs` runs with a mix of set, empty, and absent fields.
     /// Guarantees: it yields typed pairs for non-empty values only, skipping empty and `None`.
