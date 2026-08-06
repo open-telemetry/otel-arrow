@@ -1566,7 +1566,7 @@ mod tests {
     /// the error, giving the finalization block real flow metrics to flush.
     struct ErrorOnPDataProcessor {
         node_id: String,
-        // The counter_metric is registered externally and shared with the test
+        // The snapshot_metric is registered externally and shared with the test
         // so the test can verify a snapshot was delivered to metrics_rx.
         snapshot_metric: MeasurementMetricSet<FlowConsumedItemsMetrics>,
     }
