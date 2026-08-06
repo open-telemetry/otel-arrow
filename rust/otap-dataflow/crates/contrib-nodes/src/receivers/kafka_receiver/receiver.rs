@@ -3175,6 +3175,97 @@ mod tests {
         );
     }
 
+    /// Scenario (consumer-group rebalancing): a partition owned under generation 1
+    /// (with an established committable offset) is revoked and reassigned to this
+    /// receiver under generation 2, and a new generation-2 record is tracked.
+    /// A stale Ack/Nack for the old generation-1 record then arrives, carrying
+    /// generation 1 in its calldata.
+    /// Guarantees: the stale feedback is classified `DropStale` -- the receiver's
+    /// exact classifier decision on an Ack/Nack (both funnel through
+    /// `handle_offset_feedback`, which calls `classify_offset_feedback`) -- so it
+    /// is ignored: acknowledging the old offset is a no-op (returns false) and the
+    /// committable offset continues to reflect only the generation-2 record, never
+    /// regressing to or advancing on the generation-1 offset. An old-generation
+    /// Ack/Nack thus cannot move the commit offset.
+    #[test]
+    fn stale_generation_ack_does_not_advance_committable_offset() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Generation 1: own partition 0, track and ack offset 100 so there is an
+        // established committable offset (101) for the generation-1 period.
+        let mut tpl1 = TopicPartitionList::new();
+        let _ = tpl1.add_partition("traces", 0);
+        receiver.rebalance_state.set_assignment_for_test(&tpl1);
+        let gen1 = receiver.rebalance_state.current_generation("traces", 0);
+        receiver.offset_tracker.track("traces", 0, 100, gen1);
+        let _ = receiver.offset_tracker.acknowledge("traces", 0, 100);
+
+        // Partition 0 is revoked (revocation carries generation 1); the loop
+        // reconciles and purges the generation-1 tracker state. Also drop it from
+        // the assigned set (empty assignment), mirroring librdkafka's
+        // pre_rebalance(Revoke) removing it before post_rebalance(Assign), so the
+        // subsequent reassignment allocates a fresh, strictly-greater generation.
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, gen1);
+        receiver.reconcile_rebalance_state();
+        receiver
+            .rebalance_state
+            .set_assignment_for_test(&TopicPartitionList::new());
+
+        // Generation 2: partition 0 is reassigned; a new record (offset 200) is
+        // tracked under the newer generation.
+        receiver.rebalance_state.set_assignment_for_test(&tpl1);
+        let gen2 = receiver.rebalance_state.current_generation("traces", 0);
+        assert!(gen2 > gen1, "reassignment must allocate a newer generation");
+        receiver.offset_tracker.track("traces", 0, 200, gen2);
+        let committable_after_reassign = receiver
+            .offset_tracker
+            .committable_snapshot()
+            .get(&("traces".to_string(), 0))
+            .copied();
+
+        // A stale Ack/Nack for the old generation-1 record arrives. The receiver
+        // reads the same state `handle_offset_feedback` reads and classifies it.
+        let tracked_generation = receiver.offset_tracker.partition_generation("traces", 0);
+        let assigned_generation = receiver.rebalance_state.current_generation("traces", 0);
+        let is_assigned = receiver.rebalance_state.is_assigned("traces", 0);
+        assert_eq!(
+            classify_offset_feedback(gen1, tracked_generation, assigned_generation, is_assigned),
+            OffsetFeedbackAction::DropStale,
+            "an Ack/Nack from the old generation must classify as DropStale",
+        );
+
+        // The DropStale path does not touch the offset tracker; simulate the only
+        // mutation a stale feedback could attempt (acknowledging its old offset)
+        // and confirm it is a no-op -- the old offset is not pending under the new
+        // generation, so the watermark cannot move.
+        assert!(
+            !receiver.offset_tracker.acknowledge("traces", 0, 100),
+            "acking a stale old-generation offset must not advance the watermark",
+        );
+
+        // The committable offset still reflects only the generation-2 record; the
+        // stale feedback neither advanced nor rolled it back.
+        assert_eq!(
+            receiver
+                .offset_tracker
+                .committable_snapshot()
+                .get(&("traces".to_string(), 0))
+                .copied(),
+            committable_after_reassign,
+            "a stale old-generation Ack/Nack must not change the committable offset",
+        );
+        assert_eq!(
+            committable_after_reassign,
+            Some(200),
+            "only the generation-2 record drives the commit",
+        );
+    }
+
     /// Scenario (consumer-group rebalancing): a partition is retained across a rebalance
     /// that only adds or removes other partitions.
     /// Guarantees: the retained partition keeps its generation, so an unrelated rebalance
@@ -4141,6 +4232,81 @@ mod tests {
                 assert!(
                     m.value("acks_for_revoked_partition") >= 1,
                     "at least one ack for a revoked partition should be counted and dropped, got {}",
+                    m.value("acks_for_revoked_partition"),
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (consumer-group rebalancing): identical to
+    /// `stale_ack_after_revoke_counts_acks_for_revoked_partition` but the stale
+    /// feedback is a terminal permanent **Nack** instead of an Ack -- a
+    /// manual-commit receiver holds an un-acked in-flight record on a partition
+    /// that is then stolen by a second group member (a `RebalanceTrigger`), after
+    /// which the test permanently nacks the now-stale record.
+    /// Guarantees: the late Nack for the revoked partition is subject to the same
+    /// stale/late guard as an Ack (both funnel through `handle_offset_feedback`)
+    /// -- it increments `acks_for_revoked_partition` and is not committed -- so a
+    /// Nack that arrives after a partition is revoked can never advance a
+    /// partition this consumer no longer owns.
+    #[tokio::test]
+    async fn stale_nack_after_revoke_counts_acks_for_revoked_partition() {
+        const TOPIC: &str = "rebalance-stale-nack-traces";
+        let group = "rebalance-stale-nack-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                // One record per partition so the receiver has in-flight work on
+                // every partition it owns.
+                producer
+                    .produce_per_partition(TOPIC, REBALANCE_TEST_PARTITIONS, 1, &bytes)
+                    .await;
+
+                let cfg =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Consume the in-flight records but hold them un-acked so their
+                // offsets stay pending across the revoke.
+                let mut in_flight = Vec::new();
+                for _ in 0..REBALANCE_TEST_PARTITIONS {
+                    in_flight.push(receiver.recv_pdata().await);
+                }
+
+                // A second member joins and steals at least one partition,
+                // forcing a revoke on the receiver.
+                let trigger =
+                    RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(30))
+                        .await;
+
+                // Give the receiver's loop time to observe and reconcile the
+                // revoke before the stale nacks arrive.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                // Permanently nack the in-flight records now that at least one of
+                // their partitions has been revoked. A terminal Nack for a revoked
+                // partition must be dropped by the late-ack/stale-generation guard
+                // exactly like an Ack.
+                for pdata in in_flight {
+                    receiver.nack_permanent("stale after revoke", pdata);
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                let terminal = receiver.await_terminal_state().await;
+                drop(trigger);
+
+                let mut m = FoldedMetrics::new();
+                m.fold_all(terminal.metrics());
+                assert!(
+                    m.value("acks_for_revoked_partition") >= 1,
+                    "at least one nack for a revoked partition should be counted and dropped, got {}",
                     m.value("acks_for_revoked_partition"),
                 );
             },

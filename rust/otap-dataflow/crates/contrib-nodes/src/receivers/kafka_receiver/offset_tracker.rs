@@ -1243,4 +1243,86 @@ mod tests {
         // hwm = 100, offset 101 has never been seen.
         assert!(!tracker.is_known_offset("traces", 0, 101));
     }
+
+    /// Scenario (routing and payload correctness): a partition's offsets are
+    /// tracked and acked under generation 1 (so they are "known" via the pending
+    /// set and high-water mark), then a record of generation 2 is tracked for the
+    /// same partition -- the in-place reset path taken when a partition is
+    /// reassigned to this consumer under a newer generation.
+    /// Guarantees: the newer-generation `track` clears the old pending set and
+    /// high-water mark, so the old-generation offsets are no longer reported as
+    /// known. A redelivered old offset after a generation bump is therefore
+    /// treated as new (reprocessed) rather than idempotently skipped, while the
+    /// new-generation offset is known. This proves the idempotency dedupe memory
+    /// is correctly cleared by a generation change (via the `track` reset path).
+    #[test]
+    fn is_known_offset_false_for_old_offset_after_newer_generation_track() {
+        let mut tracker = OffsetTracker::new();
+
+        // Generation 1: track and ack 100, 101 so both are "known" (100 <= hwm,
+        // 101 <= hwm after acking).
+        tracker.track("traces", 0, 100, 1);
+        tracker.track("traces", 0, 101, 1);
+        let _ = tracker.acknowledge("traces", 0, 100);
+        let _ = tracker.acknowledge("traces", 0, 101);
+        assert!(tracker.is_known_offset("traces", 0, 100));
+        assert!(tracker.is_known_offset("traces", 0, 101));
+
+        // Generation 2: the partition was revoked and reassigned; a new record is
+        // tracked under the newer generation, which resets the partition state.
+        tracker.track("traces", 0, 200, 2);
+        assert_eq!(tracker.partition_generation("traces", 0), Some(2));
+
+        // The old-generation offsets are no longer known: their pending/hwm state
+        // was cleared, so a redelivery of them would be reprocessed, not skipped.
+        assert!(
+            !tracker.is_known_offset("traces", 0, 100),
+            "an old-generation offset must not remain known after a newer-generation track",
+        );
+        assert!(!tracker.is_known_offset("traces", 0, 101));
+        assert!(!tracker.is_known_offset("traces", 0, 50));
+
+        // The new-generation offset is known (it is pending under generation 2).
+        assert!(tracker.is_known_offset("traces", 0, 200));
+    }
+
+    /// Scenario (routing and payload correctness): a partition's offsets are
+    /// tracked and acked under generation 1 (so they are "known"), the partition
+    /// is then revoked via the generation-aware purge (`revoke_if_older`), and
+    /// finally reassigned with a new record tracked under generation 2.
+    /// Guarantees: the revoke purges the partition's entire state (pending set and
+    /// high-water mark), so the old-generation offsets are no longer known; after
+    /// reassignment only the new-generation offset is known. This proves the
+    /// idempotency dedupe memory is also cleared by the revoke/reassign purge
+    /// path, so an old offset redelivered after a new generation is reprocessed
+    /// rather than skipped.
+    #[test]
+    fn is_known_offset_false_for_old_offset_after_revoke_reassign() {
+        let mut tracker = OffsetTracker::new();
+
+        // Generation 1: track and ack 100..=104 so they are known.
+        for offset in 100..=104 {
+            tracker.track("traces", 0, offset, 1);
+        }
+        for offset in 100..=104 {
+            let _ = tracker.acknowledge("traces", 0, offset);
+        }
+        assert!(tracker.is_known_offset("traces", 0, 104));
+
+        // The partition is revoked (revocation carries generation 1). The purge
+        // removes all of its state, including the known-offset memory.
+        assert!(tracker.revoke_if_older("traces", 0, 1));
+        assert!(
+            !tracker.is_known_offset("traces", 0, 104),
+            "a revoked partition's offsets must no longer be known",
+        );
+
+        // Generation 2: the partition is reassigned and a new record is tracked.
+        tracker.track("traces", 0, 200, 2);
+        assert!(
+            !tracker.is_known_offset("traces", 0, 104),
+            "an old-generation offset must not become known again after reassignment",
+        );
+        assert!(tracker.is_known_offset("traces", 0, 200));
+    }
 }
