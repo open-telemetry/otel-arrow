@@ -2418,6 +2418,47 @@ mod tests {
         assert_eq!(receiver.metrics.offset_commit_errors.get(), 1);
     }
 
+    /// Scenario (offset guarantees): a commit request times out at the broker,
+    /// so its asynchronous outcome arrives on the commit callback as a failure
+    /// (modeled here via `record_commit_result_for_test(false)`, the same seam
+    /// the real `commit_callback` drives). This unit-level surrogate is used
+    /// because on the in-process `MockCluster` an injected `OffsetCommit`
+    /// timeout is not delivered to the callback within a test window (verified),
+    /// so the timeout outcome cannot be observed end-to-end.
+    /// Guarantees: a timed-out (failed) commit outcome is surfaced as
+    /// `offset_commit_errors` on the next reconcile and does not increment
+    /// `offset_commits` -- so a commit timeout is reported and never silently
+    /// counted as a successful commit or allowed to advance committed state.
+    #[test]
+    fn commit_timeout_outcome_surfaces_as_offset_commit_error() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // A commit that reached the broker succeeds; a later commit times out
+        // (its callback outcome is a failure).
+        receiver.rebalance_state.record_commit_result_for_test(true);
+        receiver
+            .rebalance_state
+            .record_commit_result_for_test(false);
+
+        receiver.reconcile_rebalance_state();
+
+        // The timeout is surfaced as a commit error, not folded into the success
+        // counter -- a timed-out commit is never mistaken for a successful one.
+        assert_eq!(
+            receiver.metrics.offset_commit_errors.get(),
+            1,
+            "a timed-out commit outcome must be surfaced as offset_commit_errors",
+        );
+        assert_eq!(
+            receiver.metrics.offset_commits.get(),
+            1,
+            "only the successful commit should count toward offset_commits",
+        );
+    }
+
     /// Scenario (offset guarantees): tracked offsets are snapshotted into the shared
     /// rebalance state, then a partition is assigned.
     /// Guarantees: the committable snapshot feeds the rebalance state's assignment view, so
@@ -5080,6 +5121,107 @@ mod tests {
                     let pdata = receiver.recv_pdata().await;
                     receiver.ack(pdata);
                 }
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (failure recovery): a manual-commit receiver delivers and acks a
+    /// first batch, then hits a transient network interruption -- simulated by a
+    /// burst of injected fetch errors that block fetches for a bounded window --
+    /// which is later cleared and more records produced.
+    /// Guarantees: the receiver makes no progress while the interruption is
+    /// active (no records delivered), yet the loop is non-fatal and, once the
+    /// interruption clears, the same receiver recovers and delivers the
+    /// post-interruption records with no loss (its committed offset reaches the
+    /// full produced count). Models an intermittent network hiccup distinct from
+    /// the sustained full-outage case; a truly asymmetric (one-way) partition is
+    /// not modeled by the mock.
+    #[tokio::test]
+    async fn intermittent_network_interruption_recovers_without_loss() {
+        const TOPIC: &str = "failure-netblip-traces";
+        const PRE: usize = 3;
+        const POST: usize = 3;
+        let group = "failure-netblip-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                for i in 0..PRE {
+                    let key = format!("pre-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send pre-interruption record");
+                }
+
+                let cfg =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Consume and ack the first batch before the interruption.
+                for _ in 0..PRE {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
+                }
+
+                // Transient network interruption: a long burst of fetch errors
+                // that blocks fetches while active. Consumed one-per-request in
+                // order, sized to outlast the observation window below.
+                let fetch_errors = vec![RDKafkaRespErr::RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT; 512];
+                cluster.faults().fail_fetch(&fetch_errors);
+
+                // Produce during the interruption; nothing must be delivered while
+                // it is active.
+                for i in 0..POST {
+                    let key = format!("post-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send post-interruption record");
+                }
+                assert!(
+                    receiver
+                        .try_recv_pdata(Duration::from_secs(3))
+                        .await
+                        .is_none(),
+                    "no records should be delivered during the network interruption",
+                );
+
+                // Clear the interruption so fetches can succeed again.
+                cluster.faults().clear_fetch_failures();
+
+                // The same receiver must recover and deliver every post-interruption
+                // record without loss.
+                for _ in 0..POST {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
+                }
+
+                // No loss: the committed offset reaches the full produced count.
+                let brokers = cluster.bootstrap_servers().to_string();
+                let committed =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= (PRE + POST) as i64)
+                    })
+                    .await;
+                assert!(
+                    committed,
+                    "after recovery the committed offset should reach the full \
+                     produced count {}, got {:?}",
+                    PRE + POST,
+                    committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed"),
+                );
 
                 receiver.shutdown(Duration::from_secs(5));
                 receiver.await_stopped().await;
