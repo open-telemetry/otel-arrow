@@ -380,7 +380,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
 
 /// Convert tracing Level to OTLP severity number.
 ///
-/// See: https://opentelemetry.io/docs/specs/otel/logs/data-model/#field-severitynumber
+/// See: <https://opentelemetry.io/docs/specs/otel/logs/data-model/#field-severitynumber>
 #[inline]
 #[must_use]
 pub const fn level_to_severity_number(level: &Level) -> u8 {

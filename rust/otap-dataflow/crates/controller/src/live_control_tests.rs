@@ -1001,6 +1001,101 @@ connections:
     assert!(plan.resize_stop_cores.is_empty());
 }
 
+/// Scenario: an unchanged effective limiter map moves from engine scope to the
+/// pipeline being reconfigured.
+/// Guarantees: declaration scope alone is a V1 planning no-op, so the controller
+/// does not replace the pipeline and reset otherwise identical receiver buckets.
+#[test]
+fn prepare_rollout_plan_returns_noop_for_rate_limiter_scope_only_change() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: auto
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket: { allow: 1024, interval: 1s, burst: 1024 }
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine-scoped limiter config should parse");
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _receiver =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket: { allow: 1024, interval: 1s, burst: 1024 }
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("pipeline-scoped limiter config should parse");
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("scope-only limiter change should be planned");
+
+    assert_eq!(plan.action, RolloutAction::NoOp);
+    assert_eq!(plan.target_generation, 0);
+    assert!(plan.rollout.cores.is_empty());
+}
+
 /// Scenario: the controller executes a rollout plan that has already been
 /// classified as `NoOp`.
 /// Guarantees: the controller returns an immediate successful rollout
@@ -2626,6 +2721,81 @@ groups:
     match err {
         ControlPlaneError::InvalidRequest { message } => {
             assert!(message.contains("runtime topic broker mutation"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: full-config reconciliation changes the process-wide memory limiter policy.
+/// Guarantees: live reconciliation rejects startup-owned sampler changes before mutating committed config.
+#[test]
+fn reconcile_engine_config_rejects_runtime_memory_limiter_mutation() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: rss
+      check_interval: 1s
+      soft_limit: "64 MiB"
+      hard_limit: "96 MiB"
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("config should parse");
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: rss
+      check_interval: 1s
+      soft_limit: "128 MiB"
+      hard_limit: "192 MiB"
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("memory limiter runtime changes should be rejected");
+
+    match err {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("runtime memory_limiter mutation"));
         }
         other => panic!("unexpected error: {other:?}"),
     }

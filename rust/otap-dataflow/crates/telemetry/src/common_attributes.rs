@@ -45,6 +45,8 @@ pub enum ReceiverRejectionErrorType {
     MemoryPressure,
     /// No configured admission or concurrency capacity is available.
     ConcurrencyLimit,
+    /// The receiver-local rate limit refused the request.
+    RateLimit,
     /// The encoded or decoded payload exceeds the configured size limit.
     PayloadTooLarge,
     /// The request is malformed or otherwise invalid.

@@ -37,6 +37,7 @@ ignore:
   # cfg), so exempt them here instead. diagnostics.rs/genproto.rs stay covered.
   - "rust/otap-dataflow/xtask/src/main.rs"
   - "rust/otap-dataflow/xtask/src/structure_check.rs"
+  - "rust/otap-dataflow/xtask/src/component_inventory.rs" # AST static scanner tool
 
 comment:
   layout: "header, diff, flags, components"
