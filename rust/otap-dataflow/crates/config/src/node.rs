@@ -117,6 +117,13 @@ pub struct NodeUserConfig {
     )]
     pub capabilities: HashMap<CapabilityId, ExtensionId>,
 
+    /// Ordered names of rate limiters applied at this node's admission point.
+    ///
+    /// Omit this field or use an empty list to leave the node unbound. V1 accepts
+    /// at most one bound limiter until multi-limiter reservation semantics exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limiters: Option<Vec<String>>,
+
     /// Entity configuration for the node.
     ///
     /// Currently, we support entity::extend::identity_attributes, for example:
@@ -230,6 +237,7 @@ impl NodeUserConfig {
             entity: None,
             config: Value::Null,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -250,6 +258,7 @@ impl NodeUserConfig {
             default_output: None,
             config: Value::Null,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -270,6 +279,7 @@ impl NodeUserConfig {
             default_output: None,
             config: Value::Null,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -287,6 +297,7 @@ impl NodeUserConfig {
             default_output: None,
             config: user_config,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,

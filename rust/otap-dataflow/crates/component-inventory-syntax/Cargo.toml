@@ -1,0 +1,20 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "otap-df-component-inventory-syntax"
+description = "Shared syn parser for the #[component_inventory] attribute (RFC 0001), used by both the proc-macro and the xtask scanner"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+syn = { workspace = true }

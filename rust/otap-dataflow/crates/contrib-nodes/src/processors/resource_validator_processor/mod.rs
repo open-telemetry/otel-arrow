@@ -171,6 +171,7 @@ pub fn create_resource_validator_processor(
 
 /// Register ResourceValidatorProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {

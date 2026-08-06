@@ -259,7 +259,7 @@ impl AttributeView for RawKeyValue<'_> {
         loop {
             if let Some((start, end)) = from_option_nonzero_range_to_primitive(self.key_range.get())
             {
-                return &self.buf[start..end];
+                return self.buf.get(start..end).unwrap_or_default();
             } else if self.pos.get() >= self.buf.len() {
                 break;
             } else {
@@ -277,7 +277,7 @@ impl AttributeView for RawKeyValue<'_> {
             if let Some((start, end)) =
                 from_option_nonzero_range_to_primitive(self.value_range.get())
             {
-                let slice = &self.buf[start..end];
+                let slice = &self.buf.get(start..end)?;
                 return Some(RawAnyValue {
                     buf: slice,
                     value_offset: Cell::new(None),
@@ -525,5 +525,52 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
             INSTRUMENTATION_SCOPE_ATTRIBUTES,
             wire_types::LEN,
         ))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use otap_df_config::ConversionOptions;
+    use otap_df_pdata_views::views::common::AttributeView;
+
+    use crate::{
+        otlp::{BoundedBuf, ProtoBuffer},
+        proto::consts::{
+            field_num::common::{KEY_VALUE_KEY, KEY_VALUE_VALUE},
+            wire_types,
+        },
+        views::otlp::bytes::common::RawKeyValue,
+    };
+
+    #[test]
+    fn test_kv_handles_invalid_key_range() {
+        let mut protobuf = ProtoBuffer::new(ConversionOptions::default());
+        protobuf
+            .encode_field_tag(KEY_VALUE_KEY, wire_types::LEN)
+            .unwrap();
+        // length is for some reason invalid - someone gave us a bad proto bytes
+        protobuf.encode_varint(5).unwrap();
+        protobuf.extend_from_slice("aaa".as_bytes()).unwrap();
+
+        let kv_view = RawKeyValue::new(protobuf.as_slice());
+        let key = kv_view.key();
+        assert!(key.is_empty());
+    }
+
+    #[test]
+    fn test_kv_handles_invalid_value_range() {
+        let mut protobuf = ProtoBuffer::new(ConversionOptions::default());
+        protobuf.encode_string(KEY_VALUE_KEY, "my-key").unwrap();
+
+        protobuf
+            .encode_field_tag(KEY_VALUE_VALUE, wire_types::LEN)
+            .unwrap();
+        // length is for some reason invalid - someone gave us bad proto bytes
+        protobuf.encode_varint(4).unwrap();
+        protobuf.extend_from_slice(&[0]).unwrap();
+
+        let kv_view = RawKeyValue::new(protobuf.as_slice());
+        let value = kv_view.value();
+        assert!(value.is_none());
     }
 }
