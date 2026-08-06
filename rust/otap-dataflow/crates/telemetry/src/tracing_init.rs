@@ -35,7 +35,10 @@ pub struct TracingSetup {
 }
 
 impl TracingSetup {
-    /// Create a new tracing setup.
+    /// Creates a standalone tracing setup with no externally retained update handle.
+    ///
+    /// Use [`Self::with_log_filter`] to attach a shared runtime filter managed by
+    /// the internal telemetry system.
     #[must_use]
     pub fn new(provider: ProviderSetup, log_level: LogLevel, context_fn: LogContextFn) -> Self {
         let (log_filter, _handle) = RuntimeLogFilter::new(&log_level);

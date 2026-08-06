@@ -16,6 +16,7 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, Layer};
 
 struct SharedState {
+    // Desired config value; startup RUST_LOG may temporarily select a different filter.
     configured_level: ArcSwap<LogLevel>,
     // The first reconciliation must replace RUST_LOG even when logs.level is unchanged.
     startup_override_active: AtomicBool,
@@ -107,7 +108,10 @@ impl RuntimeLogFilter {
         RuntimeLogFilterLayer { filter }
     }
 
-    /// Returns the most recently applied configuration value.
+    /// Returns the desired configuration value.
+    ///
+    /// Before the first reconciliation this may differ from the effective startup
+    /// filter when `RUST_LOG` supplied that filter.
     #[must_use]
     pub fn configured_level(&self) -> LogLevel {
         self.shared.configured_level.load().as_ref().clone()
@@ -153,7 +157,10 @@ impl RuntimeLogFilterHandle {
         tracing::callsite::rebuild_interest_cache();
     }
 
-    /// Returns the most recently applied configuration value.
+    /// Returns the desired configuration value.
+    ///
+    /// Before the first reconciliation this may differ from the effective startup
+    /// filter when `RUST_LOG` supplied that filter.
     #[must_use]
     pub fn configured_level(&self) -> LogLevel {
         self.shared.configured_level.load().as_ref().clone()

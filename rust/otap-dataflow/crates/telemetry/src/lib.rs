@@ -380,7 +380,10 @@ impl InternalTelemetrySystem {
         &self.its_reporter
     }
 
-    /// Returns the configured log level.
+    /// Returns the desired configured log level.
+    ///
+    /// Before the first reconciliation this may differ from the effective startup
+    /// filter when `RUST_LOG` supplied that filter.
     #[must_use]
     pub fn log_level(&self) -> LogLevel {
         self.log_filter.configured_level()
