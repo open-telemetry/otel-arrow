@@ -192,7 +192,7 @@ mod tests {
 
     // -- resolve_security_protocol ---------------------------
 
-    /// Scenario (section 8, feature gates): AWS MSK IAM auth is combined with an
+    /// Scenario (configuration and packaging: feature gates): AWS MSK IAM auth is combined with an
     /// explicit TLS config, with the `aws` feature enabled.
     /// Guarantees: the resolved security protocol is `SASL_SSL`, so the
     /// AWS-gated mechanism integrates with the shared protocol resolution.
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(resolve_security_protocol(Some(&tls), None), "SSL");
     }
 
-    /// Scenario (section 8, feature gates): AWS MSK IAM auth is configured with
+    /// Scenario (configuration and packaging: feature gates): AWS MSK IAM auth is configured with
     /// no explicit TLS block, with the `aws` feature enabled.
     /// Guarantees: the resolved protocol is still `SASL_SSL`, because MSK
     /// enforces encrypted connections -- the AWS-gated path always upgrades to
@@ -260,7 +260,7 @@ mod tests {
 
     // -- apply_sasl_config -----------------------------------
 
-    /// Scenario (section 8, feature gates): AWS MSK IAM auth is applied to a
+    /// Scenario (configuration and packaging: feature gates): AWS MSK IAM auth is applied to a
     /// client config with the `aws` feature enabled.
     /// Guarantees: `sasl.mechanism` is set to `OAUTHBEARER` (the wire mechanism
     /// MSK IAM uses) and no `debug` value is injected, so the AWS-gated
@@ -334,7 +334,7 @@ mod tests {
 
     // -- build_aws_msk_context -------------------------------
 
-    /// Scenario (section 8, feature gates): AWS MSK IAM auth is passed to the
+    /// Scenario (configuration and packaging: feature gates): AWS MSK IAM auth is passed to the
     /// context builder with the `aws` feature enabled.
     /// Guarantees: a MSK OAUTHBEARER client context is constructed, so the
     /// AWS-gated token-refresh path is wired only when the `aws` feature and MSK
@@ -346,7 +346,7 @@ mod tests {
         assert!(build_aws_msk_context(Some(&auth)).is_some());
     }
 
-    /// Scenario (section 8, feature gates): a generic (non-MSK) SASL auth is
+    /// Scenario (configuration and packaging: feature gates): a generic (non-MSK) SASL auth is
     /// passed to the context builder.
     /// Guarantees: no MSK context is created, so the AWS-gated path is not
     /// triggered for non-MSK mechanisms.
@@ -357,7 +357,7 @@ mod tests {
         assert!(build_aws_msk_context(Some(&auth)).is_none());
     }
 
-    /// Scenario (section 8, feature gates): a PLAIN username/password SASL auth
+    /// Scenario (configuration and packaging: feature gates): a PLAIN username/password SASL auth
     /// is passed to the context builder.
     /// Guarantees: no MSK context is created for a plaintext mechanism.
     #[cfg(feature = "aws")]
@@ -367,7 +367,7 @@ mod tests {
         assert!(build_aws_msk_context(Some(&auth)).is_none());
     }
 
-    /// Scenario (section 8, feature gates): no auth is configured.
+    /// Scenario (configuration and packaging: feature gates): no auth is configured.
     /// Guarantees: the context builder returns `None`, so the AWS-gated path is
     /// never entered without auth.
     #[cfg(feature = "aws")]
@@ -376,7 +376,7 @@ mod tests {
         assert!(build_aws_msk_context(None).is_none());
     }
 
-    /// Scenario (section 8, feature gates): a misconfigured PLAIN auth carries a
+    /// Scenario (configuration and packaging: feature gates): a misconfigured PLAIN auth carries a
     /// stray `aws_msk` block.
     /// Guarantees (defense-in-depth): the context builder still returns `None`
     /// because the mechanism is not MSK, so an OAUTHBEARER context is never

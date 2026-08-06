@@ -1148,7 +1148,7 @@ mod tests {
         assert!(KafkaExporterConfig::try_from(builder).is_ok());
     }
 
-    /// Scenario (section 8, timeout limits): a config sets `timeout_ms` to `0`.
+    /// Scenario (configuration and packaging: timeout limits): a config sets `timeout_ms` to `0`.
     /// Guarantees: validation rejects `0` (which maps to librdkafka's infinite
     /// `message.timeout.ms`), so an infinite delivery timeout can never block
     /// the exporter's bounded shutdown; the error names `timeout_ms`.
@@ -1161,7 +1161,7 @@ mod tests {
         assert!(err.contains("timeout_ms"));
     }
 
-    /// Scenario (section 8, timeout limits): a config sets `timeout_ms` just
+    /// Scenario (configuration and packaging: timeout limits): a config sets `timeout_ms` just
     /// above `MAX_TIMEOUT_MS`.
     /// Guarantees: validation rejects any value greater than the 30s ceiling,
     /// so an unreasonably large delivery timeout cannot delay shutdown; the
@@ -1175,7 +1175,7 @@ mod tests {
         assert!(err.contains("timeout_ms"));
     }
 
-    /// Scenario (section 8, timeout limits): a config sets `timeout_ms` exactly
+    /// Scenario (configuration and packaging: timeout limits): a config sets `timeout_ms` exactly
     /// to `MAX_TIMEOUT_MS`.
     /// Guarantees: the inclusive upper bound is accepted, so the documented
     /// maximum is usable (the bound is `<=`, not `<`).
@@ -1187,7 +1187,7 @@ mod tests {
         assert!(KafkaExporterConfig::try_from(builder).is_ok());
     }
 
-    /// Scenario (section 8, timeout limits): a config omits `timeout_ms` and
+    /// Scenario (configuration and packaging: timeout limits): a config omits `timeout_ms` and
     /// takes the serde default.
     /// Guarantees: the default (5000 ms) is within the valid range and is
     /// applied, so an unconfigured exporter has a bounded, valid delivery
@@ -1379,7 +1379,7 @@ mod tests {
         }
     }
 
-    /// Scenario (section 6, compression): a config built with each supported
+    /// Scenario (Kafka integration: compression): a config built with each supported
     /// `CompressionType` is turned into an rdkafka client config.
     /// Guarantees: every codec is written to librdkafka's `compression.type`
     /// with the exact wire string (`gzip`/`snappy`/`lz4`/`zstd`), so the
@@ -1722,7 +1722,7 @@ mod tests {
 
     // ---- overridden_producer_config_keys ----
 
-    /// Scenario (section 8, escape-hatch precedence): `producer_config` mixes
+    /// Scenario (configuration and packaging: escape-hatch precedence): `producer_config` mixes
     /// keys managed by first-class fields with an unmanaged custom key.
     /// Guarantees: `overridden_producer_config_keys` reports exactly the managed
     /// keys (the operator-warning surface) and ignores unmanaged keys, so the
@@ -1746,7 +1746,7 @@ mod tests {
         assert_eq!(conflicts, vec!["bootstrap.servers", "linger.ms"]);
     }
 
-    /// Scenario (section 8, escape-hatch precedence): `producer_config` contains
+    /// Scenario (configuration and packaging: escape-hatch precedence): `producer_config` contains
     /// only keys with no first-class-field counterpart.
     /// Guarantees: `overridden_producer_config_keys` is empty, so purely
     /// advanced tuning knobs pass through the escape hatch without triggering a
@@ -1766,7 +1766,7 @@ mod tests {
 
     // ---- Security: allow.auto.create.topics (default-deny) ----
 
-    /// Scenario (section 8, escape-hatch precedence): build the librdkafka
+    /// Scenario (configuration and packaging: escape-hatch precedence): build the librdkafka
     /// client config from a default exporter config.
     /// Guarantees: `allow.auto.create.topics` is explicitly set to `false` by
     /// default, so a client-controlled routing header cannot rely on the broker
@@ -1781,7 +1781,7 @@ mod tests {
         assert_eq!(client.get("allow.auto.create.topics"), Some("false"));
     }
 
-    /// Scenario (section 8, escape-hatch precedence): an operator explicitly
+    /// Scenario (configuration and packaging: escape-hatch precedence): an operator explicitly
     /// opts in to broker auto-creation.
     /// Guarantees: `with_allow_auto_create_topics(true)` sets
     /// `allow.auto.create.topics` to `true` in the built client config.
@@ -1796,7 +1796,7 @@ mod tests {
         assert_eq!(client.get("allow.auto.create.topics"), Some("true"));
     }
 
-    /// Scenario (section 8, escape-hatch precedence): a `producer_config`
+    /// Scenario (configuration and packaging: escape-hatch precedence): a `producer_config`
     /// passthrough tries to set `allow.auto.create.topics`.
     /// Guarantees: the key is a managed key -- the first-class field wins in the
     /// built config, and the conflict is reported by
@@ -1826,7 +1826,7 @@ mod tests {
 
     // ---- Configuration & packaging: timeout mapping and escape-hatch precedence ----
 
-    /// Scenario (section 8, timeout limits): a validated `timeout_ms` is turned
+    /// Scenario (configuration and packaging: timeout limits): a validated `timeout_ms` is turned
     /// into an rdkafka client config.
     /// Guarantees: `timeout_ms` maps to librdkafka's `message.timeout.ms` with
     /// the exact configured value, so the per-delivery deadline the exporter
@@ -1842,7 +1842,7 @@ mod tests {
         assert_eq!(client.get("message.timeout.ms"), Some("1234"));
     }
 
-    /// Scenario (section 8, escape-hatch precedence): `producer_config` supplies
+    /// Scenario (configuration and packaging: escape-hatch precedence): `producer_config` supplies
     /// values for keys that also have first-class fields, alongside the
     /// first-class fields themselves.
     /// Guarantees: `producer_config` is applied first and every managed
@@ -1899,7 +1899,7 @@ mod tests {
         );
     }
 
-    /// Scenario (section 8, escape-hatch precedence): `producer_config` sets a
+    /// Scenario (configuration and packaging: escape-hatch precedence): `producer_config` sets a
     /// tuning knob that is not managed by any first-class field.
     /// Guarantees: an unmanaged passthrough key survives unchanged into the
     /// built client config (the escape hatch remains usable for advanced
@@ -1921,7 +1921,7 @@ mod tests {
         assert!(config.overridden_producer_config_keys().is_empty());
     }
 
-    /// Scenario (section 8, escape-hatch precedence): both `producer_config` and
+    /// Scenario (configuration and packaging: escape-hatch precedence): both `producer_config` and
     /// the first-class `debug` field try to set librdkafka's `debug` contexts.
     /// Guarantees: the first-class `debug` field is applied last and overrides
     /// the `producer_config` passthrough, so debug logging is driven by the
@@ -1944,7 +1944,7 @@ mod tests {
         );
     }
 
-    /// Scenario (section 8, escape-hatch precedence): the first-class
+    /// Scenario (configuration and packaging: escape-hatch precedence): the first-class
     /// `log_level` field is configured.
     /// Guarantees: `build_client_config` applies the configured log level to the
     /// rdkafka client (a first-class-only setting with no `producer_config`
