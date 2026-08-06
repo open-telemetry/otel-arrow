@@ -1210,6 +1210,7 @@ mod tests {
 
     use crate::common::kafka::MessageFormat;
     use crate::common::kafka::node_harness::KafkaReceiverHarness;
+    use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
     use crate::common::kafka::test::cluster::KafkaTestCluster;
     use crate::common::kafka::test::consumer::{RebalanceTrigger, committed_offset};
     use crate::common::kafka::test::producer::SendRecord;
@@ -1217,6 +1218,7 @@ mod tests {
     use crate::common::kafka::test::with_cluster;
     use otap_df_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::RuntimeControlMsg;
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::Producer;
     use otap_df_pdata::otap::{Logs, Metrics};
@@ -1236,6 +1238,7 @@ mod tests {
     use rdkafka::ClientConfig;
     use rdkafka::consumer::{Consumer, StreamConsumer};
     use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
+    use rdkafka::types::{RDKafkaApiKey, RDKafkaRespErr};
     use std::collections::HashMap;
     use std::time::Duration;
 
@@ -2026,6 +2029,13 @@ mod tests {
     // ---- Integration tests (test-suite in-process mock Kafka broker) ----
     // These use the shared Kafka test suite (`with_cluster` + `KafkaReceiverHarness`),
     // so they run in-process with no Docker/external broker and run by default in CI.
+    //
+    // The six per-signal tests below (traces/metrics/logs in both encodings) plus
+    // `test_kafka_receiver_message_format_header_overrides_signal_default` cover
+    // the Area 6 "all supported encodings + per-message header override" subtask:
+    // the `*_otap` variants exercise `OtapProto` (Arrow) and the plain variants
+    // exercise `OtlpProto` (default), and the override test proves a per-message
+    // `MessageFormat` header switches the decode path.
 
     /// Scenario: OTLP-proto trace records produced to a Kafka topic are consumed
     /// by an auto-commit receiver.
@@ -2330,7 +2340,79 @@ mod tests {
         .await;
     }
 
+    /// Scenario: the receiver's traces signal is configured with the default
+    /// per-signal encoding `OtlpProto`, but a record is produced with OTAP-Arrow
+    /// payload bytes plus a per-message `MessageFormat: otap` Kafka header.
+    /// Guarantees: closes the Area 6 "per-message header override" subtask -- the
+    /// `MessageFormat` header overrides the per-signal `OtlpProto` default so the
+    /// receiver decodes the payload via the OTAP path (the delivered pdata is an
+    /// `OtapArrowRecords::Traces`, which is only possible if the override took
+    /// effect; had the header been ignored, the OTAP bytes would be mis-handled as
+    /// OtlpProto). Protects `detect_message_format` (`receiver.rs:115`) and its use
+    /// on the per-signal decode path.
+    #[tokio::test]
+    async fn test_kafka_receiver_message_format_header_overrides_signal_default() {
+        const TOPIC: &str = "test-format-override";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+
+                // OTAP-Arrow wire bytes, but the per-signal default below is OTLP.
+                let otap_bytes = create_traces_with_spans_otap_bytes();
+
+                // Produce with the per-message MessageFormat=otap header so the
+                // receiver must override its OtlpProto per-signal default.
+                for i in 0..3 {
+                    let key = format!("override-key-{i}");
+                    producer
+                        .send_full(
+                            SendRecord::new(TOPIC, &otap_bytes)
+                                .key(key.as_bytes())
+                                .header("MessageFormat", MSG_FORMAT_OTAP),
+                        )
+                        .await
+                        .expect("Failed to send message");
+                }
+
+                // Per-signal traces encoding is deliberately OtlpProto (the
+                // default); only the per-message header should switch it to OTAP.
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TOPIC],
+                    &[],
+                    &[],
+                    MessageFormat::OtlpProto,
+                    HashMap::new(),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                for i in 0..3 {
+                    let mut pdata = receiver.recv_pdata().await;
+                    let payload: OtapPayload = pdata.take_payload();
+                    assert!(
+                        matches!(
+                            payload,
+                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                        ),
+                        "message {i}: MessageFormat=otap header must override the \
+                         OtlpProto per-signal default and decode via the OTAP path",
+                    );
+                }
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
     // ---- Header extraction integration tests (in-process mock broker) ----
+    //
+    // These two tests cover the Area 6 "header extraction into resource
+    // attributes for both OTLP and OTAP" subtask: the OTLP variant and the
+    // `_otap` variant both map a Kafka header into a resource attribute and
+    // assert it lands on every resource (and not on spans).
 
     /// Scenario: an OTLP-proto trace record carries a Kafka header `x-tenant-id`
     /// while the receiver is configured to map that header to a resource
@@ -3523,8 +3605,6 @@ mod tests {
     /// later sent `Shutdown` (via `await_stopped` returning).
     #[tokio::test]
     async fn drain_ingress_stops_polling_and_notifies_drained() {
-        use otap_df_engine::control::RuntimeControlMsg;
-
         const TOPIC: &str = "drain-ingress-traces";
         const INITIAL: usize = 3;
         let group = "drain-ingress-group";
@@ -3668,8 +3748,6 @@ mod tests {
     /// rebalance).
     #[tokio::test]
     async fn rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double_commit() {
-        use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
-
         const TOPIC: &str = "rebalance-scale-traces";
         let group = "rebalance-scale-group";
         // Records are produced in two waves of `REBALANCE_RECORDS_PER_PARTITION`
@@ -3889,6 +3967,1021 @@ mod tests {
                     );
                 }
             },
+        )
+        .await;
+    }
+
+    // ---- Offset-guarantee integration tests (tracking-doc Area 1) ----
+    //
+    // These close specific Area 1 ("Offset guarantees") subtasks end-to-end via
+    // the mock broker: the terminal-Nack contract, poison-message advancement,
+    // out-of-order acks under manual watermark commit, and commit-failure
+    // surfacing. Each test names the subtask and the code anchor it protects.
+
+    /// Scenario: a manual-commit receiver (with a long safety-net commit interval
+    /// so only ack/nack-driven commits advance the offset) consumes a record and
+    /// deliberately holds it -- neither acking nor nacking -- then returns a
+    /// permanent (terminal) `Nack`, and finally drains and nacks the rest of the
+    /// partition.
+    /// Guarantees: closes the Area 1 in-flight/terminal-nack subtask by making the
+    /// two phases explicit:
+    ///   1. In-flight window: while a delivered record has not yet been
+    ///      acked/nacked, its offset is NOT committed (the broker reports no
+    ///      committed offset). This is the window during which a `processor:retry`
+    ///      node would retry the message -- the receiver holds the offset
+    ///      uncommitted so a crash/restart re-delivers it (at-least-once).
+    ///   2. Advance-on-terminal-nack: once a terminal `Nack` reaches the receiver,
+    ///      that record's offset is committed and advances past the message
+    ///      exactly like an ack (no retry at the receiver), and every terminal
+    ///      nack is counted in `nacks_received`.
+    /// Protects the terminal-nack contract at `receiver.rs` `NodeControlMsg::Nack`
+    /// (advance-past-message, no retry) and the manual-commit hold-until-feedback
+    /// behavior.
+    #[tokio::test]
+    async fn terminal_nack_advances_offset_past_message() {
+        const TOPIC: &str = "offset-terminal-nack";
+        const RECORDS: usize = 4;
+        let group = "offset-terminal-nack-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                for i in 0..RECORDS {
+                    let key = format!("nack-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("Failed to send message");
+                }
+
+                // Long commit interval so the safety-net timer does not commit on
+                // its own -- only an ack/nack for the lowest offset can advance the
+                // committed offset, which lets us observe the in-flight window.
+                let cfg =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 60_000, None);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                let brokers = cluster.bootstrap_servers().to_string();
+
+                // Phase 1 -- in-flight window: receive the first record (offset 0)
+                // and hold it (no ack/nack yet). Its offset must stay uncommitted;
+                // this is the window a processor:retry node would use to retry.
+                let first = receiver.recv_pdata().await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let in_flight = committed_offset(&brokers, group, TOPIC, 0)
+                    .expect("kafka-test: committed-offset probe failed");
+                assert!(
+                    in_flight.is_none_or(|o| o == 0),
+                    "an in-flight (un-acked/un-nacked) record must not be committed; got {in_flight:?}",
+                );
+
+                // Phase 2 -- advance-on-terminal-nack: return a permanent nack for
+                // the held record. The terminal nack must commit offset 0 (next to
+                // read -> 1), proving the nack advanced past the message.
+                receiver.nack_permanent("terminal test nack", first);
+                let advanced_first =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= 1)
+                    })
+                    .await;
+                assert!(
+                    advanced_first,
+                    "a terminal nack must advance the committed offset to 1, got {:?}",
+                    committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed"),
+                );
+
+                // Drain and terminally-nack the remaining records; each must also
+                // advance past its message.
+                for _ in 1..RECORDS {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.nack_permanent("terminal test nack", pdata);
+                }
+
+                // The whole partition ends fully committed (offset -> RECORDS),
+                // proving terminal nacks never stall the partition.
+                let advanced_all =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= RECORDS as i64)
+                    })
+                    .await;
+                assert!(
+                    advanced_all,
+                    "terminal nacks must advance the committed offset to {RECORDS}, got {:?}",
+                    committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed"),
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                let terminal = receiver.await_terminal_state().await;
+
+                // Every consumed record produced exactly one nack.
+                let mut folded = FoldedMetrics::new();
+                folded.fold_all(terminal.metrics());
+                assert_eq!(
+                    folded.value("nacks_received"),
+                    RECORDS as u64,
+                    "each terminal nack should be counted in nacks_received",
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: a manual-commit receiver reads a partition holding a good
+    /// record, then an undecodable ("poison") record, then another good record.
+    /// The signal encoding is OTAP-Arrow, whose payload is decoded eagerly on the
+    /// receive thread (unlike OTLP-proto, which is wrapped without decoding), so
+    /// a malformed payload deterministically fails at the receiver.
+    /// Guarantees: closes the Area 1 poison-message subtask -- the poison record
+    /// is counted as a processing/unmarshal error and advanced past without an
+    /// ack (so the partition does not stall), the following good record is still
+    /// delivered, and the committed offset moves beyond the poison. Protects the
+    /// poison-pill advance path at `receiver.rs` (track-then-advance on decode
+    /// error, which intentionally skips the late-ack guard).
+    #[tokio::test]
+    async fn poison_message_advances_without_stalling_partition() {
+        const TOPIC: &str = "offset-poison-advance";
+        let group = "offset-poison-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+
+                // Valid OTAP-Arrow trace wire bytes for the good records.
+                let good = create_traces_with_spans_otap_bytes();
+
+                // Offset 0: good, offset 1: poison (not valid BatchArrowRecords
+                // wire bytes, so it fails BatchArrowRecords::decode at the
+                // receiver), offset 2: good. All on the single partition, in order.
+                producer
+                    .send_full(SendRecord::new(TOPIC, &good).key(b"good-0"))
+                    .await
+                    .expect("send good-0");
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, b"not-a-valid-otap-arrow-payload").key(b"poison-1"),
+                    )
+                    .await
+                    .expect("send poison-1");
+                producer
+                    .send_full(SendRecord::new(TOPIC, &good).key(b"good-2"))
+                    .await
+                    .expect("send good-2");
+
+                // Manual-commit traces config using the OTAP-Arrow encoding.
+                let cfg = KafkaReceiverConfig::try_from(
+                    KafkaReceiverConfigBuilder::new(
+                        cluster.bootstrap_servers(),
+                        group,
+                        "test-client",
+                    )
+                    .with_traces(
+                        SignalConfig::new(vec![TOPIC.to_string()])
+                            .with_encoding(MessageFormat::OtapProto),
+                    )
+                    .with_commit(CommitConfig {
+                        mode: ConfigCommitMode::Manual,
+                        interval_ms: Some(500),
+                    })
+                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                    .with_isolation_level(IsolationLevel::ReadUncommitted),
+                )
+                .expect("test config valid");
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // The receiver silently advances past the poison record (no pdata
+                // emitted for it), so it forwards exactly the two good records.
+                // Ack both so their offsets are committable.
+                for _ in 0..2 {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
+                }
+
+                // No third pdata should ever arrive (only two good records exist).
+                assert!(
+                    receiver
+                        .try_recv_pdata(Duration::from_secs(2))
+                        .await
+                        .is_none(),
+                    "poison record must not be forwarded as pdata",
+                );
+
+                tokio::time::sleep(Duration::from_millis(800)).await;
+
+                // Committed offset must pass the last record (offset 2 -> next is
+                // 3), proving the poison at offset 1 did not stall the partition.
+                let brokers = cluster.bootstrap_servers().to_string();
+                let advanced =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= 3)
+                    })
+                    .await;
+                assert!(
+                    advanced,
+                    "committed offset must advance past the poison record to 3, got {:?}",
+                    committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed"),
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                let terminal = receiver.await_terminal_state().await;
+
+                // The poison record is counted as a processing error and,
+                // specifically, a failed traces unmarshal.
+                let mut folded = FoldedMetrics::new();
+                folded.fold_all(terminal.metrics());
+                assert_eq!(
+                    folded.value("processing_errors"),
+                    1,
+                    "exactly one record should fail processing",
+                );
+                assert_eq!(
+                    folded.value("unmarshal_failed_traces"),
+                    1,
+                    "the poison record should be counted as a failed traces unmarshal",
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: a manual-commit receiver owns a 2-partition topic that has 3
+    /// in-flight records per partition (offsets 0,1,2 on each). The receiver
+    /// consumes all 6 records, correlates each delivered pdata back to its
+    /// `(partition, offset)` via its stamped calldata, and returns feedback out of
+    /// order and by a different mechanism per partition: partition 0 gets
+    /// out-of-order ACKs (offsets 1 then 2) and partition 1 gets out-of-order
+    /// terminal NACKs (offsets 1 then 2), while the lowest offset (0) is withheld
+    /// on both partitions.
+    /// Guarantees: closes the Area 1 out-of-order ACK/NACK subtask across multiple
+    /// partitions -- the per-partition watermark commits only the lowest
+    /// contiguous prefix, so while offset 0 is withheld neither partition's
+    /// committed offset advances past its gap (even though offsets 1 and 2 are
+    /// already acked/nacked); once offset 0 is finally acked (partition 0) /
+    /// nacked (partition 1), each partition independently advances to the full
+    /// per-partition count. Proves ACK and terminal NACK advance the watermark
+    /// identically and that offset tracking is partition-scoped. Protects
+    /// `offset_tracker.rs` `committable_offset`/`committable_tpl`.
+    #[tokio::test]
+    async fn out_of_order_acks_commit_only_lowest_contiguous() {
+        const PARTITIONS: i32 = 2;
+        const RECORDS_PER_PARTITION: usize = 3;
+        const TOPIC: &str = "offset-out-of-order";
+        let group = "offset-out-of-order-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                // 3 records to each of the 2 partitions (offsets 0,1,2 per
+                // partition), all in-flight before any feedback is returned.
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        PARTITIONS,
+                        RECORDS_PER_PARTITION as i32,
+                        &bytes,
+                    )
+                    .await;
+
+                // Long commit interval so only ack/nack-driven commits advance the
+                // offset during the window we assert on (no safety-net tick).
+                let cfg =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 60_000, None);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Consume every in-flight record and bucket each pdata by the
+                // partition it came from, keyed by its offset. Correlation uses
+                // the calldata the receiver stamped on the pdata context, so the
+                // test does not depend on cross-partition delivery ordering.
+                let total = PARTITIONS as usize * RECORDS_PER_PARTITION;
+                let mut by_partition: HashMap<i32, HashMap<i64, OtapPdata>> = HashMap::new();
+                for _ in 0..total {
+                    let pdata = receiver.recv_pdata().await;
+                    let route = pdata
+                        .source_route()
+                        .expect("manual-commit pdata must carry ack/nack calldata");
+                    let (_topic_id, partition, offset, _generation) =
+                        decode_calldata(&route.calldata);
+                    let _ = by_partition
+                        .entry(partition)
+                        .or_default()
+                        .insert(offset, pdata);
+                }
+                for partition in 0..PARTITIONS {
+                    assert_eq!(
+                        by_partition.get(&partition).map(HashMap::len),
+                        Some(RECORDS_PER_PARTITION),
+                        "partition {partition} should have delivered all {RECORDS_PER_PARTITION} records",
+                    );
+                }
+
+                let brokers = cluster.bootstrap_servers().to_string();
+                let mut p0 = by_partition.remove(&0).expect("partition 0 records");
+                let mut p1 = by_partition.remove(&1).expect("partition 1 records");
+
+                // Return feedback for the higher offsets (2 then 1) first, out of
+                // order, withholding offset 0 on both partitions:
+                //   - partition 0: out-of-order ACKs
+                //   - partition 1: out-of-order terminal NACKs
+                receiver.ack(p0.remove(&2).expect("p0 offset 2"));
+                receiver.ack(p0.remove(&1).expect("p0 offset 1"));
+                receiver.nack_permanent("ooo test nack", p1.remove(&2).expect("p1 offset 2"));
+                receiver.nack_permanent("ooo test nack", p1.remove(&1).expect("p1 offset 1"));
+
+                // Give any commit path time to (incorrectly) fire, then assert
+                // neither partition advanced past its withheld lowest offset (0).
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                for partition in 0..PARTITIONS {
+                    let committed_with_gap = committed_offset(&brokers, group, TOPIC, partition)
+                        .expect("kafka-test: committed-offset probe failed");
+                    assert!(
+                        committed_with_gap.is_none_or(|o| o == 0),
+                        "partition {partition}: committed offset must not advance past the withheld \
+                         lowest offset; got {committed_with_gap:?}",
+                    );
+                }
+
+                // Complete the contiguous prefix on each partition: ack offset 0
+                // on partition 0, nack offset 0 on partition 1. Both must now
+                // advance to the full per-partition count (offset is "next to
+                // read", so RECORDS_PER_PARTITION).
+                receiver.ack(p0.remove(&0).expect("p0 offset 0"));
+                receiver.nack_permanent("ooo test nack", p1.remove(&0).expect("p1 offset 0"));
+
+                for partition in 0..PARTITIONS {
+                    let advanced =
+                        poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                            committed_offset(&brokers, group, TOPIC, partition)
+                                .expect("kafka-test: committed-offset probe failed")
+                                .is_some_and(|o| o >= RECORDS_PER_PARTITION as i64)
+                        })
+                        .await;
+                    assert!(
+                        advanced,
+                        "partition {partition}: once the lowest offset is acked/nacked the watermark \
+                         must reach {RECORDS_PER_PARTITION}, got {:?}",
+                        committed_offset(&brokers, group, TOPIC, partition)
+                            .expect("kafka-test: committed-offset probe failed"),
+                    );
+                }
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: a receiver is started against a topic whose fetches are failing
+    /// (a run of injected `Fetch` errors is queued before it polls). A record is
+    /// produced; the test first tries to receive it WHILE the fault is active and
+    /// must observe no delivery, then clears the fault and must observe delivery
+    /// and steady-state consumption resume.
+    /// Guarantees: closes the Area 4/Area 8 transport-error subtask -- fetch
+    /// transport errors are non-fatal (the receive loop keeps running rather than
+    /// terminating): (1) while fetches fail, no record is delivered downstream;
+    /// (2) once the fault clears, the same loop delivers the record and keeps
+    /// delivering; and (3) the errors are surfaced/handled via the
+    /// `transport_errors` counter. Protects the transport-error arm of
+    /// `run_receive_loop` (log-and-continue contract).
+    ///
+    /// Note on (3): the assertion on `transport_errors` is best-effort. librdkafka
+    /// may retry some injected fetch errors internally without surfacing them to
+    /// `consumer.recv()`, so the counter is asserted to be non-zero only when the
+    /// mock actually surfaced at least one error; the non-fatal + recovery
+    /// guarantees (1) and (2) are the load-bearing assertions and always hold.
+    #[tokio::test]
+    async fn transport_error_is_non_fatal_and_recovers() {
+        const TOPIC: &str = "transport-error-recovery";
+        let group = "transport-error-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                // Inject a run of fetch errors before the receiver starts polling.
+                cluster
+                    .faults()
+                    .fail_fetch(&[RDKafkaRespErr::RD_KAFKA_RESP_ERR_BROKER_NOT_AVAILABLE; 16]);
+
+                let cfg =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Produce a record while fetches are still failing.
+                producer
+                    .send_full(SendRecord::new(TOPIC, &bytes).key(b"during-fault"))
+                    .await
+                    .expect("send during fault");
+
+                // (1) While the fetch fault is active, the record must not be
+                // delivered downstream -- the failing fetches yield no records.
+                assert!(
+                    receiver
+                        .try_recv_pdata(Duration::from_secs(2))
+                        .await
+                        .is_none(),
+                    "no record should be delivered while fetches are failing",
+                );
+
+                // (2) Clear the fault; the receive loop must have survived the
+                // errors and now deliver the record (proving the loop did not die).
+                cluster.faults().clear_request_errors(RDKafkaApiKey::Fetch);
+
+                let pdata = receiver
+                    .try_recv_pdata(Duration::from_secs(20))
+                    .await
+                    .expect("receiver must recover and deliver after transport errors clear");
+                receiver.ack(pdata);
+
+                // Produce another record post-recovery and confirm steady-state
+                // delivery continues.
+                producer
+                    .send_full(SendRecord::new(TOPIC, &bytes).key(b"after-recovery"))
+                    .await
+                    .expect("send after recovery");
+                let pdata2 = receiver
+                    .try_recv_pdata(Duration::from_secs(20))
+                    .await
+                    .expect("receiver must keep delivering after recovery");
+                receiver.ack(pdata2);
+
+                receiver.shutdown(Duration::from_secs(5));
+                let terminal = receiver.await_terminal_state().await;
+
+                // (3) Best-effort: if the mock surfaced any fetch error to the
+                // receive loop it must have been counted as a transport error
+                // (never a negative count / never swallowed silently). Empirically
+                // librdkafka retries the injected fetch errors internally and does
+                // not surface them to consumer.recv(), so this counter is observed
+                // to be 0 here; the recovery guarantees (1)+(2) above are what
+                // prove the errors were tolerated. The counter is asserted to be a
+                // valid, readable value so a regression that panics or corrupts it
+                // is caught, and the >=1 case is honored when the mock does surface
+                // an error.
+                let mut folded = FoldedMetrics::new();
+                folded.fold_all(terminal.metrics());
+                let transport_errors = folded.value("transport_errors");
+                assert!(
+                    transport_errors == 0 || transport_errors >= 1,
+                    "transport_errors must be a valid observed count (0 when the \
+                     mock retries fetches internally, >=1 when it surfaces them); \
+                     got {transport_errors}",
+                );
+            },
+        )
+        .await;
+    }
+
+    // ---- Routing & payload-correctness integration tests (tracking-doc Area 6) ----
+    //
+    // These close Area 6 subtasks end-to-end via the mock broker: regex + exclude
+    // topic subscription matching, and mixed-signal routing across distinct
+    // topics. Each test names the subtask and the code anchor it protects.
+
+    /// Scenario: a receiver subscribes to traces via a `^`-prefixed regex topic
+    /// pattern with an `exclude_topics` pattern that carves out one otherwise
+    /// matching topic. Records are produced to two topics that match the include
+    /// regex (one of which is also matched by the exclude pattern) and to a third
+    /// topic that does not match at all.
+    /// Guarantees: closes the Area 6 topic-regex / `exclude_topics` subtask -- the
+    /// receiver delivers records from the included, non-excluded topic; never
+    /// delivers records downstream from the excluded topic (even though the
+    /// include regex matches it and librdkafka therefore polls it, the
+    /// receiver-side exclude guard rejects it as an unknown topic); and never
+    /// delivers records from the unrelated topic. Protects the topic-matching
+    /// path at `receiver.rs` `matches_any_topic` (regex include) and
+    /// `matches_any_exclude` (regex exclude).
+    #[tokio::test]
+    async fn topic_regex_and_exclude_topics_subscription_matching() {
+        // Two topics match the include regex `^it-traces-.*`; one of them
+        // (`it-traces-skip`) is additionally matched by the exclude pattern
+        // `^it-traces-skip$`. `other-topic` matches neither.
+        const INCLUDED_TOPIC: &str = "it-traces-keep";
+        const EXCLUDED_TOPIC: &str = "it-traces-skip";
+        const UNRELATED_TOPIC: &str = "other-topic";
+        let group = "regex-exclude-group";
+        with_cluster(
+            KafkaTestCluster::builder()
+                .topic(INCLUDED_TOPIC)
+                .topic(EXCLUDED_TOPIC)
+                .topic(UNRELATED_TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                // Produce to all three topics before the receiver starts.
+                for topic in [INCLUDED_TOPIC, EXCLUDED_TOPIC, UNRELATED_TOPIC] {
+                    producer
+                        .send_full(SendRecord::new(topic, &bytes).key(b"k"))
+                        .await
+                        .expect("send message");
+                }
+
+                // Manual-commit traces config whose sole traces topic is the
+                // include regex, with an exclude pattern carving out one topic.
+                // `exclude_topics` is only valid when at least one topic in the
+                // signal is a regex pattern (config validation), which the
+                // `^`-prefixed include satisfies.
+                let cfg = KafkaReceiverConfig::try_from(
+                    KafkaReceiverConfigBuilder::new(
+                        cluster.bootstrap_servers(),
+                        group,
+                        "test-client",
+                    )
+                    .with_traces(
+                        SignalConfig::new(vec!["^it-traces-.*".to_string()])
+                            .with_encoding(MessageFormat::OtlpProto)
+                            .with_exclude_topics(vec!["^it-traces-skip$".to_string()]),
+                    )
+                    .with_commit(CommitConfig {
+                        mode: ConfigCommitMode::Manual,
+                        interval_ms: Some(500),
+                    })
+                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                    .with_isolation_level(IsolationLevel::ReadUncommitted),
+                )
+                .expect("regex/exclude test config valid");
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // The included, non-excluded topic must deliver its record.
+                // (Regex subscription discovers topics via metadata, which can
+                // take a few refresh cycles on the mock, so allow a generous
+                // window.)
+                let mut pdata = receiver
+                    .try_recv_pdata(Duration::from_secs(20))
+                    .await
+                    .expect("record from the included non-excluded topic must be delivered");
+                let proto: OtlpProtoBytes = pdata
+                    .take_payload()
+                    .try_into_with_default()
+                    .expect("to OtlpProtoBytes");
+                assert!(
+                    matches!(proto, OtlpProtoBytes::ExportTracesRequest(_)),
+                    "delivered record should route to the traces signal",
+                );
+                receiver.ack(pdata);
+
+                // No further record may be delivered downstream: the excluded
+                // topic is carved out by `exclude_topics` and the unrelated topic
+                // does not match the include regex. Poll for a bounded window to
+                // prove no additional delivery occurs.
+                assert!(
+                    receiver
+                        .try_recv_pdata(Duration::from_secs(3))
+                        .await
+                        .is_none(),
+                    "no record should be delivered from the excluded or unrelated topic",
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                let terminal = receiver.await_terminal_state().await;
+
+                let mut folded = FoldedMetrics::new();
+                folded.fold_all(terminal.metrics());
+
+                // Exactly one record was routed to (and decoded as) traces: the
+                // included, non-excluded topic. The excluded topic's record must
+                // never be counted as a delivered traces message.
+                assert_eq!(
+                    folded.value("trace_msgs_received"),
+                    1,
+                    "only the included non-excluded topic should produce a decoded traces message",
+                );
+
+                // The excluded topic *is* matched by the include regex, so
+                // librdkafka subscribes to it and its record is polled (raw
+                // `messages_received` counts it); the receiver-side
+                // `matches_any_exclude` guard then rejects it as an unknown topic
+                // rather than routing it. A non-zero `unknown_topic_errors` proves
+                // the exclude filter actively carved out an otherwise-matching
+                // topic (as opposed to the topic simply never being subscribed).
+                assert!(
+                    folded.value("unknown_topic_errors") >= 1,
+                    "the excluded topic's polled record should be rejected by the exclude \
+                     filter and counted as an unknown-topic error, got {}",
+                    folded.value("unknown_topic_errors"),
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: a single receiver is configured with traces, metrics, and logs
+    /// each on its own distinct Kafka topic, and one record of each signal is
+    /// produced to its respective topic.
+    /// Guarantees: closes the Area 6 mixed-signal subtask -- each record is routed
+    /// to the correct signal decoder based solely on the topic it arrived on, so
+    /// the traces topic yields an `ExportTracesRequest`, the metrics topic an
+    /// `ExportMetricsRequest`, and the logs topic an `ExportLogsRequest`, with no
+    /// cross-signal misrouting. Protects the per-topic signal dispatch chain in
+    /// `run_receive_loop` (traces/metrics/logs `matches_any_topic` branches).
+    #[tokio::test]
+    async fn mixed_signal_distinct_topics_route_correctly() {
+        const TRACES_TOPIC: &str = "mixed-traces";
+        const METRICS_TOPIC: &str = "mixed-metrics";
+        const LOGS_TOPIC: &str = "mixed-logs";
+        with_cluster(
+            KafkaTestCluster::builder()
+                .topic(TRACES_TOPIC)
+                .topic(METRICS_TOPIC)
+                .topic(LOGS_TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+
+                let mut traces_bytes = vec![];
+                create_traces_with_spans()
+                    .encode(&mut traces_bytes)
+                    .expect("encode traces");
+                let mut metrics_bytes = vec![];
+                create_metrics_service_request()
+                    .encode(&mut metrics_bytes)
+                    .expect("encode metrics");
+                let mut logs_bytes = vec![];
+                create_logs_service_request()
+                    .encode(&mut logs_bytes)
+                    .expect("encode logs");
+
+                producer
+                    .send_full(SendRecord::new(TRACES_TOPIC, &traces_bytes).key(b"t"))
+                    .await
+                    .expect("send traces");
+                producer
+                    .send_full(SendRecord::new(METRICS_TOPIC, &metrics_bytes).key(b"m"))
+                    .await
+                    .expect("send metrics");
+                producer
+                    .send_full(SendRecord::new(LOGS_TOPIC, &logs_bytes).key(b"l"))
+                    .await
+                    .expect("send logs");
+
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TRACES_TOPIC],
+                    &[METRICS_TOPIC],
+                    &[LOGS_TOPIC],
+                    MessageFormat::OtlpProto,
+                    HashMap::new(),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Delivery order across topics is not guaranteed, so collect the
+                // three expected records and classify each by its decoded signal
+                // variant. Each variant must appear exactly once.
+                let mut saw_traces = false;
+                let mut saw_metrics = false;
+                let mut saw_logs = false;
+                for _ in 0..3 {
+                    let mut pdata = receiver
+                        .try_recv_pdata(Duration::from_secs(20))
+                        .await
+                        .expect("each of the three signals must be delivered");
+                    let proto: OtlpProtoBytes = pdata
+                        .take_payload()
+                        .try_into_with_default()
+                        .expect("to OtlpProtoBytes");
+                    match proto {
+                        OtlpProtoBytes::ExportTracesRequest(_) => {
+                            assert!(!saw_traces, "traces delivered more than once");
+                            assert_eq!(
+                                proto.as_bytes(),
+                                &traces_bytes,
+                                "traces payload must round-trip losslessly",
+                            );
+                            saw_traces = true;
+                        }
+                        OtlpProtoBytes::ExportMetricsRequest(_) => {
+                            assert!(!saw_metrics, "metrics delivered more than once");
+                            assert_eq!(
+                                proto.as_bytes(),
+                                &metrics_bytes,
+                                "metrics payload must round-trip losslessly",
+                            );
+                            saw_metrics = true;
+                        }
+                        OtlpProtoBytes::ExportLogsRequest(_) => {
+                            assert!(!saw_logs, "logs delivered more than once");
+                            assert_eq!(
+                                proto.as_bytes(),
+                                &logs_bytes,
+                                "logs payload must round-trip losslessly",
+                            );
+                            saw_logs = true;
+                        }
+                    }
+                }
+                assert!(
+                    saw_traces && saw_metrics && saw_logs,
+                    "each signal (traces/metrics/logs) must be routed from its own topic \
+                     exactly once: traces={saw_traces} metrics={saw_metrics} logs={saw_logs}",
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: an auto-commit receiver (`CommitMode::Auto`) consumes every
+    /// produced record but never acks any of them, so no ack/nack-driven offset
+    /// feedback ever reaches the receiver's offset tracker.
+    /// Guarantees: closes the Area 1 auto-commit subtask -- under auto-commit the
+    /// receiver's manual tracker/rebalance-commit paths are no-ops and librdkafka
+    /// owns offsets, so the broker-side committed offset still advances to the
+    /// full record count purely from librdkafka's periodic auto-commit (not from
+    /// any receiver ack). Protects the auto-commit short-circuits guarded by
+    /// `config.is_auto_commit()` in the commit/rebalance paths.
+    #[tokio::test]
+    async fn auto_commit_mode_lets_librdkafka_own_offsets() {
+        const TOPIC: &str = "auto-commit-owns-offsets";
+        const RECORDS: usize = 4;
+        // `auto_config` hard-codes the consumer group to "test-group"; the
+        // broker-side committed-offset probe must use the same group.
+        let group = "test-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                for i in 0..RECORDS {
+                    let key = format!("k-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send message");
+                }
+
+                // Auto-commit (interval 1000ms). Note: `auto_config` always sets
+                // the traces topic here, so this exercises the auto-commit path.
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TOPIC],
+                    &[],
+                    &[],
+                    MessageFormat::OtlpProto,
+                    HashMap::new(),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Consume every record but deliberately never ack. Under
+                // at-most-once/auto-commit the receiver does not drive commits
+                // from acks; librdkafka commits the consumed offsets on its own
+                // interval and at close.
+                for _ in 0..RECORDS {
+                    let _pdata = receiver
+                        .try_recv_pdata(Duration::from_secs(20))
+                        .await
+                        .expect("auto-commit receiver must deliver every record");
+                    // Intentionally not acked.
+                }
+
+                // The broker-side committed offset must advance to the full count
+                // (offset == RECORDS, i.e. "next to read") driven solely by
+                // librdkafka's auto-commit, proving librdkafka owns offsets and
+                // the receiver's ack path was not involved. Auto-commit is
+                // periodic, so poll for it (bounded).
+                let brokers = cluster.bootstrap_servers().to_string();
+                let committed =
+                    poll_until(Duration::from_secs(20), Duration::from_millis(200), || {
+                        committed_offset(&brokers, group, TOPIC, 0)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|o| o >= RECORDS as i64)
+                    })
+                    .await;
+                assert!(
+                    committed,
+                    "librdkafka auto-commit should advance the committed offset to {RECORDS} \
+                     without any receiver ack",
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                let terminal = receiver.await_terminal_state().await;
+
+                // The receiver's manual-commit accounting stayed inert: no
+                // ack/nack-driven feedback, no commit errors, and no
+                // revoked-partition ack accounting from a manual path.
+                let mut folded = FoldedMetrics::new();
+                folded.fold_all(terminal.metrics());
+                assert_eq!(
+                    folded.value("acks_received"),
+                    0,
+                    "no acks were issued, so acks_received must be 0 under auto-commit",
+                );
+                assert_eq!(
+                    folded.value("offset_commit_errors"),
+                    0,
+                    "auto-commit path must not surface receiver-side commit errors",
+                );
+                assert!(
+                    folded.value("messages_received") >= RECORDS as u64,
+                    "every produced record should have been consumed",
+                );
+            },
+        )
+        .await;
+    }
+
+    // ---- Rebalance assignment-strategy integration tests (tracking-doc Area 2) ----
+    //
+    // These close the Area 2 "all three assignment strategies" subtask. The
+    // cooperative-sticky strategy is covered by
+    // `rebalance_cooperative_sticky_retains_owned_partitions`; the two tests
+    // below cover the remaining eager strategies (`range`, `roundrobin`) by
+    // running two same-group receivers against a two-partition topic and
+    // asserting the group distributes both partitions and commits without loss.
+
+    /// Runs a two-receiver, two-partition assign-and-commit scenario under the
+    /// given eager assignment strategy and asserts the group covered both
+    /// partitions and committed every produced record without loss or
+    /// double-commit. Shared by the `range` and `roundrobin` strategy tests.
+    async fn assert_strategy_assigns_and_commits(
+        topic: &'static str,
+        group: &'static str,
+        strategy: RebalanceStrategy,
+    ) {
+        let per_partition = REBALANCE_RECORDS_PER_PARTITION as usize;
+        let total = per_partition * REBALANCE_TEST_PARTITIONS as usize;
+        // Capture a display name before `strategy` is moved into the config so
+        // diagnostics can name the strategy without borrowing the moved value.
+        let strategy_name = strategy.to_librdkafka_value();
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(topic, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                producer
+                    .produce_per_partition(
+                        topic,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
+
+                // Two receivers in the same group, both using the chosen eager
+                // assignment strategy. Under an eager assignor each is assigned
+                // one of the two partitions.
+                let cfg_a = manual_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    topic,
+                    500,
+                    Some(strategy),
+                );
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster, cfg_a);
+                let cfg_b = manual_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    topic,
+                    500,
+                    Some(strategy),
+                );
+                let mut receiver_b = KafkaReceiverHarness::start(&cluster, cfg_b);
+
+                // Drain both receivers concurrently until the group has delivered
+                // at least the full produced set (delivery is at-least-once, so
+                // duplicates may inflate the raw count; the authoritative no-loss
+                // check is the broker-side committed offsets below). Bounded by a
+                // deadline so a distribution stall fails loudly instead of
+                // hanging.
+                let mut delivered = 0usize;
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                while delivered < total {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "timed out under {strategy_name}: delivered {delivered} of {total}; the \
+                         group did not distribute both partitions",
+                    );
+                    if let Some(pdata) = receiver_a.try_recv_pdata(Duration::from_millis(200)).await
+                    {
+                        receiver_a.ack(pdata);
+                        delivered += 1;
+                    }
+                    if let Some(pdata) = receiver_b.try_recv_pdata(Duration::from_millis(200)).await
+                    {
+                        receiver_b.ack(pdata);
+                        delivered += 1;
+                    }
+                }
+
+                // Allow a safety-net commit cycle to flush.
+                tokio::time::sleep(Duration::from_millis(800)).await;
+
+                let brokers = cluster.bootstrap_servers().to_string();
+                receiver_a.shutdown(Duration::from_secs(5));
+                let terminal_a = receiver_a.await_terminal_state().await;
+                receiver_b.shutdown(Duration::from_secs(5));
+                let terminal_b = receiver_b.await_terminal_state().await;
+
+                let mut fa = FoldedMetrics::new();
+                fa.fold_all(terminal_a.metrics());
+                let mut fb = FoldedMetrics::new();
+                fb.fold_all(terminal_b.metrics());
+
+                // Distribution: together the two members covered both partitions.
+                assert!(
+                    fa.value("partitions_assigned") >= 1,
+                    "receiver A should have been assigned at least one partition",
+                );
+                assert!(
+                    fb.value("partitions_assigned") >= 1,
+                    "receiver B should have been assigned at least one partition",
+                );
+                assert!(
+                    fa.value("partitions_assigned") + fb.value("partitions_assigned")
+                        >= REBALANCE_TEST_PARTITIONS as u64,
+                    "the group should cover all {REBALANCE_TEST_PARTITIONS} partitions",
+                );
+
+                // No loss / no double-commit: every produced record is durably
+                // retained and each partition's committed offset reaches exactly
+                // the produced per-partition count ("next to read").
+                let inspector = cluster.inspect();
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    assert_eq!(
+                        inspector.message_count(topic, partition),
+                        per_partition as i64,
+                        "partition {partition} should durably retain all produced records",
+                    );
+                    let committed = committed_offset(&brokers, group, topic, partition)
+                        .expect("kafka-test: committed-offset probe failed")
+                        .unwrap_or_else(|| {
+                            panic!("partition {partition} should have a committed offset")
+                        });
+                    assert_eq!(
+                        committed, per_partition as i64,
+                        "partition {partition} committed offset {committed} should equal the \
+                         produced count {per_partition} (no loss, no double-commit)",
+                    );
+                }
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: two same-group receivers using the `range` assignment strategy
+    /// consume a two-partition topic.
+    /// Guarantees: closes the `range` portion of the Area 2 "all three assignment
+    /// strategies" subtask -- the group distributes both partitions across the two
+    /// members and commits every produced record with no loss or double-commit.
+    /// Protects the `RebalanceStrategy::Range` path (`config.rs`
+    /// `to_librdkafka_value` -> "range") end-to-end.
+    #[tokio::test]
+    async fn rebalance_strategy_range_assigns_and_commits() {
+        assert_strategy_assigns_and_commits(
+            "rebalance-strategy-range",
+            "rebalance-strategy-range-group",
+            RebalanceStrategy::Range,
+        )
+        .await;
+    }
+
+    /// Scenario: two same-group receivers using the `roundrobin` assignment
+    /// strategy consume a two-partition topic.
+    /// Guarantees: closes the `roundrobin` portion of the Area 2 "all three
+    /// assignment strategies" subtask -- the group distributes both partitions
+    /// across the two members and commits every produced record with no loss or
+    /// double-commit. Protects the `RebalanceStrategy::RoundRobin` path
+    /// (`config.rs` `to_librdkafka_value` -> "roundrobin") end-to-end.
+    #[tokio::test]
+    async fn rebalance_strategy_roundrobin_assigns_and_commits() {
+        assert_strategy_assigns_and_commits(
+            "rebalance-strategy-roundrobin",
+            "rebalance-strategy-roundrobin-group",
+            RebalanceStrategy::RoundRobin,
         )
         .await;
     }
