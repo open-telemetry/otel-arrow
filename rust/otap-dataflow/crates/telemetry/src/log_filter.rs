@@ -3,6 +3,7 @@
 
 //! Runtime-reloadable filtering for internal telemetry logs.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use arc_swap::ArcSwap;
@@ -16,6 +17,8 @@ use tracing_subscriber::layer::{Context, Layer};
 
 struct SharedState {
     configured_level: ArcSwap<LogLevel>,
+    // The first reconciliation must replace RUST_LOG even when logs.level is unchanged.
+    startup_override_active: AtomicBool,
     template: ArcSwap<EnvFilter>,
     layers: Mutex<Vec<Weak<ArcSwap<EnvFilter>>>>,
 }
@@ -28,9 +31,17 @@ pub struct RuntimeLogFilterLayer {
 /// Creates the startup `EnvFilter` from `RUST_LOG`, falling back to `level`.
 #[must_use]
 pub fn create_env_filter(level: &LogLevel) -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use")
-    })
+    create_startup_env_filter(level).0
+}
+
+fn create_startup_env_filter(level: &LogLevel) -> (EnvFilter, bool) {
+    match EnvFilter::try_from_default_env() {
+        Ok(filter) => (filter, true),
+        Err(_) => (
+            EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use"),
+            false,
+        ),
+    }
 }
 
 /// A shared factory for runtime-reloadable `EnvFilter` layers.
@@ -53,9 +64,11 @@ impl RuntimeLogFilter {
     /// Creates a filter and its update handle from the configured log level.
     #[must_use]
     pub fn new(level: &LogLevel) -> (Self, RuntimeLogFilterHandle) {
+        let (filter, startup_override_active) = create_startup_env_filter(level);
         let shared = Arc::new(SharedState {
             configured_level: ArcSwap::from_pointee(level.clone()),
-            template: ArcSwap::from_pointee(create_env_filter(level)),
+            startup_override_active: AtomicBool::new(startup_override_active),
+            template: ArcSwap::from_pointee(filter),
             layers: Mutex::new(Vec::new()),
         });
         (
@@ -71,6 +84,7 @@ impl RuntimeLogFilter {
         Self {
             shared: Arc::new(SharedState {
                 configured_level: ArcSwap::from_pointee(level),
+                startup_override_active: AtomicBool::new(false),
                 template: ArcSwap::from_pointee(filter),
                 layers: Mutex::new(Vec::new()),
             }),
@@ -110,7 +124,9 @@ impl RuntimeLogFilterHandle {
     /// stays empty for them. Such directives still work when supplied at
     /// startup. See the crate README for operator-facing details.
     pub fn apply(&self, level: &LogLevel) {
-        if self.shared.configured_level.load().as_ref() == level {
+        if self.shared.configured_level.load().as_ref() == level
+            && !self.shared.startup_override_active.load(Ordering::Acquire)
+        {
             return;
         }
         let filter =
@@ -121,6 +137,9 @@ impl RuntimeLogFilterHandle {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.shared.configured_level.store(Arc::new(level.clone()));
+        self.shared
+            .startup_override_active
+            .store(false, Ordering::Release);
         self.shared.template.store(Arc::new(filter.clone()));
         layers.retain(|layer| {
             if let Some(layer) = layer.upgrade() {
@@ -333,6 +352,28 @@ mod tests {
             });
 
             assert_eq!(handle.configured_level().as_str(), "info");
+        });
+    }
+
+    /// Scenario: RUST_LOG overrides startup with the same logs.level later reconciled.
+    /// Guarantees: the first reconciliation replaces the environment-derived filter.
+    #[test]
+    fn unchanged_runtime_level_overrides_rust_log_startup_filter() {
+        crate::with_rust_log(Some("error"), || {
+            let count = Arc::new(AtomicUsize::new(0));
+            let (filter, handle) = RuntimeLogFilter::new(&level("info"));
+            let subscriber = Registry::default()
+                .with(filter.layer())
+                .with(CountingLayer(Arc::clone(&count)));
+
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!("RUST_LOG blocks this startup event");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 0);
+
+                handle.apply(&level("info"));
+                tracing::info!("reconciled logs.level permits this event");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 1);
+            });
         });
     }
 
