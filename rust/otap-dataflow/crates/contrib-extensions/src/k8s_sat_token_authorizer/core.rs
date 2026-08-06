@@ -156,77 +156,87 @@ impl Core {
                 None => AuthzDecision::deny(DenyReason::InvalidCredential),
             },
             ReviewOutcome::Authenticated(user) => {
-                // Admit against the entry for the confirmed audience, not a
-                // global list, so a service account is only trusted for the
-                // audience it was minted for. `match_audience` resolves the
-                // single bound audience and fails closed on ambiguity.
-                let audience = match self.match_audience(&user.audiences) {
-                    Ok(audience) => audience,
+                // Every configured audience the token was confirmed for. The
+                // `TokenReview` only requests configured audiences, so each
+                // confirmed audience is one we govern. Admission requires EVERY
+                // matched audience's policy to admit (fail closed on the first
+                // denial), so a token that also carries a laxer audience can
+                // never bypass a stricter tenant's policy; the emitted identity
+                // then lists all matched audiences.
+                let audiences = match self.match_audiences(&user.audiences) {
+                    Ok(audiences) => audiences,
                     Err(deny) => return Ok(deny),
                 };
-                let admission = &self.admission_by_audience[&audience];
 
-                match admission {
-                    // RBAC admission needs a second API call (SubjectAccessReview).
-                    // A request failure is undetermined: fail closed.
-                    Admission::Rbac(attrs) => {
-                        match reviewer
+                let mut denied = None;
+                for audience in &audiences {
+                    let admission = &self.admission_by_audience[audience];
+                    let result = match admission {
+                        // RBAC admission needs a second API call
+                        // (SubjectAccessReview). A request failure is
+                        // undetermined: fail closed.
+                        Admission::Rbac(attrs) => match reviewer
                             .check_access(&user, attrs)
                             .await
                             .map_err(|err| self.cap_err.error(err))?
                         {
-                            AccessOutcome::Allowed => Self::allow(&user, &audience),
-                            AccessOutcome::Denied { reason } => match reason {
+                            AccessOutcome::Allowed => Ok(()),
+                            AccessOutcome::Denied { reason } => Err(match reason {
                                 Some(detail) => AuthzDecision::deny_with_detail(
                                     DenyReason::NotPermitted,
                                     detail,
                                 ),
                                 None => AuthzDecision::deny(DenyReason::NotPermitted),
-                            },
-                        }
+                            }),
+                        },
+                        _ => Self::admit_non_rbac(&user, admission),
+                    };
+                    if let Err(deny) = result {
+                        denied = Some(deny);
+                        break;
                     }
-                    _ => Self::admit_non_rbac(&user, &audience, admission),
+                }
+
+                match denied {
+                    Some(deny) => deny,
+                    None => Self::allow(&user, &audiences),
                 }
             }
         };
         Ok(decision)
     }
 
-    /// Selects the single configured audience among those `TokenReview`
-    /// confirmed, or returns the deny decision to use.
+    /// Returns the configured audiences the `TokenReview` confirmed, in a
+    /// stable (sorted, deduplicated) order, or the deny to use when none are
+    /// bound.
     ///
-    /// A token can be confirmed for several configured audiences at once; their
-    /// order in `confirmed` is unspecified by Kubernetes. To keep policy
-    /// selection deterministic and preserve cross-tenant isolation, this admits
-    /// only an unambiguous single match:
+    /// A token can be confirmed for several configured audiences at once (it may
+    /// be minted for multiple, and the order in `confirmed` is unspecified by
+    /// Kubernetes). Rather than pick one nondeterministically, all matched
+    /// audiences are returned so the caller can require every one's policy to
+    /// admit and can list them all on the emitted identity. Only an empty match
+    /// is a deny:
     ///
-    /// - exactly one configured audience matched -> `Ok(audience)`;
-    /// - none matched -> `Err(Deny(NotPermitted, "token audience is not bound"))`;
-    /// - two or more distinct configured audiences matched -> `Err(Deny(..))`
-    ///   ("ambiguous policy"), failing closed rather than picking one tenant's
-    ///   policy nondeterministically.
-    fn match_audience(&self, confirmed: &[String]) -> Result<String, AuthzDecision> {
+    /// - one or more configured audiences matched -> `Ok(vec![..])` (sorted, deduped);
+    /// - none matched -> `Err(Deny(NotPermitted, "token audience is not bound"))`.
+    fn match_audiences(&self, confirmed: &[String]) -> Result<Vec<String>, AuthzDecision> {
         // Distinct confirmed audiences that are configured. Dedup so a repeated
-        // audience in the response is not mistaken for an ambiguous match.
-        let mut matched: Vec<&str> = confirmed
+        // audience in the response is not counted twice.
+        let mut matched: Vec<String> = confirmed
             .iter()
-            .map(String::as_str)
             .filter(|aud| self.admission_by_audience.contains_key(*aud))
+            .cloned()
             .collect();
         matched.sort_unstable();
         matched.dedup();
 
-        match matched.as_slice() {
-            [] => Err(AuthzDecision::deny_with_detail(
+        if matched.is_empty() {
+            return Err(AuthzDecision::deny_with_detail(
                 DenyReason::NotPermitted,
                 "token audience is not bound",
-            )),
-            [audience] => Ok((*audience).to_owned()),
-            _ => Err(AuthzDecision::deny_with_detail(
-                DenyReason::NotPermitted,
-                "token confirmed for multiple bound audiences; ambiguous policy",
-            )),
+            ));
         }
+        Ok(matched)
     }
 
     /// Returns the lazily-built reviewer, constructing the Kubernetes client on
@@ -248,18 +258,25 @@ impl Core {
     ///
     /// Emits every claim the `TokenReview` verified so a downstream tenant /
     /// authorization resolver can match on them: the SA username as the
-    /// `principal` and `sub` claim, the matched `aud`, the parsed
-    /// `k8s.namespace` / `k8s.serviceaccount`, plus `uid`, `groups`, and any
-    /// `extra` attributes (namespaced `extra.<key>`). Scheme is `k8s_sat`.
-    fn allow(user: &AuthenticatedUser, audience: &str) -> AuthzDecision {
-        let mut identity = AuthorizedIdentity::new()
-            .with_scheme(SCHEME)
-            .with_audience(audience);
+    /// `principal` and `sub` claim, the confirmed `aud` (single- or
+    /// multi-valued, listing every audience the token was admitted for), the
+    /// parsed `k8s.namespace` / `k8s.serviceaccount`, plus `uid`, `groups`, and
+    /// any `extra` attributes (namespaced `extra.<key>`). Scheme is `k8s_sat`.
+    fn allow(user: &AuthenticatedUser, audiences: &[String]) -> AuthzDecision {
+        let mut identity = AuthorizedIdentity::new().with_scheme(SCHEME);
+        // A single confirmed audience is a scalar `aud`; several are a
+        // multi-valued `aud`, so the identity faithfully lists them all.
+        identity = match audiences {
+            [] => identity,
+            [audience] => identity.with_audience(audience),
+            many => identity.with_claim_values(
+                AuthorizedIdentity::CLAIM_AUDIENCE,
+                many.iter().map(String::as_str),
+            ),
+        };
 
         if let Some(username) = &user.username {
-            identity = identity
-                .with_principal(username)
-                .with_subject(username);
+            identity = identity.with_principal(username).with_subject(username);
             // The SA username encodes namespace + name; surface them as their
             // own claims so a resolver need not re-parse the username.
             if let Some((namespace, name)) = parse_service_account(username) {
@@ -282,25 +299,27 @@ impl Core {
         AuthzDecision::allow(identity)
     }
 
-    /// Admits `user` for `audience` using the non-RBAC strategies (any /
-    /// allow-list). The RBAC strategy needs an async API call and is handled in
+    /// Runs the non-RBAC admission check (any / allow-list) for one audience's
+    /// policy.
+    ///
+    /// Returns `Ok(())` when the user is admitted, or the deny decision to use.
+    /// The RBAC strategy needs an async API call and is handled in
     /// [`Core::decide`].
     fn admit_non_rbac(
         user: &AuthenticatedUser,
-        audience: &str,
         admission: &Admission,
-    ) -> AuthzDecision {
+    ) -> Result<(), AuthzDecision> {
         match admission {
-            Admission::Any => Self::allow(user, audience),
+            Admission::Any => Ok(()),
             Admission::AllowList(allowed) => match &user.username {
-                Some(name) if allowed.contains(name) => Self::allow(user, audience),
-                _ => AuthzDecision::deny_with_detail(
+                Some(name) if allowed.contains(name) => Ok(()),
+                _ => Err(AuthzDecision::deny_with_detail(
                     DenyReason::NotPermitted,
                     "service account not in allow-list",
-                ),
+                )),
             },
             // Handled by the async RBAC path; never reached here.
-            Admission::Rbac(_) => AuthzDecision::deny(DenyReason::NotPermitted),
+            Admission::Rbac(_) => Err(AuthzDecision::deny(DenyReason::NotPermitted)),
         }
     }
 }
@@ -338,20 +357,50 @@ impl Core {
             audiences: vec![audience.to_owned()],
             ..Default::default()
         };
-        Self::admit_non_rbac(&user, audience, admission)
+        match Self::admit_non_rbac(&user, admission) {
+            Ok(()) => Self::allow(&user, &[audience.to_owned()]),
+            Err(deny) => deny,
+        }
     }
 
     /// Builds the `Allow` identity for a fully-populated user. Test-only.
     pub(crate) fn allow_for_test(&self, user: &AuthenticatedUser, audience: &str) -> AuthzDecision {
-        Self::allow(user, audience)
+        Self::allow(user, &[audience.to_owned()])
     }
 
-    /// Resolves the confirmed audiences to a single bound audience, or the deny.
-    /// Test-only wrapper over [`Core::match_audience`].
-    pub(crate) fn match_audience_for_test(
+    /// Resolves the confirmed audiences to the sorted set of bound audiences, or
+    /// the deny. Test-only wrapper over [`Core::match_audiences`].
+    pub(crate) fn match_audiences_for_test(
         &self,
         confirmed: &[String],
-    ) -> Result<String, AuthzDecision> {
-        self.match_audience(confirmed)
+    ) -> Result<Vec<String>, AuthzDecision> {
+        self.match_audiences(confirmed)
+    }
+
+    /// Runs the non-RBAC multi-audience admission exactly as [`Core::decide`]
+    /// does -- every matched audience's policy must admit (AND), failing closed
+    /// on the first denial -- then builds the identity listing all matched
+    /// audiences. Test-only; the RBAC path needs a live cluster.
+    pub(crate) fn admit_multi_for_test(
+        &self,
+        username: Option<String>,
+        confirmed: &[String],
+    ) -> AuthzDecision {
+        let user = AuthenticatedUser {
+            username,
+            audiences: confirmed.to_vec(),
+            ..Default::default()
+        };
+        let audiences = match self.match_audiences(&user.audiences) {
+            Ok(audiences) => audiences,
+            Err(deny) => return deny,
+        };
+        for audience in &audiences {
+            let admission = &self.admission_by_audience[audience];
+            if let Err(deny) = Self::admit_non_rbac(&user, admission) {
+                return deny;
+            }
+        }
+        Self::allow(&user, &audiences)
     }
 }
