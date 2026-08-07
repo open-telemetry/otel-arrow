@@ -84,6 +84,18 @@ Each format object contains:
   budget the entry is emitted whole (best-effort, possibly exceeding `max_size`)
   and counted by the same `split.budget.fallbacks` metric.
 
+In addition to these per-entry budgets, splitting is bounded per *flush* by the
+remaining outbound request capacity (`outbound_request_limit`). When a flush is
+subscribed (its inputs carry Ack/Nack interest), the splitter will not fan an
+oversize entry out into more fragments than there are free outbound slots left
+for the whole flush -- reserving one slot for each resource entry still to be
+processed so an early greedy split cannot starve later entries. An entry that
+would exceed the remaining capacity is emitted whole instead (best-effort,
+possibly exceeding `max_size`) and counted by the `split.capacity.fallbacks`
+metric. This keeps a split input all-or-nothing: it is never partially
+subscribed across the outbound pool, so a late fragment can never be Nacked for
+outbound-slot exhaustion while its siblings are already in flight.
+
 ## Examples
 
 Flush every incoming message:
@@ -124,6 +136,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `otap.processor.batch.nacked_inbound_slots` | `{msg}` | Number of requests nacked due to inbound slot exhaustion. |
 | `otap.processor.batch.nacked_outbound_slots` | `{msg}` | Number of requests nacked due to outbound slot exhaustion. |
 | `otap.processor.batch.split_budget_fallbacks` | `{entry}` | Number of oversize resource entries emitted whole because splitting would have exceeded `max_split_fragments` or `max_split_overhead_bytes`. |
+| `otap.processor.batch.split_capacity_fallbacks` | `{entry}` | Number of oversize resource entries emitted whole because splitting them would have exceeded the flush's remaining outbound request capacity (`outbound_request_limit`). |
 
 ### Events
 

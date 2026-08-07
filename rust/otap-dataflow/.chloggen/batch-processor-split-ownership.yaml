@@ -26,3 +26,7 @@ subtext: |
   and otlp.max_split_overhead_bytes (default 8 MiB) configs cap per-entry fan-out and
   duplicated-wrapper-byte amplification; over-budget entries are emitted whole
   (best-effort) and counted by the otap.processor.batch split.budget.fallbacks metric.
+  Splitting is additionally bounded per flush by the remaining outbound_request_limit
+  capacity so a split input is never partially subscribed across the outbound pool
+  (no fragment Nacked mid-flush while siblings are in flight); over-capacity entries
+  fall back to whole and are counted by the split.capacity.fallbacks metric.

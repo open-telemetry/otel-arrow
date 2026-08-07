@@ -30,15 +30,19 @@ const CHILD_LIST_FIELD: u64 = 2;
 type OwnedBatch = (OtlpProtoBytes, usize);
 
 /// Result of byte batching: the output batches (each with its ownership weight)
-/// plus the number of oversize entries that were emitted whole because their
-/// projected fragment count would have exceeded the caller's fragment budget.
+/// plus the counts of oversize entries that were emitted whole instead of split.
 pub struct BytesBatches {
     /// Output batches, each paired with the input-byte ownership weight it
     /// represents. The weights sum to the input byte total.
     pub batches: Vec<OwnedBatch>,
     /// Number of resource entries emitted whole (best-effort) instead of split
-    /// because their projected fragment count exceeded the budget.
+    /// because their projected fragment count or duplicated wrapper bytes
+    /// exceeded the per-entry `fragment_budget` / `overhead_budget`.
     pub budget_fallbacks: u64,
+    /// Number of resource entries emitted whole (best-effort) instead of split
+    /// because splitting them would have produced more output batches than the
+    /// flush's remaining outbound capacity (`output_budget`) could track.
+    pub capacity_fallbacks: u64,
 }
 
 /// Number of bytes needed to encode `v` as a protobuf varint.
@@ -108,6 +112,27 @@ fn next_field(buf: &[u8], pos: usize) -> Option<(u64, u64, usize, usize)> {
         }
         _ => None,
     }
+}
+
+/// Counts top-level repeated resource entries (`RESOURCE_ENTRY_FIELD`, LEN
+/// wire type) in `buf`, skipping payloads. A malformed tail stops the count.
+/// Used to reserve one outbound slot per not-yet-processed entry when bounding
+/// a split against the flush's remaining outbound capacity.
+fn count_resource_entries(buf: &[u8]) -> usize {
+    let mut pos = 0;
+    let mut count = 0;
+    while pos < buf.len() {
+        match next_field(buf, pos) {
+            Some((field, wire, _, field_end)) => {
+                if field == RESOURCE_ENTRY_FIELD && wire == wire_types::LEN {
+                    count += 1;
+                }
+                pos = field_end;
+            }
+            None => break,
+        }
+    }
+    count
 }
 
 /// Returns `true` when every field in `buf` parses cleanly through to the end
@@ -200,9 +225,12 @@ fn push_resource_entry(
     max_size: usize,
     fragment_budget: usize,
     overhead_budget: usize,
+    output_budget: usize,
+    entries_after: usize,
     cur: &mut Vec<u8>,
     batches: &mut Vec<OwnedBatch>,
     budget_fallbacks: &mut u64,
+    capacity_fallbacks: &mut u64,
 ) {
     if cur.len() + full.len() <= max_size {
         cur.extend_from_slice(full);
@@ -225,10 +253,29 @@ fn push_resource_entry(
         batches,
         budget_fallbacks,
     );
+    // Bound cumulative fan-out across the whole flush. `batches.len()` is the
+    // running total of committed outputs (the `cur` accumulator was just
+    // flushed, so nothing is pending). Reserve one outbound slot for every
+    // resource entry still to be processed (`entries_after`): even if each of
+    // them falls back to a single whole batch, they need a slot, so this entry
+    // may only keep its split if the running total plus those reservations still
+    // fits `output_budget` -- the flush's remaining outbound capacity. Without
+    // the reservation a greedy early entry could consume the whole budget and
+    // force later entries to be Nacked. Collapsing back to a single whole entry
+    // keeps the input's Ack/Nack coherent: a real split would create more
+    // subscribed fragments than the outbound pool can track, so a later fragment
+    // would be Nacked while its siblings are already in flight. Nothing has been
+    // sent yet (the caller builds the entire output vec first), so truncation is
+    // safe.
+    if batches.len() - start > 1 && batches.len().saturating_add(entries_after) > output_budget {
+        batches.truncate(start);
+        emit_top(signal, payload, batches);
+        *capacity_fallbacks += 1;
+    }
     // Every fragment produced by this split re-encodes the resource/scope
     // headers, so their encoded lengths sum to more than the input entry.
-    // Reattribute the entry's input bytes across the fragments so Ack/Nack
-    // ownership sums back to the input.
+    // Reattribute the entry's input bytes across the fragments (or the single
+    // whole batch above) so Ack/Nack ownership sums back to the input.
     rescale_ownership(&mut batches[start..], full.len());
 }
 
@@ -489,7 +536,7 @@ pub fn make_bytes_batches(
     inputs: Vec<OtlpProtoBytes>,
 ) -> Result<Vec<OtlpProtoBytes>> {
     Ok(
-        make_bytes_batches_owned(signal, max_bytes, None, None, inputs)?
+        make_bytes_batches_owned(signal, max_bytes, None, None, usize::MAX, inputs)?
             .batches
             .into_iter()
             .map(|(batch, _weight)| batch)
@@ -514,11 +561,23 @@ pub fn make_bytes_batches(
 /// either budget is emitted whole (best-effort) and counted in
 /// `budget_fallbacks`, so no records are ever partially emitted before falling
 /// back. `None` means unbounded.
+///
+/// `output_budget` caps the *cumulative* number of output batches across the
+/// whole call, tying split fan-out to the caller's remaining outbound capacity.
+/// When deciding whether to keep an entry's split, one slot is reserved for
+/// every resource entry still to be processed (each may need at least a whole
+/// batch), so an early greedy split cannot consume the whole budget and starve
+/// later entries. If keeping the split would push the running total (plus those
+/// reservations) past this bound, the entry is instead emitted whole and counted
+/// in `capacity_fallbacks`, so a single input never fans out into more subscribed
+/// fragments than the caller can track (which would otherwise Nack a late
+/// fragment while its siblings are in flight). Pass `usize::MAX` for unbounded.
 pub fn make_bytes_batches_owned(
     signal: SignalType,
     max_bytes: Option<NonZeroU64>,
     fragment_budget: Option<NonZeroU64>,
     overhead_budget: Option<NonZeroU64>,
+    output_budget: usize,
     inputs: Vec<OtlpProtoBytes>,
 ) -> Result<BytesBatches> {
     if inputs.is_empty() {
@@ -538,6 +597,7 @@ pub fn make_bytes_batches_owned(
             return BytesBatches {
                 batches: vec![(batch, weight)],
                 budget_fallbacks: 0,
+                capacity_fallbacks: 0,
             };
         }
         let bytes = inputs
@@ -550,6 +610,7 @@ pub fn make_bytes_batches_owned(
         BytesBatches {
             batches: vec![(OtlpProtoBytes::new_from_bytes(signal, bytes), weight)],
             budget_fallbacks: 0,
+            capacity_fallbacks: 0,
         }
     };
 
@@ -576,6 +637,22 @@ pub fn make_bytes_batches_owned(
     // `max_size` unless a single indivisible unit forces it.
     let mut cur: Vec<u8> = Vec::with_capacity(total_size.min(max_size));
     let mut budget_fallbacks: u64 = 0;
+    let mut capacity_fallbacks: u64 = 0;
+
+    // Total number of top-level resource entries across all inputs. Used to
+    // reserve one outbound slot per not-yet-processed entry when bounding a
+    // split against `output_budget`, so an early greedy split cannot starve
+    // later entries. Only meaningful when `output_budget` is finite; the count
+    // is cheap (field tags only, payloads skipped).
+    let total_entries: usize = if output_budget == usize::MAX {
+        0
+    } else {
+        inputs
+            .iter()
+            .map(|input| count_resource_entries(input.as_bytes()))
+            .sum()
+    };
+    let mut entries_seen: usize = 0;
 
     for input in &inputs {
         let buf = input.as_bytes();
@@ -586,6 +663,8 @@ pub fn make_bytes_batches_owned(
                     let full = &buf[pos..field_end];
                     pos = field_end;
                     if field == RESOURCE_ENTRY_FIELD && wire == wire_types::LEN {
+                        entries_seen += 1;
+                        let entries_after = total_entries.saturating_sub(entries_seen);
                         push_resource_entry(
                             signal,
                             full,
@@ -593,9 +672,12 @@ pub fn make_bytes_batches_owned(
                             max_size,
                             fragment_budget,
                             overhead_budget,
+                            output_budget,
+                            entries_after,
                             &mut cur,
                             &mut batches,
                             &mut budget_fallbacks,
+                            &mut capacity_fallbacks,
                         );
                     } else {
                         push_opaque(signal, full, max_size, &mut cur, &mut batches);
@@ -615,5 +697,6 @@ pub fn make_bytes_batches_owned(
     Ok(BytesBatches {
         batches,
         budget_fallbacks,
+        capacity_fallbacks,
     })
 }
