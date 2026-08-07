@@ -103,7 +103,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.log_sampling.dropped.items` | `{log}` | Log records dropped by sampling. |
+| `processor.log_sampling.dropped.items` | `{item}` | Log records dropped by sampling. |
 | `processor.log_sampling.filtering_errors` | `{error}` | Errors encountered while filtering OTAP batches. |
 | `processor.log_sampling.filter_buffer_reclamation_failures` | `{error}` | How many times we fail to reclaim the underlying filter buffer. |
 

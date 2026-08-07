@@ -1,6 +1,6 @@
 change_type: breaking
 component: pipeline
-note: Refactored log sampling metrics to use standard `processor.log_sampling.dropped_items` metric instead of separate consumed/dropped counters.
+note: Refactored log sampling metrics to use standard `processor.log_sampling.dropped.items` metric instead of separate consumed/dropped counters.
 issues: [3530]
 subtext: |
   Migration: Replace `log_signals_dropped` with `processor.log_sampling.dropped.items`. Replace `log_signals_consumed` with engine-level `node.consumer.consumed.items`, enabling item counts as needed.
