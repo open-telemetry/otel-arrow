@@ -421,13 +421,6 @@ fn log_level(value: &str) -> LogLevel {
     serde_json::from_value(serde_json::json!(value)).expect("log level should parse")
 }
 
-fn assert_rust_log_unset() {
-    assert!(
-        std::env::var_os("RUST_LOG").is_none(),
-        "runtime log-filter benchmarks require RUST_LOG to be unset"
-    );
-}
-
 fn emit_enabled() {
     otap_df_telemetry::otel_info!("benchmark.enabled", value = std::hint::black_box(42));
 }
@@ -495,7 +488,6 @@ fn run_log_filter_emission_bench(
 }
 
 fn bench_runtime_log_filter_emission(c: &mut Criterion) {
-    assert_rust_log_unset();
     let mut group = c.benchmark_group("runtime_log_filter_emission");
 
     _ = group.bench_function("enabled/static_info", |b| {
@@ -507,7 +499,7 @@ fn bench_runtime_log_filter_emission(c: &mut Criterion) {
         );
     });
     _ = group.bench_function("enabled/runtime_info", |b| {
-        let (filter, _handle) = RuntimeLogFilter::new(&log_level("info"));
+        let (filter, _handle) = RuntimeLogFilter::new_configured(&log_level("info"));
         run_log_filter_emission_bench(b, EmissionFilter::Runtime(filter), emit_enabled, true);
     });
     _ = group.bench_function("disabled/static_warn", |b| {
@@ -519,7 +511,7 @@ fn bench_runtime_log_filter_emission(c: &mut Criterion) {
         );
     });
     _ = group.bench_function("disabled/runtime_warn", |b| {
-        let (filter, _handle) = RuntimeLogFilter::new(&log_level("warn"));
+        let (filter, _handle) = RuntimeLogFilter::new_configured(&log_level("warn"));
         run_log_filter_emission_bench(b, EmissionFilter::Runtime(filter), emit_disabled, false);
     });
 

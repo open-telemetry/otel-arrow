@@ -20,11 +20,11 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::wiring_contract::WiringContract;
 use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
 use otap_df_state::pipeline_status::PipelineStatus;
-use otap_df_telemetry::TracingSetup;
 use otap_df_telemetry::event::EngineEvent;
 use otap_df_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
 use otap_df_telemetry::metrics::MetricSetSnapshot;
 use otap_df_telemetry::tracing_init::ProviderSetup;
+use otap_df_telemetry::{TracingSetup, otel_info};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{Event, Subscriber};
@@ -2482,7 +2482,7 @@ fn reconcile_engine_config_applies_runtime_log_level() {
             .with(log_filter.layer())
             .with(CountingLayer(Arc::clone(&event_count))),
     );
-    let emit_info = || tracing::info!("reconciled controller filter test");
+    let emit_info = || otel_info!("test.controller.runtime_filter");
 
     tracing::dispatcher::with_default(&dispatch, emit_info);
     assert_eq!(event_count.swap(0, Ordering::SeqCst), 0);
@@ -2537,7 +2537,7 @@ fn reconcile_engine_config_rejects_invalid_runtime_log_level() {
     assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
     assert_eq!(runtime.engine_config_snapshot(), config);
     tracing::subscriber::with_default(subscriber, || {
-        tracing::info!("rejected update must not enable this event");
+        otel_info!("test.controller.rejected_runtime_filter");
     });
     assert_eq!(event_count.load(Ordering::SeqCst), 0);
 }

@@ -66,6 +66,25 @@ impl RuntimeLogFilter {
     #[must_use]
     pub fn new(level: &LogLevel) -> (Self, RuntimeLogFilterHandle) {
         let (filter, startup_override_active) = create_startup_env_filter(level);
+        Self::from_configured_filter(level, filter, startup_override_active)
+    }
+
+    /// Creates a filter from the configured level without consulting `RUST_LOG`.
+    ///
+    /// This is intended for callers such as benchmarks that need deterministic
+    /// configured-filter behavior independent of the process environment.
+    #[must_use]
+    pub fn new_configured(level: &LogLevel) -> (Self, RuntimeLogFilterHandle) {
+        let filter =
+            EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use");
+        Self::from_configured_filter(level, filter, false)
+    }
+
+    fn from_configured_filter(
+        level: &LogLevel,
+        filter: EnvFilter,
+        startup_override_active: bool,
+    ) -> (Self, RuntimeLogFilterHandle) {
         let shared = Arc::new(SharedState {
             configured_level: ArcSwap::from_pointee(level.clone()),
             startup_override_active: AtomicBool::new(startup_override_active),
@@ -359,6 +378,25 @@ mod tests {
             });
 
             assert_eq!(handle.configured_level().as_str(), "info");
+        });
+    }
+
+    /// Scenario: a deterministic configured filter is created while RUST_LOG is set.
+    /// Guarantees: new_configured uses logs.level without consulting the environment.
+    #[test]
+    fn configured_filter_ignores_rust_log() {
+        crate::with_rust_log(Some("error"), || {
+            let count = Arc::new(AtomicUsize::new(0));
+            let (filter, _handle) = RuntimeLogFilter::new_configured(&level("info"));
+            let subscriber = Registry::default()
+                .with(filter.layer())
+                .with(CountingLayer(Arc::clone(&count)));
+
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!("configured filter ignores RUST_LOG");
+            });
+
+            assert_eq!(count.load(Ordering::SeqCst), 1);
         });
     }
 
