@@ -45,6 +45,10 @@ they can fail to match.
 A **tenant token** is one set of tenant keys, defined when a list of
 extractors all match.
 
+A **tenant condition** is a precomputed matcher for a set of keys and
+optional values that callers can quickly evaluate over a tenant
+context.
+
 In most cases, tenant context behavior will be specified entirely
 through policies, where tenant extractors and ingress rules are
 expressed. Policies inform the engine that a combination of tenant
@@ -99,6 +103,34 @@ specific way, for example the gRPC code `FAILED_PRECONDITION` or HTTP
 403 `Forbidden`. Other nodes with missing required tokens will
 automatically Nack requests, and other configurations can be added
 through policies.
+
+### Trust boundary
+
+The engine governs the use of tenant context to enforce type-correct
+use of extractors. Authorization extensions that implement recognized
+authorization capabilities are able to produce the
+`AuthorizedIdentity` struct used in authorization
+extractors. Authorization claims will not be able to be produced from
+transport headers directly, they must be produced by authorization
+extensions.
+
+```yaml
+policies:
+  tenant:
+    tokens:
+      auth_subject:
+        extractors:
+          - key: user_id
+            authorized_key: sub
+            retain: false
+```
+
+Specific `authorized_key` extractor semantics are out of scope in this
+document. While the tenant context uses a packed `Bytes`
+representation, it retains logical separation of its independent
+components to maintain type safety. Consumers will be able to extract
+authorized key information separately from transport headers, peer
+address, and other attributes.
 
 ### Consumers
 
@@ -156,6 +188,20 @@ nodes:
             - key: tenant_id
           port: shared
 ```
+
+### Matching
+
+The tenant compiler computes hash codes enabling a fast lookup and
+equality mechanism. The tenant compiler determines a **token
+signature** which is the set of tenant tokens used in a condition. For
+each signature it computes:
+
+- Hashcode: a hashcode joined from the set of values in the signature
+- Indices: the offset in the tenant context for the interned value 
+  identity or encoded literal value.
+
+Nodes will resolve tenant conditions at startup or whenever their
+configuration changes.
 
 ### Propagation
 
@@ -242,6 +288,14 @@ list of key:values, encoding using OTLP bytes. The bagged section of
 the tenant context can be borrowed as `&[u8]` for encoding
 OpenTelemetry attributes directly from the tenant context.
 
+The tenant compiler determines what information is necessary to
+include in the tenant context, for example:
+
+- Transport headers that are not referenced or bagged will be dropped
+- Static configuration strings are replaced by numeric identifiers
+- Tenant key names are compiled out, used only when bagged
+- Tenant key values are hashed and/or canonicalized
+
 The topic exporter and receiver will be extended with dedicated
 configuration for controlling the propagation of tenant context across
 pipeline group boundaries.
@@ -256,9 +310,16 @@ reconfiguration events. The tenant context carries state to indicate
 which version of the compiler was used as an epoch number.
 
 In some cases, live reconfiguration will be possible without
-restarting a pipeline. Multiple tenant-compiler epochs can run
-concurrently.  In some cases, it will require a draining or flushing
-procedure to remove an old tenant configuration from memory.
+restarting a pipeline, for example to add a new tenant condition.  In
+other cases, it will require a draining or flushing procedure to
+remove tenant epochs from memory.
+
+Components that use tenant conditions will require changes to support
+this mode of live reconfiguration, as it means multiple
+tenant-compiler epochs can be in-use concurrently. Orchestration may
+be required to achieve. Components that use tenant conditions are
+expected to fail requests that refer to an unknown tenant compiler
+epoch. A coarse epoch timeout mechanism may be sufficient.
 
 ## Transport headers
 
