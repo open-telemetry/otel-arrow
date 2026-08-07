@@ -365,7 +365,8 @@ impl<
         Ok(())
     }
 
-    /// Resizes a pipeline when only core allocation changed and common cores stay untouched.
+    /// Resizes a listener-free pipeline when only core allocation changed and common cores stay
+    /// untouched.
     pub(super) fn run_resize_rollout(
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,

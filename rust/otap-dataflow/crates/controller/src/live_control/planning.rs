@@ -751,23 +751,12 @@ impl<
             &resolved_pipeline,
             &reserved_core_ids,
         )?;
-        let listener_group_keys_unchanged = current_record
-            .as_ref()
-            .zip(current_pipeline_placement.as_ref())
-            .is_none_or(|(record, placement)| {
-                let current_snapshot =
-                    listener_group::snapshot_for_pipeline(&record.resolved, placement, 0);
-                let target_snapshot = listener_group::snapshot_for_pipeline(
-                    &resolved_pipeline,
-                    &target_pipeline_placement,
-                    0,
-                );
-                current_snapshot
-                    .plans
-                    .iter()
-                    .map(|plan| &plan.key)
-                    .eq(target_snapshot.plans.iter().map(|plan| &plan.key))
-            });
+        let mut target_listener_group_snapshot = listener_group::snapshot_for_pipeline(
+            &resolved_pipeline,
+            &target_pipeline_placement,
+            0,
+        );
+        let target_has_listener_groups = !target_listener_group_snapshot.plans.is_empty();
         let current_assigned_cores: Vec<usize> = current_pipeline_placement
             .as_ref()
             .map(|placement| placement.cores.iter().map(|core| core.core_id.id).collect())
@@ -826,7 +815,9 @@ impl<
                 && record.resolved.runtime_matches(&resolved_pipeline);
             let resize_only = current_core_set != target_core_set
                 && !active_runtime_state.has_foreign_active_generations
-                && listener_group_keys_unchanged
+                // Listener snapshots are immutable per worker. Retained cores cannot
+                // participate in an in-place resize without keeping stale membership.
+                && !target_has_listener_groups
                 && record
                     .resolved
                     .runtime_shape_matches_ignoring_resources(&resolved_pipeline);
@@ -914,11 +905,11 @@ impl<
                         record.placement_generation,
                     )
                 });
-        let target_placement = self.live_pipeline_placement_from(
-            &resolved_pipeline,
-            target_pipeline_placement,
-            placement_generation,
-        );
+        target_listener_group_snapshot.generation = placement_generation;
+        let target_placement = LivePipelinePlacement {
+            placement: target_pipeline_placement,
+            listener_group_snapshot: Arc::new(target_listener_group_snapshot),
+        };
 
         let rollout_core_ids = match action {
             RolloutAction::NoOp => Vec::new(),

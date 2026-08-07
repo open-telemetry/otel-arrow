@@ -1980,12 +1980,12 @@ connections:
     );
 }
 
-/// Scenario: a socket receiver changes only its `core_count` allocation while
-/// keeping the same listener bind identity.
-/// Guarantees: rollout planning preserves the resize path and updates listener
-/// membership under a fresh placement generation.
+/// Scenario: a socket receiver grows its `core_count` while retaining workers
+/// whose immutable listener snapshots contain the old membership.
+/// Guarantees: planning uses replacement so every worker receives the same new
+/// listener membership and placement generation.
 #[test]
-fn prepare_rollout_plan_resizes_when_listener_membership_changes() {
+fn prepare_rollout_plan_replaces_listener_pipeline_on_scale_up() {
     let config = engine_config_with_pipeline(
         r#"
         policies:
@@ -2049,8 +2049,10 @@ connections:
         )
         .expect("resize should be planned");
 
-    assert_eq!(plan.action, RolloutAction::Resize);
-    assert_eq!(plan.target_generation, 0);
+    assert_eq!(plan.action, RolloutAction::Replace);
+    assert_eq!(plan.target_generation, 1);
+    assert!(plan.resize_start_cores.is_empty());
+    assert!(plan.resize_stop_cores.is_empty());
     assert_eq!(plan.target_placement.listener_group_snapshot.generation, 1);
     let listener_plan = plan.target_placement.listener_group_snapshot.plans[0].clone();
     assert_eq!(
@@ -2060,6 +2062,93 @@ connections:
             .map(|member| member.core_id)
             .collect::<Vec<_>>(),
         vec![0, 1, 2]
+    );
+}
+
+/// Scenario: a socket receiver shrinks its `core_count` while retaining workers
+/// whose immutable listener snapshots still include the removed core.
+/// Guarantees: planning uses replacement so retained workers cannot keep stale
+/// listener membership after the removed worker exits.
+#[test]
+fn prepare_rollout_plan_replaces_listener_pipeline_on_scale_down() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 3
+        nodes:
+          receiver:
+            type: "urn:otel:receiver:otlp"
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 2
+nodes:
+  receiver:
+    type: "urn:otel:receiver:otlp"
+    config:
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("replacement should parse");
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("listener scale-down should be planned");
+
+    assert_eq!(plan.action, RolloutAction::Replace);
+    assert_eq!(plan.target_generation, 1);
+    assert_eq!(plan.current_assigned_cores, vec![0, 1, 2]);
+    assert_eq!(plan.target_assigned_cores, vec![0, 1]);
+    assert_eq!(plan.removed_assigned_cores, vec![2]);
+    assert!(plan.resize_start_cores.is_empty());
+    assert!(plan.resize_stop_cores.is_empty());
+    assert_eq!(plan.target_placement.listener_group_snapshot.generation, 1);
+    assert_eq!(
+        plan.target_placement.listener_group_snapshot.plans[0]
+            .expected_members
+            .iter()
+            .map(|member| member.core_id)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
     );
 }
 
