@@ -48,7 +48,7 @@ steps:
                 exporter_extra_config:
                   max_in_flight: 256
                 max_batch_size: 8192
-                signals_per_second: 100000
+                signals_per_second: {{signals_per_second | default(100000)}}
                 metric_weight: 0
                 trace_weight: 0
                 log_weight: 100
