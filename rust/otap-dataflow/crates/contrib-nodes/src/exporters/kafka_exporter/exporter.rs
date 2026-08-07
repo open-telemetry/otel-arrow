@@ -10,7 +10,7 @@ use super::producer::{ExporterFutureProducer, ExporterFutureRecord};
 
 use super::config::{KafkaExporterConfig, SignalConfig};
 use super::encoder;
-use super::error::KafkaExporterError;
+use super::error::{KafkaExporterError, is_permanent_send_error};
 use super::metrics::KafkaExporterMetrics;
 use super::partitioner;
 use super::topic_router::TopicRouter;
@@ -510,20 +510,31 @@ impl KafkaExporter {
             }
             Err((kafka_err, _original_record)) => {
                 self.metrics.inc_failed(signal_type);
+                // Classify the send failure: some Kafka errors (e.g. a record
+                // that exceeds `message.max.bytes`, or an authorization failure)
+                // can never succeed on retry, so they are permanently nacked and
+                // dropped at the source rather than retried by an upstream
+                // `processor:retry`. Everything else stays transient (retryable).
+                let permanent = is_permanent_send_error(&kafka_err);
                 // `topic` may be a client-supplied (header-routed) value, so
                 // bound/escape it before logging to avoid log injection.
                 otap_df_telemetry::otel_warn!(
                     "kafka.exporter.send.failed",
                     topic = %crate::common::kafka::sanitize_for_log(&topic),
                     signal_type = ?signal_type,
+                    permanent = permanent,
                     error = %kafka_err,
                 );
                 // Nack reporting is best-effort; don't propagate nack errors since the
                 // primary Kafka error is what matters
-                if let Err(e) = reporter
-                    .nack(kafka_err.to_string(), OtapPdata::new(context, payload))
-                    .await
-                {
+                let reason = kafka_err.to_string();
+                let refused = OtapPdata::new(context, payload);
+                let nack_result = if permanent {
+                    reporter.nack_permanent(reason, refused).await
+                } else {
+                    reporter.nack(reason, refused).await
+                };
+                if let Err(e) = nack_result {
                     if let Some(eh) = effect_handler {
                         eh.info(&format!(
                             "Failed to report nack for Kafka export failure: {}",
@@ -2466,15 +2477,19 @@ pub mod test_support {
 
         /// Scenario (retry correctness): the exporter is configured with the
         /// smallest allowed `max_message_bytes` (1000) and an oversized batch
-        /// (many records, > 1000 encoded bytes) is exported, followed by a
-        /// normal single-record batch on the same running exporter.
+        /// (many records, > 1000 encoded bytes) carrying a subscriber unwind
+        /// frame is exported, followed by a normal single-record batch on the
+        /// same running exporter.
         /// Guarantees: the oversized record is rejected by the producer and
         /// counted as a failed export (`messages{logs,failure}`) rather than
-        /// delivered, and the event loop survives so the subsequent normal batch
-        /// still delivers (`messages{logs,success}`) -- so a single message that
-        /// exceeds the size limit cannot stall the exporter.
+        /// delivered; its failure is classified as a PERMANENT nack (a
+        /// message-too-large error can never succeed on retry, so an upstream
+        /// `processor:retry` drops it at the source); and the event loop
+        /// survives so the subsequent normal batch still delivers
+        /// (`messages{logs,success}`) -- so a single message that exceeds the
+        /// size limit cannot stall the exporter or be retried pointlessly.
         #[tokio::test]
-        async fn oversized_payload_is_failed_and_loop_survives() {
+        async fn oversized_payload_is_permanently_nacked_and_loop_survives() {
             let topic = "it-oversized-logs";
             with_cluster(
                 KafkaTestCluster::builder().topic(topic),
@@ -2487,10 +2502,12 @@ pub mod test_support {
                             .with_max_message_bytes(1000)
                             .try_into()
                             .expect("config should be valid");
-                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+                    let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
 
                     // Oversized: many records so the encoded payload far exceeds
-                    // the 1000-byte limit and the producer rejects it.
+                    // the 1000-byte limit and the producer rejects it. The
+                    // subscriber frame makes the resulting nack observable so its
+                    // permanent/transient classification can be asserted.
                     let oversized = logs_request_bytes_n(2000);
                     assert!(
                         oversized.len() > 1000,
@@ -2498,9 +2515,20 @@ pub mod test_support {
                         oversized.len(),
                     );
                     exporter
-                        .send_pdata(logs_pdata(oversized, None))
+                        .send_pdata(logs_pdata_subscribed(oversized, None))
                         .await
                         .expect("send oversized");
+
+                    // The oversized send must unwind a PERMANENT nack: a
+                    // message-too-large error can never succeed on retry.
+                    let nack = exporter
+                        .recv_nack(Duration::from_secs(5))
+                        .await
+                        .expect("oversized send should unwind a nack");
+                    assert!(
+                        nack.permanent,
+                        "an oversized (message-too-large) send failure must be permanently nacked",
+                    );
 
                     // A normal-sized batch on the same exporter must still deliver.
                     let small = logs_request_bytes();

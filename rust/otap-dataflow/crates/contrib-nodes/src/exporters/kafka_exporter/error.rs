@@ -17,6 +17,62 @@
 
 use crate::common::kafka::sanitize_for_log;
 use otap_df_config::SignalType;
+use rdkafka::error::KafkaError;
+use rdkafka::types::RDKafkaErrorCode;
+
+/// Classifies a producer send failure as permanent (non-retryable) or transient
+/// (retryable).
+///
+/// A Kafka send can fail either at enqueue time (librdkafka rejects the record
+/// locally, e.g. the payload exceeds `message.max.bytes`) or at delivery time
+/// (the broker's delivery callback resolves with an error). Both surface as a
+/// [`KafkaError`] carrying an [`RDKafkaErrorCode`]. This function returns `true`
+/// only for a conservative allowlist of codes that can never succeed on retry,
+/// so the exporter can permanently nack such a batch and let an upstream
+/// `processor:retry` drop it at the source instead of retrying an error that
+/// will always fail.
+///
+/// The classification is deliberately conservative: any code not in the
+/// permanent set -- and any error without an [`RDKafkaErrorCode`] (e.g. a
+/// canceled delivery) -- is treated as transient so that a retryable or
+/// unrecognized failure is retried rather than silently dropped.
+#[must_use]
+pub(crate) fn is_permanent_send_error(err: &KafkaError) -> bool {
+    let Some(code) = err.rdkafka_error_code() else {
+        // No underlying code (e.g. Canceled): prefer retry over drop.
+        return false;
+    };
+    matches!(
+        code,
+        // The record itself is malformed or too large: it will never be
+        // accepted no matter how many times it is retried.
+        RDKafkaErrorCode::MessageSizeTooLarge
+            | RDKafkaErrorCode::InvalidMessageSize
+            | RDKafkaErrorCode::MessageBatchTooLarge
+            | RDKafkaErrorCode::InvalidMessage
+            | RDKafkaErrorCode::InvalidRecord
+            // Authorization is denied for this destination: retrying the same
+            // batch against the same topic/cluster cannot succeed.
+            | RDKafkaErrorCode::TopicAuthorizationFailed
+            | RDKafkaErrorCode::ClusterAuthorizationFailed
+            // Fundamentally unsupported request shape for this broker/topic:
+            // the same request will keep being rejected.
+            | RDKafkaErrorCode::InvalidRequiredAcks
+            | RDKafkaErrorCode::UnsupportedVersion
+            | RDKafkaErrorCode::UnsupportedForMessageFormat
+            // A locally-invalid argument (bad topic/partition/config for this
+            // record) will not become valid on retry.
+            | RDKafkaErrorCode::InvalidArgument
+            // Serialization of the key/value failed: deterministic for the
+            // same record, so retrying is pointless.
+            | RDKafkaErrorCode::KeySerialization
+            | RDKafkaErrorCode::ValueSerialization
+    )
+    // NOTE: transient/retryable codes (timeouts, broker/leader unavailable,
+    // network failures, queue-full, coordinator churn, and any unlisted or
+    // future code under `#[non_exhaustive]`) intentionally fall through to
+    // `false` so they are retried rather than dropped.
+}
 
 /// Errors produced by the Kafka exporter.
 #[derive(Debug, thiserror::Error)]
@@ -45,7 +101,7 @@ pub enum KafkaExporterError {
 
     /// Kafka client error.
     #[error("Kafka client error: {0}")]
-    KafkaError(#[from] rdkafka::error::KafkaError),
+    KafkaError(#[from] KafkaError),
 
     /// The delivery-result notification was canceled before it resolved: the
     /// producer was dropped after the record was enqueued but before its
@@ -214,5 +270,76 @@ mod tests {
     fn error_is_send_sync_std_error() {
         fn assert_bounds<T: Send + Sync + StdError>() {}
         assert_bounds::<KafkaExporterError>();
+    }
+
+    // ---- Send-error classification ----
+
+    /// Scenario: a produce failure carries a Kafka error code that can never
+    /// succeed on retry (an oversized record, an authorization failure, or a
+    /// deterministic malformed/serialization error).
+    /// Guarantees: `is_permanent_send_error` classifies each such code as
+    /// permanent, so the exporter permanently nacks it (dropped at the source)
+    /// instead of retrying an error that will always fail.
+    #[test]
+    fn permanent_send_error_codes_are_permanent() {
+        for code in [
+            RDKafkaErrorCode::MessageSizeTooLarge,
+            RDKafkaErrorCode::InvalidMessageSize,
+            RDKafkaErrorCode::MessageBatchTooLarge,
+            RDKafkaErrorCode::InvalidMessage,
+            RDKafkaErrorCode::InvalidRecord,
+            RDKafkaErrorCode::TopicAuthorizationFailed,
+            RDKafkaErrorCode::ClusterAuthorizationFailed,
+            RDKafkaErrorCode::InvalidRequiredAcks,
+            RDKafkaErrorCode::UnsupportedVersion,
+            RDKafkaErrorCode::UnsupportedForMessageFormat,
+            RDKafkaErrorCode::InvalidArgument,
+            RDKafkaErrorCode::KeySerialization,
+            RDKafkaErrorCode::ValueSerialization,
+        ] {
+            assert!(
+                is_permanent_send_error(&KafkaError::MessageProduction(code)),
+                "{code:?} should be classified as a permanent send error"
+            );
+        }
+    }
+
+    /// Scenario: a produce failure carries a Kafka error code that may resolve
+    /// on retry (a timeout, a broker/leader that is temporarily unavailable, a
+    /// network failure, or a full local queue).
+    /// Guarantees: `is_permanent_send_error` classifies each such code as
+    /// transient, so the exporter emits a retryable nack and an upstream
+    /// `processor:retry` can retry the batch.
+    #[test]
+    fn transient_send_error_codes_are_transient() {
+        for code in [
+            RDKafkaErrorCode::RequestTimedOut,
+            RDKafkaErrorCode::MessageTimedOut,
+            RDKafkaErrorCode::BrokerNotAvailable,
+            RDKafkaErrorCode::LeaderNotAvailable,
+            RDKafkaErrorCode::NotLeaderForPartition,
+            RDKafkaErrorCode::NotEnoughReplicas,
+            RDKafkaErrorCode::NetworkException,
+            RDKafkaErrorCode::BrokerTransportFailure,
+            RDKafkaErrorCode::AllBrokersDown,
+            RDKafkaErrorCode::QueueFull,
+        ] {
+            assert!(
+                !is_permanent_send_error(&KafkaError::MessageProduction(code)),
+                "{code:?} should be classified as a transient (retryable) send error"
+            );
+        }
+    }
+
+    /// Scenario: a send failure has no underlying `RDKafkaErrorCode` (e.g. the
+    /// delivery notification was canceled).
+    /// Guarantees: `is_permanent_send_error` defaults such an error to transient,
+    /// so an unclassified failure is retried rather than silently dropped.
+    #[test]
+    fn send_error_without_code_defaults_to_transient() {
+        assert!(
+            !is_permanent_send_error(&KafkaError::Canceled),
+            "an error without an rdkafka code must default to transient (retryable)"
+        );
     }
 }

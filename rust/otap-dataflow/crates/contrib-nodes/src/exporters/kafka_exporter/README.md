@@ -416,9 +416,14 @@ Not every failure is retryable. The exporter emits a **permanent** (non-retryabl
 nack -- which the retry processor forwards immediately without retrying -- for:
 
 - an **encoding failure** (the payload cannot be serialized);
-- a pdata message for an **unconfigured signal type**; and
+- a pdata message for an **unconfigured signal type**;
 - an **invalid dynamic topic** supplied via a transport header (see
-  [Dynamic Topic Routing](#dynamic-topic-routing)).
+  [Dynamic Topic Routing](#dynamic-topic-routing)); and
+- a **non-retryable send error** returned by the Kafka producer -- a record that
+  exceeds the size limit (`message.max.bytes`), a malformed/invalid record, an
+  authorization failure, or an unsupported request. All other send failures
+  (timeouts, an unavailable broker/leader, network errors, or a full producer
+  queue) remain **transient** and are retried.
 
 The retry processor's backoff fields map onto Go's `retry_on_failure`:
 
