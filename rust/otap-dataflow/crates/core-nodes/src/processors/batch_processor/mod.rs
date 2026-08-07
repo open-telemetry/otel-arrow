@@ -165,8 +165,19 @@ pub struct FormatConfig {
     /// `split_budget_fallbacks` metric. `None` means unbounded. This bounds
     /// worst-case fan-out (and memory) when `max_size` is small relative to a
     /// single indivisible input.
-    #[serde(default)]
+    #[serde(default = "default_max_split_fragments")]
     pub max_split_fragments: Option<NonZeroUsize>,
+
+    /// Maximum number of duplicated wrapper bytes a single oversize resource
+    /// entry may amplify into when byte-splitting (OTLP bytes only). Each
+    /// fragment re-encodes the resource/scope headers, so a large header split
+    /// across many records can amplify output far beyond the input even when
+    /// the fragment count stays under `max_split_fragments`. If the projected
+    /// duplicated wrapper bytes would exceed this budget, the entry is emitted
+    /// whole (best-effort, possibly exceeding `max_size`) and counted in the
+    /// `split_budget_fallbacks` metric. `None` means unbounded.
+    #[serde(default = "default_max_split_overhead_bytes")]
+    pub max_split_overhead_bytes: Option<NonZeroUsize>,
 }
 
 /// Batching format option.
@@ -291,12 +302,21 @@ const fn default_max_split_fragments() -> Option<NonZeroUsize> {
     NonZeroUsize::new(100_000)
 }
 
+/// Default cap on the duplicated wrapper bytes a single oversize resource entry
+/// may amplify into when splitting. Bounds worst-case output-byte amplification
+/// from re-encoding large resource/scope headers across many fragments; entries
+/// projected to exceed this are emitted whole. Default: 8 MiB.
+const fn default_max_split_overhead_bytes() -> Option<NonZeroUsize> {
+    NonZeroUsize::new(8 * 1024 * 1024)
+}
+
 const fn default_otap() -> FormatConfig {
     FormatConfig {
         min_size: default_otap_min_size_items(),
         max_size: default_otap_max_size_items(),
         sizer: default_otap_sizer_items(),
         max_split_fragments: None,
+        max_split_overhead_bytes: None,
     }
 }
 
@@ -306,6 +326,7 @@ const fn default_otlp() -> FormatConfig {
         max_size: default_otlp_max_size_bytes(),
         sizer: default_otlp_sizer_bytes(),
         max_split_fragments: default_max_split_fragments(),
+        max_split_overhead_bytes: default_max_split_overhead_bytes(),
     }
 }
 
@@ -355,6 +376,7 @@ impl FormatConfig {
             max_size: NonZeroUsize::new(max_size),
             sizer: Sizer::Items,
             max_split_fragments: None,
+            max_split_overhead_bytes: None,
         }
     }
 
@@ -365,6 +387,7 @@ impl FormatConfig {
             max_size: NonZeroUsize::new(max_size),
             sizer: Sizer::Bytes,
             max_split_fragments: default_max_split_fragments(),
+            max_split_overhead_bytes: default_max_split_overhead_bytes(),
         }
     }
 
@@ -852,6 +875,7 @@ impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
             signal,
             nzu_to_nz64(fmtcfg.max_size),
             nzu_to_nz64(fmtcfg.max_split_fragments),
+            nzu_to_nz64(fmtcfg.max_split_overhead_bytes),
             pending,
         )?;
         Ok(BatchingOutput {
@@ -3501,10 +3525,36 @@ mod tests {
         otlp_message_to_bytes(&OtlpProtoMessage::Logs(logs))
     }
 
-    /// Scenario: a single OTLP-bytes input is one `ResourceLogs` whose records
-    /// exceed `max_size`, so the byte splitter fragments it (duplicating the
-    /// resource/scope headers) into several output batches. The downstream Acks
-    /// every fragment except the final one, which it Nacks.
+    /// Builds an OTLP logs request wrapping a single `ResourceLogs` / single
+    /// `ScopeLogs` whose `InstrumentationScope` name is `header_len` bytes, with
+    /// `count` tiny records. The scope *header* is large relative to the records,
+    /// so splitting at record granularity re-encodes that big header per record
+    /// -- amplifying the output bytes even though the fragment count stays low.
+    /// This isolates the byte-amplification (overhead) budget from the fragment
+    /// budget.
+    fn single_resource_logs_big_scope_header(count: usize, header_len: usize) -> OtlpProtoBytes {
+        let records: Vec<LogRecord> = (0..count)
+            .map(|_| LogRecord {
+                severity_text: "x".to_string(),
+                ..Default::default()
+            })
+            .collect();
+        let logs = LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "h".repeat(header_len),
+                        ..Default::default()
+                    }),
+                    log_records: records,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        otlp_message_to_bytes(&OtlpProtoMessage::Logs(logs))
+    }
+
     ///
     /// Guarantees: Ack/Nack ownership is apportioned by input-byte weight (which
     /// sums to the input total even though header duplication inflates the
@@ -3653,6 +3703,111 @@ mod tests {
                     "exactly one budget fallback should be recorded"
                 );
             });
+    }
+
+    /// Scenario: a single oversize `ResourceLogs` has only a few records (well
+    /// under `max_split_fragments`) but a very large scope header, so splitting
+    /// at record granularity would re-encode that header per fragment and
+    /// amplify the output bytes past `max_split_overhead_bytes`.
+    ///
+    /// Guarantees: the byte-amplification budget (independent of the fragment
+    /// count) triggers the fallback -- the entry is emitted whole, exactly one
+    /// output is produced, and `split.budget.fallbacks` records it.
+    #[test]
+    fn test_split_overhead_budget_fallback_emits_whole() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "otlp": {
+                "min_size": null,
+                "max_size": 100,
+                "sizer": "bytes",
+                // Fragment budget is generous; only the overhead budget bites.
+                "max_split_fragments": 1000,
+                "max_split_overhead_bytes": 1000,
+            },
+            "format": "otlp",
+            "max_batch_duration": "0s",
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                // 6 records * ~4 KiB scope header re-encoded per record projects
+                // to ~24 KiB of duplicated wrapper bytes, over the 1000-byte
+                // overhead budget, while only 6 fragments stay under the
+                // fragment budget of 1000.
+                let bytes = single_resource_logs_big_scope_header(6, 4096);
+                let input_bytes = bytes.num_bytes();
+                let pdata = OtapPdata::new_default(bytes.into());
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("process input");
+
+                let outputs = ctx.drain_pdata().await;
+                assert_eq!(
+                    outputs.len(),
+                    1,
+                    "entry over the overhead budget must be emitted whole, not split"
+                );
+                let out_bytes = outputs[0]
+                    .clone()
+                    .payload()
+                    .num_bytes()
+                    .expect("otlp bytes size known");
+                assert_eq!(
+                    out_bytes, input_bytes,
+                    "the whole entry is emitted unchanged (and exceeds max_size)"
+                );
+                assert!(out_bytes > 100, "the whole entry exceeds max_size");
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert_eq!(
+                    counter_metric_value(
+                        &telemetry_registry,
+                        "otap.processor.batch",
+                        "split.budget.fallbacks"
+                    ),
+                    1,
+                    "exactly one budget fallback should be recorded"
+                );
+            });
+    }
+
+    /// Scenario: an OTLP config omits `max_split_fragments` and
+    /// `max_split_overhead_bytes`.
+    ///
+    /// Guarantees: serde applies the documented defaults (100k fragments, 8 MiB
+    /// overhead) rather than leaving the fields `None` (unbounded), so an
+    /// omitted config is bounded, not unlimited.
+    #[test]
+    fn test_split_budget_defaults_applied_when_omitted() {
+        let config: Config = serde_json::from_value(json!({
+            "otlp": {
+                "min_size": null,
+                "max_size": 1048576,
+                "sizer": "bytes",
+            },
+            "format": "otlp",
+            "max_batch_duration": "0s",
+        }))
+        .expect("config parses");
+
+        assert_eq!(
+            config.otlp.max_split_fragments,
+            NonZeroUsize::new(100_000),
+            "omitted max_split_fragments must default to 100k, not None (unbounded)"
+        );
+        assert_eq!(
+            config.otlp.max_split_overhead_bytes,
+            NonZeroUsize::new(8 * 1024 * 1024),
+            "omitted max_split_overhead_bytes must default to 8 MiB, not None (unbounded)"
+        );
     }
 
     /// Scenario: every input merged into one output batch carries the same

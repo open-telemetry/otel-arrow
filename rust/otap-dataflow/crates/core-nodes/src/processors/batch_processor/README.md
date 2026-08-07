@@ -50,6 +50,7 @@ config:
     max_size: null
     sizer: bytes
     max_split_fragments: 100000  # Cap on fragments per oversize entry (OTLP only).
+    max_split_overhead_bytes: 8388608  # Cap on duplicated wrapper bytes per oversize entry (OTLP only).
 
   # Maximum time before flushing pending data (default: 200ms).
   max_batch_duration: 500ms
@@ -74,6 +75,14 @@ Each format object contains:
   input could fan out into very many fragments. When the projected fragment
   count exceeds this budget the entry is emitted whole (best-effort, possibly
   exceeding `max_size`) and counted by the `split.budget.fallbacks` metric.
+- `max_split_overhead_bytes` (OTLP bytes only): non-zero cap on how many
+  duplicated wrapper bytes a single oversize resource entry may amplify into, or
+  `null` for unbounded (default 8 MiB). Because each fragment re-encodes the
+  resource/scope headers, a large header split across many records can amplify
+  output far beyond the input even when the fragment count stays under
+  `max_split_fragments`. When the projected duplicated wrapper bytes exceed this
+  budget the entry is emitted whole (best-effort, possibly exceeding `max_size`)
+  and counted by the same `split.budget.fallbacks` metric.
 
 ## Examples
 
@@ -114,7 +123,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `otap.processor.batch.batching_errors` | `{error}` | Number of batches for which errors encountered. |
 | `otap.processor.batch.nacked_inbound_slots` | `{msg}` | Number of requests nacked due to inbound slot exhaustion. |
 | `otap.processor.batch.nacked_outbound_slots` | `{msg}` | Number of requests nacked due to outbound slot exhaustion. |
-| `otap.processor.batch.split_budget_fallbacks` | `{entry}` | Number of oversize resource entries emitted whole because splitting would have exceeded `max_split_fragments`. |
+| `otap.processor.batch.split_budget_fallbacks` | `{entry}` | Number of oversize resource entries emitted whole because splitting would have exceeded `max_split_fragments` or `max_split_overhead_bytes`. |
 
 ### Events
 

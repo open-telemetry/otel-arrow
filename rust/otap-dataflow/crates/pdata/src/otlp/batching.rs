@@ -199,6 +199,7 @@ fn push_resource_entry(
     payload: &[u8],
     max_size: usize,
     fragment_budget: usize,
+    overhead_budget: usize,
     cur: &mut Vec<u8>,
     batches: &mut Vec<OwnedBatch>,
     budget_fallbacks: &mut u64,
@@ -220,6 +221,7 @@ fn push_resource_entry(
         payload,
         max_size,
         fragment_budget,
+        overhead_budget,
         batches,
         budget_fallbacks,
     );
@@ -237,16 +239,19 @@ fn push_resource_entry(
 /// fragments.
 ///
 /// Before emitting anything, an upper bound on the fragment count is projected
-/// (worst case: one fragment per record, plus one per empty scope). If that
-/// exceeds `fragment_budget`, the entry is emitted whole (best-effort, may
-/// exceed `max_size`) and `budget_fallbacks` is incremented, so the caller can
-/// always fall back without having already emitted -- and thus duplicated --
-/// some of the entry's records.
+/// (worst case: one fragment per record, plus one per empty scope) and an upper
+/// bound on the duplicated wrapper bytes (resource header re-encoded per
+/// fragment plus each scope header re-encoded per record). If either exceeds its
+/// budget (`fragment_budget` / `overhead_budget`), the entry is emitted whole
+/// (best-effort, may exceed `max_size`) and `budget_fallbacks` is incremented,
+/// so the caller can always fall back without having already emitted -- and thus
+/// duplicated -- some of the entry's records.
 fn split_resource_entry(
     signal: SignalType,
     entry_payload: &[u8],
     max_size: usize,
     fragment_budget: usize,
+    overhead_budget: usize,
     batches: &mut Vec<OwnedBatch>,
     budget_fallbacks: &mut u64,
 ) {
@@ -295,15 +300,30 @@ fn split_resource_entry(
         return;
     }
 
-    // Bound fan-out before emitting anything: project an upper bound on the
-    // fragment count (one per record, or one for an empty scope). Falling back
-    // here -- before any fragment is emitted -- avoids duplicating records that
-    // would otherwise already be in earlier fragments.
-    let projected_fragments: usize = scope_payloads
+    // Bound fan-out before emitting anything. Two projections, both worst-case
+    // (one fragment per record), so falling back here -- before any fragment is
+    // emitted -- never duplicates records already placed in earlier fragments:
+    //
+    //   1. fragment count: one per record (or one for an empty scope);
+    //   2. duplicated wrapper bytes: the resource header is re-encoded once per
+    //      fragment, and each scope header is re-encoded once per record in that
+    //      scope. A large header split across many records amplifies output far
+    //      beyond the input even when the fragment count stays low.
+    let per_scope_records: Vec<usize> = scope_payloads
         .iter()
         .map(|sp| count_records(sp).max(1))
-        .sum();
-    if projected_fragments > fragment_budget {
+        .collect();
+    let projected_fragments: usize = per_scope_records.iter().sum();
+    let projected_overhead: usize = projected_fragments
+        .saturating_mul(header.len())
+        .saturating_add(
+            scope_payloads
+                .iter()
+                .zip(&per_scope_records)
+                .map(|(sp, records)| scope_header_len(sp).saturating_mul(*records))
+                .fold(0usize, |acc, n| acc.saturating_add(n)),
+        );
+    if projected_fragments > fragment_budget || projected_overhead > overhead_budget {
         emit_top(signal, entry_payload, batches);
         *budget_fallbacks += 1;
         return;
@@ -347,6 +367,23 @@ fn count_records(scope_payload: &[u8]) -> usize {
         pos = field_end;
     }
     count
+}
+
+/// Total encoded length of a scope's non-record (header) fields -- the
+/// `InstrumentationScope`, `schema_url`, and any unknown fields, i.e. everything
+/// except the repeated records (field 2). These bytes are re-encoded into every
+/// record-fragment when a scope is split, so they drive the byte-amplification
+/// projection in [`split_resource_entry`].
+fn scope_header_len(scope_payload: &[u8]) -> usize {
+    let mut len = 0;
+    let mut pos = 0;
+    while let Some((field, wire, _payload_start, field_end)) = next_field(scope_payload, pos) {
+        if !(field == CHILD_LIST_FIELD && wire == wire_types::LEN) {
+            len += field_end - pos;
+        }
+        pos = field_end;
+    }
+    len
 }
 
 /// Split one oversize scope entry into multiple resource-entry fragments, each
@@ -451,16 +488,18 @@ pub fn make_bytes_batches(
     max_bytes: Option<NonZeroU64>,
     inputs: Vec<OtlpProtoBytes>,
 ) -> Result<Vec<OtlpProtoBytes>> {
-    Ok(make_bytes_batches_owned(signal, max_bytes, None, inputs)?
-        .batches
-        .into_iter()
-        .map(|(batch, _weight)| batch)
-        .collect())
+    Ok(
+        make_bytes_batches_owned(signal, max_bytes, None, None, inputs)?
+            .batches
+            .into_iter()
+            .map(|(batch, _weight)| batch)
+            .collect(),
+    )
 }
 
 /// Like [`make_bytes_batches`] but also returns, per output, the input-byte
 /// ownership weight it represents (summing to the input total), and bounds
-/// fan-out with `fragment_budget`.
+/// fan-out with `fragment_budget` and byte amplification with `overhead_budget`.
 ///
 /// The batch processor uses the ownership weights -- not each batch's own
 /// encoded length -- to apportion Ack/Nack subscribers, so every fragment of a
@@ -468,14 +507,18 @@ pub fn make_bytes_batches(
 /// makes the fragments' encoded lengths sum to more than the input.
 ///
 /// `fragment_budget` caps how many fragments a single oversize resource entry
-/// may split into. The projected fragment count is checked up front; an entry
-/// that would exceed the budget is emitted whole (best-effort) and counted in
+/// may split into. `overhead_budget` caps the projected duplicated wrapper
+/// bytes (resource/scope headers re-encoded across fragments), guarding against
+/// output-byte amplification from large headers even when the fragment count
+/// stays low. Both projections are checked up front; an entry that would exceed
+/// either budget is emitted whole (best-effort) and counted in
 /// `budget_fallbacks`, so no records are ever partially emitted before falling
 /// back. `None` means unbounded.
 pub fn make_bytes_batches_owned(
     signal: SignalType,
     max_bytes: Option<NonZeroU64>,
     fragment_budget: Option<NonZeroU64>,
+    overhead_budget: Option<NonZeroU64>,
     inputs: Vec<OtlpProtoBytes>,
 ) -> Result<BytesBatches> {
     if inputs.is_empty() {
@@ -524,6 +567,9 @@ pub fn make_bytes_batches_owned(
     let fragment_budget = fragment_budget
         .map(|n| n.get() as usize)
         .unwrap_or(usize::MAX);
+    let overhead_budget = overhead_budget
+        .map(|n| n.get() as usize)
+        .unwrap_or(usize::MAX);
 
     let mut batches: Vec<OwnedBatch> = Vec::new();
     // Reserve for the common top-level packing path; a batch never exceeds
@@ -546,6 +592,7 @@ pub fn make_bytes_batches_owned(
                             &buf[payload_start..field_end],
                             max_size,
                             fragment_budget,
+                            overhead_budget,
                             &mut cur,
                             &mut batches,
                             &mut budget_fallbacks,
