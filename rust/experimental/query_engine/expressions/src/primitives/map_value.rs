@@ -43,7 +43,7 @@ where
     F: FnMut(&str, Value<'a>) -> bool,
 {
     callback: F,
-    marker: PhantomData<&'a usize>,
+    marker: PhantomData<&'a F>,
 }
 
 impl<'a, F> KeyValueClosureCallback<'a, F>

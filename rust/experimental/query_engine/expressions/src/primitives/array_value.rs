@@ -134,7 +134,7 @@ where
     F: FnMut(usize, Value<'a>) -> bool,
 {
     callback: F,
-    marker: PhantomData<&'a usize>,
+    marker: PhantomData<&'a F>,
 }
 
 impl<'a, F> IndexValueClosureCallback<'a, F>
