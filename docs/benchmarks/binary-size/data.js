@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786064820248,
+  "lastUpdate": 1786066149936,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -7765,6 +7765,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 99.35,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "dab00a4e5a3124ebc1f0c4d24f895454155a0aec",
+          "message": "feat: add endpoint to dump heap allocation profile (#3497)\n\n# Change Summary\n\n<!--Replace with a brief summary of the change in this PR-->\n\nAdds an endpoint (/api/v1/debug/pprof/heap) that can dump the a profile\n(in pprof format) heap allocations.\n\nFurther reading about this solution:\nhttps://www.polarsignals.com/blog/posts/2023/12/20/rust-memory-profiling\n\nRun the app w/ profiling enabled. `jemalloc` must be the allocator\n(default on linux and macos):\n```sh\n_RJEM_MALLOC_CONF=\"prof:true,prof_active:true,lg_prof_sample:19\" \\\ncargo run -- \\\n --config ./configs/trafficgen-filter-debug-noop.yaml\n```\n\nscrape the endpoint, open in your favourite pprof viewer\n```\ncurl -XGET http://localhost:8080/api/v1/debug/pprof/heap -o out.pprof\ngo tool pprof -http=:18080 ./target/debug/df_engine ./out.pprof\n```\n\n<img width=\"1724\" height=\"704\" alt=\"image\"\nsrc=\"https://github.com/user-attachments/assets/43f43503-05e9-44c4-960b-39fc664bf36e\"\n/>\n\n\nThis endpoint will return 500 when:\n- jemalloc is not the allocator, or jemalloc is used, but was compiled\nwithout the `profiling` feature\n- if the jemalloc options `prof:true,prof_active:true` are not set\n\n## What issue does this PR close?\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #3660\n\n## How are these changes tested?\n\nManually\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n \n Yes, the user could call this endpoint\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-08-07T00:16:10Z",
+          "tree_id": "7e22a907f72606cb339e0b363d2efaa28a2bdea3",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/dab00a4e5a3124ebc1f0c4d24f895454155a0aec"
+        },
+        "date": 1786066136100,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 80.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 68.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 112.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.85,
             "unit": "MB"
           }
         ]
