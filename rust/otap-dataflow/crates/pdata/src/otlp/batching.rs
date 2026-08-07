@@ -209,3 +209,5 @@ pub fn make_bytes_batches(
         }
     }
 }
+
+// TODO: Implement recursive protobuf splitting for Issue #3661 to handle oversize ResourceLogs
