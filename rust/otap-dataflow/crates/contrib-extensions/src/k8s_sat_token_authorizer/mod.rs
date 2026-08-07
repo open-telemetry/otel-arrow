@@ -104,6 +104,7 @@ fn create(
 
 /// Factory registration for the Kubernetes SAT authorizer extension.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Extension)]
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static K8S_SAT_TOKEN_AUTHORIZER_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: K8S_SAT_TOKEN_AUTHORIZER_URN,
