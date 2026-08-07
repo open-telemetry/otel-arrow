@@ -176,8 +176,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- | --- |
 | `processor.content_router.messages` | `outcome`, `reason` | `{message}` | Number of messages processed by the content router. |
 
-The `outcome` attribute is one of: `Success`, `Failure`, `Refused`.
-The `reason` attribute is one of: `MatchedRoute`, `DefaultRouteNoMatch`, `DefaultRouteMissingKey`, `NoMatchingRoute`, `MissingRoutingKey`, `MixedBatch`, `ConversionError`, `RouteFull`, `RouteClosed`, `NodeShutdown`.
+The `outcome` attribute is one of: `success`, `failure`, `refused`.
+The `reason` attribute is one of: `matched_route`, `default_route_no_match`, `default_route_missing_key`, `no_matching_route`, `missing_routing_key`, `mixed_batch`, `conversion_error`, `route_full`, `route_closed`, `node_shutdown`.
 
 ### Events
 
