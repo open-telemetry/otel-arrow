@@ -130,7 +130,8 @@ linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
 mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
-tikv-jemallocator = { version = "0.7.0" }
+jemalloc_pprof = { version = "0.9.0", features = ["symbolize"] }
+tikv-jemallocator = { version = "0.7.0", features = ["profiling", "unprefixed_malloc_on_supported_platforms"]}
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
 tikv-jemalloc-sys = "0.7.0"
 memchr = "2.8.0"
@@ -245,7 +246,7 @@ clickhouse = { version = "0.15.1", features = ["rustls-tls-ring", "rustls-tls-na
 clickhouse-ext-arrow = "0.1.0"
 cpu-time = "1.0.0"
 
-one_collect = "0.1.34811"
+one_collect = "0.1.35021"
 
 # TODO: un-pin these dependencies as soon as Arc support is available in a released version: https://github.com/open-telemetry/otel-arrow/issues/3551
 azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "606bf947308148c86b1545964af6f4d0f8baf209", default-features = false }
@@ -294,9 +295,12 @@ otap-df-pdata = { path = "crates/pdata" }
 otap-df-pdata-views = { path = "crates/pdata-views" }
 
 [features]
-# ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
 default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
-jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
+jemalloc = [
+    "dep:tikv-jemallocator",
+    "otap-df-engine/jemalloc",
+    "otap-df-controller/jemalloc-pprof",
+]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
 aws = ["otap-df-otap/aws", "otap-df-contrib-nodes/aws"]
