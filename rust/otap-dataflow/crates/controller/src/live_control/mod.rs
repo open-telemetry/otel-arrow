@@ -167,6 +167,7 @@ impl<
                 next_recovery_id: 0,
                 next_pipeline_operation_reservation_id: 0,
                 first_error: None,
+                instance_wait_released: false,
                 global_shutdown_requested: false,
                 global_shutdown_coordinators: 0,
             }),
