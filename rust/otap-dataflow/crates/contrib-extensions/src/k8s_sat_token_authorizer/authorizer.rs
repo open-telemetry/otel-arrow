@@ -30,7 +30,7 @@ use super::cache::DecisionCache;
 use super::config::AudienceConfig;
 use super::core::Core;
 
-// ── Shared variant (Send; Arc + Mutex) ─────────────────────────────────────
+// -- Shared variant (Send; Arc + Mutex) -------------------------------------
 
 /// Shared, `Send` Kubernetes SAT authorizer.
 ///
@@ -77,7 +77,7 @@ impl SharedBearerTokenAuthorizer for SharedK8sSatTokenAuthorizer {
     }
 }
 
-// ── Local variant (!Send; Rc + RefCell, lock-free) ─────────────────────────
+// -- Local variant (!Send; Rc + RefCell, lock-free) -------------------------
 
 /// Local, `!Send` Kubernetes SAT authorizer.
 ///

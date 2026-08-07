@@ -144,6 +144,8 @@ extensions is a future enhancement).
 4. **`TokenReview`** is submitted for the token with the union of all entry
    audiences. The API server answer maps to:
    - authenticated -> **admission** (below);
+   - authenticated as a non-service-account identity ->
+     `Deny(InvalidCredential)`;
    - not authenticated -> `Deny(InvalidCredential)` with the API server's
      message as log-only detail;
    - request failure / missing status -> `Err` (undetermined; not cached).
@@ -182,6 +184,14 @@ audience the token was admitted for (multi-valued when more than one). A
 confirmed audience that is not configured is ignored; if **no** confirmed
 audience is configured, the request is denied (`NotPermitted`, "token audience
 is not bound").
+
+Admission additionally requires the authenticated identity to be a **service
+account**, i.e. to carry the canonical
+`system:serviceaccount:<namespace>:<name>` username. `TokenReview` authenticates
+every credential type the API server accepts (OIDC, webhook, ...), so any other
+authenticated identity is denied (`InvalidCredential`) rather than admitted --
+otherwise an audience-only entry would admit a non-service-account caller and
+emit it under the `k8s_sat` scheme.
 
 Within an entry, admission uses exactly one strategy (the two fields are
 mutually exclusive):
@@ -253,7 +263,7 @@ Multi-tenant example (allow-list and RBAC per audience):
 ```yaml
 extensions:
   k8s_authz:
-    urn: urn:otel:extension:k8s_sat_token_authorizer
+    type: "urn:otel:extension:k8s_sat_token_authorizer"
     config:
       audiences:
         - audience: https://tenant-a.observability.svc
@@ -269,7 +279,9 @@ extensions:
 ```
 
 A receiver binds it via its `capabilities:` map (see
-[`docs/configuration-model.md`](configuration-model.md)).
+[`docs/configuration-model.md`](configuration-model.md)). Note that no built-in
+receiver invokes `bearer_token_authorizer` yet, so binding it does not itself
+enforce authentication.
 
 ### Collector RBAC
 
@@ -294,9 +306,15 @@ rules:
 
 ### Telemetry
 
-None in this version. As a passive extension it receives no `CollectTelemetry`
-control message, so it registers no metric set. Exposing metrics from passive
-extensions is a planned enhancement.
+No metrics in this version. As a passive extension it receives no
+`CollectTelemetry` control message, so it registers no metric set. Exposing
+metrics from passive extensions is a planned enhancement.
+
+The extension does emit structured log events: debug events for authentication
+and admission outcomes, and warning events for Kubernetes client and API
+failures. Debug events can include the authenticated service-account username
+and the confirmed audiences (token-derived identity data, so they are
+log-only and never metric labels); the plaintext token is never logged.
 
 ## Security considerations
 
@@ -304,7 +322,8 @@ extensions is a planned enhancement.
 - **Secret handling.** The token is carried by the secret-protecting
   `BearerToken`; it is exposed only to build the `TokenReview` request and to
   compute its SHA-256 cache key. No plaintext token is retained -- the cache
-  keys on the digest -- and nothing token-derived is logged.
+  keys on the digest -- and the plaintext token is never logged. Debug events
+  may include the authenticated service-account username and audiences.
 - **No policy leak.** Deny reasons are coarse, low-cardinality
   (`MissingCredential`, `InvalidCredential`, `NotPermitted`); per-request detail
   goes only to logs, never to metric labels or untrusted callers.
