@@ -1,0 +1,25 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: enhancement
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: engine
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: Wire the broadcast `all` (consensus) Ack/Nack mode into the topic engine
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [2252]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries.
+subtext: |
+  Not yet configurable: this wires the engine to honor `all` mode but the config surface lands in a
+  follow-up PR under #2252. An `all`-mode broadcast topic now resolves the upstream receipt only once
+  every eligible subscriber acks, snapshotting the required subscriber set under a registry -> tracker
+  lock order, and nacks fast on subscriber nack/disconnect/lag. Also fixes a stall where a required
+  subscriber lagging past a tracked message under the `DropOldest` policy would leave consensus
+  incomplete forever; skipped messages are now nacked while still-readable ones stay pending.
