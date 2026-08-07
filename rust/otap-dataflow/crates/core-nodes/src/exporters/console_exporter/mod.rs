@@ -8,6 +8,7 @@ mod record_json;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
+use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
@@ -31,9 +32,12 @@ use otap_df_pdata_views::views::logs::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::otel_error;
+use otap_df_telemetry::output_service::{Frame, OutputService, StreamHandle};
 use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
 use std::io::Write;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use self::record_json::RecordJsonFormatter;
@@ -164,6 +168,17 @@ const fn default_record_json_scope() -> bool {
 /// Console exporter that prints OTLP data to stdout.
 pub struct ConsoleExporter {
     formatter: ConsoleFormatter,
+    /// Overrides the resolved stream; only tests supply one.
+    #[cfg(test)]
+    output: Option<TestOutput>,
+}
+
+/// Test-only stream override that also counts how often it was resolved.
+#[cfg(test)]
+#[derive(Clone)]
+struct TestOutput {
+    handle: StreamHandle,
+    resolutions: Arc<AtomicUsize>,
 }
 
 impl ConsoleExporter {
@@ -178,7 +193,57 @@ impl ConsoleExporter {
                 ConsoleFormatter::RecordJson(RecordJsonFormatter::new(config.record_json))
             }
         };
-        Self { formatter }
+        Self {
+            formatter,
+            #[cfg(test)]
+            output: None,
+        }
+    }
+
+    /// Creates an exporter bound to a caller-supplied output stream.
+    #[cfg(test)]
+    #[must_use]
+    fn with_output(config: ConsoleExporterConfig, output: StreamHandle) -> Self {
+        Self::with_counted_output(config, output).0
+    }
+
+    /// Creates an exporter bound to a test stream, returning the resolution counter.
+    #[cfg(test)]
+    #[must_use]
+    fn with_counted_output(
+        config: ConsoleExporterConfig,
+        output: StreamHandle,
+    ) -> (Self, Arc<AtomicUsize>) {
+        let resolutions = Arc::new(AtomicUsize::new(0));
+        let exporter = Self {
+            output: Some(TestOutput {
+                handle: output,
+                resolutions: Arc::clone(&resolutions),
+            }),
+            ..Self::new(config)
+        };
+        (exporter, resolutions)
+    }
+
+    /// Returns the stream this exporter writes to.
+    ///
+    /// Pretty output is this exporter's product rather than engine prose, so it
+    /// uses stdout until another exporter claims stdout for machine-readable
+    /// records.
+    fn output_handle(&self) -> StreamHandle {
+        #[cfg(test)]
+        if let Some(output) = self.output.as_ref() {
+            let _ = output.resolutions.fetch_add(1, Ordering::Relaxed);
+            return output.handle.clone();
+        }
+        match self.formatter {
+            ConsoleFormatter::Pretty(_) if OutputService::structured_stdout() => {
+                OutputService::stderr()
+            }
+            ConsoleFormatter::Pretty(_) | ConsoleFormatter::RecordJson(_) => {
+                OutputService::stdout()
+            }
+        }
     }
 }
 
@@ -197,6 +262,7 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             .map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse console exporter config: {}", e),
             })?;
+        require_structured_stdout_claim(config.format, OutputService::structured_stdout())?;
         Ok(ExporterWrapper::local(
             ConsoleExporter::new(config),
             node,
@@ -207,6 +273,61 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::validate_typed_config::<ConsoleExporterConfig>,
 };
+
+/// Claims stdout for records when `engine_cfg` deploys a `record_json` console exporter.
+///
+/// Pipelines are built on their own threads, so an exporter created late cannot
+/// stop an earlier `pretty` exporter from having already written to stdout. The
+/// process host calls this once a configuration is accepted and before any
+/// pipeline starts, which keeps `pretty` output on stderr from its first
+/// payload. Validation stays free of side effects so a rejected candidate
+/// configuration never reroutes a running exporter.
+pub fn claim_structured_stdout(engine_cfg: &OtelDataflowSpec) {
+    if config_emits_records(engine_cfg) {
+        OutputService::mark_structured_stdout();
+    }
+}
+
+/// Returns true when any console exporter in `engine_cfg` emits record JSON.
+///
+/// The engine's own observability pipeline carries a console exporter too, so it
+/// is scanned alongside the configured groups.
+fn config_emits_records(engine_cfg: &OtelDataflowSpec) -> bool {
+    let observability = engine_cfg
+        .engine
+        .observability
+        .pipeline
+        .clone()
+        .into_pipeline_config();
+    engine_cfg
+        .groups
+        .values()
+        .flat_map(|group| group.pipelines.values())
+        .chain(std::iter::once(&observability))
+        .flat_map(|pipeline| pipeline.node_iter())
+        .any(|(_, node)| {
+            node.r#type.as_str() == CONSOLE_EXPORTER_URN
+                && match serde_json::from_value::<ConsoleExporterConfig>(node.config.clone()) {
+                    Ok(config) => config.format == ConsoleOutputFormat::RecordJson,
+                    // The host normally validates first. An embedder that does not
+                    // gets the safe failure direction: prose moves off stdout.
+                    Err(_) => true,
+                }
+        })
+}
+
+/// Rejects a record exporter that was not claimed before pipelines started.
+fn require_structured_stdout_claim(
+    format: ConsoleOutputFormat,
+    structured_stdout: bool,
+) -> Result<(), ConfigError> {
+    if format == ConsoleOutputFormat::RecordJson && !structured_stdout {
+        return Err(ConfigError::InvalidUserConfig {
+            error: "record_json console output was not claimed before pipeline startup; call claim_structured_stdout on the accepted engine configuration".to_owned(),
+        });
+    }
+    Ok(())
+}
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for ConsoleExporter {
@@ -219,7 +340,10 @@ impl Exporter<OtapPdata> for ConsoleExporter {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
-                    self.export(data.payload_ref()).await;
+                    // Resolved per payload: another pipeline can claim stdout for
+                    // records after this exporter has already started.
+                    let output = self.output_handle();
+                    self.export(data.payload_ref(), &output).await;
                     effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }
                 _ => {
@@ -233,19 +357,19 @@ impl Exporter<OtapPdata> for ConsoleExporter {
 }
 
 impl ConsoleExporter {
-    async fn export(&self, payload: &OtapPayload) {
+    async fn export(&self, payload: &OtapPayload, output: &StreamHandle) {
         match payload.signal_type() {
-            SignalType::Logs => self.export_logs(payload).await,
+            SignalType::Logs => self.export_logs(payload, output).await,
             SignalType::Traces => self.export_traces(payload).await,
             SignalType::Metrics => self.export_metrics(payload).await,
         }
     }
 
-    async fn export_logs(&self, payload: &OtapPayload) {
+    async fn export_logs(&self, payload: &OtapPayload, output: &StreamHandle) {
         match payload {
             OtapPayload::OtlpBytes(bytes) => match RawLogsData::try_from(bytes) {
                 Ok(logs_view) => {
-                    self.formatter.print_logs_data(&logs_view).await;
+                    self.formatter.print_logs_data(&logs_view, output).await;
                 }
                 Err(e) => {
                     otel_error!("console.logs_view.otlp_create_failed", error = ?e, message = "Failed to create OTLP logs view");
@@ -253,7 +377,7 @@ impl ConsoleExporter {
             },
             OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
                 Ok(logs_view) => {
-                    self.formatter.print_logs_data(&logs_view).await;
+                    self.formatter.print_logs_data(&logs_view, output).await;
                 }
                 Err(e) => {
                     otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
@@ -286,15 +410,15 @@ enum ConsoleFormatter {
 }
 
 impl ConsoleFormatter {
-    /// Format logs and write the complete payload to stdout.
-    async fn print_logs_data<L: LogsDataView>(&self, logs_data: &L) {
-        let mut output = Vec::new();
+    /// Format logs and hand the complete payload to the process-wide writer.
+    async fn print_logs_data<L: LogsDataView>(&self, logs_data: &L, output: &StreamHandle) {
+        let mut buffer = Vec::new();
         let format_result = match self {
             Self::Pretty(formatter) => {
-                formatter.format_logs_data_to(logs_data, &mut output);
+                formatter.format_logs_data_to(logs_data, &mut buffer);
                 Ok(())
             }
-            Self::RecordJson(formatter) => formatter.format_logs_data_to(logs_data, &mut output),
+            Self::RecordJson(formatter) => formatter.format_logs_data_to(logs_data, &mut buffer),
         };
 
         if let Err(err) = format_result {
@@ -306,15 +430,13 @@ impl ConsoleFormatter {
             return;
         }
 
-        // Note: each per-core exporter currently creates a new Tokio stdout handle for every
-        // payload. Because stdout is a process-global serialized sink, concurrent handles still
-        // contend, and large writes can be reordered or interleaved. A future implementation
-        // could move each core's complete formatted buffers through a bounded channel to one
-        // dedicated process-wide writer thread, preserving backpressure while keeping blocking
-        // I/O off the core threads. A filelog exporter could avoid this serialization by letting
-        // each core write its logs to a separate file in parallel.
-        use tokio::io::AsyncWriteExt;
-        if let Err(err) = tokio::io::stdout().write_all(&output).await {
+        // One frame per payload: the writer holds the stdout lock for the whole
+        // buffer, so concurrent exporters can never split a record.
+        let frame = match self {
+            Self::Pretty(_) => Frame::new(buffer),
+            Self::RecordJson(_) => Frame::new_record_json(buffer),
+        };
+        if let Err(err) = output.submit(frame).await {
             otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
         }
     }
@@ -547,6 +669,12 @@ fn nanos_to_time(nanos: u64) -> SystemTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::Interests;
+    use otap_df_engine::control::PipelineCompletionMsg;
+    use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::test_node;
+    use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack};
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::encode::encode_logs_otap_batch;
     use otap_df_pdata::proto::opentelemetry::{
@@ -558,8 +686,10 @@ mod tests {
     };
     use otap_df_pdata::testing::fixtures::logs_with_full_resource_and_scope;
     use otap_df_pdata::views::otap::OtapLogsView;
+    use otap_df_telemetry::output_service::{OutputSink, OutputStream, StreamId};
     use prost::Message;
     use serde_json::{Value, json};
+    use std::time::Instant;
 
     /// Format proto logs through the raw OTLP view and parse the resulting JSON lines.
     fn format_record_json(logs_data: &LogsData, formatter: &RecordJsonFormatter) -> Vec<Value> {
@@ -1019,5 +1149,300 @@ mod tests {
         }
 
         assert_eq!(otap_values, otlp_values);
+    }
+
+    /// Sink that records the frames written by a test-owned writer thread.
+    #[derive(Clone)]
+    struct RecordingSink {
+        buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> Self {
+            Self {
+                buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+
+        fn contents(&self) -> Vec<u8> {
+            self.buffer.lock().expect("sink buffer").clone()
+        }
+    }
+
+    impl OutputSink for RecordingSink {
+        fn write_frame(&mut self, frame: &[u8]) -> std::io::Result<()> {
+            let mut buffer = self.buffer.lock().expect("sink buffer");
+            // Chunked appends mimic an operating system that accepts partial writes.
+            for chunk in frame.chunks(4096) {
+                buffer.extend_from_slice(chunk);
+                std::thread::yield_now();
+            }
+            Ok(())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Scenario: several console exporters concurrently emit record JSON through one writer.
+    /// Guarantees: every emitted line remains an independently parseable JSON record,
+    /// so concurrent producers never interleave bytes inside a record.
+    #[test]
+    fn record_json_lines_stay_parseable_under_concurrent_exporters() {
+        // The fixture carries four log records per payload.
+        const RECORDS_PER_PAYLOAD: usize = 4;
+        const EXPORTERS: usize = 4;
+        const PAYLOADS_PER_EXPORTER: usize = 25;
+
+        let encoded = logs_with_full_resource_and_scope().encode_to_vec();
+        let sink = RecordingSink::new();
+        let stream = OutputStream::start(StreamId::Stdout, 8, true, Box::new(sink.clone()))
+            .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        let workers: Vec<_> = (0..EXPORTERS)
+            .map(|_| {
+                let handle = handle.clone();
+                let encoded = encoded.clone();
+                std::thread::spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .expect("current-thread runtime");
+                    let formatter = ConsoleFormatter::RecordJson(RecordJsonFormatter::new(
+                        RecordJsonConfig::default(),
+                    ));
+                    let bytes = OtlpProtoBytes::ExportLogsRequest(encoded.into());
+                    runtime.block_on(async {
+                        for _ in 0..PAYLOADS_PER_EXPORTER {
+                            let logs_view = RawLogsData::try_from(&bytes).expect("logs");
+                            formatter.print_logs_data(&logs_view, &handle).await;
+                        }
+                    });
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("exporter thread finishes");
+        }
+
+        let outcome = stream.shutdown(Duration::from_secs(30));
+        assert!(outcome.drained);
+
+        let records = parse_json_lines(&sink.contents());
+        assert_eq!(
+            records.len(),
+            EXPORTERS * PAYLOADS_PER_EXPORTER * RECORDS_PER_PAYLOAD
+        );
+    }
+
+    /// Scenario: the console writer is already closed when the exporter formats a payload.
+    /// Guarantees: the handoff resolves as a counted enqueue failure instead of
+    /// blocking, which is what lets the exporter's message loop continue to its ACK.
+    #[tokio::test]
+    async fn console_handoff_resolves_when_the_writer_is_gone() {
+        let encoded = logs_with_full_resource_and_scope().encode_to_vec();
+        let bytes = OtlpProtoBytes::ExportLogsRequest(encoded.into());
+        let sink = RecordingSink::new();
+        let stream = OutputStream::start(StreamId::Stdout, 1, true, Box::new(sink.clone()))
+            .expect("writer thread spawns");
+        let handle = stream.handle();
+        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+
+        let formatter =
+            ConsoleFormatter::RecordJson(RecordJsonFormatter::new(RecordJsonConfig::default()));
+        let logs_view = RawLogsData::try_from(&bytes).expect("logs");
+        formatter.print_logs_data(&logs_view, &handle).await;
+
+        assert!(sink.contents().is_empty());
+        assert_eq!(handle.stats().frames_enqueue_failed, 1);
+    }
+
+    /// Scenario: a payload reaches the exporter's message loop while the console writer
+    /// is already closed, so the handoff fails.
+    /// Guarantees: the exporter still ACKs that message exactly once and terminates
+    /// cleanly, so a dead console writer never strands the upstream pipeline.
+    #[test]
+    fn enqueue_failure_still_acks_exactly_once() {
+        const SUBSCRIBER_NODE_ID: usize = 4242;
+
+        let sink = RecordingSink::new();
+        let stream = OutputStream::start(StreamId::Stdout, 1, true, Box::new(sink.clone()))
+            .expect("writer thread spawns");
+        let handle = stream.handle();
+        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(CONSOLE_EXPORTER_URN));
+        let exporter = ExporterWrapper::local(
+            ConsoleExporter::with_output(
+                ConsoleExporterConfig {
+                    format: ConsoleOutputFormat::RecordJson,
+                    ..ConsoleExporterConfig::default()
+                },
+                handle.clone(),
+            ),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| async move {
+                let pdata = create_test_pdata().test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::default().into(),
+                    SUBSCRIBER_NODE_ID,
+                );
+                ctx.send_pdata(pdata)
+                    .await
+                    .expect("exporter accepts the payload");
+                ctx.send_shutdown(Instant::now() + Duration::from_secs(1), "test complete")
+                    .await
+                    .expect("exporter accepts shutdown");
+            })
+            .run_validation(move |mut ctx, result| async move {
+                result.expect("exporter terminates cleanly after a failed console handoff");
+
+                let mut completion_rx = ctx
+                    .take_pipeline_completion_receiver()
+                    .expect("pipeline completion receiver");
+                match completion_rx.recv().await {
+                    Ok(PipelineCompletionMsg::DeliverAck { ack }) => {
+                        let (node_id, _) = next_ack(ack).expect("an ACKS subscriber");
+                        assert_eq!(node_id, SUBSCRIBER_NODE_ID);
+                    }
+                    other => panic!("expected exactly one ACK, got {other:?}"),
+                }
+                assert!(
+                    completion_rx.recv().await.is_err(),
+                    "the failed handoff must not produce a second completion message"
+                );
+
+                assert_eq!(handle.stats().frames_enqueue_failed, 1);
+                assert!(sink.contents().is_empty());
+            });
+    }
+
+    /// Scenario: an exporter's message loop handles several payloads in one run.
+    /// Guarantees: the target stream is resolved once per payload, so a stdout claim
+    /// that lands mid-run is honored instead of being fixed when the loop starts.
+    #[test]
+    fn output_stream_is_resolved_for_every_payload() {
+        const PAYLOADS: usize = 3;
+
+        let sink = RecordingSink::new();
+        let stream = OutputStream::start(StreamId::Stdout, 8, true, Box::new(sink.clone()))
+            .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        let (exporter, resolutions) = ConsoleExporter::with_counted_output(
+            ConsoleExporterConfig {
+                format: ConsoleOutputFormat::RecordJson,
+                ..ConsoleExporterConfig::default()
+            },
+            handle,
+        );
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(CONSOLE_EXPORTER_URN));
+        let wrapper = ExporterWrapper::local(
+            exporter,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let observed = Arc::clone(&resolutions);
+        test_runtime
+            .set_exporter(wrapper)
+            .run_test(|ctx| async move {
+                for _ in 0..PAYLOADS {
+                    ctx.send_pdata(create_test_pdata())
+                        .await
+                        .expect("exporter accepts the payload");
+                }
+                ctx.send_shutdown(Instant::now() + Duration::from_secs(1), "test complete")
+                    .await
+                    .expect("exporter accepts shutdown");
+            })
+            .run_validation(move |_ctx, result| async move {
+                result.expect("exporter terminates cleanly");
+                assert_eq!(
+                    observed.load(Ordering::Relaxed),
+                    PAYLOADS,
+                    "the stream must be resolved once per payload, not once per run"
+                );
+            });
+    }
+
+    /// Scenario: an accepted or malformed configuration is scanned for record exporters.
+    /// Guarantees: record JSON and malformed console configs claim stdout conservatively,
+    /// while a configuration whose only console exporter is pretty does not.
+    #[test]
+    fn config_scan_claims_only_safe_cases() {
+        let records = engine_config_with_console(r#"{ "format": "record_json" }"#);
+        let pretty_only = engine_config_with_console(r#"{ "format": "pretty" }"#);
+        let malformed = engine_config_with_console(r#"{ "format": "invalid" }"#);
+
+        assert!(config_emits_records(&records));
+        assert!(!config_emits_records(&pretty_only));
+        assert!(config_emits_records(&malformed));
+    }
+
+    /// Scenario: a record exporter is created without the process host preclaiming stdout.
+    /// Guarantees: unsafe startup and live-control transitions are rejected before the
+    /// exporter can emit JSON into a stdout that may already contain pretty output.
+    #[test]
+    fn record_json_requires_a_prestartup_claim() {
+        assert!(require_structured_stdout_claim(ConsoleOutputFormat::Pretty, false).is_ok());
+        assert!(require_structured_stdout_claim(ConsoleOutputFormat::RecordJson, true).is_ok());
+        let error = require_structured_stdout_claim(ConsoleOutputFormat::RecordJson, false)
+            .expect_err("an unclaimed record exporter must be rejected");
+        assert!(error.to_string().contains("before pipeline startup"));
+    }
+
+    fn engine_config_with_console(config: &str) -> OtelDataflowSpec {
+        OtelDataflowSpec::from_json(&format!(
+            r#"{{
+                "version": "otel_dataflow/v1",
+                "groups": {{
+                    "g1": {{
+                        "pipelines": {{
+                            "p1": {{
+                                "nodes": {{
+                                    "console": {{
+                                        "type": "urn:otel:exporter:console",
+                                        "config": {config}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#
+        ))
+        .expect("engine config parses")
+    }
+
+    /// Scenario: a pretty exporter already exists when another exporter claims stdout
+    /// for machine-readable records.
+    /// Guarantees: the pretty exporter re-resolves its stream and moves to stderr, so a
+    /// stream cached at construction cannot keep prose on a structured stdout.
+    #[test]
+    fn pretty_output_steps_aside_once_stdout_carries_records() {
+        // Built before the claim: a construction-time binding would keep stdout.
+        let pretty = ConsoleExporter::new(ConsoleExporterConfig::default());
+        let records = ConsoleExporter::new(ConsoleExporterConfig {
+            format: ConsoleOutputFormat::RecordJson,
+            ..ConsoleExporterConfig::default()
+        });
+
+        // The latch is process-wide and monotonic, matching a record JSON exporter
+        // having been created anywhere in this process.
+        OutputService::mark_structured_stdout();
+
+        assert_eq!(pretty.output_handle().stream_id(), StreamId::Stderr);
+        assert_eq!(records.output_handle().stream_id(), StreamId::Stdout);
     }
 }
