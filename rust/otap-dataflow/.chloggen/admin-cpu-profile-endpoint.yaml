@@ -1,6 +1,6 @@
 change_type: enhancement
 component: engine
 note: >-
-  Add heap profiling endpoint at `/api/v1/debug/pprof/profile` that dumps
-  profile in pprof format
+  Add CPU profiling endpoint at `/api/v1/debug/pprof/profile` that collects
+  a CPU profile in pprof format.
 issues: [3692]
