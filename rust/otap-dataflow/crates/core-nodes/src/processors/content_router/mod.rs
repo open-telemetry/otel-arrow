@@ -2299,11 +2299,17 @@ mod tests {
                 let metrics = collect_metrics_map(&telemetry_registry);
                 println!("COLLECTED METRICS: {:?}", metrics);
                 assert_eq!(
-                    metrics.get("messages.success.matched_route").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.success.matched_route")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics.get("messages.failure.no_matching_route").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.failure.no_matching_route")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
 
@@ -2356,11 +2362,17 @@ mod tests {
 
                 let metrics = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    metrics.get("messages.failure.no_matching_route").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.failure.no_matching_route")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics.get("messages.success.matched_route").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.success.matched_route")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
 
@@ -2418,11 +2430,17 @@ mod tests {
 
                 let metrics = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    metrics.get("messages.success.default_route_no_match").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.success.default_route_no_match")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics.get("messages.failure.no_matching_route").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.failure.no_matching_route")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
 
@@ -2489,15 +2507,24 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("messages.success.matched_route").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.success.matched_route")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    metrics.get("messages.refused.route_full").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.refused.route_full")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics.get("messages.refused.route_closed").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.refused.route_closed")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
 
@@ -2563,15 +2590,24 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("messages.success.matched_route").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.success.matched_route")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    metrics.get("messages.refused.route_closed").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.refused.route_closed")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics.get("messages.refused.route_full").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.refused.route_full")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
 
@@ -2637,15 +2673,24 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("messages.success.default_route_no_match").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.success.default_route_no_match")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    metrics.get("messages.refused.route_full").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.refused.route_full")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics.get("messages.refused.route_closed").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.refused.route_closed")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
 
@@ -2710,15 +2755,24 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("messages.success.default_route_no_match").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.success.default_route_no_match")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    metrics.get("messages.refused.route_closed").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.refused.route_closed")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics.get("messages.refused.route_full").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.refused.route_full")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
 
@@ -2808,15 +2862,24 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("messages.success.matched_route").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.success.matched_route")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics.get("messages.refused.route_full").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.refused.route_full")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics.get("messages.refused.route_closed").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.refused.route_closed")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
 
