@@ -13,6 +13,8 @@ use k8s_openapi::api::authorization::v1::{
 use kube::api::{Api, PostParams};
 
 use super::config::ResourceAttributesConfig;
+use otap_df_telemetry::otel_warn;
+
 use super::error::Error;
 
 /// The authenticated identity the API server returned for a token.
@@ -79,9 +81,14 @@ impl Reviewer {
         // crypto provider installed. Mirror the other auth extensions and ensure
         // one is present before any TLS handshake.
         otap_df_otap::crypto::ensure_crypto_provider();
-        let client = kube::Client::try_default()
-            .await
-            .map_err(|source| Error::ClientInit { source })?;
+        let client = kube::Client::try_default().await.map_err(|source| {
+            otel_warn!(
+                "k8s_sat_token_authorizer.client_init_failed",
+                error = %source,
+                message = "kubernetes client init failed; failing closed"
+            );
+            Error::ClientInit { source }
+        })?;
         Ok(Self { client, audiences })
     }
 
@@ -104,9 +111,22 @@ impl Reviewer {
         let response = api
             .create(&PostParams::default(), &review)
             .await
-            .map_err(|source| Error::TokenReview { source })?;
+            .map_err(|source| {
+                otel_warn!(
+                    "k8s_sat_token_authorizer.token_review_failed",
+                    error = %source,
+                    message = "TokenReview request failed; failing closed"
+                );
+                Error::TokenReview { source }
+            })?;
 
-        let status = response.status.ok_or(Error::MissingStatus)?;
+        let status = response.status.ok_or_else(|| {
+            otel_warn!(
+                "k8s_sat_token_authorizer.token_review_no_status",
+                message = "TokenReview response carried no status; failing closed"
+            );
+            Error::MissingStatus
+        })?;
 
         if status.authenticated.unwrap_or(false) {
             let user = status.user.unwrap_or_default();
@@ -161,9 +181,22 @@ impl Reviewer {
         let response = api
             .create(&PostParams::default(), &review)
             .await
-            .map_err(|source| Error::SubjectAccessReview { source })?;
+            .map_err(|source| {
+                otel_warn!(
+                    "k8s_sat_token_authorizer.access_review_failed",
+                    error = %source,
+                    message = "SubjectAccessReview request failed; failing closed"
+                );
+                Error::SubjectAccessReview { source }
+            })?;
 
-        let status = response.status.ok_or(Error::MissingStatus)?;
+        let status = response.status.ok_or_else(|| {
+            otel_warn!(
+                "k8s_sat_token_authorizer.access_review_no_status",
+                message = "SubjectAccessReview response carried no status; failing closed"
+            );
+            Error::MissingStatus
+        })?;
 
         // `allowed` grants; an explicit `denied` overrides. Anything else (not
         // allowed, or an evaluation error) is a deny -- callers fail closed.
