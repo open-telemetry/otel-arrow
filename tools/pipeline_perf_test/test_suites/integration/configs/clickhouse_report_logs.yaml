@@ -2,6 +2,9 @@ load_tables:
   clickhouse_validation:
     path_template: 'results/clickhouse/validation/{{ metadata["test.name"] }}.csv'
     format: csv
+  clickhouse_observation:
+    path_template: 'results/clickhouse/validation/{{ metadata["test.name"] }}.csv.window.csv'
+    format: csv
 
 queries:
   - name: Calculate observation window
@@ -91,6 +94,15 @@ queries:
         AND timestamp BETWEEN start_ts AND stop_ts
       GROUP BY "metric_attributes.component_name", metric_name;
 
+  - name: Calculate ClickHouse throughput
+    sql: |
+      CREATE TABLE clickhouse_throughput AS
+      SELECT
+        rows_after - rows_before AS rows_written,
+        observation_seconds,
+        (rows_after - rows_before) / observation_seconds AS rows_per_second
+      FROM clickhouse_observation;
+
   - name: Calculate component core counts
     sql: |
       CREATE TABLE component_core_counts AS
@@ -137,14 +149,25 @@ queries:
     sql: |
       CREATE TABLE gh_actions_benchmark AS
       SELECT
-        metric_name || '_rate' AS name,
+        'logs_produced_rate' AS name,
         'rows/sec' AS unit,
         average_rate AS value,
         metadata_row."test.suite" || '/' || metadata_row."test.name" ||
-          ' - ' || metric_name AS extra
+          ' - logs_produced' AS extra
       FROM telemetry_rates
       CROSS JOIN metadata_row
-      WHERE metric_name IN ('logs_produced', 'log_rows_written')
+      WHERE metric_name = 'logs_produced'
+
+      UNION ALL
+
+      SELECT
+        'log_rows_written_rate' AS name,
+        'rows/sec' AS unit,
+        rows_per_second AS value,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - ClickHouse rows written' AS extra
+      FROM clickhouse_throughput
+      CROSS JOIN metadata_row
 
       UNION ALL
 
@@ -186,7 +209,9 @@ queries:
 
 result_tables:
   - name: telemetry_rates
-    description: Produced and ClickHouse-written log rates during the observation window.
+    description: Produced and exporter-reported log rates during the observation window.
+  - name: clickhouse_throughput
+    description: ClickHouse row-count delta and written rate during the observation window.
   - name: component_resources
     description: Dataflow engine and ClickHouse resource usage.
   - name: component_core_counts
