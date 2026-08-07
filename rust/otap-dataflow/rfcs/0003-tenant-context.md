@@ -24,7 +24,9 @@ of tenant context:
 Multitenant features are implemented by a **tenant compiler** which is
 computed from the whole engine configuration. The tenant compiler
 internalizes strings and match conditions and computes hash codes for
-distinct token signatures, enabling `O(1)` match operations.
+distinct token signatures. The goal of this design is to enable `O(1)`
+match operations; the initial implementation does not support
+conditional matching, as described in the implementation plan below.
 
 ## Configuration model
 
@@ -37,19 +39,19 @@ in the pipeline.
 
 A **tenant key** is one key and value belonging to a tenant context.
 
-An **extractor** produces one tenant key. Extractors are conditional, they
-can fail to match.
+An **extractor** produces one tenant key. Extractors are conditional;
+they can fail to match.
 
 A **tenant token** is one set of tenant keys, defined when a list of
 extractors all match.
 
-In most case, tenant context behavior will be specified entirely
+In most cases, tenant context behavior will be specified entirely
 through policies, where tenant extractors and ingress rules are
 expressed. Policies inform the engine that a combination of tenant
 keys translates into a per-tenant configuration, generally, so that
 `batch_processor` does not need to know how it is being used with
-multiple tenants. In a few cases, such as the topic exporter and
-receiver, and a new processor named `tenant_router`, will the
+multiple tenants. Only in a few cases, such as the topic exporter and
+receiver, and a new processor named `tenant_router`, does the
 configuration directly refer to tenant values by key.
 
 ### Producers
@@ -71,7 +73,7 @@ policies:
 
 ```
 
-We emphasize transport header in this document because at the time of
+We emphasize transport headers in this document because at the time of
 writing, transport headers are encoded using
 `Option<Arc<Vec<TransportHeader>>>`. This design will replace the
 implementation of transport headers with tenant context, a
@@ -172,8 +174,9 @@ nodes:
       ...
 ```
 
-Nodes may require tenant tokens even when they do not use them,
-for example to declare that an idempotency key,
+Nodes may require tenant tokens even when they do not use them, for
+example to declare an idempotency key that can be required by the
+recipient:
 
 ```yaml
 policies:
@@ -184,8 +187,6 @@ policies:
           - key: idem
             idempotency: uuid7
 ```
-
-can be required by the recipient.
 
 ```yaml
 nodes:
@@ -213,7 +214,7 @@ Tenant contexts are computed for the set of reachable nodes in a
 pipeline. The compiler knows which variables are extracted and which
 are only matched. Tenant variables can be "bagged" for extraction as a
 list of key:values, encoding using OTLP bytes. The bagged section of
-the tenant context can be borrowed as `&[u8]` for use encoding
+the tenant context can be borrowed as `&[u8]` for encoding
 OpenTelemetry attributes directly from the tenant context.
 
 The topic exporter and receiver will be extended with dedicated
