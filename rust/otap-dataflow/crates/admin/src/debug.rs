@@ -136,9 +136,8 @@ async fn get_cpu_profile(
 ) -> Result<Response, (StatusCode, String)> {
     #[cfg(not(windows))]
     {
-        
-        use std::time::Duration;
         use pprof::protos::Message;
+        use std::time::Duration;
         let permit = state
             .cpu_profile_permits
             .clone()
