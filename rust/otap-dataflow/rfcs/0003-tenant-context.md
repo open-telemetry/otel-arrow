@@ -221,6 +221,7 @@ policies:
 nodes:
   batch:
     type: processor:batch
+    policies:
       ingress:
         required_tokens: [edge]
         partition_keys: [tenant_id, project_id]
