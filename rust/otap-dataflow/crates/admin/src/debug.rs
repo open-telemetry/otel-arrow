@@ -138,6 +138,22 @@ async fn get_cpu_profile(
     {
         use pprof::protos::Message;
         use std::time::Duration;
+
+        let seconds = params.seconds.unwrap_or(30);
+        if seconds == 0 {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "seconds must be greater than 0".into(),
+            ));
+        }
+        let frequency = params.frequency.unwrap_or(100);
+        if frequency == 0 {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "frequency must be greater than 0".into(),
+            ));
+        }
+
         let permit = state
             .cpu_profile_permits
             .clone()
@@ -145,13 +161,12 @@ async fn get_cpu_profile(
             .map_err(|_| {
                 (
                     StatusCode::TOO_MANY_REQUESTS,
-                    "A heap profile dump is already in progress".into(),
+                    "A cpu profile dump is already in progress".into(),
                 )
             })?;
 
         // start profile
-        let profile_builder = pprof::ProfilerGuardBuilder::default()
-            .frequency(params.frequency.unwrap_or(100) as i32);
+        let profile_builder = pprof::ProfilerGuardBuilder::default().frequency(frequency as i32);
         let guard = profile_builder.build().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -160,10 +175,10 @@ async fn get_cpu_profile(
         })?;
 
         // sleep for profile duration
-        let profile_time = Duration::from_secs(params.seconds.unwrap_or(30) as u64);
+        let profile_time = Duration::from_secs(seconds as u64);
         tokio::time::sleep(profile_time).await;
 
-        // offload the blocking generation of the profile to a dedicate thread so that the
+        // offload the blocking generation of the profile to a dedicated thread so that the
         // admin server's async runtime stays responsive.
         let pprof = tokio::task::spawn_blocking(move || {
             let _permit = permit;
