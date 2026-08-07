@@ -6,7 +6,7 @@
 
 - Type: `receiver:otap` (`urn:otel:receiver:otap`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

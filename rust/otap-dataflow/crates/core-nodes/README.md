@@ -24,9 +24,10 @@ Each node page follows the same general shape:
 
 Most nodes in this catalog are available in the default engine build. If the
 `Feature` column names a non-default feature, the node is available only in
-builds that enable that feature. A node documented as `experimental` has no
-stable compatibility guarantee yet, and its behavior or configuration can
-change between releases.
+builds that enable that feature. The `Stability` column uses the levels
+defined in [`docs/node-stability.md`](../../docs/node-stability.md). A node
+documented as `experimental` has no stable compatibility guarantee yet, and
+its behavior or configuration can change between releases.
 
 ## Node Type Syntax
 
@@ -119,8 +120,10 @@ Exporters send data out of a pipeline.
   node.
 - Keep per-node README headings predictable: `Metadata`, `Overview`,
   `Configuration`, `Examples`, `Telemetry`, `Limits`, and `Related Docs`.
-- Document node stability as `Experimental` when there is no explicit
-  compatibility guarantee.
+- Document node stability using a level from
+  [`docs/node-stability.md`](../../docs/node-stability.md), written in
+  lowercase. Default to `experimental` when there is no explicit compatibility
+  guarantee.
 - Render `Metadata` as a list with one field per list item instead of a table.
 - Omit implementation file names from metadata because the README already sits
   next to the source.

@@ -6,7 +6,7 @@
 
 - Type: `processor:partition` (`urn:otel:processor:partition`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

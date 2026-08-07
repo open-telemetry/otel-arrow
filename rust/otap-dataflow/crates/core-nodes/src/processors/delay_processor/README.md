@@ -6,7 +6,7 @@
 
 - Type: `processor:delay` (`urn:otel:processor:delay`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

@@ -6,7 +6,7 @@
 
 - Type: `receiver:host_metrics` (`urn:otel:receiver:host_metrics`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

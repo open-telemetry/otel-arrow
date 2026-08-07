@@ -6,7 +6,7 @@
 
 - Type: `receiver:internal_telemetry` (`urn:otel:receiver:internal_telemetry`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

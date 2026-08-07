@@ -18,6 +18,12 @@ The current architecture is intentionally simple:
 The schema and transform behavior are aligned with the Go OpenTelemetry
 Collector ClickHouse exporter where practical.
 
+## Metadata
+
+- Type: `exporter:clickhouse` (`urn:otel:exporter:clickhouse`)
+- Feature gate: `clickhouse-exporter` (also enabled by `contrib-exporters`)
+- Stability: experimental
+
 ## Status
 
 Implemented:

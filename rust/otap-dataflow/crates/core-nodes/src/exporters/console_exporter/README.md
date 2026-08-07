@@ -6,7 +6,7 @@
 
 - Type: `exporter:console` (`urn:otel:exporter:console`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 
