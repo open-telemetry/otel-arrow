@@ -1788,6 +1788,72 @@ pub mod test_support {
             .await;
         }
 
+        /// Scenario (security: dynamic topic routing): a signal uses an
+        /// exact-match `allowed_topics` list (not a regex allowlist); one record
+        /// carries a routing header naming a listed topic and another names an
+        /// unlisted topic, both exported through the fully-wired node.
+        /// Guarantees: the exact-match-allowed header topic is produced to that
+        /// topic while the unlisted topic is permanently nacked and never
+        /// delivered, so the non-regex allowlist enforces the same
+        /// client-cannot-pick-arbitrary-topics constraint as the regex form.
+        #[tokio::test]
+        async fn exact_match_allowed_topic_delivered_and_unlisted_nacked() {
+            let static_topic = "it-sec-exact-static";
+            let allowed_topic = "tenant_exact_logs";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(static_topic)
+                    .topic(allowed_topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[allowed_topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
+                            .with_topic_from_transport_header("x-target-topic")
+                            .with_allowed_topics([allowed_topic]),
+                    );
+                    let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // 1. Unlisted topic: a subscribed pdata so the permanent nack
+                    // unwinds observably; assert it is permanent and not delivered.
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(
+                            logs_request_bytes(),
+                            Some(("X-Target-Topic", "tenant_not_listed")),
+                        ))
+                        .await
+                        .expect("send unlisted");
+                    let nack = exporter
+                        .recv_nack(Duration::from_secs(5))
+                        .await
+                        .expect("unlisted topic should unwind a nack");
+                    assert!(
+                        nack.permanent,
+                        "an unlisted exact-match topic must be permanently nacked",
+                    );
+
+                    // 2. Listed topic: delivered to the header-named topic.
+                    let payload = logs_request_bytes();
+                    exporter
+                        .send_pdata(logs_pdata(
+                            payload.clone(),
+                            Some(("X-Target-Topic", allowed_topic)),
+                        ))
+                        .await
+                        .expect("send listed");
+                    let _ = consumer
+                        .recv()
+                        .await
+                        .assert_topic(allowed_topic)
+                        .assert_payload(&payload);
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
         // ---- Shutdown and live reconfiguration ----
 
         /// Scenario (shutdown and live reconfiguration): enqueue several records then request a graceful shutdown
@@ -2398,6 +2464,72 @@ pub mod test_support {
             .await;
         }
 
+        /// Scenario (retry correctness): the exporter is configured with the
+        /// smallest allowed `max_message_bytes` (1000) and an oversized batch
+        /// (many records, > 1000 encoded bytes) is exported, followed by a
+        /// normal single-record batch on the same running exporter.
+        /// Guarantees: the oversized record is rejected by the producer and
+        /// counted as a failed export (`messages{logs,failure}`) rather than
+        /// delivered, and the event loop survives so the subsequent normal batch
+        /// still delivers (`messages{logs,success}`) -- so a single message that
+        /// exceeds the size limit cannot stall the exporter.
+        #[tokio::test]
+        async fn oversized_payload_is_failed_and_loop_survives() {
+            let topic = "it-oversized-logs";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                            // 1000 is librdkafka's minimum allowed message.max.bytes.
+                            .with_max_message_bytes(1000)
+                            .try_into()
+                            .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Oversized: many records so the encoded payload far exceeds
+                    // the 1000-byte limit and the producer rejects it.
+                    let oversized = logs_request_bytes_n(2000);
+                    assert!(
+                        oversized.len() > 1000,
+                        "oversized payload must exceed the configured limit, got {}",
+                        oversized.len(),
+                    );
+                    exporter
+                        .send_pdata(logs_pdata(oversized, None))
+                        .await
+                        .expect("send oversized");
+
+                    // A normal-sized batch on the same exporter must still deliver.
+                    let small = logs_request_bytes();
+                    exporter
+                        .send_pdata(logs_pdata(small.clone(), None))
+                        .await
+                        .expect("send small");
+
+                    // The next consumable record is the small one (the oversized
+                    // record was never produced).
+                    let _ = consumer.recv().await.assert_topic(topic).assert_payload(&small);
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    assert_eq!(
+                        kafka_exports(ts.metrics(), "logs", "failure"),
+                        1,
+                        "the oversized record must be counted as one failed export",
+                    );
+                    assert_eq!(
+                        kafka_exports(ts.metrics(), "logs", "success"),
+                        1,
+                        "the subsequent normal batch must still deliver after the oversized failure",
+                    );
+                },
+            )
+            .await;
+        }
+
         // ---- Delivery semantics ----
 
         /// Scenario (delivery semantics): a successful send to a live mock broker resolves the
@@ -2874,6 +3006,159 @@ pub mod test_support {
                         cluster.inspect().message_count(topic, 0),
                         0,
                         "a rejected produce must not persist a record on the mock broker"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (delivery semantics): the exporter is configured with
+        /// `allow_auto_create_topics = false` (the default-deny posture) and a
+        /// signal whose topic does not exist on the broker; a record is
+        /// exported to that undeclared topic.
+        /// Guarantees: the send is not delivered (counted as a failure, never a
+        /// success) and the undeclared topic is not auto-created on the broker,
+        /// so a misconfigured or client-influenced topic cannot silently spawn
+        /// new broker topics.
+        #[tokio::test]
+        async fn undeclared_topic_with_auto_create_disabled_is_not_delivered() {
+            let declared = "it-autocreate-declared";
+            let undeclared = "it-autocreate-undeclared";
+            with_cluster(
+                // Only `declared` is created; the exporter targets `undeclared`.
+                KafkaTestCluster::builder().topic(declared),
+                |cluster| async move {
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_logs(SignalConfig::new(
+                                undeclared.into(),
+                                MessageFormat::OtlpProto,
+                            ))
+                            .with_allow_auto_create_topics(false)
+                            .try_into()
+                            .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes(), None))
+                        .await
+                        .expect("send to undeclared topic");
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    assert_eq!(
+                        kafka_exports(ts.metrics(), "logs", "success"),
+                        0,
+                        "a send to an undeclared topic must not be delivered under default-deny",
+                    );
+                    assert_eq!(
+                        kafka_exports(ts.metrics(), "logs", "failure"),
+                        1,
+                        "a send to an undeclared topic must be counted as a failure",
+                    );
+                    assert!(
+                        !cluster.inspect().topic_exists(undeclared),
+                        "the undeclared topic must not be auto-created when auto-create is disabled",
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (delivery semantics): the exporter is configured with a
+        /// non-zero `linger_ms` and several distinct records are exported in
+        /// rapid succession to a single-partition topic.
+        /// Guarantees: producer-side lingering/batching does not drop or reorder
+        /// records -- every record is delivered and they arrive in send order at
+        /// strictly increasing offsets -- so enabling linger for throughput does
+        /// not compromise per-partition ordering or completeness.
+        #[tokio::test]
+        async fn linger_batches_multiple_records_and_preserves_order() {
+            const N: usize = 5;
+            let topic = "it-linger-order";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                            .with_linger_ms(50)
+                            .try_into()
+                            .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Send N byte-distinct records back-to-back so linger can
+                    // coalesce them into batches.
+                    let mut payloads = Vec::with_capacity(N);
+                    for i in 0..N {
+                        let bytes = logs_request_bytes_seq(i);
+                        payloads.push(bytes.clone());
+                        exporter
+                            .send_pdata(logs_pdata(bytes, None))
+                            .await
+                            .expect("send record");
+                    }
+
+                    // Records arrive in send order at offsets 0..N.
+                    for (i, expected) in payloads.iter().enumerate() {
+                        let _ = consumer
+                            .recv()
+                            .await
+                            .assert_offset(i as i64)
+                            .assert_payload(expected);
+                    }
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (delivery semantics): a logs batch containing zero log
+        /// records (an empty but well-formed OTLP request) is exported.
+        /// Guarantees: an empty batch is handled deterministically per the
+        /// exporter's per-batch model -- it produces exactly one record that is
+        /// delivered and durably persisted (`messages{logs,success} == 1`, one
+        /// record on the partition), rather than being dropped, double-counted,
+        /// or failing the exporter -- pinning the empty-batch behavior.
+        #[tokio::test]
+        async fn empty_batch_produces_one_record() {
+            let topic = "it-empty-batch";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                            .try_into()
+                            .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // A well-formed OTLP logs request carrying no log records.
+                    let empty = logs_request_bytes_from(vec![]);
+                    exporter
+                        .send_pdata(logs_pdata(empty, None))
+                        .await
+                        .expect("send empty batch");
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    assert_eq!(
+                        kafka_exports(ts.metrics(), "logs", "success"),
+                        1,
+                        "an empty batch is exported as exactly one successful record",
+                    );
+                    assert_eq!(
+                        kafka_exports(ts.metrics(), "logs", "failure"),
+                        0,
+                        "an empty batch must not be counted as a failure",
+                    );
+                    assert_eq!(
+                        cluster.inspect().message_count(topic, 0),
+                        1,
+                        "an empty batch persists exactly one record on the partition",
                     );
                 },
             )
