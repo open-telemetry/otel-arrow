@@ -17,6 +17,7 @@ configuration semantics, see
 | Extension | URN | Feature gate | Capability | Docs |
 | --- | --- | --- | --- | --- |
 | Azure Identity Auth | `urn:microsoft:extension:azure_identity_auth` | `azure-identity-auth-extension` | `bearer_token_provider` | [`design.md`](./src/azure_identity_auth/design.md) |
+| Kubernetes SAT Authorizer | `urn:otel:extension:k8s_sat_token_authorizer` | `k8s-sat-token-authorizer-extension` | `bearer_token_authorizer` | [`docs/k8s-sat-token-authorizer-extension.md`](../../docs/k8s-sat-token-authorizer-extension.md) |
 
 Extensions are enabled through individual feature gates or the aggregate
 `contrib-extensions` feature gate. An extension documented as `Experimental`,
