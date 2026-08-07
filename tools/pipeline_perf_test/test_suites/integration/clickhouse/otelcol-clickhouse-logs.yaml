@@ -58,3 +58,10 @@ tests:
   - name: OTELCOL-OTLP-TRANSFORMED-100K
     from_template:
       path: test_suites/integration/templates/test_steps/otelcol-clickhouse-steps-docker.yaml
+  # Scenario: Collector OTLP input at the matched 70k logs/sec storage rate.
+  # Guarantees: Collector resources are comparable with df_engine at equal throughput.
+  - name: OTELCOL-OTLP-TRANSFORMED-70K
+    from_template:
+      path: test_suites/integration/templates/test_steps/otelcol-clickhouse-steps-docker.yaml
+      variables:
+        signals_per_second: 70000
