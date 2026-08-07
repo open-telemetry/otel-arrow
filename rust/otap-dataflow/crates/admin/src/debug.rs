@@ -132,9 +132,20 @@ struct CpuProfileParams {
 }
 
 async fn get_cpu_profile(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(params): Query<CpuProfileParams>,
 ) -> Result<Response, (StatusCode, String)> {
+    let permit = state
+        .cpu_profile_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "A heap profile dump is already in progress".into(),
+            )
+        })?;
+
     // start profile
     let profile_builder =
         pprof::ProfilerGuardBuilder::default().frequency(params.frequency.unwrap_or(100) as i32);
@@ -152,6 +163,7 @@ async fn get_cpu_profile(
     // offload the blocking generation of the profile to a dedicate thread so that the
     // admin server's async runtime stays responsive.
     let pprof = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         // finish profiling
         let report = guard.report().build().map_err(|e| {
             (

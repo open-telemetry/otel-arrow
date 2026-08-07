@@ -2651,6 +2651,7 @@ mod tests {
             controller: Arc::new(NoopControlPlane),
             terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             heap_profile_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            cpu_profile_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
             target_info: Arc::from(""),
