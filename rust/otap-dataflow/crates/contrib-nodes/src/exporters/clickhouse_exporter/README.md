@@ -109,8 +109,15 @@ Top-level config fields:
 - `username`
 - `password` (supports `${env:VAR}` / `${env:VAR:-default}` substitution, e.g. `"${env:CLICKHOUSE_PASSWORD}"`)
 - `async_insert`
+- `max_in_flight` (positive integer, defaults to `1`)
 - `table_defaults`
 - `tables`
+
+`max_in_flight` bounds the number of ClickHouse HTTP insert requests that can
+run concurrently. Values greater than one overlap synchronous inserts and may
+complete them out of order. When the limit is reached, the exporter applies
+backpressure until an insert completes. Set it to `10` for the same insert
+concurrency used by the benchmark Collector configuration.
 
 Inline attributes are always stored as `Map(LowCardinality(String), String)`;
 there is no per-group representation configuration.
@@ -198,6 +205,8 @@ payloads remain internal to the transform process.
 - initializes configured tables
 - writes only signal payloads
 - maps `Logs -> logs table` and `Spans -> traces table`
+- runs at most `max_in_flight` insert requests concurrently
+- drains accepted insert requests during shutdown
 
 There is no longer any special write ordering for attribute tables because
 attribute tables do not exist.

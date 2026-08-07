@@ -1,0 +1,9 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+change_type: enhancement
+component: pipeline
+note: "Allow the ClickHouse exporter to run concurrent inserts with the configurable max_in_flight setting."
+issues: [3512]
+subtext: |
+  The default remains 1. Increase max_in_flight to overlap synchronous ClickHouse HTTP insert requests.
