@@ -412,6 +412,19 @@ pub enum Error {
         actual_destinations: Vec<NodeName>,
     },
 
+    /// A connected node declares fewer output ports than its contract requires.
+    #[error(
+        "Invalid wiring for node `{node}`: requires at least {minimum_outputs} declared output port(s), found {actual_outputs}"
+    )]
+    InsufficientDeclaredOutputs {
+        /// The source node.
+        node: NodeName,
+        /// Minimum number of declared output ports.
+        minimum_outputs: usize,
+        /// Actual number of declared output ports.
+        actual_outputs: usize,
+    },
+
     /// A task error that occurred during the execution of a join task.
     #[error("Join task error: {error}, cancelled: {is_canceled}, panic: {is_panic}")]
     JoinTaskError {
@@ -639,6 +652,7 @@ impl Error {
             Error::UnknownReceiver { .. } => "UnknownReceiver",
             Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
             Error::InvalidNodeWiring { .. } => "InvalidNodeWiring",
+            Error::InsufficientDeclaredOutputs { .. } => "InsufficientDeclaredOutputs",
             Error::TopicAlreadyExists { .. } => "TopicAlreadyExists",
             Error::UnknownTopic { .. } => "UnknownTopic",
             Error::MessageNotTracked => "MessageNotTracked",
