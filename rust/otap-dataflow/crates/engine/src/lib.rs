@@ -838,11 +838,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     exporter_count += 1;
                     (NodeType::Exporter, pn)
                 }
-                otap_df_config::node::NodeKind::ProcessorChain => {
-                    return Err(Error::UnsupportedNodeKind {
-                        kind: "ProcessorChain".into(),
-                    });
-                }
             };
             let node_id = build_state.next_node_id(name.clone(), node_type, pipe_node)?;
             let _ = node_ids.insert(name.clone(), node_id);
@@ -1051,10 +1046,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         },
                     )?;
                     exporters.push(wrapper);
-                }
-                otap_df_config::node::NodeKind::ProcessorChain => {
-                    // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
-                    unreachable!("rejected in first pass");
                 }
             }
 
@@ -1314,11 +1305,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             plugin_urn: normalized,
                         })?
                         .wiring_contract
-                }
-                otap_df_config::node::NodeKind::ProcessorChain => {
-                    return Err(Error::UnsupportedNodeKind {
-                        kind: "ProcessorChain".into(),
-                    });
                 }
             };
 
