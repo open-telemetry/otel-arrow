@@ -112,11 +112,15 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
         let mut name_attr: Option<String> = None;
         let mut unit_attr: Option<String> = None;
         for attr in &field.attrs {
-            if let Some((maybe_name, u)) = parse_metric_field_attr(attr) {
-                if maybe_name.is_some() {
-                    name_attr = maybe_name;
+            match parse_metric_field_attr(attr) {
+                Ok(Some((maybe_name, unit))) => {
+                    if maybe_name.is_some() {
+                        name_attr = maybe_name;
+                    }
+                    unit_attr = Some(unit);
                 }
-                unit_attr = Some(u);
+                Ok(None) => {}
+                Err(err) => return err.to_compile_error().into(),
             }
         }
 
@@ -1256,23 +1260,25 @@ fn parse_metrics_name_attr(attr: &Attribute) -> Option<String> {
     out
 }
 
-fn parse_metric_field_attr(attr: &Attribute) -> Option<(Option<String>, String)> {
+fn parse_metric_field_attr(attr: &Attribute) -> syn::Result<Option<(Option<String>, String)>> {
     if !attr.path().is_ident("metric") {
-        return None;
+        return Ok(None);
     }
     let mut name: Option<String> = None;
     let mut unit: Option<String> = None;
-    let _ = attr.parse_nested_meta(|meta| {
+    attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("name") {
             let s: LitStr = meta.value()?.parse()?;
             name = Some(s.value());
         } else if meta.path.is_ident("unit") {
             let s: LitStr = meta.value()?.parse()?;
             unit = Some(s.value());
+        } else {
+            return Err(meta.error("unsupported metric argument; expected `name` or `unit`"));
         }
         Ok(())
-    });
-    unit.map(|u| (name, u))
+    })?;
+    Ok(unit.map(|u| (name, u)))
 }
 
 fn parse_attributes_name_attr(attr: &Attribute) -> Option<String> {
@@ -1316,6 +1322,50 @@ fn parse_attribute_field_attr(attr: &Attribute) -> syn::Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: A metric field declares the supported name and unit arguments.
+    /// Guarantees: The parser returns both values without an error.
+    #[test]
+    fn metric_field_arguments_accept_name_and_unit() {
+        let attr: Attribute = parse_quote!(#[metric(name = "dropped.items", unit = "{item}")]);
+
+        let parsed = parse_metric_field_attr(&attr).expect("supported arguments should parse");
+
+        assert_eq!(
+            parsed,
+            Some((Some("dropped.items".to_string()), "{item}".to_string()))
+        );
+    }
+
+    /// Scenario: A metric field attempts to declare registration attributes inline.
+    /// Guarantees: The parser rejects registration attributes instead of silently ignoring them.
+    #[test]
+    fn metric_field_arguments_reject_registration_attributes() {
+        let attr: Attribute =
+            parse_quote!(#[metric(unit = "{item}", registration_attrs(signal = "logs"))]);
+
+        let err = parse_metric_field_attr(&attr)
+            .expect_err("registration attributes are not metric field arguments");
+
+        assert_eq!(
+            err.to_string(),
+            "unsupported metric argument; expected `name` or `unit`"
+        );
+    }
+
+    /// Scenario: A metric field argument name contains a typo.
+    /// Guarantees: The parser reports the unknown argument instead of accepting partial metadata.
+    #[test]
+    fn metric_field_arguments_reject_unknown_arguments() {
+        let attr: Attribute = parse_quote!(#[metric(unit = "{item}", registration_attr = "logs")]);
+
+        let err = parse_metric_field_attr(&attr).expect_err("unknown metric arguments should fail");
+
+        assert_eq!(
+            err.to_string(),
+            "unsupported metric argument; expected `name` or `unit`"
+        );
+    }
 
     /// Scenario: measurement fields resolve to the same explicit attribute key.
     /// Guarantees: macro expansion rejects duplicate item keys.
