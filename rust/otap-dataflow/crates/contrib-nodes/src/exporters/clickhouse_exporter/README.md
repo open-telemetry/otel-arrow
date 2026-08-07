@@ -78,7 +78,8 @@ At runtime the exporter does the following:
    tables if enabled
 3. Receives `OtapPdata` messages from the engine
 4. Converts payloads into `OtapArrowRecords`
-5. Runs the transform pipeline across supported payload types
+5. Uses the specialized transformer for canonical OTAP logs, with the generic
+   transform pipeline as a fallback and for other inputs
 6. Returns only signal batches (`Logs`, `Spans`) from the transformer
 7. Inserts those batches into the destination tables
 
@@ -178,6 +179,12 @@ Nested attribute values (Map/Slice) are transcoded from binary/CBOR into a JSON
 string stored as the map value.
 
 ## Transform Pipeline
+
+Canonical OTAP log batches use a specialized transformation path that preserves
+the generic transformer's ClickHouse schema and values. If an input layout is
+not supported by that path, the exporter automatically falls back to the
+generic transformer. OTLP logs, traces, and other supported payloads continue
+to use the generic pipeline.
 
 The transform pipeline has two stages per payload:
 

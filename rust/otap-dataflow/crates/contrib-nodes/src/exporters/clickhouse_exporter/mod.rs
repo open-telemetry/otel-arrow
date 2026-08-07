@@ -32,6 +32,7 @@ use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::validation::validate_typed_config;
+use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
@@ -51,16 +52,23 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MetricSetHandler;
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::exporters::clickhouse_exporter::config::{Config, ConfigPatch};
 use crate::exporters::clickhouse_exporter::in_flight::{CompletedWrite, InFlightWrites};
 use crate::exporters::clickhouse_exporter::metrics::ClickhouseExporterMetrics;
+use crate::exporters::clickhouse_exporter::transform::logs_fast::{
+    LogsFastTransform, LogsFastTransformer,
+};
 use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
 use crate::exporters::clickhouse_exporter::writer::ClickHouseWriter;
 
 mod arrays;
+#[cfg(feature = "clickhouse-exporter-bench")]
+#[doc(hidden)]
+pub mod benchmark;
 mod config;
 mod consts;
 mod error;
@@ -221,6 +229,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
         );
 
         let mut batch_transformer = BatchTransformer::new();
+        let mut logs_fast_transformer = LogsFastTransformer::default();
         let clickhouse_writer =
             ClickHouseWriter::new(&self.config)
                 .await
@@ -276,6 +285,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                 }
                 Message::PData(pdata) => {
                     let signal_type = pdata.signal_type();
+                    let signal_format = pdata.signal_format();
 
                     let (_context, payload) = pdata.into_parts();
 
@@ -320,7 +330,30 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             }
                         })?;
 
-                    let write_batches = match batch_transformer.apply_plan(arrow_records) {
+                    let transform_result = if signal_type == SignalType::Logs
+                        && signal_format == SignalFormat::OtapRecords
+                    {
+                        match logs_fast_transformer.try_apply(&arrow_records) {
+                            Ok(LogsFastTransform::Applied(batch)) => {
+                                self.ch_metrics.record_log_fast_path();
+                                Ok(HashMap::from([(ArrowPayloadType::Logs, batch)]))
+                            }
+                            Ok(LogsFastTransform::NotApplicable(reason)) => {
+                                self.ch_metrics.record_log_transform_fallback();
+                                otap_df_telemetry::otel_debug!(
+                                    "clickhouse.exporter.transform.fallback",
+                                    message = "Using generic ClickHouse transform for OTAP logs.",
+                                    reason = reason,
+                                );
+                                batch_transformer.apply_plan(arrow_records)
+                            }
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        batch_transformer.apply_plan(arrow_records)
+                    };
+
+                    let write_batches = match transform_result {
                         Ok(batches) => batches,
                         Err(e) => {
                             self.pdata_metrics
