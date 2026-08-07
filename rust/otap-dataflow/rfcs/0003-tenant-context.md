@@ -23,10 +23,9 @@ of tenant context:
 
 Multitenant features are implemented by a **tenant compiler** which is
 computed from the whole engine configuration. The tenant compiler
-internalizes strings and match conditions and computes hash codes for
-distinct token signatures. The goal of this design is to enable `O(1)`
-match operations; the initial implementation does not support
-conditional matching, as described in the implementation plan below.
+internalizes strings and match conditions and builds one literal
+dictionary per value-matched key. At runtime, new tenant contexts
+include packed symbol words used for fast condition lookup.
 
 ## Configuration model
 
@@ -191,14 +190,19 @@ nodes:
 
 ### Matching
 
-The tenant compiler computes hash codes enabling a fast lookup and
-equality mechanism. The tenant compiler determines a **token
-signature** which is the set of tenant tokens used in a condition. For
-each signature it computes:
+The tenant compiler computes packed symbol words enabling a fast
+lookup and equality mechanism. The tenant compiler determines a
+**token signature** which is the set of tenant keys used in a
+condition; conditions testing the same keys share a signature.
 
-- Hashcode: a hashcode joined from the set of values in the signature
-- Indices: the offset in the tenant context for the interned value 
-  identity or encoded literal value.
+The compiler allocates a **token-signature pair** for each distinct
+combination of a token and a compatible signature needed by a
+configured consumer. If there are `T` tokens, `S` distinct signatures,
+and `C` conditions, the number of allocated pairs is `P <= T * S <=
+T * C`.  The tenant compiler state is primarily a matrix of `S` by `T`
+with up to `C` non-empty cells, plus dictionaries.
+
+![Tenant compiler state](images/tenant-compiler-state.svg)
 
 Nodes will resolve tenant conditions at startup or whenever their
 configuration changes.
@@ -238,7 +242,7 @@ policy configuration to avoid empty tenant contexts. This requires the
 nodes to call tenant-context construction utility functions in the
 engine, that will take several forms:
 
-- For receiver nodes, call the utility function providing borrowed 
+- For receiver nodes, call the utility function providing borrowed
   transport headers, peer network address, and authorized identity.
 - For processor nodes that extend a single tenant context, call the
   utility function providing the original and the derived values.
@@ -295,7 +299,7 @@ include in the tenant context, for example:
 - Transport headers that are not referenced or bagged will be dropped
 - Static configuration strings are replaced by numeric identifiers
 - Tenant key names are compiled out, used only when bagged
-- Tenant key values are hashed and/or canonicalized
+- Value-matched tenant keys are dictionary-encoded
 
 The topic exporter and receiver will be extended with dedicated
 configuration for controlling the propagation of tenant context across
@@ -331,10 +335,44 @@ tenant context producer and two consumers illustrating the process.
 
 ![Tenant context with only transport headers](images/tenant-context-only-transport-headers.svg)
 
-Conditional matching is not supported in the initial step. Moving
-forward, the ability to match based on tenant token values will
-introduce new fields in the encoded tenant context implementing a
-`O(1)` hash-function-based lookup.
+## Performance invariants
+
+To state requirements for tenant context impact on pipeline
+performance, let `P` be the number of allocated token-signature pairs
+as defined above. This number is pruned in cases where signatures are
+shared or token keys are incompatible with a condition. For one
+condition set, let `Q <= P` be the pairs bound to that set and let `R
+<= Q` be the number whose tokens resolved for a particular tenant context.
+
+### Space
+
+- Zero memory allocations when tenant context is not used
+- Max one memory allocation with packed encoding per new context
+- General size limits over scratch space, dictionary sizes, and encoded context size
+- `O(P + sizeof(compiled literal values))` compiled space
+- Exactly `P` packed 64-bit symbol words per non-empty tenant context,
+  plus retained encoded values
+- Compiled epoch state is immutable, no locking for lookup and match.
+
+### Time
+
+At compile time:
+
+- `O(#value-matched keys + sizeof(condition values))` for dictionary
+  encoding
+- `O(P + sum(#signature_keys) + #conditions)` to build signature
+  layouts, pair indices, and condition probe tables
+
+Per request:
+
+- `O(#value-matched keys + sizeof(value-matched input values))` to
+  dictionary-encode extracted values
+- `O(P + sum(#signature_keys per resolved pair))` to initialize and pack
+  the context's symbol words
+- Expected `O(Q)` to evaluate a condition set: one resolved-token bit
+  test per bound pair and, for each of the `R` resolved pairs, at most
+  one hash-table probe keyed by one packed `u64`. The `u64` equality
+  test occurs inside that probe rather than as a separate pass.
 
 ## PR series
 
@@ -348,7 +386,7 @@ Tenant context will be implemented in approximately 10 PRs.
 | 4  | Carriers                    | Tenant consumers can extract key values                         |
 | 5  | Remove transport headers    | Net-negative cost compared with starting point                  |
 | 6  | Authorization               | New extractors for authorization subject/audience/claims        |
-| 7  | Matchers                    | Compiler computes hash-join value array, adds tenant_router     |
+| 7  | Matchers                    | Compiler computes packed symbol words, adds tenant_router       |
 | 8  | Topics                      | Topic exporter and receiver use special extractors              |
 | 9  | Batch processor             | Batch processor gains partition keys                            |
 | 10 | Ingress rules               | Required token checking, idempotency key support                |
