@@ -49,6 +49,7 @@
 
 pub mod config;
 pub mod encoder;
+pub mod error;
 pub mod exporter;
 pub mod metrics;
 pub mod partitioner;
@@ -56,3 +57,4 @@ mod producer;
 pub mod topic_router;
 
 pub use config::{KafkaExporterConfig, KafkaExporterConfigBuilder};
+pub use error::KafkaExporterError;
