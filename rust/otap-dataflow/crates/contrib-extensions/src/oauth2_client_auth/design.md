@@ -556,7 +556,7 @@ rather than two - which matters where the choice of library is a compliance
 requirement rather than a preference.
 
 | Feature | Assertion-signing backend |
-|---|---|
+| --- | --- |
 | `crypto-ring` | `ring` |
 | `crypto-aws-lc` | `aws-lc-rs`, through `jsonwebtoken`'s bundled provider |
 | `crypto-openssl` | `openssl` |
