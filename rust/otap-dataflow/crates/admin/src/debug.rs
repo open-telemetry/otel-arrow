@@ -10,16 +10,16 @@
 //!   shutdown responsive.
 
 use axum::Router;
-use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::get;
-use serde::Deserialize;
 
 #[cfg(all(feature = "jemalloc-pprof", not(windows)))]
 use std::panic::AssertUnwindSafe;
-use std::time::Duration;
+
+#[cfg(not(windows))]
+use axum::{body::Body, http::header};
 
 use crate::AppState;
 
@@ -120,7 +120,7 @@ async fn get_heap_profile(State(state): State<AppState>) -> Result<Response, (St
 }
 
 /// Querystring parameters for /profile endpoint
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct CpuProfileParams {
     /// How long (in seconds) to sample CPU. If the parameter is not specified, the default will
     /// be 30 seconds
@@ -136,6 +136,8 @@ async fn get_cpu_profile(
 ) -> Result<Response, (StatusCode, String)> {
     #[cfg(not(windows))]
     {
+        
+        use std::time::Duration;
         use pprof::protos::Message;
         let permit = state
             .cpu_profile_permits
@@ -213,9 +215,10 @@ async fn get_cpu_profile(
 
     #[cfg(not(not(windows)))]
     {
-        // Suppress dead-code warning for the semaphore field when the
-        // jemalloc-pprof feature is not compiled in.
-        let _ = &state.heap_profile_permits;
+        // Suppress dead-code warning for the unused fields when the feature is not compiled in.
+        let _ = &state.cpu_profile_permits;
+        let _ = params.seconds;
+        let _ = params.frequency;
         Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             "CPU profiling is not available in this build".into(),
