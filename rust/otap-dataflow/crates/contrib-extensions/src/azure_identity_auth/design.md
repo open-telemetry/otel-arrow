@@ -21,12 +21,12 @@ data-path nodes through a `BearerTokenProvider` capability.
 
 It builds on the extension system foundations:
 
-- [Extension System Proposal](extension-requirements.md) - the *what* and *why*
+- [Extension System Proposal](../../../../docs/extension-requirements.md) - the *what* and *why*
   of the capability-based extension system.
-- [Extension System Architecture](extension-system-architecture.md) - the
+- [Extension System Architecture](../../../../docs/extension-system-architecture.md) - the
   Phase 1 *how* (capability proc macro, registry, Active/Passive lifecycle,
   local/shared execution models).
-- [Design Principles and Constraints](design-principles.md) - thread-per-core
+- [Design Principles and Constraints](../../../../docs/design-principles.md) - thread-per-core
   execution, minimal synchronization, security/privacy first.
 
 ## Problem
@@ -85,7 +85,7 @@ path free of authentication plumbing.
 - A general-purpose capability framework. `BearerTokenProvider` is a single,
   purpose-built capability trait (defined via the engine's `#[capability]`
   proc macro, see
-  [Extension System Architecture](extension-system-architecture.md)) introduced
+  [Extension System Architecture](../../../../docs/extension-system-architecture.md)) introduced
   alongside this extension; this design adds no capability machinery beyond it.
 - General-purpose OAuth/OIDC support. This extension is Azure-specific.
 - Per-request, per-tenant token selection. One extension instance serves one
@@ -419,7 +419,7 @@ Metrics are recorded in both the background refresh loop and the slow-path
 
 1. The engine starts the extension before any consumer that binds it (extensions
    start first; see
-   [Extension System Architecture](extension-system-architecture.md#key-design-decisions)).
+   [Extension System Architecture](../../../../docs/extension-system-architecture.md#key-design-decisions)).
    At factory time `create()` has already built `Auth`, registered the metric
    set, and constructed the extension with an empty token cache.
 2. `SharedExtension::start()` runs the refresh loop. The first acquisition
@@ -501,7 +501,7 @@ pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
 };
 ```
 
-The URN follows the [URN format](urns.md): `urn:microsoft:extension:azure_identity_auth`
+The URN follows the [URN format](../../../../docs/urns.md): `urn:microsoft:extension:azure_identity_auth`
 (`microsoft` namespace, `extension` kind). The main binary links the crate with
 a side-effect import (`use otap_df_contrib_extensions as _;`) so the
 registration takes effect.
@@ -544,7 +544,7 @@ registration takes effect.
   rather than firing on a shared cadence. A future move to a broader scope
   (group/engine) would let a single instance be shared across cores without code
   changes (see
-  [Extension Scopes](extension-requirements.md#extension-scopes)).
+  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 - **Runtime discipline.** The refresh loop runs on the per-core async runtime;
   all I/O is async (`reqwest` via the Azure SDK), so it never blocks other
   futures on the core.
@@ -610,13 +610,13 @@ Additional scenario coverage:
 - **Broader extension scope.** Hoist the extension to group/engine scope (Phase
   2) for genuine cross-core token-cache sharing, so a single token cache and
   refresh loop serve every core (see
-  [Extension Scopes](extension-requirements.md#extension-scopes)).
+  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 
 ## References
 
-- [Extension System Proposal](extension-requirements.md)
-- [Extension System Architecture](extension-system-architecture.md)
-- [Design Principles and Constraints](design-principles.md)
-- [Architecture](architecture.md)
-- [URN Format](urns.md)
+- [Extension System Proposal](../../../../docs/extension-requirements.md)
+- [Extension System Architecture](../../../../docs/extension-system-architecture.md)
+- [Design Principles and Constraints](../../../../docs/design-principles.md)
+- [Architecture](../../../../docs/architecture.md)
+- [URN Format](../../../../docs/urns.md)
 - [PR #3337 - Workload Identity Federation for Azure Monitor exporter (merged)](https://github.com/open-telemetry/otel-arrow/pull/3337)
