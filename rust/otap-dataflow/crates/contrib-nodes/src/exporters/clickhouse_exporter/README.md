@@ -1,9 +1,9 @@
 # ClickHouse Exporter
 
-This exporter accepts OTAP Arrow payloads, reshapes them into
-ClickHouse-compatible Arrow `RecordBatch`es, and inserts them into ClickHouse
-over HTTP using the official ClickHouse Rust client (`clickhouse` +
-`clickhouse-ext-arrow`, `FORMAT ArrowStream`).
+This exporter accepts OTAP Arrow payloads and serialized OTLP requests,
+reshapes them into ClickHouse-compatible Arrow `RecordBatch`es, and inserts
+them into ClickHouse over HTTP using the official ClickHouse Rust client
+(`clickhouse` + `clickhouse-ext-arrow`, `FORMAT ArrowStream`).
 
 The current architecture is intentionally simple:
 
@@ -77,9 +77,10 @@ At runtime the exporter does the following:
 2. Connects to ClickHouse and creates the target database and configured
    tables if enabled
 3. Receives `OtapPdata` messages from the engine
-4. Converts payloads into `OtapArrowRecords`
-5. Uses the specialized transformer for canonical OTAP logs, with the generic
-   transform pipeline as a fallback and for other inputs
+4. Transforms serialized OTLP logs directly into ClickHouse columns; if that
+   path cannot handle an input, converts it into `OtapArrowRecords`
+5. Uses a second specialized transformer for canonical OTAP logs, with the
+   generic transform pipeline as a fallback and for other inputs
 6. Returns only signal batches (`Logs`, `Spans`) from the transformer
 7. Inserts those batches into the destination tables
 
@@ -175,16 +176,18 @@ Inline attributes are stored as:
 Map(LowCardinality(String), String)
 ```
 
-Nested attribute values (Map/Slice) are transcoded from binary/CBOR into a JSON
-string stored as the map value.
+Nested attribute values (Map/Slice) are stored as a JSON string. The raw OTLP
+path serializes them directly, while OTAP inputs transcode their CBOR values.
 
 ## Transform Pipeline
 
-Canonical OTAP log batches use a specialized transformation path that preserves
-the generic transformer's ClickHouse schema and values. If an input layout is
-not supported by that path, the exporter automatically falls back to the
-generic transformer. OTLP logs, traces, and other supported payloads continue
-to use the generic pipeline.
+Serialized OTLP log requests build the final ClickHouse columns directly from
+the protobuf byte view, avoiding an intermediate OTAP Arrow batch. Canonical
+OTAP log batches use a separate specialized transformation path. Both paths
+preserve the generic transformer's ClickHouse values. Raw OTLP transformation
+errors use the legacy conversion path, while unsupported OTAP layouts use the
+generic transformer. Traces and other supported payloads continue to use the
+generic pipeline.
 
 The transform pipeline has two stages per payload:
 
