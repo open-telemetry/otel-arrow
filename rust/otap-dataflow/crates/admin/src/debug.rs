@@ -10,15 +10,14 @@
 //!   shutdown responsive.
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::Response;
 use axum::routing::get;
 use pprof::protos::Message;
 use serde::Deserialize;
 
-#[cfg(all(feature = "jemalloc-pprof", not(windows)))]
-use axum::{body::Body, http::header};
 #[cfg(all(feature = "jemalloc-pprof", not(windows)))]
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
@@ -27,8 +26,8 @@ use crate::AppState;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
-    .route("/debug/pprof/heap", get(get_heap_profile))
-    .route("/debug/pprof/profile", get(get_cpu_profile))
+        .route("/debug/pprof/heap", get(get_heap_profile))
+        .route("/debug/pprof/profile", get(get_cpu_profile))
 }
 
 async fn get_heap_profile(State(state): State<AppState>) -> Result<Response, (StatusCode, String)> {
@@ -150,24 +149,37 @@ async fn get_cpu_profile(
     let profile_time = Duration::from_secs(params.seconds.unwrap_or(30) as u64);
     tokio::time::sleep(profile_time).await;
 
-    // finish profiling
-    let report = guard.report().build().map_err(|e| {
+    // offload the blocking generation of the profile to a dedicate thread so that the
+    // admin server's async runtime stays responsive.
+    let pprof = tokio::task::spawn_blocking(move || {
+        // finish profiling
+        let report = guard.report().build().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not build profile report: {e}"),
+            )
+        })?;
+
+        // encode profile as proto-encoded pprof
+        let pprof = match report.pprof() {
+            Ok(pprof) => pprof.encode_to_vec(),
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Could not proto-encode profile report: {e}"),
+                ));
+            }
+        };
+
+        Ok(pprof)
+    })
+    .await
+    .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Could not build profile report: {e}"),
+            format!("Heap profile task failed to join: {e}"),
         )
-    })?;
-
-    // encode profile as proto-encoded pprof
-    let pprof = match report.pprof() {
-        Ok(pprof) => pprof.encode_to_vec(),
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not proto-encode profile report: {e}"),
-            ));
-        }
-    };
+    })??;
 
     // return response
     let body = Body::from(pprof);
