@@ -169,6 +169,7 @@ parquet = { version = "58.3", default-features = false, features = ["arrow", "as
 pest = "2.8"
 pest_derive = "2.8"
 pretty_assertions = "1.4.1"
+pprof = { version = "0.15", features = ["prost-codec"] }
 proc-macro2 = "1.0"
 prometheus = "0.14.0"
 prost = "0.14"
