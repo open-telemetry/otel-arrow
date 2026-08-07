@@ -132,13 +132,13 @@ impl OtlpReceiverMetrics {
         &mut self,
         signal: SignalType,
         protocol: OtlpProtocol,
-        payload_bytes: u64,
+        payload_bytes: Option<u64>,
     ) {
         let requests = self
             .requests
             .with(OtlpRequestAttributes { signal, protocol });
         requests.started.inc();
-        if payload_bytes > 0 {
+        if let Some(payload_bytes) = payload_bytes.filter(|bytes| *bytes > 0) {
             requests.payload_size.add(payload_bytes);
         }
     }
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn receiver_metrics_are_partitioned_by_context() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Grpc, 42);
+        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Grpc, Some(42));
         metrics.record_request_completed(SignalType::Logs, OtlpProtocol::Grpc);
         metrics.record_rejection(
             OtlpProtocol::Http,
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn admitted_empty_request_still_records_started() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Http, 0);
+        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Http, Some(0));
 
         let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
         assert_eq!(requests.started.get(), 1);
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_admitted(SignalType::Metrics, OtlpProtocol::Http, 0);
+        metrics.record_request_admitted(SignalType::Metrics, OtlpProtocol::Http, Some(0));
         metrics.record_rejection(
             OtlpProtocol::Grpc,
             ReceiverRejectionErrorType::MemoryPressure,

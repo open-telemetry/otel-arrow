@@ -51,6 +51,7 @@ pub mod log_tap;
 pub mod metrics;
 pub mod registry;
 pub mod reporter;
+pub mod resource_detectors;
 pub mod self_tracing;
 pub mod semconv;
 /// Tokio tracing subscriber initialization.

@@ -162,7 +162,7 @@ pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
 /// #[component_inventory(
 ///     category = Receiver,
 ///     description = "OTLP unary gRPC receiver on port 4317",
-///     attributes(port = "4317", protocol = "gRPC (HTTP/2)", auth = "mTLS (opt-in)"),
+///     attributes(listen_port = "4317", protocol = "gRPC (HTTP/2)", auth = "mTLS (opt-in)"),
 /// )]
 /// #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
@@ -183,7 +183,8 @@ pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
 /// crate: it emits fully-qualified `::otap_df_engine::inventory::*` paths.
 #[proc_macro_attribute]
 pub fn component_inventory(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(args as component_inventory::ComponentInventoryArgs);
+    let args =
+        parse_macro_input!(args as otap_df_component_inventory_syntax::ComponentInventoryArgs);
     let item = parse_macro_input!(input as Item);
     component_inventory::expand_component_inventory(args, item).into()
 }

@@ -2809,6 +2809,152 @@ groups:
         );
     }
 
+    /// Scenario: a named rate limiter is configured at both top-level and pipeline scopes.
+    /// Guarantees: policy resolution keeps normal override precedence instead of rejecting the config.
+    #[test]
+    fn resolve_rate_limit_pipeline_overrides_engine() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: auto
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket:
+          allow: 1000
+          interval: 1s
+          burst: 1000
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          resources:
+            rate_limiters:
+              ingress:
+                enforcement: observe_only
+                aggregation: receiver_instance
+                unit: request_bytes
+                pressure: soft
+                token_bucket:
+                  allow: 2000
+                  interval: 1s
+                  burst: 2000
+        nodes:
+          receiver:
+            type: "urn:otel:receiver:otlp"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("override should be valid");
+        let resolved = config.resolve();
+        let pipeline = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "main")
+            .expect("main pipeline should be resolved");
+        let rate_limiter = pipeline
+            .policies
+            .rate_limiters
+            .get("ingress")
+            .expect("rate limiter should be resolved");
+
+        assert_eq!(rate_limiter.token_bucket.allow, 2000);
+        assert_eq!(rate_limiter.token_bucket.burst, Some(2000));
+        assert_eq!(
+            pipeline.policies.rate_limiter_scope,
+            Some(crate::policy::RateLimiterDeclarationScope::Pipeline(
+                PipelineGroupId::from("default"),
+                crate::PipelineId::from("main"),
+            ))
+        );
+    }
+
+    /// Scenario: a top-level rate limiter is configured with an internal observability pipeline.
+    /// Guarantees: observability does not inherit the user-facing receiver rate limiter policy.
+    #[test]
+    fn resolve_observability_pipeline_has_no_rate_limit() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: auto
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket:
+          allow: 1000
+          interval: 1s
+          burst: 1000
+engine:
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "urn:otel:receiver:internal_telemetry"
+          config: {}
+        sink:
+          type: "urn:otel:exporter:console"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:otel:receiver:otlp"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let resolved = config.resolve();
+
+        let obs = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.role == ResolvedPipelineRole::ObservabilityInternal)
+            .expect("observability pipeline should be resolved");
+        assert!(
+            obs.policies.rate_limiters.is_empty(),
+            "observability pipeline should not have a rate limiter"
+        );
+
+        let main = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_id.as_ref() == "main")
+            .expect("main pipeline should be resolved");
+        assert!(
+            !main.policies.rate_limiters.is_empty(),
+            "regular pipelines should inherit the engine-level rate limiter"
+        );
+    }
+
     #[test]
     fn bundled_configs_parse_as_engine_configs() {
         let mut dirs = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../configs")];
