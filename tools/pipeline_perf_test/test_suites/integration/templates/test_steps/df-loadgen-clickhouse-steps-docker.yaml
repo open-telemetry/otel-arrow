@@ -89,11 +89,32 @@ steps:
     hooks:
       run:
         pre:
+          - run_command:
+              command: >-
+                curl --fail --silent --show-error --user default:test
+                --data-binary 'SELECT count() FROM {{clickhouse_database}}.otel_logs'
+                http://localhost:8123 >
+                results/clickhouse/validation/{{validation_file}}.rows-before &&
+                date +%s.%N >
+                results/clickhouse/validation/{{validation_file}}.count-start
           - record_event:
               name: observation_start
         post:
           - record_event:
               name: observation_stop
+          - run_command:
+              command: >-
+                before=$(cat results/clickhouse/validation/{{validation_file}}.rows-before) &&
+                after=$(curl --fail --silent --show-error --user default:test
+                --data-binary 'SELECT count() FROM {{clickhouse_database}}.otel_logs'
+                http://localhost:8123) &&
+                end=$(date +%s.%N) &&
+                start=$(cat results/clickhouse/validation/{{validation_file}}.count-start) &&
+                seconds=$(awk -v start="${start}" -v end="${end}" 'BEGIN { print end - start }') &&
+                test "${after}" -gt "${before}" &&
+                printf 'rows_before,rows_after,observation_seconds\n%s,%s,%s\n'
+                "${before}" "${after}" "${seconds}" >
+                results/clickhouse/validation/{{validation_file}}.window.csv
 
   - name: Stop Load Generator
     hooks:
