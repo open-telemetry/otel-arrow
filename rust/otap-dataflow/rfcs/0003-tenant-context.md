@@ -94,6 +94,12 @@ nodes:
       ...
 ```
 
+Receivers are expected to handle missing required tokens in a protocol
+specific way, for example the gRPC code `FAILED_PRECONDITION` or HTTP
+403 `Forbidden`. Other nodes with missing required tokens will
+automatically Nack requests, and other configurations can be added
+through policies.
+
 ### Consumers
 
 Consumers of the tenant context fall into two categories:
@@ -284,6 +290,10 @@ Tenant context will be implemented in approximately 10 PRs.
 | 8  | Topics                      | Topic exporter and receiver use special extractors              |
 | 9  | Batch processor             | Batch processor gains partition keys                            |
 | 10 | Ingress rules               | Required token checking, idempotency key support                |
+
+Note that a PR5, when transport headers are removed, we will have
+implemented the complete equivalent functionality compared with the
+existing mechanism.
 
 At this point, many more nodes will come up for review, and how we
 design the use of tenant tokens for matching and propagation will
