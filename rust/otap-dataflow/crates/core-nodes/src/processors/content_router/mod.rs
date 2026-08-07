@@ -607,9 +607,16 @@ impl ContentRouter {
     fn record_forwarded_route(&mut self, route_kind: SelectedRouteKind) {
         if let Some(m) = self.metrics.as_mut() {
             match route_kind {
-                SelectedRouteKind::Matched => m.record(Outcome::Success, ContentRouterReason::MatchedRoute),
-                SelectedRouteKind::DefaultNoMatch => m.record(Outcome::Success, ContentRouterReason::DefaultRouteNoMatch),
-                SelectedRouteKind::DefaultMissingKey => m.record(Outcome::Success, ContentRouterReason::DefaultRouteMissingKey),
+                SelectedRouteKind::Matched => {
+                    m.record(Outcome::Success, ContentRouterReason::MatchedRoute)
+                }
+                SelectedRouteKind::DefaultNoMatch => {
+                    m.record(Outcome::Success, ContentRouterReason::DefaultRouteNoMatch)
+                }
+                SelectedRouteKind::DefaultMissingKey => m.record(
+                    Outcome::Success,
+                    ContentRouterReason::DefaultRouteMissingKey,
+                ),
             }
         }
     }
@@ -891,7 +898,8 @@ impl local::Processor<OtapPdata> for ContentRouter {
                         // matched-route admission once the default port has
                         // been selected.
                         if let Some(default_port) = self.default_output.clone() {
-                            let default_kind = if matches!(resolution, RouteResolution::MissingKey) {
+                            let default_kind = if matches!(resolution, RouteResolution::MissingKey)
+                            {
                                 SelectedRouteKind::DefaultMissingKey
                             } else {
                                 SelectedRouteKind::DefaultNoMatch
@@ -2157,7 +2165,12 @@ mod tests {
                 |_desc, _scope_attrs, item_attrs, iter| {
                     for (field, value) in iter {
                         let mut name = field.name.to_string();
+                        println!("ITEM ATTRS: {:?}", item_attrs);
                         if let Some((_, v)) = item_attrs.iter().find(|(k, _)| *k == "outcome") {
+                            name.push('.');
+                            name.push_str(v);
+                        }
+                        if let Some((_, v)) = item_attrs.iter().find(|(k, _)| *k == "reason") {
                             name.push('.');
                             name.push_str(v);
                         }
@@ -2285,8 +2298,14 @@ mod tests {
 
                 let metrics = collect_metrics_map(&telemetry_registry);
                 println!("COLLECTED METRICS: {:?}", metrics);
-                assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics.get("messages.success.matched_route").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics.get("messages.failure.no_matching_route").copied().unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2336,8 +2355,14 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics.get("messages.failure.no_matching_route").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics.get("messages.success.matched_route").copied().unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2393,10 +2418,13 @@ mod tests {
 
                 let metrics = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    metrics.get("messages.routed_default").copied().unwrap_or(0),
+                    metrics.get("messages.success.default_route_no_match").copied().unwrap_or(0),
                     1
                 );
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics.get("messages.failure.no_matching_route").copied().unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2460,20 +2488,16 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    metrics
-                        .get("messages.rejected_route_full")
-                        .copied()
-                        .unwrap_or(0),
+                    metrics.get("messages.success.matched_route").copied().unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics.get("messages.refused.route_full").copied().unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics
-                        .get("messages.rejected_route_closed")
-                        .copied()
-                        .unwrap_or(0),
+                    metrics.get("messages.refused.route_closed").copied().unwrap_or(0),
                     0
                 );
 
@@ -2538,21 +2562,17 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    metrics
-                        .get("messages.rejected_route_full")
-                        .copied()
-                        .unwrap_or(0),
+                    metrics.get("messages.success.matched_route").copied().unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    metrics
-                        .get("messages.rejected_route_closed")
-                        .copied()
-                        .unwrap_or(0),
+                    metrics.get("messages.refused.route_closed").copied().unwrap_or(0),
                     1
+                );
+                assert_eq!(
+                    metrics.get("messages.refused.route_full").copied().unwrap_or(0),
+                    0
                 );
 
                 stop_telemetry(reporter, collector_task);
@@ -2617,22 +2637,15 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("messages.routed_default").copied().unwrap_or(0),
+                    metrics.get("messages.success.default_route_no_match").copied().unwrap_or(0),
                     0
                 );
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    metrics
-                        .get("messages.rejected_route_full")
-                        .copied()
-                        .unwrap_or(0),
+                    metrics.get("messages.refused.route_full").copied().unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics
-                        .get("messages.rejected_route_closed")
-                        .copied()
-                        .unwrap_or(0),
+                    metrics.get("messages.refused.route_closed").copied().unwrap_or(0),
                     0
                 );
 
@@ -2697,22 +2710,15 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("messages.routed_default").copied().unwrap_or(0),
+                    metrics.get("messages.success.default_route_no_match").copied().unwrap_or(0),
                     0
                 );
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    metrics
-                        .get("messages.rejected_route_closed")
-                        .copied()
-                        .unwrap_or(0),
+                    metrics.get("messages.refused.route_closed").copied().unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics
-                        .get("messages.rejected_route_full")
-                        .copied()
-                        .unwrap_or(0),
+                    metrics.get("messages.refused.route_full").copied().unwrap_or(0),
                     0
                 );
 
@@ -2801,20 +2807,16 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("messages.routed").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("messages.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    metrics
-                        .get("messages.rejected_route_full")
-                        .copied()
-                        .unwrap_or(0),
+                    metrics.get("messages.success.matched_route").copied().unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    metrics
-                        .get("messages.rejected_route_closed")
-                        .copied()
-                        .unwrap_or(0),
+                    metrics.get("messages.refused.route_full").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics.get("messages.refused.route_closed").copied().unwrap_or(0),
                     0
                 );
 
