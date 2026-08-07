@@ -18,6 +18,7 @@ use otap_df_engine::capability::auth::{
     AuthorizedIdentity, AuthzDecision, BearerToken, ClaimValue, DenyReason,
 };
 use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
+use otap_df_telemetry::otel_debug;
 use tokio::sync::OnceCell;
 
 use super::cache::DecisionStore;
@@ -115,6 +116,7 @@ impl Core {
         // An empty credential is a missing credential (401); never round-trip it
         // to the API server.
         if token.is_empty() {
+            otel_debug!("k8s_sat_token_authorizer.credential_missing");
             return Ok(Self::missing());
         }
 
@@ -149,12 +151,18 @@ impl Core {
             .map_err(|err| self.cap_err.error(err))?;
 
         let decision = match outcome {
-            ReviewOutcome::Unauthenticated { error } => match error {
-                Some(detail) => {
-                    AuthzDecision::deny_with_detail(DenyReason::InvalidCredential, detail)
+            ReviewOutcome::Unauthenticated { error } => {
+                otel_debug!(
+                    "k8s_sat_token_authorizer.token_unauthenticated",
+                    detail = ?error
+                );
+                match error {
+                    Some(detail) => {
+                        AuthzDecision::deny_with_detail(DenyReason::InvalidCredential, detail)
+                    }
+                    None => AuthzDecision::deny(DenyReason::InvalidCredential),
                 }
-                None => AuthzDecision::deny(DenyReason::InvalidCredential),
-            },
+            }
             ReviewOutcome::Authenticated(user) => {
                 // Every configured audience the token was confirmed for. The
                 // `TokenReview` only requests configured audiences, so each
@@ -165,7 +173,13 @@ impl Core {
                 // then lists all matched audiences.
                 let audiences = match self.match_audiences(&user.audiences) {
                     Ok(audiences) => audiences,
-                    Err(deny) => return Ok(deny),
+                    Err(deny) => {
+                        otel_debug!(
+                            "k8s_sat_token_authorizer.audience_unbound",
+                            confirmed = ?user.audiences
+                        );
+                        return Ok(deny);
+                    }
                 };
 
                 let mut denied = None;
@@ -192,6 +206,11 @@ impl Core {
                         _ => Self::admit_non_rbac(&user, admission),
                     };
                     if let Err(deny) = result {
+                        otel_debug!(
+                            "k8s_sat_token_authorizer.admission_denied",
+                            audience = %audience,
+                            subject = ?user.username
+                        );
                         denied = Some(deny);
                         break;
                     }
@@ -199,7 +218,14 @@ impl Core {
 
                 match denied {
                     Some(deny) => deny,
-                    None => Self::allow(&user, &audiences),
+                    None => {
+                        otel_debug!(
+                            "k8s_sat_token_authorizer.authorized",
+                            audiences = ?audiences,
+                            subject = ?user.username
+                        );
+                        Self::allow(&user, &audiences)
+                    }
                 }
             }
         };
