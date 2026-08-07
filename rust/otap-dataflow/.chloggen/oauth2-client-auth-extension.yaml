@@ -1,0 +1,14 @@
+change_type: new_component
+
+component: pipeline
+
+note: Add the `oauth2_client_auth` extension, a `BearerTokenProvider` backed by the OAuth 2.0 client-credentials and JWT-bearer grants.
+
+issues: [3479]
+
+subtext: |
+  Feature `oauth2-client-auth-extension`, URN
+  `urn:otel:extension:oauth2_client_auth`. Supports the client-credentials and
+  JWT-bearer grants over TLS (custom CA, mTLS). Credentials may be inline or
+  in files re-read on each acquisition for rotation without a restart.
+  Tokens are refreshed ahead of expiry.
