@@ -18,7 +18,7 @@ use super::config::{AudienceConfig, Config, ResourceAttributesConfig, normalize_
 use super::core::Core;
 use super::*;
 
-// ── Config tests ───────────────────────────────────────────
+// -- Config tests -----------------------------------------------------------
 
 fn config_from_json(value: serde_json::Value) -> Result<Config, ConfigError> {
     parse_config(&value)
@@ -74,7 +74,7 @@ fn duplicate_audience_is_rejected() {
             ],
         }))
         .is_err(),
-        "duplicate duplicate audiences must be rejected"
+        "duplicate audiences must be rejected"
     );
 }
 
@@ -151,7 +151,7 @@ fn malformed_allow_list_entry_is_rejected() {
     );
 }
 
-// ── RBAC (SubjectAccessReview) config tests ────────────────
+// -- RBAC (SubjectAccessReview) config tests --------------------------------
 
 /// Scenario: parse an entry with a valid `resource_attributes` RBAC block.
 /// Guarantees: the required `resource`/`verb` and optional fields deserialize.
@@ -233,7 +233,7 @@ fn allow_list_and_rbac_are_mutually_exclusive() {
     );
 }
 
-// ── Service-account normalization tests ────────────────────
+// -- Service-account normalization tests ------------------------------------
 
 /// Scenario: normalize the three accepted allow-list shapes (full username,
 /// `<ns>/<name>`, `<ns>:<name>`).
@@ -296,7 +296,7 @@ fn allowed_set_canonicalizes_and_empty_is_none() {
     );
 }
 
-// ── Factory registration tests ─────────────────────────────
+// -- Factory registration tests ---------------------------------------------
 
 /// Scenario: inspect the linkme-registered factory entry.
 /// Guarantees: the factory is registered under the documented URN and advertises
@@ -327,9 +327,9 @@ fn validate_config_hook_accepts_valid_and_rejects_invalid() {
     assert!(validate_config(&serde_json::json!({})).is_err());
 }
 
-// ── Extension behavior tests ───────────────────────────────
+// -- Extension behavior tests -----------------------------------------------
 
-// ── Admission tests (Core) ─────────────────────────────────
+// -- Admission tests (Core) -------------------------------------------------
 
 /// Builds a single-entry core for audience `my-service` with an optional
 /// allow-list.
@@ -373,6 +373,30 @@ fn admit_without_allow_list_allows_any_authenticated() {
     );
     assert_eq!(identity.claim_str("k8s.namespace"), Some("default"));
     assert_eq!(identity.claim_str("k8s.serviceaccount"), Some("my-sa"));
+}
+
+/// Scenario: audience-only admission (no allow-list, which admits any
+/// authenticated caller) receives a `TokenReview` identity that authenticated
+/// successfully but is not a service account -- e.g. an OIDC or webhook user,
+/// which `TokenReview` also authenticates.
+/// Guarantees: the identity is denied as an invalid credential rather than
+/// admitted, so a non-service-account caller is never accepted by an
+/// audience-only entry nor emitted under the `k8s_sat` scheme.
+#[test]
+fn admit_denies_non_service_account_identity() {
+    let core = make_core(None);
+    for username in [
+        "alice@example.com",
+        "system:node:worker-1",
+        "system:serviceaccount:default:",
+        "system:serviceaccount::my-sa",
+    ] {
+        assert_eq!(
+            core.admit_for_test(Some(username.to_string()), "my-service"),
+            AuthzDecision::deny(DenyReason::InvalidCredential),
+            "non-service-account username {username} must not be admitted"
+        );
+    }
 }
 
 /// Scenario: admit a fully-populated authenticated user (username, uid, groups,
@@ -733,7 +757,7 @@ async fn authorize_empty_credential_is_missing_local() {
     assert_eq!(decision, AuthzDecision::deny(DenyReason::MissingCredential));
 }
 
-// ── Decision cache tests ───────────────────────────────────
+// -- Decision cache tests ---------------------------------------------------
 
 /// Scenario: insert a decision and read it back before and after its TTL
 /// elapses.
@@ -768,7 +792,7 @@ fn cache_respects_max_entries() {
     );
 }
 
-// ── Live-cluster integration tests ─────────────────────────
+// -- Live-cluster integration tests -----------------------------------------
 //
 // These are #[ignore]d: they require a reachable Kubernetes cluster (via the
 // ambient kubeconfig/in-cluster config) and a valid projected service-account

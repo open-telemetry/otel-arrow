@@ -8,7 +8,7 @@ change_type: new_component
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add the `k8s_sat_token_authorizer` contrib extension, which exposes the `BearerTokenAuthorizer` capability by validating inbound Kubernetes service-account tokens via the `TokenReview` API and admitting them per audience -- each audience binds to either a service-account allow-list or a Kubernetes RBAC `SubjectAccessReview` check -- so an identity is only trusted for the audience it was minted for.
+note: Add the `k8s_sat_token_authorizer` contrib extension to authenticate Kubernetes service-account tokens via `TokenReview` and admit them per audience (allow-list or RBAC `SubjectAccessReview`).
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3494]
@@ -17,10 +17,7 @@ issues: [3494]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  The extension is gated behind the `k8s-sat-token-authorizer-extension` feature
-  (and the aggregate `contrib-extensions` feature) and registered under the URN
-  `urn:otel:extension:k8s_sat_token_authorizer`. It caches reached decisions,
-  keyed by the token's SHA-256 digest (no plaintext credential retained) and
-  bounded by a configurable TTL and entry cap, to bound `TokenReview` calls to
-  the API server. A reached deny is a normal outcome; an unreachable API server
-  surfaces as an error so callers fail closed.
+  Admission keys off the audience `TokenReview` confirms, so an identity is
+  only trusted for the audience it was minted for, and only Kubernetes service
+  accounts are admitted. Gated behind the `k8s-sat-token-authorizer-extension`
+  feature; decisions are cached by the token's SHA-256 digest.

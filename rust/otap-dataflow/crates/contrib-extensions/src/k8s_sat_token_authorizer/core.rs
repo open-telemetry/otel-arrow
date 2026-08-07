@@ -164,6 +164,21 @@ impl Core {
                 }
             }
             ReviewOutcome::Authenticated(user) => {
+                // `TokenReview` authenticates any credential the API server
+                // accepts (OIDC, webhook, ...), not only service-account
+                // tokens. This authorizer speaks only for service accounts, so
+                // reject any identity without a canonical
+                // `system:serviceaccount:<ns>:<name>` username rather than
+                // emitting it under the `k8s_sat` scheme -- an audience-only
+                // entry would otherwise admit it.
+                if !Self::is_service_account(&user) {
+                    otel_debug!(
+                        "k8s_sat_token_authorizer.not_service_account",
+                        subject = ?user.username
+                    );
+                    return Ok(AuthzDecision::deny(DenyReason::InvalidCredential));
+                }
+
                 // Every configured audience the token was confirmed for. The
                 // `TokenReview` only requests configured audiences, so each
                 // confirmed audience is one we govern. Admission requires EVERY
@@ -325,6 +340,20 @@ impl Core {
         AuthzDecision::allow(identity)
     }
 
+    /// Returns `true` when the authenticated identity is a Kubernetes service
+    /// account, i.e. its username has the canonical
+    /// `system:serviceaccount:<namespace>:<name>` form.
+    ///
+    /// `TokenReview` authenticates every credential type the API server is
+    /// configured to accept, so this gates admission to the only identity kind
+    /// this authorizer is meant to speak for.
+    fn is_service_account(user: &AuthenticatedUser) -> bool {
+        user.username
+            .as_deref()
+            .and_then(parse_service_account)
+            .is_some()
+    }
+
     /// Runs the non-RBAC admission check (any / allow-list) for one audience's
     /// policy.
     ///
@@ -369,7 +398,8 @@ fn parse_service_account(username: &str) -> Option<(&str, &str)> {
 impl Core {
     /// Runs the non-RBAC admission step for `audience`'s entry. Test-only.
     ///
-    /// Returns a `NotPermitted` deny when the audience is not bound, mirroring
+    /// Returns a `NotPermitted` deny when the audience is not bound, and an
+    /// `InvalidCredential` deny for a non-service-account identity, mirroring
     /// the request path.
     pub(crate) fn admit_for_test(&self, username: Option<String>, audience: &str) -> AuthzDecision {
         let Some(admission) = self.admission_by_audience.get(audience) else {
@@ -383,6 +413,9 @@ impl Core {
             audiences: vec![audience.to_owned()],
             ..Default::default()
         };
+        if !Self::is_service_account(&user) {
+            return AuthzDecision::deny(DenyReason::InvalidCredential);
+        }
         match Self::admit_non_rbac(&user, admission) {
             Ok(()) => Self::allow(&user, &[audience.to_owned()]),
             Err(deny) => deny,
@@ -417,6 +450,9 @@ impl Core {
             audiences: confirmed.to_vec(),
             ..Default::default()
         };
+        if !Self::is_service_account(&user) {
+            return AuthzDecision::deny(DenyReason::InvalidCredential);
+        }
         let audiences = match self.match_audiences(&user.audiences) {
             Ok(audiences) => audiences,
             Err(deny) => return deny,
