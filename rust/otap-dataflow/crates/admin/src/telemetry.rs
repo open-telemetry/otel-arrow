@@ -2557,6 +2557,10 @@ mod tests {
             })
         }
 
+        fn has_active_instances(&self) -> bool {
+            false
+        }
+
         fn shutdown_pipeline(
             &self,
             _pipeline_group_id: &str,

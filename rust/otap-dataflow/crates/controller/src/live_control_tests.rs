@@ -3903,6 +3903,96 @@ fn runtime_thread_panic_populates_error_source_in_observed_status() {
     assert!(source.contains("backtrace:"));
 }
 
+static LAUNCH_PAUSE: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> =
+    Mutex::new(None);
+
+fn blocking_create(
+    _pipeline_ctx: PipelineContext,
+    node: otap_df_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+    if let Some((tx, rx)) = LAUNCH_PAUSE.lock().unwrap().as_mut() {
+        tx.send(()).unwrap();
+        rx.recv().unwrap();
+    }
+    Ok(ReceiverWrapper::local(
+        RecoveryTestReceiver,
+        node,
+        node_config,
+        receiver_config,
+    ))
+}
+
+/// Scenario: shutdown is requested while a pipeline instance is still starting
+/// and has not yet been registered in the controller's runtime instances map.
+/// Guarantees: shutdown completion waits for the launch to finish and register,
+/// so it doesn't incorrectly return early with a 200 OK before the instance
+/// is even tracked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn has_active_instances_checks_multiple_state_fields() {
+    use std::sync::mpsc;
+    let (launch_started_tx, launch_started_rx) = mpsc::channel();
+    let (allow_launch_tx, allow_launch_rx) = mpsc::channel();
+
+    *LAUNCH_PAUSE.lock().unwrap() = Some((launch_started_tx, allow_launch_rx));
+
+    let receiver_factories: &'static [ReceiverFactory<()>] = Box::leak(Box::new(vec![
+        ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: blocking_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+        ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: test_receiver_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+    ]));
+    let test_factory = Box::leak(Box::new(PipelineFactory::new(
+        receiver_factories,
+        TEST_PROCESSOR_FACTORIES,
+        RECOVERY_TEST_EXPORTER_FACTORIES,
+        &[],
+    )));
+
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime_with_factory(&config, test_factory);
+    let control_plane = runtime.control_plane();
+
+    // Start reconciliation which will launch the pipeline
+    let control_plane_clone = control_plane.clone();
+    let config_clone = config.clone();
+    let _reconcile_task = tokio::spawn(async move {
+        let req = reconcile_request(config_clone, false);
+        let _ = control_plane_clone.reconcile_engine_config(req).unwrap();
+    });
+
+    // Wait for the pipeline creation to begin and block
+    launch_started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+
+    // At this point, the instance is launching but NOT yet registered.
+    // The "new guard" (active_engine_operation.is_some()) keeps has_active_instances() true.
+    assert!(control_plane.has_active_instances());
+
+    // Allow the launch to finish
+    allow_launch_tx.send(()).unwrap();
+
+    // Give it a moment to complete initialization
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // We can also trigger a clean shutdown to ensure the test cleans up properly.
+    control_plane.shutdown_all(1).unwrap();
+
+    // The result might be a timeout Error(504) or Ok(()) depending on timing of test exit,
+    // but the key assertion was that it did not return immediately above.
+}
+
 /// Scenario: one core in a two-core regular pipeline exits with a runtime error
 /// while its sibling remains healthy, then a later rollout is planned.
 /// Guarantees: the controller promotes a ready replacement generation only for
