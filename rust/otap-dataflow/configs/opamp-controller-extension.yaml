@@ -14,4 +14,37 @@ engine:
           agent_description:
             identifying_attributes:
               service.name: "otap-df-engine"
-groups: {}
+groups:
+  default:
+    pipelines:
+      light_traffic:
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+          sink:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4317"
+        connections:
+          - from: generator
+            to: sink
+      local_backend:
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+          sink:
+            type: exporter:noop
+            config: {}
+        connections:
+          - from: receiver
+            to: sink
