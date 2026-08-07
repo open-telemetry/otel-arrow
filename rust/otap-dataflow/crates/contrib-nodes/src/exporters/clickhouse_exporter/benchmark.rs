@@ -4,25 +4,20 @@
 //! Benchmark-only access to the ClickHouse logs transformation implementations.
 
 use arrow::array::RecordBatch;
-use otap_df_pdata::OtapArrowRecords;
+use bytes::Bytes;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
 
 use super::transform::logs_fast::{LogsFastTransform, LogsFastTransformer};
+use super::transform::logs_otlp::OtlpLogsTransformer;
 use super::transform::transform_batch::BatchTransformer;
 
 /// Owns reusable state for comparing the generic and specialized logs transformers.
+#[derive(Default)]
 pub struct LogsTransformBenchmark {
     generic: BatchTransformer,
     fast: LogsFastTransformer,
-}
-
-impl Default for LogsTransformBenchmark {
-    fn default() -> Self {
-        Self {
-            generic: BatchTransformer::new(),
-            fast: LogsFastTransformer::default(),
-        }
-    }
+    otlp: OtlpLogsTransformer,
 }
 
 impl LogsTransformBenchmark {
@@ -49,5 +44,27 @@ impl LogsTransformBenchmark {
                 panic!("benchmark input is not supported by the specialized transform: {reason}")
             }
         }
+    }
+
+    /// Transform raw OTLP logs through the legacy OTAP Arrow conversion path.
+    #[must_use]
+    pub fn transform_otlp_legacy(&mut self, request: Bytes) -> RecordBatch {
+        let payload: OtapPayload = OtlpProtoBytes::ExportLogsRequest(request).into();
+        let mut records: OtapArrowRecords = payload
+            .try_into_with_default()
+            .expect("convert benchmark OTLP logs to OTAP Arrow");
+        records
+            .decode_transport_optimized_ids()
+            .expect("decode benchmark transport-optimized IDs");
+        self.transform_generic(records)
+    }
+
+    /// Transform raw OTLP logs directly to ClickHouse columns.
+    #[must_use]
+    pub fn transform_otlp_direct(&mut self, request: &[u8]) -> RecordBatch {
+        self.otlp
+            .transform(request)
+            .expect("direct ClickHouse OTLP logs transform")
+            .expect("benchmark input contains logs")
     }
 }
