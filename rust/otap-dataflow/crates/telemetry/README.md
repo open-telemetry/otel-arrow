@@ -85,10 +85,35 @@ The dataflow engine supports multiple ways to configure internal logs and
 metrics. Log provider modes determine how logging is configured in different
 parts of the code.
 
-All modes configure the [Rust-standard `env_logger`
-crate](https://docs.rs/env_logger/latest/env_logger/), making the
-`RUST_LOG` environment variable available for controlling internal
-logging.
+All modes use a [`tracing_subscriber::EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html).
+The `engine.telemetry.logs.level` field accepts either a severity such as
+`warn` or a complete target directive string. Successful full-engine
+reconciliation applies changes to this field to existing tracing subscribers,
+so an OpAMP or admin control plane can temporarily increase verbosity without
+restarting the engine. Failed reconciliation preserves the active filter.
+
+At startup, a valid `RUST_LOG` environment variable takes precedence over
+`logs.level`. After startup, a successful full-engine reconciliation makes the
+reconciled `logs.level` authoritative and replaces the environment-derived
+filter. This lets an OpAMP or admin control plane reliably change verbosity
+even when the process was launched with `RUST_LOG`.
+
+### Limitation: active span state is not reconstructed
+
+`EnvFilter` supports span-scoped directives such as
+`warn,[pipeline_thread]=debug`, which raise verbosity only while a matching
+span is entered. Those directives work when supplied at startup through
+`logs.level` or `RUST_LOG`, but reconciliation cannot apply them to spans that
+are already entered.
+
+Reconciliation installs a newly built `EnvFilter` into each live dispatcher.
+`EnvFilter` tracks span scopes through `on_new_span` and `on_enter`, so a
+replacement filter has no record of spans entered before it was installed and
+never pushes them onto its scope stack. A reconciled span directive applies to
+matching spans created after the update, including spans created by replacement
+pipeline threads. A long-lived `pipeline_thread` span that was already entered
+continues with its previous behavior until that pipeline thread is recreated.
+The non-span part of the reconciled `logs.level` takes effect immediately.
 
 There are four aspects that can be configured:
 

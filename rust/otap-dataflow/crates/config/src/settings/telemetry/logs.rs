@@ -6,6 +6,7 @@
 use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing_subscriber::EnvFilter;
 
 /// Internal logs configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -20,7 +21,12 @@ pub struct LogsConfig {
     /// specified, the default is `"info,h2=off,hyper=off"` which silences known
     /// noisy HTTP dependencies.
     ///
-    /// The `RUST_LOG` environment variable, if set, takes precedence over this field.
+    /// At startup, a valid `RUST_LOG` environment variable takes precedence over this field.
+    /// A subsequent successful full-engine reconciliation makes this field authoritative.
+    ///
+    /// Successful full-engine reconciliation applies changes to this field to running
+    /// subscribers without restarting the engine. Reconciled span-scoped directives apply
+    /// to spans created after the update, but not to spans that are already active.
     ///
     /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
     #[serde(default)]
@@ -60,6 +66,13 @@ pub struct InternalLogTapConfig {
 /// See the [`EnvFilter` directives documentation][env-filter] for the full syntax.
 ///
 /// Defaults to `"info,h2=off,hyper=off"`.
+///
+/// At startup, a valid `RUST_LOG` environment variable takes precedence over this value.
+/// A subsequent successful full-engine reconciliation makes this value authoritative.
+///
+/// Successful full-engine reconciliation applies changes to this value to running
+/// subscribers without restarting the engine. Reconciled span-scoped directives apply
+/// to spans created after the update, but not to spans that are already active.
 ///
 /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -228,9 +241,14 @@ impl LogsConfig {
     /// Validate the logs configuration.
     ///
     /// Returns an error if:
+    /// - `level` is not a valid `EnvFilter` directive string
     /// - `internal` is configured to use ITS, ConsoleAsync (needs_reporter())
     /// - `admin` is configured to use ConsoleAsync (would loop to itself)
     pub fn validate(&self) -> Result<(), Error> {
+        _ = EnvFilter::try_new(self.level.as_str()).map_err(|error| Error::InvalidUserConfig {
+            error: format!("invalid logs.level directive: {error}"),
+        })?;
+
         if self.providers.internal.uses_any_internal_provider() {
             return Err(Error::InvalidUserConfig {
                 error: format!(
@@ -388,6 +406,15 @@ mod tests {
     #[test]
     fn test_validate_default_succeeds() {
         assert!(LogsConfig::default().validate().is_ok());
+    }
+
+    /// Scenario: logs.level contains a malformed EnvFilter directive.
+    /// Guarantees: validation rejects the directive instead of accepting a lossy filter.
+    #[test]
+    fn test_validate_rejects_invalid_log_level_directive() {
+        let config = parse("level: 'info,['");
+
+        assert_invalid(&config, "invalid logs.level directive");
     }
 
     #[test]
