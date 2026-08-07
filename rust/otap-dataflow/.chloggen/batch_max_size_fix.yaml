@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: pdata
+note: >-
+  Track fixing the zero-copy bytes batch processor ignoring max_size for oversize single resources.
+issues: [3661]
