@@ -5,10 +5,11 @@
 //! `SubjectAccessReview` (RBAC) checks.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 
-use k8s_openapi::api::authentication::v1::{TokenReview, TokenReviewSpec};
+use k8s_openapi::api::authentication::v1::{TokenReview, TokenReviewSpec, TokenReviewStatus};
 use k8s_openapi::api::authorization::v1::{
-    ResourceAttributes, SubjectAccessReview, SubjectAccessReviewSpec,
+    ResourceAttributes, SubjectAccessReview, SubjectAccessReviewSpec, SubjectAccessReviewStatus,
 };
 use kube::api::{Api, PostParams};
 
@@ -100,13 +101,7 @@ impl Reviewer {
     /// normal [`ReviewOutcome::Unauthenticated`], not an error.
     pub(crate) async fn review(&self, token: &str) -> Result<ReviewOutcome, Error> {
         let api: Api<TokenReview> = Api::all(self.client.clone());
-        let review = TokenReview {
-            spec: TokenReviewSpec {
-                token: token.to_owned(),
-                audiences: Some(self.audiences.clone()),
-            },
-            ..Default::default()
-        };
+        let review = token_review_request(token, &self.audiences);
 
         let response = api
             .create(&PostParams::default(), &review)
@@ -128,20 +123,7 @@ impl Reviewer {
             Error::MissingStatus
         })?;
 
-        if status.authenticated.unwrap_or(false) {
-            let user = status.user.unwrap_or_default();
-            Ok(ReviewOutcome::Authenticated(AuthenticatedUser {
-                username: user.username,
-                uid: user.uid,
-                groups: user.groups.unwrap_or_default(),
-                extra: user.extra.unwrap_or_default(),
-                audiences: status.audiences.unwrap_or_default(),
-            }))
-        } else {
-            Ok(ReviewOutcome::Unauthenticated {
-                error: status.error,
-            })
-        }
+        Ok(review_outcome(status))
     }
 
     /// Submits a `SubjectAccessReview` asking whether `user` may perform the
@@ -157,26 +139,7 @@ impl Reviewer {
         attrs: &ResourceAttributesConfig,
     ) -> Result<AccessOutcome, Error> {
         let api: Api<SubjectAccessReview> = Api::all(self.client.clone());
-        let review = SubjectAccessReview {
-            spec: SubjectAccessReviewSpec {
-                user: user.username.clone(),
-                uid: user.uid.clone(),
-                groups: Some(user.groups.clone()),
-                extra: Some(user.extra.clone()),
-                resource_attributes: Some(ResourceAttributes {
-                    group: attrs.group.clone(),
-                    version: attrs.version.clone(),
-                    resource: Some(attrs.resource.clone()),
-                    verb: Some(attrs.verb.clone()),
-                    namespace: attrs.namespace.clone(),
-                    name: attrs.name.clone(),
-                    subresource: attrs.subresource.clone(),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let review = access_review_request(user, attrs);
 
         let response = api
             .create(&PostParams::default(), &review)
@@ -198,13 +161,119 @@ impl Reviewer {
             Error::MissingStatus
         })?;
 
-        // `allowed` grants; an explicit `denied` overrides. Anything else (not
-        // allowed, or an evaluation error) is a deny -- callers fail closed.
-        if status.allowed && !status.denied.unwrap_or(false) {
-            Ok(AccessOutcome::Allowed)
-        } else {
-            let reason = status.reason.or(status.evaluation_error);
-            Ok(AccessOutcome::Denied { reason })
+        Ok(access_outcome(status))
+    }
+}
+
+/// The Kubernetes review calls the decision flow depends on.
+///
+/// Exists so [`Core::decide`] can be exercised against canned API-server
+/// responses in unit tests. [`Reviewer`] is the only production implementor and
+/// simply forwards to its inherent methods; the trait deliberately adds no
+/// behavior of its own.
+pub(crate) trait KubeReviews {
+    /// Authenticates `token` via `TokenReview`.
+    fn review(&self, token: &str) -> impl Future<Output = Result<ReviewOutcome, Error>>;
+
+    /// Asks whether `user` may perform the action described by `attrs`.
+    fn check_access(
+        &self,
+        user: &AuthenticatedUser,
+        attrs: &ResourceAttributesConfig,
+    ) -> impl Future<Output = Result<AccessOutcome, Error>>;
+}
+
+impl KubeReviews for Reviewer {
+    async fn review(&self, token: &str) -> Result<ReviewOutcome, Error> {
+        Reviewer::review(self, token).await
+    }
+
+    async fn check_access(
+        &self,
+        user: &AuthenticatedUser,
+        attrs: &ResourceAttributesConfig,
+    ) -> Result<AccessOutcome, Error> {
+        Reviewer::check_access(self, user, attrs).await
+    }
+}
+
+/// Builds the `TokenReview` submitted for `token`.
+///
+/// Always requests the configured `audiences`, so the API server only ever
+/// confirms an audience this authorizer governs.
+pub(crate) fn token_review_request(token: &str, audiences: &[String]) -> TokenReview {
+    TokenReview {
+        spec: TokenReviewSpec {
+            token: token.to_owned(),
+            audiences: Some(audiences.to_vec()),
+        },
+        ..Default::default()
+    }
+}
+
+/// Maps a `TokenReviewStatus` to a [`ReviewOutcome`].
+///
+/// Anything short of an explicit `authenticated: true` is
+/// [`ReviewOutcome::Unauthenticated`], so a status that omits the flag fails
+/// closed.
+pub(crate) fn review_outcome(status: TokenReviewStatus) -> ReviewOutcome {
+    if status.authenticated.unwrap_or(false) {
+        let user = status.user.unwrap_or_default();
+        ReviewOutcome::Authenticated(AuthenticatedUser {
+            username: user.username,
+            uid: user.uid,
+            groups: user.groups.unwrap_or_default(),
+            extra: user.extra.unwrap_or_default(),
+            audiences: status.audiences.unwrap_or_default(),
+        })
+    } else {
+        ReviewOutcome::Unauthenticated {
+            error: status.error,
         }
+    }
+}
+
+/// Builds the `SubjectAccessReview` asking whether `user` may perform the
+/// action described by `attrs`.
+///
+/// Forwards the full subject (username, uid, groups, extra) so the API server
+/// evaluates RBAC against the exact identity `TokenReview` authenticated,
+/// rather than a reconstructed one.
+pub(crate) fn access_review_request(
+    user: &AuthenticatedUser,
+    attrs: &ResourceAttributesConfig,
+) -> SubjectAccessReview {
+    SubjectAccessReview {
+        spec: SubjectAccessReviewSpec {
+            user: user.username.clone(),
+            uid: user.uid.clone(),
+            groups: Some(user.groups.clone()),
+            extra: Some(user.extra.clone()),
+            resource_attributes: Some(ResourceAttributes {
+                group: attrs.group.clone(),
+                version: attrs.version.clone(),
+                resource: Some(attrs.resource.clone()),
+                verb: Some(attrs.verb.clone()),
+                namespace: attrs.namespace.clone(),
+                name: attrs.name.clone(),
+                subresource: attrs.subresource.clone(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// Maps a `SubjectAccessReviewStatus` to an [`AccessOutcome`].
+///
+/// `allowed` grants; an explicit `denied` overrides it. Anything else (not
+/// allowed, or an evaluation error) is a deny, so callers fail closed.
+pub(crate) fn access_outcome(status: SubjectAccessReviewStatus) -> AccessOutcome {
+    if status.allowed && !status.denied.unwrap_or(false) {
+        AccessOutcome::Allowed
+    } else {
+        let reason = status.reason.or(status.evaluation_error);
+        AccessOutcome::Denied { reason }
     }
 }

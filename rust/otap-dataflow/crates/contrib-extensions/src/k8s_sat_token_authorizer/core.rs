@@ -23,7 +23,7 @@ use tokio::sync::OnceCell;
 
 use super::cache::DecisionStore;
 use super::config::{AudienceConfig, ResourceAttributesConfig};
-use super::reviewer::{AccessOutcome, AuthenticatedUser, ReviewOutcome, Reviewer};
+use super::reviewer::{AccessOutcome, AuthenticatedUser, KubeReviews, ReviewOutcome, Reviewer};
 
 /// Authentication scheme tag emitted on every identity from this authorizer.
 const SCHEME: &str = "k8s_sat";
@@ -143,7 +143,19 @@ impl Core {
         // Lazily build the Kubernetes client on first use; a build failure is
         // undetermined, so fail closed and let the next request retry.
         let reviewer = self.reviewer().await?;
+        self.decide_with(reviewer.as_ref(), token).await
+    }
 
+    /// Reaches a decision using `reviewer` for the Kubernetes calls.
+    ///
+    /// Split out of [`Core::decide`] so the full authenticate-then-admit flow
+    /// can be driven against canned API-server responses; production always
+    /// passes the lazily built [`Reviewer`].
+    pub(crate) async fn decide_with<R: KubeReviews>(
+        &self,
+        reviewer: &R,
+        token: &str,
+    ) -> Result<AuthzDecision, CapabilityError> {
         // Perform the TokenReview (a request failure is undetermined).
         let outcome = reviewer
             .review(token)

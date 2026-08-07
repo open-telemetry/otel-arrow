@@ -3,7 +3,11 @@
 
 //! Unit tests for the Kubernetes SAT authorizer extension.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+
+use k8s_openapi::api::authentication::v1::{TokenReviewStatus, UserInfo};
+use k8s_openapi::api::authorization::v1::SubjectAccessReviewStatus;
 
 use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::capability::auth::{
@@ -13,9 +17,14 @@ use otap_df_engine::local::capability::auth::bearer_token_authorizer::BearerToke
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
 
 use super::authorizer::{LocalK8sSatTokenAuthorizer, SharedK8sSatTokenAuthorizer};
-use super::cache::DecisionCache;
+use super::cache::{DecisionCache, DecisionStore};
 use super::config::{AudienceConfig, Config, ResourceAttributesConfig, normalize_service_account};
 use super::core::Core;
+use super::error::Error;
+use super::reviewer::{
+    AccessOutcome, AuthenticatedUser, KubeReviews, ReviewOutcome, access_outcome,
+    access_review_request, review_outcome, token_review_request,
+};
 use super::*;
 
 // -- Config tests -----------------------------------------------------------
@@ -325,6 +334,55 @@ fn factory_is_registered_with_capability() {
 fn validate_config_hook_accepts_valid_and_rejects_invalid() {
     assert!(validate_config(&serde_json::json!({ "audiences": [{ "audience": "svc" }] })).is_ok());
     assert!(validate_config(&serde_json::json!({})).is_err());
+}
+
+/// Scenario: run the factory's `create` hook with a valid config, outside any
+/// Kubernetes cluster.
+/// Guarantees: it builds a passive bundle carrying BOTH the shared and local
+/// variants, and does so without contacting Kubernetes -- confirming the client
+/// is built lazily on first authorize rather than at pipeline construction, so
+/// a collector still starts when the API server is briefly unreachable.
+#[test]
+fn factory_create_builds_both_variants_without_a_cluster() {
+    let (ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        K8S_SAT_TOKEN_AUTHORIZER_URN.into(),
+        serde_json::json!({
+            "audiences": [{ "audience": "my-service" }],
+            "cache_ttl": "1m",
+        }),
+    ));
+    let extension_config = ExtensionConfig::new("k8s-authz");
+
+    let bundle = create(&ctx, "k8s-authz".into(), user_config, &extension_config)
+        .expect("a valid config must build an extension bundle");
+
+    let shared = bundle.shared().expect("shared variant must be present");
+    let local = bundle.local().expect("local variant must be present");
+    assert!(
+        shared.is_passive() && local.is_passive(),
+        "both variants must be passive: the authorizer is driven by requests, not a control loop"
+    );
+}
+
+/// Scenario: run the factory's `create` hook with a config that fails
+/// validation.
+/// Guarantees: the error surfaces as a `ConfigError` at construction time, so a
+/// misconfigured pipeline fails to build instead of denying every request at
+/// runtime.
+#[test]
+fn factory_create_rejects_an_invalid_config() {
+    let (ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        K8S_SAT_TOKEN_AUTHORIZER_URN.into(),
+        serde_json::json!({}),
+    ));
+    let extension_config = ExtensionConfig::new("k8s-authz");
+
+    assert!(
+        create(&ctx, "k8s-authz".into(), user_config, &extension_config).is_err(),
+        "a config without audiences must be rejected at build time"
+    );
 }
 
 // -- Extension behavior tests -----------------------------------------------
@@ -789,6 +847,526 @@ fn cache_respects_max_entries() {
     assert!(
         cache.len() <= 2,
         "cache must not exceed its max_entries bound"
+    );
+}
+
+/// Scenario: re-insert a decision for a token already present in the cache.
+/// Guarantees: the existing slot is refreshed in place rather than duplicated,
+/// so a re-authorized token both picks up the new decision and keeps the cache
+/// bounded.
+#[test]
+fn cache_insert_refreshes_an_existing_entry() {
+    let mut cache = DecisionCache::new(Duration::from_secs(300), 1024);
+    let now = Instant::now();
+    cache.insert("tok", AuthzDecision::allow_anonymous(), now);
+    assert_eq!(cache.len(), 1);
+
+    let deny = AuthzDecision::deny(DenyReason::NotPermitted);
+    cache.insert("tok", deny.clone(), now);
+
+    assert_eq!(cache.len(), 1, "re-insert must not add a second entry");
+    assert_eq!(
+        cache.get("tok", now),
+        Some(deny),
+        "the refreshed decision must replace the previous one"
+    );
+}
+
+/// Scenario: drive the `DecisionStore` trait through both interior-mutability
+/// wrappers used by the two capability variants (`Mutex` for shared, `RefCell`
+/// for local).
+/// Guarantees: both wrappers round-trip a decision and honor the TTL
+/// identically, so the shared and local variants cache alike.
+#[test]
+fn decision_store_round_trips_through_both_wrappers() {
+    let now = Instant::now();
+    let expired = now + Duration::from_secs(301);
+    let decision = AuthzDecision::allow_anonymous();
+
+    let shared = std::sync::Mutex::new(DecisionCache::new(Duration::from_secs(300), 1024));
+    assert_eq!(DecisionStore::get(&shared, "tok", now), None);
+    DecisionStore::insert(&shared, "tok", decision.clone(), now);
+    assert_eq!(
+        DecisionStore::get(&shared, "tok", now),
+        Some(decision.clone())
+    );
+    assert_eq!(DecisionStore::get(&shared, "tok", expired), None);
+
+    let local = std::cell::RefCell::new(DecisionCache::new(Duration::from_secs(300), 1024));
+    assert_eq!(DecisionStore::get(&local, "tok", now), None);
+    DecisionStore::insert(&local, "tok", decision.clone(), now);
+    assert_eq!(DecisionStore::get(&local, "tok", now), Some(decision));
+    assert_eq!(DecisionStore::get(&local, "tok", expired), None);
+}
+
+// -- TokenReview / SubjectAccessReview mapping tests -------------------------
+
+/// Scenario: authorize a token whose decision is already cached and unexpired,
+/// using a `Core` that has never built a Kubernetes client.
+/// Guarantees: the cached decision is returned without contacting the API
+/// server -- the property the cache exists for, since a client build would fail
+/// (and the call would error) if the fast path were skipped.
+#[tokio::test]
+async fn authorize_serves_a_cached_decision_without_contacting_kubernetes() {
+    let core = Core::new(
+        "test-authorizer",
+        vec![AudienceConfig {
+            audience: "my-service".to_string(),
+            allowed_service_accounts: Vec::new(),
+            resource_attributes: None,
+        }],
+    );
+    let store = std::sync::Mutex::new(DecisionCache::new(Duration::from_secs(300), 1024));
+    let cached = AuthzDecision::deny(DenyReason::NotPermitted);
+    DecisionStore::insert(&store, "cached-token", cached.clone(), Instant::now());
+
+    let decision = core
+        .authorize(
+            &BearerToken::without_expiry("cached-token".to_string()),
+            &store,
+        )
+        .await
+        .expect("a cache hit must not require a Kubernetes client");
+
+    assert_eq!(decision, cached);
+}
+
+/// Scenario: build the `TokenReview` submitted for a token.
+/// Guarantees: the token is sent verbatim and the request always carries the
+/// configured audiences, so the API server can only ever confirm an audience
+/// this authorizer governs.
+#[test]
+fn token_review_request_carries_token_and_configured_audiences() {
+    let audiences = vec!["aud-a".to_string(), "aud-b".to_string()];
+    let request = token_review_request("the-token", &audiences);
+
+    assert_eq!(request.spec.token, "the-token");
+    assert_eq!(request.spec.audiences.as_deref(), Some(&audiences[..]));
+}
+
+/// Scenario: map an authenticated `TokenReviewStatus` carrying a full subject.
+/// Guarantees: username, uid, groups, extra, and the confirmed audiences are
+/// all preserved, since admission and the emitted identity are built from them.
+#[test]
+fn review_outcome_preserves_the_full_authenticated_subject() {
+    let status = TokenReviewStatus {
+        authenticated: Some(true),
+        audiences: Some(vec!["aud-a".to_string()]),
+        user: Some(UserInfo {
+            username: Some("system:serviceaccount:ns:sa".to_string()),
+            uid: Some("uid-1".to_string()),
+            groups: Some(vec!["system:serviceaccounts".to_string()]),
+            extra: Some(BTreeMap::from([(
+                "authentication.kubernetes.io/pod-name".to_string(),
+                vec!["pod-1".to_string()],
+            )])),
+        }),
+        error: None,
+    };
+
+    match review_outcome(status) {
+        ReviewOutcome::Authenticated(user) => {
+            assert_eq!(
+                user.username.as_deref(),
+                Some("system:serviceaccount:ns:sa")
+            );
+            assert_eq!(user.uid.as_deref(), Some("uid-1"));
+            assert_eq!(user.groups, vec!["system:serviceaccounts".to_string()]);
+            assert_eq!(user.audiences, vec!["aud-a".to_string()]);
+            assert_eq!(
+                user.extra
+                    .get("authentication.kubernetes.io/pod-name")
+                    .map(Vec::as_slice),
+                Some(&["pod-1".to_string()][..])
+            );
+        }
+        ReviewOutcome::Unauthenticated { .. } => panic!("status was authenticated"),
+    }
+}
+
+/// Scenario: map statuses that deny authentication outright, and one that omits
+/// the `authenticated` flag entirely.
+/// Guarantees: both are `Unauthenticated`, so a malformed or partial status
+/// fails closed rather than being read as a successful authentication.
+#[test]
+fn review_outcome_fails_closed_without_an_explicit_authenticated_flag() {
+    let denied = TokenReviewStatus {
+        authenticated: Some(false),
+        error: Some("token expired".to_string()),
+        ..Default::default()
+    };
+    match review_outcome(denied) {
+        ReviewOutcome::Unauthenticated { error } => {
+            assert_eq!(error.as_deref(), Some("token expired"));
+        }
+        ReviewOutcome::Authenticated(_) => panic!("an explicit false must not authenticate"),
+    }
+
+    // No `authenticated` field at all: absence must not mean success.
+    let absent = TokenReviewStatus::default();
+    assert!(
+        matches!(
+            review_outcome(absent),
+            ReviewOutcome::Unauthenticated { .. }
+        ),
+        "a status without an authenticated flag must fail closed"
+    );
+}
+
+/// Scenario: build the `SubjectAccessReview` for an authenticated subject and a
+/// configured resource-attribute policy.
+/// Guarantees: the exact identity Kubernetes authenticated (user, uid, groups,
+/// extra) and every configured resource attribute are forwarded, so RBAC is
+/// evaluated against the real subject rather than a reconstructed one.
+#[test]
+fn access_review_request_forwards_subject_and_resource_attributes() {
+    let user = AuthenticatedUser {
+        username: Some("system:serviceaccount:ns:sa".to_string()),
+        uid: Some("uid-1".to_string()),
+        groups: vec!["system:serviceaccounts".to_string()],
+        extra: BTreeMap::from([("k".to_string(), vec!["v".to_string()])]),
+        audiences: vec!["aud-a".to_string()],
+    };
+    let attrs = ResourceAttributesConfig {
+        group: Some("telemetry.io".to_string()),
+        version: Some("v1".to_string()),
+        resource: "telemetry".to_string(),
+        verb: "export".to_string(),
+        namespace: Some("tenant-a".to_string()),
+        name: Some("stream".to_string()),
+        subresource: Some("logs".to_string()),
+    };
+
+    let spec = access_review_request(&user, &attrs).spec;
+    assert_eq!(spec.user.as_deref(), Some("system:serviceaccount:ns:sa"));
+    assert_eq!(spec.uid.as_deref(), Some("uid-1"));
+    assert_eq!(
+        spec.groups.as_deref(),
+        Some(&["system:serviceaccounts".to_string()][..])
+    );
+    assert_eq!(
+        spec.extra.and_then(|e| e.get("k").cloned()),
+        Some(vec!["v".to_string()])
+    );
+
+    let resource = spec
+        .resource_attributes
+        .expect("resource attributes are always sent");
+    assert_eq!(resource.group.as_deref(), Some("telemetry.io"));
+    assert_eq!(resource.version.as_deref(), Some("v1"));
+    assert_eq!(resource.resource.as_deref(), Some("telemetry"));
+    assert_eq!(resource.verb.as_deref(), Some("export"));
+    assert_eq!(resource.namespace.as_deref(), Some("tenant-a"));
+    assert_eq!(resource.name.as_deref(), Some("stream"));
+    assert_eq!(resource.subresource.as_deref(), Some("logs"));
+}
+
+/// Scenario: map every combination of the `allowed` / `denied` flags a
+/// `SubjectAccessReviewStatus` can carry.
+/// Guarantees: only a plain `allowed` grants; an explicit `denied` overrides
+/// `allowed`, and anything else denies -- so an ambiguous RBAC answer never
+/// admits a caller.
+#[test]
+fn access_outcome_admits_only_on_an_unopposed_allow() {
+    let allowed = SubjectAccessReviewStatus {
+        allowed: true,
+        ..Default::default()
+    };
+    assert!(matches!(access_outcome(allowed), AccessOutcome::Allowed));
+
+    // An explicit deny wins over `allowed`.
+    let contradictory = SubjectAccessReviewStatus {
+        allowed: true,
+        denied: Some(true),
+        reason: Some("explicitly denied".to_string()),
+        ..Default::default()
+    };
+    match access_outcome(contradictory) {
+        AccessOutcome::Denied { reason } => {
+            assert_eq!(reason.as_deref(), Some("explicitly denied"))
+        }
+        AccessOutcome::Allowed => panic!("an explicit denied must override allowed"),
+    }
+
+    let not_allowed = SubjectAccessReviewStatus {
+        allowed: false,
+        ..Default::default()
+    };
+    assert!(matches!(
+        access_outcome(not_allowed),
+        AccessOutcome::Denied { reason: None }
+    ));
+}
+
+/// Scenario: map a status that carries no `reason` but does report an
+/// evaluation error.
+/// Guarantees: the evaluation error is surfaced as the deny reason, so an RBAC
+/// misconfiguration is diagnosable from the decision alone.
+#[test]
+fn access_outcome_falls_back_to_the_evaluation_error() {
+    let status = SubjectAccessReviewStatus {
+        allowed: false,
+        evaluation_error: Some("webhook unavailable".to_string()),
+        ..Default::default()
+    };
+    match access_outcome(status) {
+        AccessOutcome::Denied { reason } => {
+            assert_eq!(reason.as_deref(), Some("webhook unavailable"));
+        }
+        AccessOutcome::Allowed => panic!("a failed evaluation must not admit"),
+    }
+}
+
+// -- Decision flow tests (Core::decide against canned review responses) ------
+
+/// A [`KubeReviews`] stand-in returning canned API-server responses, so the
+/// real decision flow can be driven without a cluster.
+struct FakeReviewer {
+    outcome: ReviewOutcome,
+    access: AccessOutcome,
+}
+
+impl FakeReviewer {
+    /// A reviewer that authenticates `username` for `audiences` and, if RBAC is
+    /// consulted, allows.
+    fn authenticated(username: &str, audiences: &[&str]) -> Self {
+        Self {
+            outcome: ReviewOutcome::Authenticated(AuthenticatedUser {
+                username: Some(username.to_string()),
+                uid: Some("uid-1".to_string()),
+                groups: vec!["system:serviceaccounts".to_string()],
+                extra: BTreeMap::new(),
+                audiences: audiences.iter().map(|a| (*a).to_string()).collect(),
+            }),
+            access: AccessOutcome::Allowed,
+        }
+    }
+
+    fn with_access(mut self, access: AccessOutcome) -> Self {
+        self.access = access;
+        self
+    }
+}
+
+impl KubeReviews for FakeReviewer {
+    async fn review(&self, _token: &str) -> Result<ReviewOutcome, Error> {
+        Ok(self.outcome.clone())
+    }
+
+    async fn check_access(
+        &self,
+        _user: &AuthenticatedUser,
+        _attrs: &ResourceAttributesConfig,
+    ) -> Result<AccessOutcome, Error> {
+        Ok(self.access.clone())
+    }
+}
+
+/// Scenario: the API server does not authenticate the token.
+/// Guarantees: the decision is an `InvalidCredential` deny carrying the API
+/// server's reason, and no admission policy is consulted.
+#[tokio::test]
+async fn decide_denies_an_unauthenticated_token() {
+    let core = make_core(None);
+    let reviewer = FakeReviewer {
+        outcome: ReviewOutcome::Unauthenticated {
+            error: Some("token expired".to_string()),
+        },
+        access: AccessOutcome::Allowed,
+    };
+
+    let decision = core.decide_with(&reviewer, "tok").await.expect("decision");
+    assert!(!decision.is_allowed());
+    assert_eq!(
+        decision,
+        AuthzDecision::deny_with_detail(DenyReason::InvalidCredential, "token expired")
+    );
+}
+
+/// Scenario: `TokenReview` authenticates a non-service-account identity (an
+/// OIDC or webhook user) for a configured audience whose entry admits any
+/// authenticated caller.
+/// Guarantees: the request is denied. This is the gate that stops a
+/// non-Kubernetes identity from being admitted, and emitted, under the
+/// `k8s_sat` scheme.
+#[tokio::test]
+async fn decide_denies_a_non_service_account_even_when_the_audience_admits_any() {
+    let core = make_core(None);
+    let reviewer = FakeReviewer::authenticated("alice@example.com", &["my-service"]);
+
+    let decision = core.decide_with(&reviewer, "tok").await.expect("decision");
+    assert_eq!(
+        decision,
+        AuthzDecision::deny(DenyReason::InvalidCredential),
+        "only canonical service-account identities may be admitted"
+    );
+}
+
+/// Scenario: a service account is authenticated for an audience the authorizer
+/// does not govern.
+/// Guarantees: the request is denied rather than admitted on the strength of
+/// authentication alone.
+#[tokio::test]
+async fn decide_denies_a_token_bound_to_no_configured_audience() {
+    let core = make_core(None);
+    let reviewer =
+        FakeReviewer::authenticated("system:serviceaccount:ns:sa", &["some-other-service"]);
+
+    let decision = core.decide_with(&reviewer, "tok").await.expect("decision");
+    assert!(!decision.is_allowed());
+}
+
+/// Scenario: an allow-listed service account is authenticated for the governed
+/// audience.
+/// Guarantees: the request is allowed and the emitted identity carries the
+/// verified claims (scheme, principal, audience, and the parsed namespace and
+/// service-account name) a downstream resolver matches on.
+#[tokio::test]
+async fn decide_allows_an_allow_listed_service_account_and_emits_its_claims() {
+    let core = make_core(Some(vec!["ns/sa"]));
+    let reviewer = FakeReviewer::authenticated("system:serviceaccount:ns:sa", &["my-service"]);
+
+    let decision = core.decide_with(&reviewer, "tok").await.expect("decision");
+    let identity = match decision {
+        AuthzDecision::Allow { identity, .. } => identity,
+        other => panic!("expected an allow, got {other:?}"),
+    };
+    assert_eq!(identity.scheme(), Some("k8s_sat"));
+    assert_eq!(identity.subject(), Some("system:serviceaccount:ns:sa"));
+    assert_eq!(identity.audience(), Some("my-service"));
+    assert_eq!(
+        identity.claim_str("k8s.namespace"),
+        Some("ns"),
+        "the namespace must be surfaced so a resolver need not re-parse the username"
+    );
+    assert_eq!(identity.claim_str("k8s.serviceaccount"), Some("sa"));
+}
+
+/// Scenario: a service account that is not on the audience's allow-list is
+/// authenticated for that audience.
+/// Guarantees: authentication alone does not admit; the allow-list still
+/// governs, and the deny is `NotPermitted` rather than a credential error.
+#[tokio::test]
+async fn decide_denies_a_service_account_missing_from_the_allow_list() {
+    let core = make_core(Some(vec!["ns/other"]));
+    let reviewer = FakeReviewer::authenticated("system:serviceaccount:ns:sa", &["my-service"]);
+
+    let decision = core.decide_with(&reviewer, "tok").await.expect("decision");
+    assert!(!decision.is_allowed());
+    assert!(
+        matches!(decision, AuthzDecision::Deny { reason, .. } if reason == DenyReason::NotPermitted)
+    );
+}
+
+/// Scenario: RBAC admission where the `SubjectAccessReview` allows, then denies.
+/// Guarantees: the RBAC verdict decides the request, and an RBAC denial is
+/// surfaced as `NotPermitted` with the API server's reason.
+#[tokio::test]
+async fn decide_honors_the_rbac_verdict() {
+    let core = Core::new(
+        "test-authorizer",
+        vec![AudienceConfig {
+            audience: "my-service".to_string(),
+            allowed_service_accounts: Vec::new(),
+            resource_attributes: Some(ResourceAttributesConfig {
+                group: None,
+                version: None,
+                resource: "telemetry".to_string(),
+                verb: "export".to_string(),
+                namespace: None,
+                name: None,
+                subresource: None,
+            }),
+        }],
+    );
+
+    let allowed = FakeReviewer::authenticated("system:serviceaccount:ns:sa", &["my-service"]);
+    assert!(
+        core.decide_with(&allowed, "tok")
+            .await
+            .expect("decision")
+            .is_allowed(),
+        "an RBAC allow must admit"
+    );
+
+    let denied = FakeReviewer::authenticated("system:serviceaccount:ns:sa", &["my-service"])
+        .with_access(AccessOutcome::Denied {
+            reason: Some("no binding".to_string()),
+        });
+    assert_eq!(
+        core.decide_with(&denied, "tok").await.expect("decision"),
+        AuthzDecision::deny_with_detail(DenyReason::NotPermitted, "no binding"),
+        "an RBAC deny must not admit"
+    );
+}
+
+/// Scenario: a token confirmed for two governed audiences at once, where the
+/// second audience's allow-list excludes the service account.
+/// Guarantees: admission requires EVERY matched audience to admit, so carrying
+/// a laxer audience cannot be used to bypass a stricter tenant's policy.
+#[tokio::test]
+async fn decide_requires_every_matched_audience_to_admit() {
+    let core = Core::new(
+        "test-authorizer",
+        vec![
+            // Permissive: admits any authenticated service account.
+            AudienceConfig {
+                audience: "lax".to_string(),
+                allowed_service_accounts: Vec::new(),
+                resource_attributes: None,
+            },
+            // Strict: admits only a different service account.
+            AudienceConfig {
+                audience: "strict".to_string(),
+                allowed_service_accounts: vec!["ns/someone-else".to_string()],
+                resource_attributes: None,
+            },
+        ],
+    );
+    let reviewer = FakeReviewer::authenticated("system:serviceaccount:ns:sa", &["lax", "strict"]);
+
+    let decision = core.decide_with(&reviewer, "tok").await.expect("decision");
+    assert!(
+        !decision.is_allowed(),
+        "the strict audience must veto, even though the lax one would admit"
+    );
+}
+
+/// Scenario: a token confirmed for two governed audiences that both admit it.
+/// Guarantees: the request is allowed and the emitted identity lists every
+/// matched audience, so a downstream resolver sees exactly what was confirmed
+/// rather than one arbitrarily chosen audience.
+#[tokio::test]
+async fn decide_lists_every_matched_audience_when_all_admit() {
+    let core = Core::new(
+        "test-authorizer",
+        vec![
+            AudienceConfig {
+                audience: "aud-a".to_string(),
+                allowed_service_accounts: Vec::new(),
+                resource_attributes: None,
+            },
+            AudienceConfig {
+                audience: "aud-b".to_string(),
+                allowed_service_accounts: vec!["ns/sa".to_string()],
+                resource_attributes: None,
+            },
+        ],
+    );
+    let reviewer = FakeReviewer::authenticated("system:serviceaccount:ns:sa", &["aud-b", "aud-a"]);
+
+    let decision = core.decide_with(&reviewer, "tok").await.expect("decision");
+    let identity = match decision {
+        AuthzDecision::Allow { identity, .. } => identity,
+        other => panic!("expected an allow, got {other:?}"),
+    };
+    let audiences = identity
+        .claim(AuthorizedIdentity::CLAIM_AUDIENCE)
+        .expect("the audience claim is always emitted");
+    assert_eq!(
+        audiences.as_slice(),
+        &["aud-a".to_string(), "aud-b".to_string()][..],
+        "every matched audience must be listed, in a stable order"
     );
 }
 
