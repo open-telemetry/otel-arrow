@@ -15,7 +15,6 @@ use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::Response;
 use axum::routing::get;
-use pprof::protos::Message;
 use serde::Deserialize;
 
 #[cfg(all(feature = "jemalloc-pprof", not(windows)))]
@@ -135,76 +134,91 @@ async fn get_cpu_profile(
     State(state): State<AppState>,
     Query(params): Query<CpuProfileParams>,
 ) -> Result<Response, (StatusCode, String)> {
-    let permit = state
-        .cpu_profile_permits
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| {
-            (
-                StatusCode::TOO_MANY_REQUESTS,
-                "A heap profile dump is already in progress".into(),
-            )
-        })?;
+    #[cfg(not(windows))]
+    {
+        use pprof::protos::Message;
+        let permit = state
+            .cpu_profile_permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "A heap profile dump is already in progress".into(),
+                )
+            })?;
 
-    // start profile
-    let profile_builder =
-        pprof::ProfilerGuardBuilder::default().frequency(params.frequency.unwrap_or(100) as i32);
-    let guard = profile_builder.build().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Could not build profiler: {e}"),
-        )
-    })?;
-
-    // sleep for profile duration
-    let profile_time = Duration::from_secs(params.seconds.unwrap_or(30) as u64);
-    tokio::time::sleep(profile_time).await;
-
-    // offload the blocking generation of the profile to a dedicate thread so that the
-    // admin server's async runtime stays responsive.
-    let pprof = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        // finish profiling
-        let report = guard.report().build().map_err(|e| {
+        // start profile
+        let profile_builder = pprof::ProfilerGuardBuilder::default()
+            .frequency(params.frequency.unwrap_or(100) as i32);
+        let guard = profile_builder.build().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not build profile report: {e}"),
+                format!("Could not build profiler: {e}"),
             )
         })?;
 
-        // encode profile as proto-encoded pprof
-        let pprof = match report.pprof() {
-            Ok(pprof) => pprof.encode_to_vec(),
-            Err(e) => {
-                return Err((
+        // sleep for profile duration
+        let profile_time = Duration::from_secs(params.seconds.unwrap_or(30) as u64);
+        tokio::time::sleep(profile_time).await;
+
+        // offload the blocking generation of the profile to a dedicate thread so that the
+        // admin server's async runtime stays responsive.
+        let pprof = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            // finish profiling
+            let report = guard.report().build().map_err(|e| {
+                (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Could not proto-encode profile report: {e}"),
-                ));
-            }
-        };
+                    format!("Could not build profile report: {e}"),
+                )
+            })?;
 
-        Ok(pprof)
-    })
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Heap profile task failed to join: {e}"),
-        )
-    })??;
+            // encode profile as proto-encoded pprof
+            let pprof = match report.pprof() {
+                Ok(pprof) => pprof.encode_to_vec(),
+                Err(e) => {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Could not proto-encode profile report: {e}"),
+                    ));
+                }
+            };
 
-    // return response
-    let body = Body::from(pprof);
-    let resp = Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/x-protobuf")
-        .body(body)
+            Ok(pprof)
+        })
+        .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not dump profile pprof: {e}"),
+                format!("Heap profile task failed to join: {e}"),
             )
-        })?;
+        })??;
 
-    Ok(resp)
+        // return response
+        let body = Body::from(pprof);
+        let resp = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/x-protobuf")
+            .body(body)
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Could not dump profile pprof: {e}"),
+                )
+            })?;
+
+        Ok(resp)
+    }
+
+    #[cfg(not(not(windows)))]
+    {
+        // Suppress dead-code warning for the semaphore field when the
+        // jemalloc-pprof feature is not compiled in.
+        let _ = &state.heap_profile_permits;
+        Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "CPU profiling is not available in this build".into(),
+        ))
+    }
 }
