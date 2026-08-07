@@ -70,7 +70,6 @@ policies:
             transport_header: x-tenant-id
           - key: project_id
             transport_header: x-project-id
-
 ```
 
 We emphasize transport headers in this document because at the time of
@@ -162,17 +161,37 @@ configured using tenant context, first by listing required tenant
 tokens, then the set of metadata keys it partitions by.
 
 ```yaml
+policies:
+  tenant:
+    tokens:
+      batched:
+        propagate_keys: [tenant_id, project_id]
 nodes:
   batch:
     type: processor:batch
-    policies:
       ingress:
         required_tokens: [edge]
         partition_keys: [tenant_id, project_id]
         max_cardinality: 100
+      egress:
+        required_tokens: [batched]
     config:
       ...
 ```
+
+In general, nodes that combine many tenant contexts into one will be
+forced to reset the tenant context. These nodes will require explicit
+policy configuration to avoid empty tenant contexts. This requires the
+nodes to call tenant-context construction utility functions in the
+engine, that will take several forms:
+
+- For receiver nodes, call the utility function providing borrowed 
+  transport headers, peer network address, and authorized identity.
+- For processor nodes that extend a single tenant context, call the
+  utility function providing the original and the derived values.
+- Processor nodes that combine multiple tenant contexts must use the
+  `partition_keys` mechanism, the engine automatically constructs
+  egress tokens from the projection of the partition keys.
 
 Nodes may require tenant tokens even when they do not use them, for
 example to declare an idempotency key that can be required by the
