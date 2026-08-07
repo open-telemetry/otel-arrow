@@ -272,9 +272,9 @@ fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollR
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics_types::MetricValue;
     use crate::metrics_types::{MetricDataPoint, MetricSetSnapshot, MetricsSnapshot};
     use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
-    use otap_df_telemetry::metrics::MetricValue;
     use std::collections::HashMap;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};

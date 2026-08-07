@@ -23,6 +23,7 @@ use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValu
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
 use otap_df_telemetry::event::LogEvent;
+use otap_df_telemetry::instrument::DistributionValue;
 use otap_df_telemetry::log_tap::{LogQuery, LogQueryResult, RetainedLogEvent};
 use otap_df_telemetry::metrics::{MetricValue, MetricsIterator};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -84,7 +85,137 @@ struct MetricDataPointWithMetadata {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     attributes: HashMap<String, AttributeValue>,
     /// Current value.
+    #[serde(serialize_with = "serialize_metric_value")]
     value: MetricValue,
+}
+
+/// Returns true for a distribution that recorded nothing this interval.
+///
+/// An empty distribution has no min, max or quantile to report -- those fields
+/// are zeros carrying no observation -- so it is omitted from the rendered
+/// output entirely. Zero-filtering in the registry is per metric-set bucket,
+/// not per field, so a set with any active field still yields its idle
+/// distribution siblings here.
+fn is_empty_distribution(value: &MetricValue) -> bool {
+    matches!(value, MetricValue::Distribution(d) if d.is_empty())
+}
+
+/// Quantiles estimated for bucketed distributions on the admin endpoints.
+///
+/// Must stay sorted in non-decreasing order and aligned with the
+/// `p50`/`p90`/`p99` fields of [`api::DistributionDetails`].
+///
+/// TODO: the Prometheus and line-protocol renderers still expose only the
+/// exact summary statistics for a distribution, so the bucket detail visible
+/// in the JSON endpoints is invisible to a scraper. Exposing it needs a
+/// format decision that JSON did not: Prometheus native histograms carry the
+/// buckets faithfully but require the protobuf exposition format, whereas
+/// classic `_bucket` series or quantile-labelled summaries fit the text
+/// format at the cost of fidelity.
+const ADMIN_QUANTILES: [f64; 3] = [0.5, 0.9, 0.99];
+
+/// Serializes a [`MetricValue`] for the JSON admin endpoints.
+///
+/// `MetricValue` has no serde implementation: a distribution's canonical wire
+/// form is the OTLP exponential histogram, which the OTLP export path emits
+/// directly. The JSON endpoints render a distribution as its min/max/sum/count
+/// summary, matching the Prometheus and line-protocol renderings, plus -- for
+/// the bucketed tiers only -- a `details` object carrying the exact-zero
+/// count, the relative error bound, and quantile estimates computed here from
+/// the live histogram.
+///
+/// The whole `details` object is one bucket walk: the quantile pass reports
+/// the zero count it recovered on the way, so nothing here scans the buckets
+/// twice. The basic tier encodes no buckets, so it emits no `details` at all.
+///
+/// The raw bucket counts are available only through the OTLP export. Sending
+/// estimates rather than buckets keeps this endpoint cheap for its
+/// human-facing consumers, but note that quantiles cannot be merged: a client
+/// holding summaries from several series cannot combine them, and the quantile
+/// set is fixed by `ADMIN_QUANTILES`. Cross-series aggregation is therefore
+/// performed here, against the histograms, before serialization.
+fn serialize_metric_value<S>(value: &MetricValue, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeStruct;
+
+    match value {
+        MetricValue::U64(v) => serializer.serialize_u64(*v),
+        MetricValue::F64(v) => serializer.serialize_f64(*v),
+        MetricValue::Distribution(d) => {
+            let (count, sum, min, max) = d.summary();
+            if count == 0 {
+                // Collectors drop empty distributions, so this is only reached
+                // for a value assembled elsewhere. min/max/sum are meaningless
+                // without an observation, so report the count alone rather than
+                // inviting a consumer to read them.
+                let mut state = serializer.serialize_struct("DistributionValue", 1)?;
+                state.serialize_field("count", &0_u64)?;
+                return state.end();
+            }
+            let details = distribution_details(d);
+            let fields = if details.is_some() { 5 } else { 4 };
+
+            let mut state = serializer.serialize_struct("DistributionValue", fields)?;
+            state.serialize_field("min", &min)?;
+            state.serialize_field("max", &max)?;
+            state.serialize_field("sum", &sum)?;
+            state.serialize_field("count", &count)?;
+            if let Some(details) = &details {
+                state.serialize_field("details", details)?;
+            }
+            state.end()
+        }
+    }
+}
+
+/// Collects the bucket-derived part of a distribution in a single pass.
+///
+/// Returns `None` for the basic tier, which encodes no buckets and so has no
+/// zero population to report and no quantiles to estimate.
+fn distribution_details(d: &DistributionValue) -> Option<api::DistributionDetails> {
+    let mut estimates = [0.0_f64; ADMIN_QUANTILES.len()];
+    // One walk over the buckets yields both the estimates and the zero count;
+    // asking for the zero count separately would repeat that walk.
+    let totals = d.quantiles(&ADMIN_QUANTILES, &mut estimates)?;
+    // NaN is not representable in JSON, so an estimate without an underlying
+    // observation is reported as an absent field rather than a misleading 0.0.
+    let finite = |v: f64| if v.is_finite() { Some(v) } else { None };
+    Some(api::DistributionDetails {
+        zero_count: totals.zero_count,
+        relative_error: d.relative_error().unwrap_or(0.0),
+        p50: finite(estimates[0]),
+        p90: finite(estimates[1]),
+        p99: finite(estimates[2]),
+    })
+}
+
+/// Serializes a name-keyed map of [`MetricValue`]s (see
+/// [`serialize_metric_value`]).
+fn serialize_metric_value_map<S>(
+    values: &HashMap<String, MetricValue>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+
+    /// Newtype that applies [`serialize_metric_value`] to a map value.
+    struct Value<'a>(&'a MetricValue);
+
+    impl Serialize for Value<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serialize_metric_value(self.0, serializer)
+        }
+    }
+
+    let mut map = serializer.serialize_map(Some(values.len()))?;
+    for (name, value) in values {
+        map.serialize_entry(name, &Value(value))?;
+    }
+    map.end()
 }
 
 /// Container of all aggregated metrics (no metadata).
@@ -100,6 +231,7 @@ struct MetricSet {
     attributes: HashMap<String, AttributeValue>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     data_point_attributes: HashMap<String, AttributeValue>,
+    #[serde(serialize_with = "serialize_metric_value_map")]
     metrics: HashMap<String, MetricValue>,
 }
 
@@ -508,7 +640,7 @@ fn aggregate_metric_groups(
             let _ = metrics_map
                 .entry(field.name.to_string())
                 .and_modify(|existing| existing.add_in_place(value))
-                .or_insert(value);
+                .or_insert_with(|| value.clone());
         }
     };
 
@@ -549,10 +681,13 @@ fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata>
         let mut metrics = Vec::with_capacity(g.metrics.len());
         for field in g.brief.metrics.iter() {
             if let Some(val) = g.metrics.get(field.name) {
+                if is_empty_distribution(val) {
+                    continue;
+                }
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
                     attributes: HashMap::new(),
-                    value: *val,
+                    value: val.clone(),
                 });
             }
         }
@@ -571,39 +706,47 @@ fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata>
 fn groups_without_metadata(groups: &[AggregateGroup]) -> Vec<MetricSet> {
     let mut out = Vec::with_capacity(groups.len());
     for g in groups {
+        let metrics = g
+            .metrics
+            .iter()
+            .filter(|(_, value)| !is_empty_distribution(value))
+            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .collect();
         out.push(MetricSet {
             name: g.name.clone(),
             attributes: g.attributes.clone(),
             data_point_attributes: HashMap::new(),
-            metrics: g.metrics.clone(),
+            metrics,
         });
     }
     out
 }
 
-fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
+fn format_lp_value(value: &MetricValue, value_type: Option<MetricValueType>) -> String {
     match value {
         MetricValue::U64(_) | MetricValue::F64(_) => {
             let vtype = value_type.unwrap_or(match value {
                 MetricValue::U64(_) => MetricValueType::U64,
                 MetricValue::F64(_) => MetricValueType::F64,
-                MetricValue::Mmsc(_) => unreachable!(),
+                MetricValue::Distribution(_) => unreachable!(),
             });
             match vtype {
                 MetricValueType::U64 => {
                     let int_val = match value {
-                        MetricValue::U64(v) => v,
-                        MetricValue::F64(v) => v as u64,
-                        MetricValue::Mmsc(_) => unreachable!(),
+                        MetricValue::U64(v) => *v,
+                        MetricValue::F64(v) => *v as u64,
+                        MetricValue::Distribution(_) => unreachable!(),
                     };
                     format!("{int_val}i")
                 }
                 MetricValueType::F64 => value.to_f64().to_string(),
             }
         }
-        // MMSC values are expanded into multiple fields at the call site;
-        // this arm should not be reached.
-        MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
+        // Distribution values are expanded into multiple fields at the call
+        // site; this arm should not be reached.
+        MetricValue::Distribution(_) => {
+            unreachable!("DistributionValue values must be expanded at the call site")
+        }
     }
 }
 
@@ -675,26 +818,28 @@ impl PromGroupedMetrics {
     }
 }
 
-fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
+fn format_prom_value(value: &MetricValue, value_type: Option<MetricValueType>) -> String {
     match value {
         MetricValue::U64(_) | MetricValue::F64(_) => {
             let vtype = value_type.unwrap_or(match value {
                 MetricValue::U64(_) => MetricValueType::U64,
                 MetricValue::F64(_) => MetricValueType::F64,
-                MetricValue::Mmsc(_) => unreachable!(),
+                MetricValue::Distribution(_) => unreachable!(),
             });
             match vtype {
                 MetricValueType::U64 => match value {
                     MetricValue::U64(v) => v.to_string(),
-                    MetricValue::F64(v) => (v as u64).to_string(),
-                    MetricValue::Mmsc(_) => unreachable!(),
+                    MetricValue::F64(v) => (*v as u64).to_string(),
+                    MetricValue::Distribution(_) => unreachable!(),
                 },
                 MetricValueType::F64 => value.to_f64().to_string(),
             }
         }
-        // MMSC values are expanded into summary lines at the call site;
-        // this arm should not be reached.
-        MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
+        // Distribution values are expanded into summary lines at the call
+        // site; this arm should not be reached.
+        MetricValue::Distribution(_) => {
+            unreachable!("DistributionValue values must be expanded at the call site")
+        }
     }
 }
 
@@ -735,14 +880,17 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         &mut fields,
                         "{}={}",
                         escape_lp_field_key(fname),
-                        format_lp_value(*val, field_type)
+                        format_lp_value(val, field_type)
                     );
                 }
-                MetricValue::Mmsc(s) => {
-                    if s.count == 0 {
+                // Distribution metrics render their summary statistics only;
+                // full exponential-bucket rendering is deferred.
+                MetricValue::Distribution(d) => {
+                    let (count, sum, min, max) = d.summary();
+                    if count == 0 {
                         continue;
                     }
-                    for (suffix, fval) in [("_min", s.min), ("_max", s.max), ("_sum", s.sum)] {
+                    for (suffix, fval) in [("_min", min), ("_max", max), ("_sum", sum)] {
                         if !first {
                             fields.push(',');
                         }
@@ -763,7 +911,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         &mut fields,
                         "{}_count={}i",
                         escape_lp_field_key(fname),
-                        s.count
+                        count
                     );
                 }
             }
@@ -780,7 +928,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
 fn collect_scalar_metric(
     groups: &mut PromGroupedMetrics,
     field: &MetricsField,
-    value: MetricValue,
+    value: &MetricValue,
     base_labels: &str,
     ts_suffix: &str,
 ) {
@@ -791,25 +939,18 @@ fn collect_scalar_metric(
             Instrument::Counter => "counter",
             Instrument::UpDownCounter => "gauge",
             Instrument::Gauge => "gauge",
-            // `Instrument::Histogram` reaches this path with a scalar
-            // `U64`/`F64` value because the telemetry registry does not yet
-            // store pre-aggregated bucket data. The stored scalar is a single
-            // observation (whatever the metric set's `snapshot_values()`
-            // returns). The native OTLP bridge can place that observation in
-            // stable explicit bounds, but this admin snapshot has no
-            // bucket/sum/count state to render.
-            //
-            // Rendering as the Prometheus histogram family
-            // (`_bucket{le=...}`/`_sum`/`_count`) would require fabricating
-            // bucket data we don't have, so we emit a `gauge` reflecting the
-            // raw stored scalar. This is a known limitation: not spec-compliant
-            // for OTel Histograms (the spec mandates the histogram family) and
-            // potentially misleading because the gauge value's meaning depends
-            // on what the producer chose to put in `snapshot_values()`.
-            // Proper handling requires extending `MetricValue` with a variant
-            // carrying buckets/sum/count.
-            Instrument::Histogram => "gauge",
-            Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
+            // A distribution-valued field routed here means the descriptor
+            // and the stored value disagree. The renderer has a scalar in
+            // hand, so it emits a gauge rather than panicking the admin
+            // worker and failing the whole scrape.
+            Instrument::Mmsc | Instrument::ExponentialHistogram => {
+                debug_assert!(
+                    false,
+                    "distribution instrument {:?} carried a scalar value for metric {}",
+                    field.instrument, field.name
+                );
+                "gauge"
+            }
         };
         PromMetricMetadata {
             help: if field.brief.is_empty() {
@@ -833,15 +974,20 @@ fn collect_scalar_metric(
     group.samples.push(sample);
 }
 
-/// Collects MMSC (min/max/sum/count) sub-metrics into the grouped buffer.
-fn collect_mmsc_metric(
+/// Collects a distribution's min/max/sum/count sub-metrics into the grouped
+/// buffer.
+///
+/// Full exponential-bucket rendering is deferred; the admin endpoints expose
+/// the summary statistics only.
+fn collect_distribution_metric(
     groups: &mut PromGroupedMetrics,
     field: &MetricsField,
-    s: &otap_df_telemetry::instrument::MmscSnapshot,
+    distribution: &DistributionValue,
     base_labels: &str,
     ts_suffix: &str,
 ) {
-    if s.count == 0 {
+    let (count, sum, min, max) = distribution.summary();
+    if count == 0 {
         return;
     }
     let base_metric_name = build_prom_metric_name(field.name, field.unit, Instrument::Gauge);
@@ -853,7 +999,7 @@ fn collect_mmsc_metric(
     let unit_word = ucum_to_prometheus_unit(field.unit).map(|u| u.to_string());
 
     // _min and _max as gauges
-    for (suffix, prom_type, val) in [("_min", "gauge", s.min), ("_max", "gauge", s.max)] {
+    for (suffix, prom_type, val) in [("_min", "gauge", min), ("_max", "gauge", max)] {
         let sub_name = format!("{base_metric_name}{suffix}");
         let group = groups.get_or_insert(&sub_name, || PromMetricMetadata {
             help: brief.clone(),
@@ -884,7 +1030,7 @@ fn collect_mmsc_metric(
             &mut sample,
             &sum_name,
             base_labels,
-            &format!("{}", s.sum),
+            &format!("{sum}"),
             ts_suffix,
         );
         group.samples.push(sample);
@@ -903,7 +1049,7 @@ fn collect_mmsc_metric(
             &mut sample,
             &count_name,
             base_labels,
-            &format!("{}", s.count),
+            &format!("{count}"),
             ts_suffix,
         );
         group.samples.push(sample);
@@ -1022,13 +1168,19 @@ fn agg_prometheus_text(
                         collect_scalar_metric(
                             &mut prom_groups,
                             field,
-                            *value,
+                            value,
                             &base_labels,
                             &ts_suffix,
                         );
                     }
-                    MetricValue::Mmsc(s) => {
-                        collect_mmsc_metric(&mut prom_groups, field, s, &base_labels, &ts_suffix);
+                    MetricValue::Distribution(d) => {
+                        collect_distribution_metric(
+                            &mut prom_groups,
+                            field,
+                            d,
+                            &base_labels,
+                            &ts_suffix,
+                        );
                     }
                 }
             }
@@ -1054,10 +1206,13 @@ fn collect_metrics_snapshot(
             let mut metrics = Vec::new();
 
             for (field, value) in metrics_iter {
+                if is_empty_distribution(value) {
+                    continue;
+                }
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
                     attributes: data_point_attributes.clone(),
-                    value,
+                    value: value.clone(),
                 });
             }
 
@@ -1095,10 +1250,13 @@ fn collect_metrics_snapshot_and_reset(
             let mut metrics = Vec::new();
 
             for (field, value) in metrics_iter {
+                if is_empty_distribution(value) {
+                    continue;
+                }
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
                     attributes: data_point_attributes.clone(),
-                    value,
+                    value: value.clone(),
                 });
             }
 
@@ -1133,7 +1291,10 @@ fn collect_compact_snapshot(
         |descriptor, attributes, item_attributes, metrics_iter| {
             let mut metrics = HashMap::new();
             for (field, value) in metrics_iter {
-                let _ = metrics.insert(field.name.to_string(), value);
+                if is_empty_distribution(value) {
+                    continue;
+                }
+                let _ = metrics.insert(field.name.to_string(), value.clone());
             }
 
             if !metrics.is_empty() {
@@ -1168,7 +1329,10 @@ fn collect_compact_snapshot_and_reset(
         |descriptor, attributes, item_attributes, metrics_iter| {
             let mut metrics = HashMap::new();
             for (field, value) in metrics_iter {
-                let _ = metrics.insert(field.name.to_string(), value);
+                if is_empty_distribution(value) {
+                    continue;
+                }
+                let _ = metrics.insert(field.name.to_string(), value.clone());
             }
 
             if !metrics.is_empty() {
@@ -1252,11 +1416,14 @@ fn format_line_protocol(
                         format_lp_value(value, Some(field.value_type))
                     );
                 }
-                MetricValue::Mmsc(s) => {
-                    if s.count == 0 {
+                // Distribution metrics render their summary statistics only;
+                // full exponential-bucket rendering is deferred.
+                MetricValue::Distribution(d) => {
+                    let (count, sum, min, max) = d.summary();
+                    if count == 0 {
                         continue;
                     }
-                    for (suffix, fval) in [("_min", s.min), ("_max", s.max), ("_sum", s.sum)] {
+                    for (suffix, fval) in [("_min", min), ("_max", max), ("_sum", sum)] {
                         if !first {
                             fields.push(',');
                         }
@@ -1277,7 +1444,7 @@ fn format_line_protocol(
                         &mut fields,
                         "{}_count={}i",
                         escape_lp_field_key(field.name),
-                        s.count
+                        count
                     );
                 }
             }
@@ -1336,8 +1503,8 @@ fn format_prometheus_text(
                 MetricValue::U64(_) | MetricValue::F64(_) => {
                     collect_scalar_metric(&mut groups, field, value, &base_labels, &ts_suffix);
                 }
-                MetricValue::Mmsc(ref s) => {
-                    collect_mmsc_metric(&mut groups, field, s, &base_labels, &ts_suffix);
+                MetricValue::Distribution(d) => {
+                    collect_distribution_metric(&mut groups, field, d, &base_labels, &ts_suffix);
                 }
             }
         }
@@ -2375,7 +2542,7 @@ mod tests {
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsField,
         Temporality,
     };
-    use otap_df_telemetry::instrument::MmscSnapshot;
+    use otap_df_telemetry::instrument::{HistogramDetailed, HistogramNormal, Mmsc};
     use otap_df_telemetry::metrics::MetricSetHandler;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -2483,6 +2650,7 @@ mod tests {
             metrics_registry,
             controller: Arc::new(NoopControlPlane),
             terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            heap_profile_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
             target_info: Arc::from(""),
@@ -2900,7 +3068,7 @@ mod tests {
                 let mut m = HashMap::new();
                 let _ = m.insert(
                     "request_duration".to_string(),
-                    MetricValue::Mmsc(MmscSnapshot {
+                    MetricValue::from(Mmsc {
                         min: 1.5,
                         max: 100.0,
                         sum: 250.5,
@@ -2957,7 +3125,7 @@ mod tests {
                 let mut m = HashMap::new();
                 let _ = m.insert(
                     "request_duration".to_string(),
-                    MetricValue::Mmsc(MmscSnapshot {
+                    MetricValue::from(Mmsc {
                         min: 1.5,
                         max: 100.0,
                         sum: 250.5,
@@ -3132,6 +3300,121 @@ mod tests {
         assert!(filter.matches(&match_entry));
         assert!(!filter.matches(&wrong_level));
         assert!(!filter.matches(&wrong_text));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Distribution JSON rendering tests
+    // ---------------------------------------------------------------------------
+
+    /// Serializes a single `MetricValue` through the admin JSON path.
+    fn distribution_json(value: &MetricValue) -> serde_json::Value {
+        #[derive(serde::Serialize)]
+        struct Wrapper<'a> {
+            #[serde(serialize_with = "serialize_metric_value")]
+            value: &'a MetricValue,
+        }
+        serde_json::to_value(Wrapper { value })
+            .unwrap()
+            .get("value")
+            .unwrap()
+            .clone()
+    }
+
+    /// Builds a bucketed distribution over the integers 1..=n.
+    #[allow(unused_qualifications)]
+    fn normal_distribution(n: u64) -> MetricValue {
+        let mut histogram = HistogramNormal::default();
+        for i in 1..=n {
+            histogram.record(i as f64);
+        }
+        MetricValue::Distribution(histogram.get())
+    }
+
+    /// Builds an empty detailed-tier distribution.
+    #[allow(unused_qualifications)]
+    fn detailed_distribution() -> MetricValue {
+        MetricValue::Distribution(HistogramDetailed::default().get())
+    }
+
+    /// Scenario: Empty distributions of every tier are passed to the admin
+    /// JSON serializer and to the collectors' emptiness predicate.
+    /// Guarantees: the predicate reports them empty so collectors drop them,
+    /// and the serializer emits `count` alone -- never a min, max, sum or
+    /// quantile fabricated from an interval with no observation.
+    #[test]
+    fn empty_distribution_json_reports_count_only() {
+        let tiers = [
+            MetricValue::from(Mmsc::default()),
+            normal_distribution(0),
+            detailed_distribution(),
+        ];
+        for value in &tiers {
+            assert!(is_empty_distribution(value));
+            let json = distribution_json(value);
+            let obj = json.as_object().unwrap();
+            assert_eq!(obj.len(), 1, "{obj:?}");
+            assert_eq!(obj.get("count").unwrap(), 0);
+        }
+        assert!(!is_empty_distribution(&normal_distribution(1)));
+        assert!(!is_empty_distribution(&MetricValue::U64(0)));
+    }
+
+    /// Scenario: A basic-tier distribution, which encodes no buckets, is
+    /// rendered for the admin JSON endpoints.
+    /// Guarantees: only the exact mmsc statistics appear, with no `details`
+    /// object, since the tier supports neither a zero count nor quantiles.
+    #[test]
+    fn basic_tier_json_reports_only_exact_statistics() {
+        let value = MetricValue::from(Mmsc {
+            min: 1.0,
+            max: 9.0,
+            sum: 20.0,
+            count: 4,
+        });
+        let json = distribution_json(&value);
+        let obj = json.as_object().unwrap();
+
+        assert_eq!(obj.get("min").unwrap(), 1.0);
+        assert_eq!(obj.get("max").unwrap(), 9.0);
+        assert_eq!(obj.get("sum").unwrap(), 20.0);
+        assert_eq!(obj.get("count").unwrap(), 4);
+        // The basic tier keeps no bucket structure and so tracks no zero
+        // population; a zero there is an ordinary observation that lowers min.
+        assert!(!obj.contains_key("details"));
+    }
+
+    /// Scenario: A bucketed normal-tier distribution over 1..=1000 is rendered
+    /// for the admin JSON endpoints.
+    /// Guarantees: the exact statistics stay at the top level while every
+    /// bucket-derived value is grouped under a single `details` object holding
+    /// the zero count, the relative error bound, and ordered p50/p90/p99
+    /// estimates that each land within that bound of the true quantile.
+    #[test]
+    fn bucketed_tier_json_reports_quantiles_and_error_bound() {
+        let value = normal_distribution(1000);
+        let json = distribution_json(&value);
+        let obj = json.as_object().unwrap();
+
+        assert_eq!(obj.get("count").unwrap(), 1000);
+        assert!(!obj.contains_key("zero_count"), "{obj:?}");
+        assert!(!obj.contains_key("scale"), "{obj:?}");
+
+        let details = obj.get("details").unwrap().as_object().unwrap();
+        assert_eq!(details.get("zero_count").unwrap(), 0);
+        assert!(!details.contains_key("scale"), "{details:?}");
+
+        let bound = details.get("relative_error").unwrap().as_f64().unwrap();
+        assert!(bound > 0.0 && bound < 0.5, "bound = {bound}");
+
+        let p50 = details.get("p50").unwrap().as_f64().unwrap();
+        let p90 = details.get("p90").unwrap().as_f64().unwrap();
+        let p99 = details.get("p99").unwrap().as_f64().unwrap();
+        assert!(p50 <= p90 && p90 <= p99, "{p50} {p90} {p99}");
+
+        for (est, exact) in [(p50, 500.0), (p90, 900.0), (p99, 990.0)] {
+            let err = (est - exact).abs() / exact;
+            assert!(err <= bound * 1.5, "est={est} exact={exact} err={err}");
+        }
     }
 
     // ---------------------------------------------------------------------------
@@ -3601,7 +3884,7 @@ mod tests {
         }
 
         fn needs_flush(&self) -> bool {
-            self.values.iter().any(|&v| !v.is_zero())
+            self.values.iter().any(|v| !v.is_zero())
         }
     }
 

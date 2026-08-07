@@ -46,6 +46,7 @@ data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
+tokio-util = { workspace = true, optional = true }
 xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
 hex = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
@@ -70,6 +71,7 @@ paste = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
@@ -93,6 +95,7 @@ kafka-receiver = [
     "dep:rdkafka",
     "dep:smallvec",
     "dep:regex",
+    "dep:tokio-util",
 ]
 kafka-exporter = [
     "dep:rdkafka",
@@ -144,6 +147,7 @@ clickhouse-exporter = [
 geneva-exporter = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
+    "dep:url",
 ]
 azure-monitor-exporter = [
     "dep:opentelemetry-proto",

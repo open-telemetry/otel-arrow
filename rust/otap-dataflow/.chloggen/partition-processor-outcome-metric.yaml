@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: Replace the partition processor's separate success and failure counters with `processor.partition.operations`, partitioned by `outcome`, using unit `{operation}`.
+issues: [3530]
+subtext: |
+  Migration: Replace `processor.partition.partition_operations_succeeded` queries with `processor.partition.operations` filtered by `outcome=success`, and `processor.partition.partition_operations_failed` queries with the same metric filtered by `outcome=failure`.

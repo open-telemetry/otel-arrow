@@ -13,13 +13,14 @@ static RFC_DATE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("(?:\\w*, )?(\\d+)[- ]([A-Za-z]+)[- ](\\d+)").unwrap());
 static LOCAL_DATE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("([A-Za-z])+[- ](\\d+),?[ \\-](\\d+)").unwrap());
-static ISO_TIME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("(?:^|[^-+:\\d])(\\d+):(\\d+)(?::(\\d+)(?:\\.(\\d+))?)?(?:Z|(?: GMT))?").unwrap()
-});
+static ISO_TIME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("(?:^|[^-+:\\d])(\\d+):(\\d+)(?::(\\d+)(?:\\.(\\d+))?)?").unwrap());
 static LOCAL_TIME_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("(\\d+)(?::(\\d+))?\\s*([AaPp][Mm])").unwrap());
 static ISO_TIME_OFFSET_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("([-+])(\\d+)(?::(\\d+))?").unwrap());
+static TIME_ZONE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("\\b(Z|UT|GMT|EST|EDT|CST|CDT|MST|MDT|PST|PDT)\\b").unwrap());
 static ISO_TIME_SPAN_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("(-)?(?:(\\d+)\\.)?(\\d+):(\\d+):(\\d+)(?:\\.(\\d+))?").unwrap());
 
@@ -324,6 +325,25 @@ fn parse_offset(input: &str) -> Option<(i32, Range<usize>)> {
         return Some((offset, r));
     }
 
+    let c = TIME_ZONE_REGEX.captures(input);
+    if let Some(captures) = c {
+        let r = captures.get(0).unwrap().range();
+        let offset_hours = match captures.get(1).unwrap().as_str() {
+            "Z" | "UT" | "GMT" => 0,
+            "EST" => -5,
+            "EDT" => -4,
+            "CST" => -6,
+            "CDT" => -5,
+            "MST" => -7,
+            "MDT" => -6,
+            "PST" => -8,
+            "PDT" => -7,
+            _ => return None,
+        };
+
+        return Some((offset_hours * 60 * 60, r));
+    }
+
     None
 }
 
@@ -454,6 +474,43 @@ mod tests {
         );
         run_test_success("2014-11-08T15:05", create_utc(2014, 11, 8, 15, 5, 0, 0));
         run_test_success("2014-11-08T15:05 GMT", create_utc(2014, 11, 8, 15, 5, 0, 0));
+    }
+
+    /// Scenario: RFC 822 timestamps use standard named time zones other than GMT.
+    /// Guarantees: Each named zone is parsed with its specified fixed UTC offset.
+    #[test]
+    fn test_parse_rfc_822_named_time_zones() {
+        let cases = [
+            ("UT", 0),
+            ("GMT", 0),
+            ("EST", -5),
+            ("EDT", -4),
+            ("CST", -6),
+            ("CDT", -5),
+            ("MST", -7),
+            ("MDT", -6),
+            ("PST", -8),
+            ("PDT", -7),
+        ];
+
+        for (zone, offset_hours) in cases {
+            let input = format!("Wed, 4 Feb 26 15:05:02 {zone}");
+            let expected = create_fixed(2026, 2, 4, 15, 5, 2, 0, offset_hours * 60 * 60);
+
+            assert_eq!(parse_date_time(&input), Ok(expected), "zone: {zone}");
+        }
+    }
+
+    /// Scenario: A timestamp contains both a UTC designator and another time zone.
+    /// Guarantees: Ambiguous timestamps with multiple time zone indicators are rejected.
+    #[test]
+    fn test_parse_date_time_rejects_multiple_time_zones() {
+        for input in [
+            "Wed, 4 Feb 26 15:05:02Z EST",
+            "Wed, 4 Feb 26 15:05:02Z-07:00",
+        ] {
+            assert_eq!(parse_date_time(input), Err(()), "input: {input}");
+        }
     }
 
     #[test]

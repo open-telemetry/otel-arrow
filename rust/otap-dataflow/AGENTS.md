@@ -153,6 +153,11 @@ compatibility. The project does not publish crates or make an API stability
 promise, so an API change alone is not a `breaking` change. Choose the entry
 type that describes the user-facing impact instead.
 
+Changelog entries are release notes for end users. Write `note` and `subtext`
+in terms of observable behavior, configuration changes, and actions users must
+take. Avoid implementation details such as internal refactors, type names, or
+instrumentation mechanisms unless they directly affect users.
+
 Changelog entries must use ASCII characters only. Replace typographic punctuation
 and other non-ASCII characters with ASCII equivalents.
 
