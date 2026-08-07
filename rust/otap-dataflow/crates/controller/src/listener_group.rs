@@ -17,9 +17,9 @@ use otap_df_engine::listener_group::{
 use otap_df_telemetry::otel_warn;
 use std::net::SocketAddr;
 
-// TODO: Replace this conservative extraction with receiver/factory-declared
-// bind identities so listener-group planning does not hardcode receiver URNs
-// and config shapes in the controller.
+// TODO(#3687): Replace controller-owned receiver schema extraction with
+// receiver-declared listener identities. Distinguish declared-none from
+// undeclared before listener snapshots drive coordination.
 const KNOWN_RECEIVER_URNS: &[&str] = &[
     "urn:otel:receiver:otlp",
     "urn:otel:receiver:otap",
