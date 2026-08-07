@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-/// Default time an authorization decision is cached, keyed by the opaque token.
+/// Default time an authorization decision is cached, keyed by the token's
+/// SHA-256 digest (never the plaintext token; see `cache.rs`).
 fn default_cache_ttl() -> Duration {
     Duration::from_secs(300)
 }
