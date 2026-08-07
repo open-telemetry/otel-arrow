@@ -130,7 +130,8 @@ linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
 mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
-tikv-jemallocator = { version = "0.7.0" }
+jemalloc_pprof = { version = "0.9.0", features = ["symbolize"] }
+tikv-jemallocator = { version = "0.7.0", features = ["profiling", "unprefixed_malloc_on_supported_platforms"]}
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
 tikv-jemalloc-sys = "0.7.0"
 memchr = "2.8.0"
@@ -294,9 +295,12 @@ otap-df-pdata = { path = "crates/pdata" }
 otap-df-pdata-views = { path = "crates/pdata-views" }
 
 [features]
-# ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
 default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
-jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
+jemalloc = [
+    "dep:tikv-jemallocator",
+    "otap-df-engine/jemalloc",
+    "otap-df-controller/jemalloc-pprof",
+]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
 aws = ["otap-df-otap/aws", "otap-df-contrib-nodes/aws"]
