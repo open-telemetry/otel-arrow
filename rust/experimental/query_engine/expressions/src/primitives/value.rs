@@ -3,6 +3,7 @@
 
 use std::{
     borrow::Borrow,
+    fmt,
     fmt::{Debug, Display, Write},
 };
 
@@ -59,6 +60,32 @@ impl Value<'_> {
             Value::Regex(_) => ValueType::Regex,
             Value::String(_) => ValueType::String,
             Value::TimeSpan(_) => ValueType::TimeSpan,
+        }
+    }
+
+    pub fn diagnostic_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Null => f.write_str("Null"),
+            Value::Array(a) => write!(f, "Array(Count={})", a.len()),
+            Value::Map(m) => write!(f, "Map(Count={})", m.len()),
+            Value::String(s) => {
+                f.write_str("String(")?;
+                let v = s.get_value();
+                match v.char_indices().nth(32) {
+                    Some((idx, _)) => {
+                        write_json_escaped_str(f, &v[..idx], true)?;
+                    }
+                    None => {
+                        write_json_escaped_str(f, v, false)?;
+                    }
+                }
+                f.write_char(')')
+            }
+            v => {
+                write!(f, "{}(", v.get_value_type())?;
+                std::fmt::Display::fmt(v, f)?;
+                f.write_char(')')
+            }
         }
     }
 
@@ -336,6 +363,16 @@ impl Value<'_> {
         left: &Value,
         right: &Value,
     ) -> Result<i64, ExpressionError> {
+        if let Value::Integer(left) = left
+            && let Value::Integer(right) = right
+        {
+            return Ok(compare_ordered_values(left.get_value(), right.get_value()));
+        } else if let Value::Double(left) = left
+            && let Value::Double(right) = right
+        {
+            return Ok(compare_double_values(left.get_value(), right.get_value()));
+        }
+
         let left_type = left.get_value_type();
         let right_type = right.get_value_type();
 
@@ -976,6 +1013,45 @@ impl Value<'_> {
 
         left_may_by_double || right_may_by_double
     }
+}
+
+fn write_json_escaped_str(
+    f: &mut fmt::Formatter<'_>,
+    s: &str,
+    append_ellipsis: bool,
+) -> fmt::Result {
+    f.write_char('"')?;
+    for ch in s.chars() {
+        match ch {
+            '"' => f.write_str("\\\"")?,
+            '\\' => f.write_str("\\\\")?,
+            '\n' => f.write_str("\\n")?,
+            '\r' => f.write_str("\\r")?,
+            '\t' => f.write_str("\\t")?,
+            c if (c as u32) < 0x20 => {
+                // control characters U+0000..U+001F -> \u00XX
+                write!(f, "\\u{:04x}", c as u32)?;
+            }
+            c if (c as u32) <= 0xFFFF => {
+                // BMP non-control characters: write directly
+                f.write_char(c)?;
+            }
+            // Non-BMP characters (above U+FFFF) must be encoded as UTF-16 surrogate pairs
+            c => {
+                let code = c as u32;
+                let u = code - 0x1_0000;
+                let high = 0xD800 | ((u >> 10) & 0x3FF);
+                let low = 0xDC00 | (u & 0x3FF);
+                write!(f, "\\u{:04x}\\u{:04x}", high, low)?;
+            }
+        }
+    }
+    if append_ellipsis {
+        f.write_str("...\"")?;
+    } else {
+        f.write_char('"')?;
+    }
+    Ok(())
 }
 
 impl Display for Value<'_> {
