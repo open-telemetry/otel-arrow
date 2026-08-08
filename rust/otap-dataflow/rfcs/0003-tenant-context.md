@@ -25,7 +25,7 @@ Multitenant features are implemented by a **tenant compiler** which is
 computed from the whole engine configuration. The tenant compiler
 internalizes strings and match conditions and builds one literal
 dictionary per value-matched key. At runtime, new tenant contexts
-include packed symbol words used for fast condition lookup.
+include precomputed results for every configured condition set.
 
 ## Configuration model
 
@@ -131,14 +131,23 @@ components to maintain type safety. Consumers will be able to extract
 authorized key information separately from transport headers, peer
 address, and other attributes.
 
+## Transport headers
+
+The first deliverable in the timeline below, where tenant context is
+used in the pipeline, will be a re-implementation of transport headers
+in the DFE. The diagram explains how the tenant compiler works, with a
+tenant context producer and two consumers illustrating the process.
+
+![Tenant context with only transport headers](images/tenant-context-only-transport-headers.svg)
+
 ### Consumers
 
 Consumers of the tenant context fall into two categories:
 
 - Carriers: Consumers have the general ability to extract values from
   tenant context by key.
-- Matchers: Consumers have the general ability to form conditions on
-  tenant context, either in configuration or in runtime data structures.
+- Matchers: Consumers declare condition sets before a compiler epoch is
+  activated. Condition sets remain static for that epoch.
 
 As an example of the carrier pattern, the gRPC OTLP exporter can be
 configured to export specific tenant keys:
@@ -190,22 +199,19 @@ nodes:
 
 ### Matching
 
-The tenant compiler computes packed symbol words enabling a fast
-lookup and equality mechanism. The tenant compiler determines a
-**token signature** which is the set of tenant keys used in a
-condition; conditions testing the same keys share a signature.
-
-The compiler allocates a **token-signature pair** for each distinct
-combination of a token and a compatible signature needed by a
-configured consumer. If there are `T` tokens, `S` distinct signatures,
-and `C` conditions, the number of allocated pairs is `P <= T * S <=
-T * C`.  The tenant compiler state is primarily a matrix of `S` by `T`
-with up to `C` non-empty cells, plus dictionaries.
+Condition sets are static within a compiler epoch. Conditions testing
+the same key shape share a **signature**, and each compatible
+token-signature pair has one construction-time PairSlot. The number of
+PairSlots is bounded by `#tokens x #signatures`.
 
 ![Tenant compiler state](images/tenant-compiler-state.svg)
 
-Nodes will resolve tenant conditions at startup or whenever their
-configuration changes.
+When constructing tenant context, the engine dictionary-encodes
+value-matched keys, computes PairSlot words in scratch, and evaluates
+every condition set. Only the winning condition index or no-match
+result for each set is packed into tenant context. Consumers retrieve
+that result directly by condition-set identifier. Configuration
+changes compile a new epoch with a new immutable layout.
 
 ### Propagation
 
@@ -326,53 +332,28 @@ be required to achieve. Components that use tenant conditions are
 expected to fail requests that refer to an unknown tenant compiler
 epoch. A coarse epoch timeout mechanism may be sufficient.
 
-## Transport headers
-
-The first deliverable in the timeline below, where tenant context is
-used in the pipeline, will be a re-implementation of transport headers
-in the DFE. The diagram explains how the tenant compiler works, with a
-tenant context producer and two consumers illustrating the process.
-
-![Tenant context with only transport headers](images/tenant-context-only-transport-headers.svg)
-
 ## Performance invariants
 
-To state requirements for tenant context impact on pipeline
-performance, let `P` be the number of allocated token-signature pairs
-as defined above. This number is pruned in cases where signatures are
-shared or token keys are incompatible with a condition. For one
-condition set, let `Q <= P` be the pairs bound to that set and let `R
-<= Q` be the number whose tokens resolved for a particular tenant context.
+All dimensions are explicitly limited: tokens, keys per token,
+signatures, condition sets and branches, literal dictionaries, scratch
+space, retained values, field sizes, and total encoded context size.
+Configurations or inputs exceeding a limit fail rather than growing
+state without bound.
 
-### Space
-
-- Zero memory allocations when tenant context is not used
-- Max one memory allocation with packed encoding per new context
-- General size limits over scratch space, dictionary sizes, and encoded context size
-- `O(P + sizeof(compiled literal values))` compiled space
-- Exactly `P` packed 64-bit symbol words per non-empty tenant context,
-  plus retained encoded values
-- Compiled epoch state is immutable, no locking for lookup and match.
-
-### Time
-
-At compile time:
-
-- `O(#value-matched keys + sizeof(condition values))` for dictionary
-  encoding
-- `O(P + sum(#signature_keys) + #conditions)` to build signature
-  layouts, pair indices, and condition probe tables
-
-Per request:
-
-- `O(#value-matched keys + sizeof(value-matched input values))` to
-  dictionary-encode extracted values
-- `O(P + sum(#signature_keys per resolved pair))` to initialize and pack
-  the context's symbol words
-- Expected `O(Q)` to evaluate a condition set: one resolved-token bit
-  test per bound pair and, for each of the `R` resolved pairs, at most
-  one hash-table probe keyed by one packed `u64`. The `u64` equality
-  test occurs inside that probe rather than as a separate pass.
+- Conditions with the same key shape share a signature. Compatible
+  token-signature pairs are bounded by
+  `#tokens x #signatures` and exist only in construction scratch.
+- Tenant-context construction evaluates extractors, resolves tokens,
+  dictionary-encodes value-matched keys, and precomputes every
+  reachable condition-set result.
+- Consumers read a condition result in `O(1)` by its condition-set
+  identifier. Retained values are likewise addressed by precomputed
+  slots rather than searched by name.
+- Tenant context costs no allocation when unused and one allocation
+  when packed; reusable scratch does not allocate at steady state
+  within configured limits.
+- Compiler state is immutable within an epoch, so request-time
+  construction and consumer lookups require no locks.
 
 ## PR series
 
@@ -386,7 +367,7 @@ Tenant context will be implemented in approximately 10 PRs.
 | 4  | Carriers                    | Tenant consumers can extract key values                         |
 | 5  | Remove transport headers    | Net-negative cost compared with starting point                  |
 | 6  | Authorization               | New extractors for authorization subject/audience/claims        |
-| 7  | Matchers                    | Compiler computes packed symbol words, adds tenant_router       |
+| 7  | Matchers                    | Compiler precomputes condition-set results, adds tenant_router  |
 | 8  | Topics                      | Topic exporter and receiver use special extractors              |
 | 9  | Batch processor             | Batch processor gains partition keys                            |
 | 10 | Ingress rules               | Required token checking, idempotency key support                |
