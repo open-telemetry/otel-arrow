@@ -85,6 +85,21 @@ fn bench_logs_transform(c: &mut Criterion) {
         });
     });
 
+    let mut otlp_direct_with_arrow_stream = LogsTransformBenchmark::default();
+    _ = group.bench_function("otlp_direct_with_arrow_stream/8192", |b| {
+        b.iter(|| {
+            let output = otlp_direct_with_arrow_stream.transform_otlp_direct(black_box(&request));
+            let mut bytes = Vec::new();
+            let mut writer = StreamWriter::try_new(&mut bytes, output.schema_ref())
+                .expect("create direct ArrowStream writer");
+            writer
+                .write(&output)
+                .expect("encode direct ClickHouse batch");
+            writer.finish().expect("finish direct ArrowStream");
+            black_box(bytes)
+        });
+    });
+
     group.finish();
 }
 
