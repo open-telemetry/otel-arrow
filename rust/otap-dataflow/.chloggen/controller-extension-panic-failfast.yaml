@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: engine
+note: Treat a panicking controller extension task as a runtime failure so it triggers fail-fast engine shutdown instead of leaving `run_forever` parked with a dead extension.
+issues: [3402]
