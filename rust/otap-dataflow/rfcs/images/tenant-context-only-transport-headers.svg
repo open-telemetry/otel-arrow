@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="596" viewBox="0 0 860 596" font-family="Helvetica, Arial, sans-serif">
+  <title>Tenant context, first cut: every node's tenant configuration is compiled once, then each node uses only its own part of the result</title>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3a414a"/>
+    </marker>
+    <marker id="arrowlight" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a94a0"/>
+    </marker>
+    <marker id="arrowctx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a1836a"/>
+    </marker>
+    <marker id="arrowtiny" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a1836a"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="860" height="596" fill="#ffffff"/>
+
+  <!-- ============ compiled once ============ -->
+  <text x="24" y="26" font-size="11" font-weight="bold" fill="#6b7784" letter-spacing="0.6">COMPILED ONCE</text>
+
+  <rect x="24" y="38" width="260" height="68" rx="5" fill="#eef1f4" stroke="#8a94a0"/>
+  <text x="36" y="57" font-size="11" font-weight="bold" fill="#3a414a">policies.tenant</text>
+  <text x="36" y="77" font-size="11" font-family="monospace" fill="#3a414a">tenant_id  &lt;- x-tenant-id</text>
+  <text x="36" y="93" font-size="11" font-family="monospace" fill="#3a414a">project_id &lt;- x-project-id</text>
+
+  <rect x="300" y="38" width="260" height="68" rx="5" fill="#eef1f4" stroke="#8a94a0"/>
+  <text x="312" y="57" font-size="11" font-weight="bold" fill="#3a414a">batch policies</text>
+  <text x="312" y="77" font-size="11" font-family="monospace" fill="#3a414a">metadata_keys:</text>
+  <text x="312" y="93" font-size="11" font-family="monospace" fill="#3a414a">  [tenant_id, project_id]</text>
+
+  <rect x="576" y="38" width="260" height="68" rx="5" fill="#eef1f4" stroke="#8a94a0"/>
+  <text x="588" y="57" font-size="11" font-weight="bold" fill="#3a414a">exporter config</text>
+  <text x="588" y="77" font-size="11" font-family="monospace" fill="#3a414a">tenant_id  -&gt; x-customer-id</text>
+  <text x="588" y="93" font-size="11" font-family="monospace" fill="#3a414a">project_id -&gt; x-workspace-id</text>
+
+  <path d="M 154 110 L 154 120 L 390 120 L 390 128" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 430 110 L 430 128" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 706 110 L 706 120 L 470 120 L 470 128" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+
+  <rect x="340" y="132" width="180" height="44" rx="5" fill="#d7e3ee" stroke="#3a414a" stroke-width="1.5"/>
+  <text x="430" y="159" font-size="13" font-weight="bold" fill="#1f2933" text-anchor="middle">tenant compiler</text>
+
+  <path d="M 390 176 L 390 202 L 258 202 L 258 246" stroke="#8a94a0" fill="none" marker-end="url(#arrowlight)"/>
+  <path d="M 430 176 L 430 246" stroke="#8a94a0" fill="none" marker-end="url(#arrowlight)"/>
+  <path d="M 470 176 L 470 202 L 602 202 L 602 246" stroke="#8a94a0" fill="none" marker-end="url(#arrowlight)"/>
+  <text x="266" y="224" font-size="10" fill="#6b7784">extractor plan</text>
+  <text x="438" y="224" font-size="10" fill="#6b7784">partition keys</text>
+  <text x="610" y="224" font-size="10" fill="#6b7784">value lookups</text>
+
+  <line x1="24" y1="190" x2="836" y2="190" stroke="#dde1e6"/>
+
+  <!-- ============ once per request ============ -->
+  <text x="24" y="212" font-size="11" font-weight="bold" fill="#6b7784" letter-spacing="0.6">ONCE PER REQUEST</text>
+
+  <text x="54" y="248" font-size="10" fill="#6b7784">inbound</text>
+  <text x="54" y="266" font-size="11" font-family="monospace" fill="#3a414a">x-tenant-id: acme</text>
+  <text x="54" y="283" font-size="11" font-family="monospace" fill="#3a414a">x-project-id: p1</text>
+  <text x="54" y="300" font-size="11" font-family="monospace" fill="#aab2bb">authorization: ...</text>
+  <line x1="54" y1="296" x2="162" y2="296" stroke="#aab2bb"/>
+
+  <path d="M 168 272 L 192 272" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+
+  <rect x="196" y="246" width="124" height="52" rx="5" fill="#ffffff" stroke="#3a414a" stroke-width="1.5"/>
+  <text x="258" y="268" font-size="12" font-weight="bold" fill="#1f2933" text-anchor="middle">receiver</text>
+  <text x="258" y="285" font-size="10" fill="#6b7784" text-anchor="middle">compiles context</text>
+
+  <rect x="368" y="246" width="124" height="52" rx="5" fill="#ffffff" stroke="#3a414a" stroke-width="1.5"/>
+  <text x="430" y="268" font-size="12" font-weight="bold" fill="#1f2933" text-anchor="middle">batch</text>
+  <text x="430" y="285" font-size="10" fill="#6b7784" text-anchor="middle">batch by project</text>
+
+  <rect x="540" y="246" width="124" height="52" rx="5" fill="#ffffff" stroke="#3a414a" stroke-width="1.5"/>
+  <text x="602" y="268" font-size="12" font-weight="bold" fill="#1f2933" text-anchor="middle">exporter</text>
+  <text x="602" y="285" font-size="10" fill="#6b7784" text-anchor="middle">reads both keys</text>
+
+  <path d="M 324 272 L 364 272" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 496 272 L 536 272" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 668 272 L 692 272" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+
+  <text x="696" y="252" font-size="10" fill="#6b7784">outbound</text>
+  <text x="696" y="270" font-size="11" font-family="monospace" fill="#3a414a">x-customer-id: acme</text>
+  <text x="696" y="288" font-size="11" font-family="monospace" fill="#3a414a">x-workspace-id: p1</text>
+
+  <!-- the carried context -->
+  <path d="M 258 302 L 258 336" stroke="#a1836a" fill="none" marker-end="url(#arrowctx)"/>
+  <path d="M 430 336 L 430 302" stroke="#a1836a" fill="none" marker-end="url(#arrowctx)"/>
+  <path d="M 602 336 L 602 302" stroke="#a1836a" fill="none" marker-end="url(#arrowctx)"/>
+
+  <rect x="196" y="338" width="468" height="128" rx="6" fill="#f7f0e6" stroke="#a1836a" stroke-width="1.5"/>
+  <text x="212" y="360" font-size="12" font-weight="bold" fill="#6b4f36">tenant context</text>
+  <text x="314" y="360" font-size="10" fill="#8a6f52">one allocation, refcounted</text>
+
+  <rect x="212" y="368" width="436" height="24" rx="3" fill="#efe3d2" stroke="#c3ab90"/>
+  <line x1="274" y1="368" x2="274" y2="392" stroke="#c3ab90"/>
+  <line x1="336" y1="368" x2="336" y2="392" stroke="#c3ab90"/>
+  <line x1="410" y1="368" x2="410" y2="392" stroke="#c3ab90"/>
+  <text x="243" y="384" font-size="10" font-family="monospace" fill="#6b4f36" text-anchor="middle">epoch</text>
+  <text x="305" y="384" font-size="10" font-family="monospace" fill="#6b4f36" text-anchor="middle">tokens</text>
+  <text x="373" y="384" font-size="10" font-family="monospace" fill="#6b4f36" text-anchor="middle">index</text>
+  <text x="529" y="384" font-size="10" font-family="monospace" fill="#6b4f36" text-anchor="middle">data</text>
+
+  <rect x="348" y="402" width="18" height="15" rx="2" fill="#ffffff" stroke="#c3ab90"/>
+  <rect x="374" y="402" width="18" height="15" rx="2" fill="#ffffff" stroke="#c3ab90"/>
+  <path d="M 357 419 L 357 433 L 410 433" stroke="#a1836a" fill="none" marker-end="url(#arrowtiny)"/>
+  <path d="M 383 419 L 383 455 L 584 455 L 584 447" stroke="#a1836a" fill="none" marker-end="url(#arrowtiny)"/>
+
+  <rect x="416" y="424" width="108" height="19" rx="2" fill="#ffffff" stroke="#c3ab90"/>
+  <text x="422" y="437" font-size="9.5" font-family="monospace" fill="#3a414a">tenant_id="acme"</text>
+  <rect x="530" y="424" width="108" height="19" rx="2" fill="#ffffff" stroke="#c3ab90"/>
+  <text x="536" y="437" font-size="9.5" font-family="monospace" fill="#3a414a">project_id="p1"</text>
+
+  <!-- ============ sampled ============ -->
+  <path d="M 529 466 L 529 542" stroke="#8a94a0" fill="none" stroke-dasharray="4 3" marker-end="url(#arrowlight)"/>
+
+  <line x1="24" y1="486" x2="836" y2="486" stroke="#dde1e6"/>
+  <text x="24" y="508" font-size="11" font-weight="bold" fill="#6b7784" letter-spacing="0.6">SAMPLED</text>
+  <text x="543" y="520" font-size="10" fill="#6b7784">span attributes</text>
+
+  <rect x="429" y="542" width="200" height="38" rx="5" fill="#ffffff" stroke="#3a414a" stroke-width="1.5"/>
+  <text x="529" y="566" font-size="12" font-weight="bold" fill="#1f2933" text-anchor="middle">observability pipeline</text>
+</svg>

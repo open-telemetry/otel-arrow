@@ -1,0 +1,239 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1090" viewBox="0 0 960 1090" font-family="Helvetica, Arial, sans-serif">
+  <title>Tenant compiler state as a token by signature matrix over per-key dictionaries</title>
+  <desc>Compatible token and signature intersections allocate PairSlots used as construction scratch. Per-key dictionaries map request values to symbols, static condition sets are evaluated once during context construction, and consumers read precomputed results by condition-set identifier.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a94a0"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="1090" fill="#ffffff"/>
+
+  <text x="24" y="30" font-size="16" font-weight="bold" fill="#1f2933">Tenant compiler state</text>
+
+  <!-- Token by signature compatibility matrix. -->
+  <text x="24" y="82" font-size="11" font-weight="bold" fill="#6b7784" letter-spacing="0.6">TOKENS</text>
+  <text x="194" y="82" font-size="11" font-weight="bold" fill="#6b7784" letter-spacing="0.6">SIGNATURES (SETS OF CONDITION KEYS)</text>
+
+  <rect x="24" y="168" width="154" height="68" rx="4" fill="#eef1f4" stroke="#8a94a0"/>
+  <text x="36" y="190" font-size="12" font-weight="bold" fill="#1f2933">edge</text>
+  <text x="36" y="210" font-size="10" font-family="monospace" fill="#3a414a">tenant_id</text>
+  <text x="36" y="225" font-size="10" font-family="monospace" fill="#3a414a">project_id</text>
+
+  <rect x="24" y="242" width="154" height="68" rx="4" fill="#eef1f4" stroke="#8a94a0"/>
+  <text x="36" y="264" font-size="12" font-weight="bold" fill="#1f2933">auth</text>
+  <text x="36" y="284" font-size="10" font-family="monospace" fill="#3a414a">user_id</text>
+  <text x="36" y="299" font-size="10" font-family="monospace" fill="#3a414a">role</text>
+
+  <rect x="24" y="316" width="154" height="68" rx="4" fill="#eef1f4" stroke="#8a94a0"/>
+  <text x="36" y="338" font-size="12" font-weight="bold" fill="#1f2933">combined</text>
+  <text x="36" y="358" font-size="10" font-family="monospace" fill="#3a414a">tenant_id, project_id</text>
+  <text x="36" y="373" font-size="10" font-family="monospace" fill="#3a414a">role</text>
+
+  <rect x="194" y="68" width="230" height="94" rx="4" fill="#d7e3ee" stroke="#6f879b"/>
+  <text x="309" y="94" font-size="13" font-weight="bold" fill="#1f2933" text-anchor="middle">S0</text>
+  <text x="309" y="116" font-size="11" font-family="monospace" fill="#3a414a" text-anchor="middle">{ project_id? }</text>
+  <text x="309" y="138" font-size="10" fill="#6b7784" text-anchor="middle">1 presence key: 1 bit</text>
+
+  <rect x="430" y="68" width="280" height="94" rx="4" fill="#d7e3ee" stroke="#6f879b"/>
+  <text x="570" y="94" font-size="13" font-weight="bold" fill="#1f2933" text-anchor="middle">S1</text>
+  <text x="570" y="116" font-size="11" font-family="monospace" fill="#3a414a" text-anchor="middle">{ tenant_id = ..., project_id? }</text>
+  <text x="570" y="138" font-size="10" fill="#6b7784" text-anchor="middle">1 value-matched + 1 presence key: 4 bits</text>
+
+  <rect x="716" y="68" width="220" height="94" rx="4" fill="#d7e3ee" stroke="#6f879b"/>
+  <text x="826" y="94" font-size="13" font-weight="bold" fill="#1f2933" text-anchor="middle">S2</text>
+  <text x="826" y="116" font-size="11" font-family="monospace" fill="#3a414a" text-anchor="middle">{ role = ... }</text>
+  <text x="826" y="138" font-size="10" fill="#6b7784" text-anchor="middle">1 value-matched key: 3 symbol bits</text>
+
+  <!-- Matrix row: edge. -->
+  <rect x="194" y="168" width="230" height="68" rx="4" fill="#ffffff" stroke="#6b9b78" stroke-width="1.5"/>
+  <text x="309" y="190" font-size="12" font-weight="bold" fill="#315c3d" text-anchor="middle">P0: u64</text>
+  <rect x="204" y="199" width="24" height="24" fill="#d9822b"/>
+  <rect x="228" y="199" width="186" height="24" fill="#e5e8eb"/>
+  <text x="216" y="215" font-size="9" font-weight="bold" fill="#ffffff" text-anchor="middle">1</text>
+  <text x="321" y="215" font-size="9" fill="#6b7784" text-anchor="middle">unused 63</text>
+
+  <rect x="430" y="168" width="280" height="68" rx="4" fill="#ffffff" stroke="#6b9b78" stroke-width="1.5"/>
+  <text x="570" y="190" font-size="12" font-weight="bold" fill="#315c3d" text-anchor="middle">P1: u64</text>
+  <rect x="440" y="199" width="72" height="24" fill="#4f81bd"/>
+  <rect x="512" y="199" width="24" height="24" fill="#d9822b"/>
+  <rect x="536" y="199" width="164" height="24" fill="#e5e8eb"/>
+  <text x="476" y="215" font-size="9" font-weight="bold" fill="#ffffff" text-anchor="middle">tenant 3</text>
+  <text x="524" y="215" font-size="9" font-weight="bold" fill="#ffffff" text-anchor="middle">1</text>
+  <text x="618" y="215" font-size="9" fill="#6b7784" text-anchor="middle">unused 60</text>
+
+  <rect x="716" y="168" width="220" height="68" rx="4" fill="#f4f5f6" stroke="#c9ced3"/>
+  <text x="826" y="207" font-size="18" fill="#aab2bb" text-anchor="middle">-</text>
+
+  <!-- Matrix row: auth. -->
+  <rect x="194" y="242" width="230" height="68" rx="4" fill="#f4f5f6" stroke="#c9ced3"/>
+  <text x="309" y="281" font-size="18" fill="#aab2bb" text-anchor="middle">-</text>
+
+  <rect x="430" y="242" width="280" height="68" rx="4" fill="#f4f5f6" stroke="#c9ced3"/>
+  <text x="570" y="281" font-size="18" fill="#aab2bb" text-anchor="middle">-</text>
+
+  <rect x="716" y="242" width="220" height="68" rx="4" fill="#ffffff" stroke="#6b9b78" stroke-width="1.5"/>
+  <text x="826" y="264" font-size="12" font-weight="bold" fill="#315c3d" text-anchor="middle">P2: u64</text>
+  <rect x="726" y="273" width="72" height="24" fill="#8b67a8"/>
+  <rect x="798" y="273" width="128" height="24" fill="#e5e8eb"/>
+  <text x="762" y="289" font-size="9" font-weight="bold" fill="#ffffff" text-anchor="middle">role 3</text>
+  <text x="862" y="289" font-size="9" fill="#6b7784" text-anchor="middle">unused 61</text>
+
+  <!-- Matrix row: combined. -->
+  <rect x="194" y="316" width="230" height="68" rx="4" fill="#ffffff" stroke="#6b9b78" stroke-width="1.5"/>
+  <text x="309" y="338" font-size="12" font-weight="bold" fill="#315c3d" text-anchor="middle">P3: u64</text>
+  <rect x="204" y="347" width="24" height="24" fill="#d9822b"/>
+  <rect x="228" y="347" width="186" height="24" fill="#e5e8eb"/>
+  <text x="216" y="363" font-size="9" font-weight="bold" fill="#ffffff" text-anchor="middle">1</text>
+  <text x="321" y="363" font-size="9" fill="#6b7784" text-anchor="middle">unused 63</text>
+
+  <rect x="430" y="316" width="280" height="68" rx="4" fill="#ffffff" stroke="#6b9b78" stroke-width="1.5"/>
+  <text x="570" y="338" font-size="12" font-weight="bold" fill="#315c3d" text-anchor="middle">P4: u64</text>
+  <rect x="440" y="347" width="72" height="24" fill="#4f81bd"/>
+  <rect x="512" y="347" width="24" height="24" fill="#d9822b"/>
+  <rect x="536" y="347" width="164" height="24" fill="#e5e8eb"/>
+  <text x="476" y="363" font-size="9" font-weight="bold" fill="#ffffff" text-anchor="middle">tenant 3</text>
+  <text x="524" y="363" font-size="9" font-weight="bold" fill="#ffffff" text-anchor="middle">1</text>
+  <text x="618" y="363" font-size="9" fill="#6b7784" text-anchor="middle">unused 60</text>
+
+  <rect x="716" y="316" width="220" height="68" rx="4" fill="#ffffff" stroke="#6b9b78" stroke-width="1.5"/>
+  <text x="826" y="338" font-size="12" font-weight="bold" fill="#315c3d" text-anchor="middle">P5: u64</text>
+  <rect x="726" y="347" width="72" height="24" fill="#8b67a8"/>
+  <rect x="798" y="347" width="128" height="24" fill="#e5e8eb"/>
+  <text x="762" y="363" font-size="9" font-weight="bold" fill="#ffffff" text-anchor="middle">role 3</text>
+  <text x="862" y="363" font-size="9" fill="#6b7784" text-anchor="middle">unused 61</text>
+
+  <line x1="24" y1="420" x2="936" y2="420" stroke="#dde1e6"/>
+
+  <!-- Compiled dictionaries and condition sets below the matrix. -->
+  <text x="24" y="438" font-size="11" font-weight="bold" fill="#6b7784" letter-spacing="0.6">COMPILED LOOKUP STATE</text>
+
+  <rect x="24" y="450" width="280" height="92" rx="5" fill="#f3f7fc" stroke="#4f81bd" stroke-width="2"/>
+  <rect x="24" y="450" width="280" height="28" rx="5" fill="#4f81bd"/>
+  <text x="38" y="469" font-size="11" font-weight="bold" font-family="monospace" fill="#ffffff">tenant_id dictionary</text>
+  <line x1="124" y1="478" x2="124" y2="542" stroke="#9ab7d6"/>
+  <line x1="164" y1="478" x2="164" y2="542" stroke="#9ab7d6"/>
+  <line x1="264" y1="478" x2="264" y2="542" stroke="#9ab7d6"/>
+  <line x1="24" y1="499" x2="304" y2="499" stroke="#9ab7d6"/>
+  <line x1="24" y1="520" x2="304" y2="520" stroke="#9ab7d6"/>
+  <text x="74" y="493" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">absent</text>
+  <text x="144" y="493" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">0</text>
+  <text x="214" y="493" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">unknown</text>
+  <text x="284" y="493" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">1</text>
+  <text x="74" y="514" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">"acme"</text>
+  <text x="144" y="514" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">2</text>
+  <text x="214" y="514" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">"globex"</text>
+  <text x="284" y="514" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">3</text>
+  <text x="74" y="536" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">"initech"</text>
+  <text x="144" y="536" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">4</text>
+  <text x="214" y="536" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">"umbrella"</text>
+  <text x="284" y="536" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">5</text>
+
+  <rect x="340" y="450" width="280" height="92" rx="5" fill="#f8f4fa" stroke="#8b67a8" stroke-width="2"/>
+  <rect x="340" y="450" width="280" height="28" rx="5" fill="#8b67a8"/>
+  <text x="354" y="469" font-size="11" font-weight="bold" font-family="monospace" fill="#ffffff">role dictionary</text>
+  <line x1="440" y1="478" x2="440" y2="542" stroke="#bda9ce"/>
+  <line x1="480" y1="478" x2="480" y2="542" stroke="#bda9ce"/>
+  <line x1="580" y1="478" x2="580" y2="542" stroke="#bda9ce"/>
+  <line x1="340" y1="499" x2="620" y2="499" stroke="#bda9ce"/>
+  <line x1="340" y1="520" x2="620" y2="520" stroke="#bda9ce"/>
+  <text x="390" y="493" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">absent</text>
+  <text x="460" y="493" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">0</text>
+  <text x="530" y="493" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">unknown</text>
+  <text x="600" y="493" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">1</text>
+  <text x="390" y="514" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">"admin"</text>
+  <text x="460" y="514" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">2</text>
+  <text x="530" y="514" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">"reader"</text>
+  <text x="600" y="514" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">3</text>
+  <text x="390" y="536" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">"writer"</text>
+  <text x="460" y="536" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">4</text>
+  <text x="530" y="536" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">"owner"</text>
+  <text x="600" y="536" font-size="10" font-family="monospace" fill="#3a414a" text-anchor="middle">5</text>
+
+  <rect x="656" y="450" width="280" height="92" rx="5" fill="#f3f8f4" stroke="#6b9b78" stroke-width="2"/>
+  <rect x="656" y="450" width="280" height="28" rx="5" fill="#6b9b78"/>
+  <text x="670" y="469" font-size="11" font-weight="bold" font-family="monospace" fill="#ffffff">condition sets</text>
+  <line x1="700" y1="478" x2="700" y2="542" stroke="#a6c2ad"/>
+  <line x1="810" y1="478" x2="810" y2="542" stroke="#a6c2ad"/>
+  <line x1="860" y1="478" x2="860" y2="542" stroke="#a6c2ad"/>
+  <line x1="656" y1="510" x2="936" y2="510" stroke="#a6c2ad"/>
+  <text x="678" y="499" font-size="10" font-family="monospace" fill="#315c3d" text-anchor="middle">C0</text>
+  <text x="755" y="499" font-size="9" font-family="monospace" fill="#315c3d" text-anchor="middle">edge+combined</text>
+  <text x="835" y="499" font-size="9.5" font-family="monospace" fill="#315c3d" text-anchor="middle">S0,S1</text>
+  <text x="898" y="499" font-size="9.5" font-family="monospace" fill="#315c3d" text-anchor="middle">b0..b2</text>
+  <text x="678" y="531" font-size="10" font-family="monospace" fill="#315c3d" text-anchor="middle">C1</text>
+  <text x="755" y="531" font-size="9.5" font-family="monospace" fill="#315c3d" text-anchor="middle">auth</text>
+  <text x="835" y="531" font-size="9.5" font-family="monospace" fill="#315c3d" text-anchor="middle">S2</text>
+  <text x="898" y="531" font-size="9.5" font-family="monospace" fill="#315c3d" text-anchor="middle">b0..b3</text>
+
+  <line x1="24" y1="560" x2="936" y2="560" stroke="#dde1e6"/>
+
+  <!-- Runtime construction of the complete tenant context. -->
+  <text x="24" y="584" font-size="11" font-weight="bold" fill="#6b7784" letter-spacing="0.6">ONCE PER REQUEST</text>
+
+  <rect x="24" y="610" width="176" height="112" rx="5" fill="#eef1f4" stroke="#8a94a0"/>
+  <text x="112" y="634" font-size="12" font-weight="bold" fill="#1f2933" text-anchor="middle">request</text>
+  <text x="40" y="658" font-size="10" font-family="monospace" fill="#3a414a">transport headers</text>
+  <text x="40" y="680" font-size="10" font-family="monospace" fill="#3a414a">authorized identity</text>
+  <text x="40" y="702" font-size="10" font-family="monospace" fill="#3a414a">peer address</text>
+
+  <path d="M 204 666 L 244 666" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+
+  <rect x="248" y="618" width="160" height="96" rx="5" fill="#d7e3ee" stroke="#6f879b" stroke-width="1.5"/>
+  <text x="328" y="643" font-size="12" font-weight="bold" fill="#1f2933" text-anchor="middle">receiver</text>
+  <text x="328" y="665" font-size="10" fill="#3a414a" text-anchor="middle">evaluate tokens</text>
+  <text x="328" y="683" font-size="10" fill="#3a414a" text-anchor="middle">evaluate condition sets</text>
+  <text x="328" y="701" font-size="10" fill="#3a414a" text-anchor="middle">encode context</text>
+
+  <path d="M 412 666 L 440 666" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+
+  <rect x="444" y="596" width="492" height="198" rx="6" fill="#f7f0e6" stroke="#a1836a" stroke-width="1.5"/>
+  <text x="460" y="619" font-size="12" font-weight="bold" fill="#6b4f36">tenant context</text>
+
+  <rect x="460" y="630" width="460" height="28" fill="#efe3d2" stroke="#c3ab90"/>
+  <line x1="690" y1="630" x2="690" y2="658" stroke="#c3ab90"/>
+  <text x="575" y="648" font-size="9.5" font-family="monospace" fill="#6b4f36" text-anchor="middle">epoch + counts</text>
+  <text x="805" y="648" font-size="9.5" font-family="monospace" fill="#6b4f36" text-anchor="middle">resolved token mask</text>
+
+  <rect x="460" y="666" width="115" height="28" fill="#dcefe2" stroke="#6b9b78"/>
+  <rect x="575" y="666" width="115" height="28" fill="#dcefe2" stroke="#6b9b78"/>
+  <rect x="690" y="666" width="115" height="28" fill="#dcefe2" stroke="#6b9b78"/>
+  <rect x="805" y="666" width="115" height="28" fill="#dcefe2" stroke="#6b9b78"/>
+  <text x="517" y="684" font-size="9.5" font-family="monospace" fill="#315c3d" text-anchor="middle">C0: branch0</text>
+  <text x="632" y="684" font-size="9.5" font-family="monospace" fill="#315c3d" text-anchor="middle">C1: no match</text>
+  <text x="747" y="684" font-size="9.5" font-family="monospace" fill="#315c3d" text-anchor="middle">C2: branch3</text>
+  <text x="862" y="684" font-size="9.5" font-family="monospace" fill="#315c3d" text-anchor="middle">...</text>
+
+  <rect x="460" y="702" width="460" height="28" fill="#ffffff" stroke="#c3ab90"/>
+  <text x="690" y="720" font-size="9.5" font-family="monospace" fill="#6b4f36" text-anchor="middle">value index: offset[0] ... offset[n]</text>
+
+  <rect x="460" y="738" width="230" height="40" fill="#ffffff" stroke="#c3ab90"/>
+  <rect x="690" y="738" width="230" height="40" fill="#ffffff" stroke="#c3ab90"/>
+  <text x="575" y="762" font-size="9.5" font-family="monospace" fill="#6b4f36" text-anchor="middle">bagged OTLP content</text>
+  <text x="805" y="762" font-size="9.5" font-family="monospace" fill="#6b4f36" text-anchor="middle">retained values</text>
+
+  <line x1="24" y1="820" x2="936" y2="820" stroke="#dde1e6"/>
+
+  <!-- Precomputed condition result lookup by a consumer. -->
+  <text x="24" y="844" font-size="11" font-weight="bold" fill="#6b7784" letter-spacing="0.6">ONCE PER CONDITION-SET ENCOUNTER</text>
+
+  <rect x="82" y="866" width="260" height="72" rx="5" fill="#f7f0e6" stroke="#a1836a"/>
+  <text x="212" y="889" font-size="12" font-weight="bold" fill="#6b4f36" text-anchor="middle">tenant context</text>
+  <text x="212" y="920" font-size="10" font-family="monospace" fill="#6b4f36" text-anchor="middle">C0=branch0, C1=none, ...</text>
+
+  <rect x="82" y="950" width="260" height="72" rx="5" fill="#f3f8f4" stroke="#6b9b78"/>
+  <text x="212" y="973" font-size="12" font-weight="bold" fill="#315c3d" text-anchor="middle">condition set</text>
+  <text x="212" y="1004" font-size="10" font-family="monospace" fill="#315c3d" text-anchor="middle">C0</text>
+
+  <path d="M 346 902 L 370 902 L 370 914 L 394 914" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+  <path d="M 346 986 L 370 986 L 370 960 L 394 960" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+
+  <rect x="398" y="900" width="276" height="80" rx="5" fill="#dcefe2" stroke="#6b9b78"/>
+  <text x="536" y="929" font-size="12" font-weight="bold" fill="#315c3d" text-anchor="middle">match</text>
+  <text x="536" y="958" font-size="10" font-family="monospace" fill="#315c3d" text-anchor="middle">results[C0]</text>
+
+  <path d="M 678 940 L 750 940" stroke="#3a414a" fill="none" marker-end="url(#arrow)"/>
+  <text x="802" y="944" font-size="12" font-weight="bold" fill="#1f2933" text-anchor="middle">branch0</text>
+
+</svg>
