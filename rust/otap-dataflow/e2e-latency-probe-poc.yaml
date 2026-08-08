@@ -1,0 +1,64 @@
+# E2E Latency Probe POC
+#
+# Demonstrates end-to-end latency measurement for Azure Monitor Pipeline:
+# - probe_emitter receiver stamps synthetic log records with origin time
+# - azure_monitor_exporter ships them to the mock LA server
+# - mock LA server detects probes, computes and prints E2E latency
+#
+# Usage:
+#   1. Start the mock LA server (with probe latency detection):
+#      cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --port 9999
+#
+#   2. Run the pipeline:
+#      cargo run --release --features azure-monitor-exporter -- --config rust/otap-dataflow/e2e-latency-probe-poc.yaml --num-cores 1
+#
+#   3. Observe stdout of the mock server — it will print per-probe E2E latency.
+
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 16
+
+engine:
+  telemetry:
+    logs:
+      level: "info"
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          probe-emitter:
+            type: "urn:otel:receiver:probe_emitter"
+            config:
+              interval: 1s
+              source: "e2e-latency-poc"
+
+          azure-monitor-exporter:
+            type: "urn:microsoft:exporter:azure_monitor"
+            config:
+              api:
+                dcr_endpoint: "http://localhost:9999"
+                stream_name: "Custom-ProbeLatency_CL"
+                dcr: "dcr-probe-poc"
+                schema:
+                  resource_mapping: {}
+                  log_record_mapping:
+                    "body": "Message"
+                    "time_unix_nano": "TimeGenerated"
+                    "attributes":
+                      "_otap_internal.probe.id": "ProbeId"
+                      "_otap_internal.probe.emitted_at_unix_nanos": "ProbeOriginTimestampNanos"
+                      "_otap_internal.probe.source": "ProbeSource"
+
+              auth:
+                method: "dev"
+
+        connections:
+          - from: probe-emitter
+            to: azure-monitor-exporter
