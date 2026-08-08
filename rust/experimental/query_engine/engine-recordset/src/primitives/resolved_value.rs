@@ -440,10 +440,10 @@ impl ArrayValue for List<'_> {
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback<'a>,
+        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
     ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
-            if !item_callback.next(index, value.to_value()) {
+            if !(item_callback)(index, value.to_value()) {
                 return false;
             }
         }
@@ -517,7 +517,7 @@ impl ArrayValue for ArraySlice<'_> {
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback<'a>,
+        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
     ) -> bool {
         let start = range
             .get_start_range_inclusize()
@@ -674,13 +674,12 @@ impl ArrayValue for Sequence<'_> {
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback<'a>,
+        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
     ) -> bool {
         let len = self.len();
 
         let mut start = range.get_start_range_inclusize().unwrap_or(0);
         let mut end = range.get_end_range_exclusive().unwrap_or(len);
-        let mut index = 0;
 
         if end > len {
             panic!(
@@ -689,6 +688,13 @@ impl ArrayValue for Sequence<'_> {
             )
         }
 
+        let mut index = 0;
+        let mut cb = move |_, v| {
+            let r = (item_callback)(index, v);
+            index += 1;
+            r
+        };
+
         for v in &self.values {
             let len = usize::min(end, v.len());
             if len == 0 {
@@ -696,14 +702,7 @@ impl ArrayValue for Sequence<'_> {
             }
             if start < len {
                 let range = (start..len).into();
-                if !v.get_item_range(
-                    range,
-                    &mut IndexValueClosureCallback::new(|_, v| {
-                        let r = item_callback.next(index, v);
-                        index += 1;
-                        r
-                    }),
-                ) {
+                if !v.get_item_range(range, &mut cb) {
                     return false;
                 }
                 start = 0;
@@ -1045,7 +1044,7 @@ impl ArrayValue for ResolvedArrayValue<'_> {
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback<'a>,
+        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
     ) -> bool {
         self.get_array().get_item_range(range, item_callback)
     }
@@ -1205,7 +1204,7 @@ impl MapValue for ResolvedMapValue<'_> {
         self.get_map().get_static(key)
     }
 
-    fn get_items<'a>(&'a self, item_callback: &mut dyn KeyValueCallback<'a>) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(&str, Value<'a>) -> bool) -> bool {
         self.get_map().get_items(item_callback)
     }
 }
@@ -1235,14 +1234,11 @@ mod tests {
         fn run_test(v: &Sequence, range: ArrayRange, expected: &[Value]) {
             let mut items = 0;
 
-            assert!(v.get_item_range(
-                range,
-                &mut IndexValueClosureCallback::new(|i, v| {
-                    assert_eq!(expected[i], v);
-                    items += 1;
-                    true
-                }),
-            ));
+            assert!(v.get_item_range(range, &mut |i, v| {
+                assert_eq!(expected[i], v);
+                items += 1;
+                true
+            },));
 
             assert_eq!(expected.len(), items);
         }
@@ -1326,13 +1322,10 @@ mod tests {
     #[should_panic]
     fn test_sequence_get_item_range_panic() {
         fn run_test(v: &Sequence, range: ArrayRange, expected: &[Value]) {
-            v.get_item_range(
-                range,
-                &mut IndexValueClosureCallback::new(|i, v| {
-                    assert_eq!(expected[i], v);
-                    true
-                }),
-            );
+            v.get_item_range(range, &mut |i, v| {
+                assert_eq!(expected[i], v);
+                true
+            });
         }
 
         let sequence = Sequence::new(vec![

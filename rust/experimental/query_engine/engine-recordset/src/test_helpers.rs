@@ -136,9 +136,9 @@ impl MapValue for TestRecord {
         Ok(self.values.get(key).map(|v| v as &dyn AsStaticValue))
     }
 
-    fn get_items<'a>(&'a self, item_callback: &mut dyn KeyValueCallback<'a>) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(&str, Value<'a>) -> bool) -> bool {
         for (k, v) in &self.values {
-            if !item_callback.next(k, v.to_value()) {
+            if !(item_callback)(k, v.to_value()) {
                 return false;
             }
         }

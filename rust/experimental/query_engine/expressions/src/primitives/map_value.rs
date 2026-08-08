@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{fmt::Debug, marker::PhantomData};
+use std::fmt::Debug;
 
 use crate::*;
 
@@ -20,50 +20,17 @@ pub trait MapValue: Debug {
     // of support for this method
     fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
-    fn get_items<'a>(&'a self, item_callback: &mut dyn KeyValueCallback<'a>) -> bool;
+    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(&str, Value<'a>) -> bool) -> bool;
 
     fn to_string(&self) -> ValueString<'_> {
         let mut values = serde_json::Map::new();
 
-        self.get_items(&mut KeyValueClosureCallback::new(|key, value| {
+        self.get_items(&mut |key, value| {
             values.insert(key.into(), value.to_json_value());
             true
-        }));
+        });
 
         ValueString::Owned(serde_json::Value::Object(values).to_string())
-    }
-}
-
-pub trait KeyValueCallback<'a> {
-    fn next(&mut self, key: &str, value: Value<'a>) -> bool;
-}
-
-pub struct KeyValueClosureCallback<'a, F>
-where
-    F: FnMut(&str, Value<'a>) -> bool,
-{
-    callback: F,
-    marker: PhantomData<&'a F>,
-}
-
-impl<'a, F> KeyValueClosureCallback<'a, F>
-where
-    F: FnMut(&str, Value<'a>) -> bool,
-{
-    pub fn new(callback: F) -> KeyValueClosureCallback<'a, F> {
-        Self {
-            callback,
-            marker: Default::default(),
-        }
-    }
-}
-
-impl<'a, F> KeyValueCallback<'a> for KeyValueClosureCallback<'a, F>
-where
-    F: FnMut(&str, Value<'a>) -> bool,
-{
-    fn next(&mut self, key: &str, value: Value<'a>) -> bool {
-        (self.callback)(key, value)
     }
 }
 
@@ -79,25 +46,23 @@ pub(crate) fn equal_to(
 
     let mut e = None;
 
-    let completed = left.get_items(&mut KeyValueClosureCallback::new(
-        |k, left_value| match right.get(k) {
-            Some(right_value) => {
-                let r = Value::are_values_equal(
-                    query_location,
-                    &left_value,
-                    &right_value.to_value(),
-                    case_insensitive,
-                );
-                if let Err(exp_e) = r {
-                    e = Some(exp_e);
-                    false
-                } else {
-                    r.unwrap()
-                }
+    let completed = left.get_items(&mut |k, left_value| match right.get(k) {
+        Some(right_value) => {
+            let r = Value::are_values_equal(
+                query_location,
+                &left_value,
+                &right_value.to_value(),
+                case_insensitive,
+            );
+            if let Err(exp_e) = r {
+                e = Some(exp_e);
+                false
+            } else {
+                r.unwrap()
             }
-            None => false,
-        },
-    ));
+        }
+        None => false,
+    });
 
     if let Some(exp_e) = e {
         Err(exp_e)

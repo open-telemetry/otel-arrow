@@ -12,8 +12,8 @@ use regex::{Regex, RegexBuilder};
 use serde_json::json;
 
 use crate::{
-    ArrayValue, ExpressionError, IndexValueClosureCallback, KeyValueClosureCallback, MapValue,
-    QueryLocation, ValueType, array_value, date_utils, map_value,
+    ArrayValue, ExpressionError, MapValue, QueryLocation, ValueType, array_value, date_utils,
+    map_value,
 };
 
 #[derive(Debug, Clone)]
@@ -184,10 +184,10 @@ impl Value<'_> {
             Value::Array(a) => {
                 let mut values = Vec::new();
 
-                a.get_items(&mut IndexValueClosureCallback::new(|_, value| {
+                a.get_items(&mut |_, value| {
                     values.push(value.to_json_value());
                     true
-                }));
+                });
 
                 serde_json::Value::Array(values)
             }
@@ -198,10 +198,10 @@ impl Value<'_> {
             Value::Map(m) => {
                 let mut values = serde_json::Map::new();
 
-                m.get_items(&mut KeyValueClosureCallback::new(|key, value| {
+                m.get_items(&mut |key, value| {
                     values.insert(key.into(), value.to_json_value());
                     true
-                }));
+                });
 
                 serde_json::Value::Object(values)
             }
@@ -472,7 +472,7 @@ impl Value<'_> {
         match haystack {
             Value::Array(array) => {
                 let mut found = false;
-                array.get_items(&mut IndexValueClosureCallback::new(|_, item_value| {
+                array.get_items(&mut |_, item_value| {
                     match Self::are_values_equal(
                         query_location,
                         &item_value,
@@ -489,7 +489,7 @@ impl Value<'_> {
                         }
                         Err(_) => true, // Continue iteration on error
                     }
-                }));
+                });
                 Ok(found)
             }
             Value::String(string_val) => {

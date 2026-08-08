@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{fmt::Debug, marker::PhantomData, ops::*};
+use std::{fmt::Debug, ops::*};
 
 use crate::*;
 
@@ -18,23 +18,23 @@ pub trait ArrayValue: Debug {
     // of support for this method
     fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
-    fn get_items<'a>(&'a self, item_callback: &mut dyn IndexValueCallback<'a>) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool) -> bool {
         self.get_item_range((..).into(), item_callback)
     }
 
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback<'a>,
+        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
     ) -> bool;
 
     fn to_string(&self) -> ValueString<'_> {
         let mut values = Vec::new();
 
-        self.get_items(&mut IndexValueClosureCallback::new(|_, value| {
+        self.get_items(&mut |_, value| {
             values.push(value.to_json_value());
             true
-        }));
+        });
 
         ValueString::Owned(serde_json::Value::Array(values).to_string())
     }
@@ -125,39 +125,6 @@ impl From<RangeInclusive<usize>> for ArrayRange {
     }
 }
 
-pub trait IndexValueCallback<'a> {
-    fn next(&mut self, index: usize, value: Value<'a>) -> bool;
-}
-
-pub struct IndexValueClosureCallback<'a, F>
-where
-    F: FnMut(usize, Value<'a>) -> bool,
-{
-    callback: F,
-    marker: PhantomData<&'a F>,
-}
-
-impl<'a, F> IndexValueClosureCallback<'a, F>
-where
-    F: FnMut(usize, Value<'a>) -> bool,
-{
-    pub fn new(callback: F) -> IndexValueClosureCallback<'a, F> {
-        Self {
-            callback,
-            marker: Default::default(),
-        }
-    }
-}
-
-impl<'a, F> IndexValueCallback<'a> for IndexValueClosureCallback<'a, F>
-where
-    F: FnMut(usize, Value<'a>) -> bool,
-{
-    fn next(&mut self, index: usize, value: Value<'a>) -> bool {
-        (self.callback)(index, value)
-    }
-}
-
 pub(crate) fn equal_to(
     query_location: &QueryLocation,
     left: &dyn ArrayValue,
@@ -170,26 +137,23 @@ pub(crate) fn equal_to(
 
     let mut e = None;
 
-    let completed =
-        left.get_items(&mut IndexValueClosureCallback::new(
-            |index, left_value| match right.get(index) {
-                Some(right_value) => {
-                    let r = Value::are_values_equal(
-                        query_location,
-                        &left_value,
-                        &right_value.to_value(),
-                        case_insensitive,
-                    );
-                    if let Err(exp_e) = r {
-                        e = Some(exp_e);
-                        false
-                    } else {
-                        r.unwrap()
-                    }
-                }
-                None => false,
-            },
-        ));
+    let completed = left.get_items(&mut |index, left_value| match right.get(index) {
+        Some(right_value) => {
+            let r = Value::are_values_equal(
+                query_location,
+                &left_value,
+                &right_value.to_value(),
+                case_insensitive,
+            );
+            if let Err(exp_e) = r {
+                e = Some(exp_e);
+                false
+            } else {
+                r.unwrap()
+            }
+        }
+        None => false,
+    });
 
     if let Some(exp_e) = e {
         Err(exp_e)
