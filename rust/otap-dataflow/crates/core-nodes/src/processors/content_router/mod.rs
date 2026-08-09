@@ -952,6 +952,7 @@ pub fn create_content_router(
 
 /// Register ContentRouter as an OTAP processor factory
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static CONTENT_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: CONTENT_ROUTER_URN,

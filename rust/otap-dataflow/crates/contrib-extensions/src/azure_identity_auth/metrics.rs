@@ -3,11 +3,10 @@
 
 //! Telemetry for the Azure Identity Auth extension.
 
-use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
-use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
+
+use crate::common::token_refresh::TokenProviderMetrics;
 
 /// Telemetry metrics for the Azure Identity Auth extension.
 #[metric_set(name = "extension.azure_identity_auth")]
@@ -27,49 +26,20 @@ pub struct AzureIdentityAuthMetrics {
     pub auth_success_latency: Mmsc,
 }
 
-/// Tracks and flushes the extension's metric set.
-pub struct AzureIdentityAuthMetricsTracker {
-    metrics: MetricSet<AzureIdentityAuthMetrics>,
-}
-
-impl std::fmt::Debug for AzureIdentityAuthMetricsTracker {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AzureIdentityAuthMetricsTracker").finish()
-    }
-}
-
-impl AzureIdentityAuthMetricsTracker {
-    /// Creates a new tracker wrapping a registered metric set.
-    #[must_use]
-    pub fn new(metrics: MetricSet<AzureIdentityAuthMetrics>) -> Self {
-        Self { metrics }
+impl TokenProviderMetrics for AzureIdentityAuthMetrics {
+    fn successes(&mut self) -> &mut Counter<u64> {
+        &mut self.auth_successes
     }
 
-    /// Flushes the metric set to the telemetry reporter.
-    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
-        reporter.report(&mut self.metrics)
+    fn failures(&mut self) -> &mut Counter<u64> {
+        &mut self.auth_failures
     }
 
-    /// Returns a point-in-time snapshot of the metric set, e.g. to attach to
-    /// the terminal state on shutdown.
-    #[must_use]
-    pub fn snapshot(&self) -> MetricSetSnapshot {
-        self.metrics.snapshot()
+    fn publishes(&mut self) -> &mut Counter<u64> {
+        &mut self.auth_token_publish
     }
 
-    /// Records a successful acquisition with its latency in milliseconds.
-    pub fn record_success(&mut self, latency_ms: f64) {
-        self.metrics.auth_successes.inc();
-        self.metrics.auth_success_latency.record(latency_ms);
-    }
-
-    /// Records a failed acquisition.
-    pub fn record_failure(&mut self) {
-        self.metrics.auth_failures.inc();
-    }
-
-    /// Records a token publication to consumers.
-    pub fn record_publish(&mut self) {
-        self.metrics.auth_token_publish.inc();
+    fn success_latency(&mut self) -> &mut Mmsc {
+        &mut self.auth_success_latency
     }
 }

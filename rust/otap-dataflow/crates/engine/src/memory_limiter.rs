@@ -434,7 +434,14 @@ pub struct MemorySample {
     pub source: MemorySampleSource,
 }
 
+use crate::component_inventory;
+
 /// Effective process-wide memory limiter configuration.
+#[component_inventory(
+    id = "urn:otel:safety:memory_limiter",
+    category = Safety,
+    description = "Engine memory pressure monitor and shedding controller",
+)]
 #[derive(Debug)]
 pub struct EffectiveMemoryLimiter {
     mode: MemoryLimiterMode,
