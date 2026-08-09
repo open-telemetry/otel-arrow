@@ -102,7 +102,7 @@ pub struct PipelineAttributeSet {
 /// Fields are private; the type can only be constructed through a scope-kind
 /// constructor (e.g. [`ExtensionScopeAttributeSet::pipeline`]). This enforces
 /// the invariant that every scope value has a populated payload matching its
-/// `scope.kind` discriminator — there is no way to build a "kind-less" or
+/// `scope.kind` discriminator -- there is no way to build a "kind-less" or
 /// inconsistent scope set in the public API.
 ///
 /// When new scope kinds are introduced (e.g. `"engine"`, `"group"`),
@@ -126,7 +126,7 @@ pub struct ExtensionScopeAttributeSet {
 impl Default for ExtensionScopeAttributeSet {
     /// Sentinel default used by the `#[compose]` macro to compute the cached
     /// composed descriptor once at startup. The produced value carries an
-    /// empty `scope.kind` and is **not** a valid scope identity — production
+    /// empty `scope.kind` and is **not** a valid scope identity -- production
     /// telemetry must construct values through a scope-kind constructor
     /// (e.g. [`ExtensionScopeAttributeSet::pipeline`]).
     fn default() -> Self {
@@ -347,6 +347,19 @@ pub struct NodeChannelAttributeSet {
     /// Channel implementation ("tokio", "flume", "internal").
     #[attribute_key = "channel.impl"]
     pub channel_impl: Cow<'static, str>,
+}
+
+/// Channel endpoint attributes for a node-hosted channel, extended with user-configured custom telemetry attributes.
+#[attribute_set(scope, name = "node.channel.custom.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct NodeWithCustomChannelAttributeSet {
+    /// Base node channel attributes.
+    #[compose]
+    pub channel_attrs: NodeChannelAttributeSet,
+
+    /// Custom user-defined telemetry attributes.
+    #[compose]
+    pub custom_attrs: CustomAttributeSet,
 }
 
 /// Channel endpoint attributes for an extension-hosted channel.

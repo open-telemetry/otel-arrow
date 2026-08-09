@@ -21,7 +21,7 @@ use toml::{Table, Value};
 pub fn run() -> anyhow::Result<()> {
     let mut errors = vec![];
 
-    println!("🚀 Checking project structure compliance...");
+    println!("\u{1F680} Checking project structure compliance...");
 
     // Check crate names in the `crates` directory (not recursively)
     for entry in std::fs::read_dir("crates")? {
@@ -30,9 +30,9 @@ pub fn run() -> anyhow::Result<()> {
         if path.is_dir() {
             let crate_name = path
                 .file_name()
-                .expect("❌ Invalid path")
+                .expect("\u{274C} Invalid path")
                 .to_str()
-                .expect("❌ Invalid crate name");
+                .expect("\u{274C} Invalid crate name");
             if crate_name != "xtask" {
                 check_presence_of(path.as_path(), "README.md", crate_name, &mut errors);
 
@@ -40,7 +40,7 @@ pub fn run() -> anyhow::Result<()> {
                 let cargo_toml_path = path.join("Cargo.toml");
                 if !cargo_toml_path.exists() {
                     errors.push(anyhow::anyhow!(
-                        "❌ Missing Cargo.toml in the `{}` crate",
+                        "\u{274C} Missing Cargo.toml in the `{}` crate",
                         crate_name
                     ));
                 }
@@ -57,7 +57,11 @@ pub fn run() -> anyhow::Result<()> {
                         }
                     }
                     Err(e) => {
-                        println!("❌ Error reading file {}: {}", entry.path().display(), e);
+                        println!(
+                            "\u{274C} Error reading file {}: {}",
+                            entry.path().display(),
+                            e
+                        );
                     }
                 }
             }
@@ -73,7 +77,7 @@ pub fn run() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    println!("✅ Cargo workspace structure complies with project policies.\n");
+    println!("\u{2705} Cargo workspace structure complies with project policies.\n");
 
     Ok(())
 }
@@ -83,7 +87,7 @@ fn check_presence_of(path: &Path, file_name: &str, crate_name: &str, errors: &mu
     let readme_path = path.join(file_name);
     if !readme_path.exists() {
         errors.push(anyhow::anyhow!(
-            "❌ Missing {} in the `{}` crate",
+            "\u{274C} Missing {} in the `{}` crate",
             file_name,
             crate_name
         ));
@@ -106,7 +110,7 @@ fn check_path_is_true<P: AsRef<Path>>(
         full_path.push_str(p);
         value = value.get(p).ok_or_else(|| {
             anyhow::anyhow!(
-                "❌ Missing `{}` in {}",
+                "\u{274C} Missing `{}` in {}",
                 full_path,
                 cargo_toml_path.as_ref().display()
             )
@@ -115,13 +119,13 @@ fn check_path_is_true<P: AsRef<Path>>(
 
     if !value.as_bool().ok_or_else(|| {
         anyhow::anyhow!(
-            "❌ `{}` is not a boolean in {}",
+            "\u{274C} `{}` is not a boolean in {}",
             full_path,
             cargo_toml_path.as_ref().display()
         )
     })? {
         return Err(anyhow::anyhow!(
-            "❌ `{}` is not true in {}",
+            "\u{274C} `{}` is not true in {}",
             full_path,
             cargo_toml_path.as_ref().display()
         ));
@@ -135,7 +139,7 @@ fn check_path_is_true<P: AsRef<Path>>(
 fn check_package<P: AsRef<Path>>(cargo_toml_path: P, toml: &Table) -> anyhow::Result<()> {
     let package = toml.get("package").ok_or_else(|| {
         anyhow::anyhow!(
-            "❌ Missing `package` section in {}",
+            "\u{274C} Missing `package` section in {}",
             cargo_toml_path.as_ref().display()
         )
     })?;
@@ -144,21 +148,21 @@ fn check_package<P: AsRef<Path>>(cargo_toml_path: P, toml: &Table) -> anyhow::Re
         .get("name")
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "❌ Missing `package.name` in {}",
+                "\u{274C} Missing `package.name` in {}",
                 cargo_toml_path.as_ref().display()
             )
         })?
         .as_str()
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "❌ `package.name` is not a string in {}",
+                "\u{274C} `package.name` is not a string in {}",
                 cargo_toml_path.as_ref().display()
             )
         })?;
 
     if !package_name.starts_with("otap-df-") {
         return Err(anyhow::anyhow!(
-            "❌ `package.name` must start with `otap-df-` in {}",
+            "\u{274C} `package.name` must start with `otap-df-` in {}",
             cargo_toml_path.as_ref().display()
         ));
     }
@@ -193,28 +197,28 @@ workspace = true
     // Check for the presence of the `lints` section
     let lints = toml.get("lints").ok_or_else(|| {
         anyhow::anyhow!(
-            "❌ Missing `lints` section in {}\n{}",
+            "\u{274C} Missing `lints` section in {}\n{}",
             cargo_toml_path.as_ref().display(),
             expected_lints
         )
     })?;
     let workspace = lints.get("workspace").ok_or_else(|| {
         anyhow::anyhow!(
-            "❌ Missing `lints.workspace` in {}\n{}",
+            "\u{274C} Missing `lints.workspace` in {}\n{}",
             cargo_toml_path.as_ref().display(),
             expected_lints
         )
     })?;
     let value = workspace.as_bool().ok_or_else(|| {
         anyhow::anyhow!(
-            "❌ `lints.workspace` is not a boolean in {}\n{}",
+            "\u{274C} `lints.workspace` is not a boolean in {}\n{}",
             cargo_toml_path.as_ref().display(),
             expected_lints
         )
     })?;
     if !value {
         return Err(anyhow::anyhow!(
-            "❌ `lints.workspace` is not true in {}\n{}",
+            "\u{274C} `lints.workspace` is not true in {}\n{}",
             cargo_toml_path.as_ref().display(),
             expected_lints
         ));

@@ -84,6 +84,10 @@ name = "otlp_bytes"
 harness = false
 
 [[bench]]
+name = "admission"
+harness = false
+
+[[bench]]
 name = "transport_optimize"
 harness = false
 

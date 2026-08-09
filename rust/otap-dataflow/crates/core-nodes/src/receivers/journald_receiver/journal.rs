@@ -10,8 +10,8 @@ use std::ffi::c_int;
 
 /// Minimal seam over the `sd-journal` seek/step calls used to position a freshly
 /// opened journal when no checkpoint cursor exists. Abstracting the three raw
-/// FFI calls lets [`position_for_fresh_start`] — including its empty-journal
-/// handling — be unit-tested without a live `sd-journal`. Each method returns
+/// FFI calls lets [`position_for_fresh_start`] -- including its empty-journal
+/// handling -- be unit-tested without a live `sd-journal`. Each method returns
 /// the raw libsystemd code (`>= 0` on success, `< 0` is `-errno`).
 #[cfg(any(target_os = "linux", test))]
 trait JournalSeek {
@@ -32,17 +32,17 @@ trait JournalSeek {
 /// `StartAt::End` is subtle. `sd_journal_seek_tail()` parks the read head
 /// *after* the most recent entry without making any entry current. From there a
 /// bare `sd_journal_next()` advances toward a *following* entry, finds none, and
-/// returns `0` (the documented EOF marker) without anchoring — so a plain
+/// returns `0` (the documented EOF marker) without anchoring -- so a plain
 /// `next()`/`wait()` follow loop started at the raw tail never advances onto
 /// entries appended after startup (verified against real journald). (It is
 /// `sd_journal_step_one()`, not `sd_journal_next()`, that libsystemd documents as
 /// behaving like `sd_journal_previous()` at the tail.) So we step back once with
-/// `previous()` — documented to seek the closest *preceding* entry — to anchor on
+/// `previous()` -- documented to seek the closest *preceding* entry -- to anchor on
 /// the last existing entry; the worker's first `next()` then steps forward onto
 /// genuinely new entries.
 ///
-/// When the journal is empty — or a filter matches none of the existing
-/// entries — `previous()` returns `0` and anchors nothing, leaving the read head
+/// When the journal is empty -- or a filter matches none of the existing
+/// entries -- `previous()` returns `0` and anchors nothing, leaving the read head
 /// parked at the tail where `next()` keeps returning `0` even after `wait()`
 /// reports appends (the same permanent stall the tail branch exists to avoid,
 /// verified against real journald). In that case we reposition to the head with
@@ -50,7 +50,7 @@ trait JournalSeek {
 /// history: `sd-journal` merges *all* open journal files (active plus
 /// rotated/archived) into a single view, and with the receiver's matches
 /// installed a well-behaved `previous()` returns `0` only when no matching entry
-/// exists in ANY of them yet — so `seek_head()` + `next()` land on the first
+/// exists in ANY of them yet -- so `seek_head()` + `next()` land on the first
 /// matching entry appended *after* startup, with nothing older to replay. Replay
 /// would require `seek_tail()` + `previous()` to spuriously report `0` while
 /// matching entries actually exist (the multi-file positioning bug of the
@@ -67,7 +67,7 @@ trait JournalSeek {
 /// systemd/systemd#17662, coreos/go-systemd `sdjournal`). Across rotated or
 /// multi-file journals the tail position is approximate, and an entry appended
 /// in the race window between `seek_tail()` and `previous()` may be anchored and
-/// skipped — acceptable under `start_at: end`, which has no durable resume
+/// skipped -- acceptable under `start_at: end`, which has no durable resume
 /// anchor until the first checkpoint commit.
 #[cfg(any(target_os = "linux", test))]
 fn position_for_fresh_start<J: JournalSeek>(
@@ -131,7 +131,7 @@ mod fresh_start_tests {
     #[test]
     fn end_with_existing_entries_anchors_with_previous() {
         // previous() finds the last existing entry (rc = 1): tail + previous and
-        // NO seek_head — rewinding to the head would replay historical records.
+        // NO seek_head -- rewinding to the head would replay historical records.
         let mut seek = RecordingSeek {
             previous_rc: 1,
             ..Default::default()
@@ -590,7 +590,7 @@ mod imp {
             // hands out each `sd_journal_enumerate_data` slice borrowed only for
             // the duration of the `feed` call (those buffers are invalidated by
             // the next enumerate call), and `FieldDecoder` copies every kept
-            // field out before the next slice is fetched — so the MESSAGE payload
+            // field out before the next slice is fetched -- so the MESSAGE payload
             // is stored once, never cloned a second time for the log body.
             unsafe { (self.lib.restart_data)(self.journal.as_ptr()) };
             let reader: &SdJournalReader = self;
@@ -626,7 +626,7 @@ mod imp {
     /// returned slice's lifetime: the borrow checker forbids fetching the next
     /// field (or otherwise touching `self`) while a slice is still held, so a
     /// slice can never be aliased past the call that invalidates it. This is
-    /// deliberately NOT a `std::iter::Iterator` — a non-lending `Item` would let
+    /// deliberately NOT a `std::iter::Iterator` -- a non-lending `Item` would let
     /// safe code `collect()` the slices or hold two at once, an immediate
     /// use-after-free.
     struct EnumerateData<'j> {
@@ -668,7 +668,7 @@ mod imp {
             // the journal, valid until the next `sd_journal_enumerate_data` call.
             // The returned slice borrows `&mut self`, so the borrow checker
             // prevents another `next_field` call (which would invalidate it) while
-            // it is still held — matching the FFI's documented lifetime exactly.
+            // it is still held -- matching the FFI's documented lifetime exactly.
             Some(unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) })
         }
     }

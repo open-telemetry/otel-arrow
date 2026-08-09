@@ -2,7 +2,7 @@
 
 This extension lets the dataflow engine act as an OpAMP agent: it connects to a
 remote OpAMP server, receives engine configuration from it, and reports health
-and pipeline status back. See [`docs/opamp.md`](../../../../docs/opamp.md) for
+and pipeline status back. See [`docs/opamp.md`](../../../../../docs/opamp.md) for
 the design document.
 
 ## Testing locally against the opamp-go reference server
@@ -37,18 +37,60 @@ agent page.
 ### 3. Push an engine config from the server
 
 Open the agent page, paste the following into the *Additional Configuration*
-box, and hit Save:
+box, and hit Save. Remote configuration is complete desired state, not a patch,
+so this payload preserves both pipelines from the startup config while changing
+`signals_per_second` from `10` to `20`:
 
 ```json
 {
   "version": "otel_dataflow/v1",
-  "engine": {},
+  "engine": {
+    "controller": {
+      "extensions": {
+        "opamp": {
+          "type": "urn:otel:extension:opamp",
+          "config": {
+            "endpoint": "ws://127.0.0.1:4320/v1/opamp",
+            "instance_uid": "8be4df61-93ca-11d2-aa0d-00e098032b8c",
+            "heartbeat_interval": "5s",
+            "agent_description": {
+              "identifying_attributes": {
+                "service.name": "otap-df-engine"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
   "groups": {
     "default": {
       "pipelines": {
-        "remote_pipeline": {
+        "light_traffic": {
           "nodes": {
-            "otlp_receiver": {
+            "generator": {
+              "type": "receiver:traffic_generator",
+              "config": {
+                "data_source": "synthetic",
+                "traffic_config": {
+                  "max_batch_size": 10,
+                  "signals_per_second": 20,
+                  "log_weight": 100
+                }
+              }
+            },
+            "sink": {
+              "type": "exporter:otlp_grpc",
+              "config": {
+                "grpc_endpoint": "http://127.0.0.1:4317"
+              }
+            }
+          },
+          "connections": [{ "from": "generator", "to": "sink" }]
+        },
+        "local_backend": {
+          "nodes": {
+            "receiver": {
               "type": "receiver:otlp",
               "config": {
                 "protocols": {
@@ -58,7 +100,7 @@ box, and hit Save:
             },
             "sink": { "type": "exporter:noop", "config": {} }
           },
-          "connections": [{ "from": "otlp_receiver", "to": "sink" }]
+          "connections": [{ "from": "receiver", "to": "sink" }]
         }
       }
     }
@@ -69,8 +111,8 @@ box, and hit Save:
 Expected sequence, visible in the server log and the engine log:
 
 1. The engine replies with `RemoteConfigStatus=APPLYING`.
-2. The engine reconciles the config and starts the pipeline (an OTLP gRPC
-   receiver comes up on `127.0.0.1:4317`).
+2. The engine reconciles the config, preserves the local OTLP loopback, and
+   updates the traffic generator to 20 signals per second.
 3. The next reply reports `RemoteConfigStatus=APPLIED` and `Healthy=true`.
 
 Pushing an invalid config (for example malformed JSON) is reported back as

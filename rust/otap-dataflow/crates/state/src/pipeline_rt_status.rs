@@ -757,7 +757,7 @@ mod tests {
         for (core, status) in statuses.iter_mut().enumerate() {
             match status.apply(EventType::Success(OkEv::Ready)) {
                 Ok(_) => {
-                    // Core received both Admitted and Ready ⇒ Running.
+                    // Core received both Admitted and Ready => Running.
                     assert_eq!(status.phase, PipelinePhase::Running);
                     assert!(
                         !dropped_cores.contains(&core),
@@ -765,7 +765,7 @@ mod tests {
                     );
                 }
                 Err(InvalidTransition { phase, .. }) => {
-                    // Core whose Admitted was dropped ⇒ still Pending.
+                    // Core whose Admitted was dropped => still Pending.
                     assert_eq!(phase, PipelinePhase::Pending);
                     assert!(
                         dropped_cores.contains(&core),

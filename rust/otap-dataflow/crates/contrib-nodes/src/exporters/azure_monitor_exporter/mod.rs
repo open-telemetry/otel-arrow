@@ -44,7 +44,7 @@ pub use metrics::{
 };
 pub use transformer::Transformer;
 
-use otap_df_engine::capability::bearer_token_provider::BearerTokenProvider;
+use otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
 
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
 pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft:exporter:azure_monitor";
@@ -53,6 +53,7 @@ pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft:exporter:azure_monit
 ///
 /// Uses the `distributed_slice` macro for automatic discovery by the dataflow engine.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: AZURE_MONITOR_EXPORTER_URN,

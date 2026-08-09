@@ -185,7 +185,9 @@ func (b *EventBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (rec
 		if event.Attributes.Len() == 0 {
 			b.ib.AppendNull()
 		} else {
-			b.ib.Append(eventID)
+			if err = b.ib.Append(eventID); err != nil {
+				return
+			}
 
 			// Attributes
 			err = attrsAccu.Append(eventID, event.Attributes)

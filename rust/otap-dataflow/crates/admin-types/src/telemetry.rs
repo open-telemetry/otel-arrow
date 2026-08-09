@@ -69,6 +69,9 @@ pub struct MetricSet {
     pub name: String,
     /// Attributes.
     pub attributes: BTreeMap<String, AttributeValue>,
+    /// Attributes that identify the metric data point bucket.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub data_point_attributes: BTreeMap<String, AttributeValue>,
     /// Metric values keyed by field name.
     pub metrics: BTreeMap<String, MetricValue>,
 }
@@ -79,6 +82,9 @@ pub struct MetricDataPoint {
     /// Metric descriptor fields.
     #[serde(flatten)]
     pub metadata: MetricsField,
+    /// Attributes that identify this metric data point.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, AttributeValue>,
     /// Metric value.
     pub value: MetricValue,
 }
@@ -109,21 +115,66 @@ pub enum MetricValue {
     U64(u64),
     /// Floating-point value.
     F64(f64),
-    /// MMSC snapshot.
-    Mmsc(MmscSnapshot),
+    /// Summary of a pre-aggregated distribution.
+    Distribution(DistributionSummary),
 }
 
-/// MMSC metric snapshot.
+/// Summary of a distribution metric.
+///
+/// The exact statistics are always present. Everything that depends on bucket
+/// structure lives in [`details`](Self::details), which is absent for the
+/// basic tier because that tier encodes no buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct MmscSnapshot {
+pub struct DistributionSummary {
     /// Minimum observed value.
+    ///
+    /// Defaulted because the admin serializer omits it, along with `max` and
+    /// `sum`, for a distribution that observed nothing: they carry no meaning
+    /// without an observation, and reporting them would invite a consumer to
+    /// read a zero as a measurement. `count` needs no default, since it is
+    /// written for every distribution including the empty one; a payload
+    /// missing it is malformed, and failing to parse says so rather than
+    /// quietly producing an empty distribution.
+    #[serde(default)]
     pub min: f64,
     /// Maximum observed value.
+    #[serde(default)]
     pub max: f64,
     /// Sum of observed values.
+    #[serde(default)]
     pub sum: f64,
-    /// Observation count.
+    /// Total observation count, including exact zeros.
     pub count: u64,
+    /// Everything recoverable only from the encoded buckets.
+    ///
+    /// `None` for the basic tier, which keeps no buckets: it tracks no zero
+    /// population -- a zero there is an ordinary observation reflected in
+    /// `min` -- and can estimate no quantiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<DistributionDetails>,
+}
+
+/// The bucket-derived part of a [`DistributionSummary`].
+///
+/// Every field here is a byproduct of one walk over the encoded buckets, so
+/// they are reported together rather than exposed as separate accessors that
+/// would each pay for their own scan.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DistributionDetails {
+    /// Number of observations excluded from the bucket range because they
+    /// were exactly zero.
+    pub zero_count: u64,
+    /// Relative error bound that applies to the quantile estimates.
+    pub relative_error: f64,
+    /// Estimated median, within `relative_error` of the true value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p50: Option<f64>,
+    /// Estimated 90th percentile, within `relative_error` of the true value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p90: Option<f64>,
+    /// Estimated 99th percentile, within `relative_error` of the true value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p99: Option<f64>,
 }
 
 /// Metric field descriptor.
@@ -154,10 +205,10 @@ pub enum Instrument {
     UpDownCounter,
     /// Gauge.
     Gauge,
-    /// Histogram.
-    Histogram,
-    /// MMSC.
+    /// Distribution keeping exact min/max/sum/count with no encoded buckets.
     Mmsc,
+    /// Distribution keeping exponential-histogram buckets.
+    ExponentialHistogram,
 }
 
 /// Aggregation temporality.
@@ -332,6 +383,9 @@ mod tests {
                             "instrument": "counter",
                             "temporality": "cumulative",
                             "value_type": "u64",
+                            "attributes": {
+                                "signal": { "String": "logs" }
+                            },
                             "value": 5
                         }
                     ]
@@ -349,6 +403,9 @@ mod tests {
                     "name": "engine",
                     "attributes": {
                         "node.id": { "String": "receiver" }
+                    },
+                    "data_point_attributes": {
+                        "signal": { "String": "logs" }
                     },
                     "metrics": {
                         "items": 5

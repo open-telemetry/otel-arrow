@@ -5,11 +5,11 @@ use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
 use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::capability::bearer_token_provider::BearerToken;
+use otap_df_engine::capability::auth::BearerToken;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::local::capability::bearer_token_provider::BearerTokenProvider;
+use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::terminal_state::TerminalState;
@@ -187,6 +187,7 @@ impl AzureMonitorExporter {
             client,
             result,
             row_count,
+            body_size_bytes,
         } = completed_export;
 
         // Return the client to the pool
@@ -194,11 +195,17 @@ impl AzureMonitorExporter {
 
         match result {
             Ok(duration) => {
-                self.handle_export_success(effect_handler, batch_id, row_count, duration)
-                    .await
+                self.handle_export_success(
+                    effect_handler,
+                    batch_id,
+                    row_count,
+                    body_size_bytes,
+                    duration,
+                )
+                .await
             }
             Err(e) => {
-                self.handle_export_failure(effect_handler, batch_id, row_count, e)
+                self.handle_export_failure(effect_handler, batch_id, row_count, body_size_bytes, e)
                     .await
             }
         }
@@ -209,13 +216,19 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
         row_count: u64,
+        body_size_bytes: u64,
         duration: std::time::Duration,
     ) -> Result<(), EngineError> {
         // Export succeeded - Ack only fully-completed messages
         let completed_messages = self.state.remove_batch_success(batch_id);
         {
             let mut m = self.metrics.borrow_mut();
-            m.record_export(Outcome::Success, row_count, completed_messages.len() as u64);
+            m.record_export(
+                Outcome::Success,
+                row_count,
+                completed_messages.len() as u64,
+                body_size_bytes,
+            );
         }
 
         otel_debug!(
@@ -238,13 +251,19 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
         row_count: u64,
+        body_size_bytes: u64,
         error: Error,
     ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
         let failed_messages = self.state.remove_batch_failure(batch_id);
         {
             let mut m = self.metrics.borrow_mut();
-            m.record_export(Outcome::Failure, row_count, failed_messages.len() as u64);
+            m.record_export(
+                Outcome::Failure,
+                row_count,
+                failed_messages.len() as u64,
+                body_size_bytes,
+            );
         }
 
         otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
@@ -669,7 +688,8 @@ mod tests {
     use otap_df_channel::mpsc;
     use otap_df_engine::Interests;
     use otap_df_engine::capability::CapabilityError;
-    use otap_df_engine::capability::bearer_token_provider::{BearerToken, TokenStream};
+    use otap_df_engine::capability::auth::BearerToken;
+    use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::local::message::LocalReceiver;
@@ -688,11 +708,12 @@ mod tests {
     #[async_trait(?Send)]
     impl BearerTokenProvider for MockTokenProvider {
         async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
-            Ok(BearerToken::new("test-token".to_owned(), None))
+            Ok(BearerToken::without_expiry("test-token".to_owned()))
         }
 
         fn token_stream(&self) -> TokenStream {
-            futures::stream::once(async { BearerToken::new("test-token".to_owned(), None) }).boxed()
+            futures::stream::once(async { BearerToken::without_expiry("test-token".to_owned()) })
+                .boxed()
         }
     }
 
@@ -751,6 +772,8 @@ mod tests {
             AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
     }
 
+    /// Scenario: A completed export succeeds with a known compressed request-body size.
+    /// Guarantees: The successful outcome records the resolved request-body bytes.
     #[tokio::test]
     async fn test_handle_export_success() {
         let config = create_test_config();
@@ -778,7 +801,7 @@ mod tests {
 
         // This might fail due to missing sender in effect_handler, but state should be updated
         let _ = exporter
-            .handle_export_success(&effect_handler, batch_id, 10, Duration::from_secs(1))
+            .handle_export_success(&effect_handler, batch_id, 10, 1_024, Duration::from_secs(1))
             .await;
 
         // Verify stats
@@ -787,6 +810,7 @@ mod tests {
         assert_eq!(success.batches.get(), 1);
         assert_eq!(success.messages.get(), 1);
         assert_eq!(success.items.get(), 10);
+        assert_eq!(success.bytes.get(), 1_024);
         drop(m);
 
         // Verify state cleared
@@ -794,6 +818,8 @@ mod tests {
         assert!(exporter.state.msg_to_data.is_empty());
     }
 
+    /// Scenario: A completed export fails with a known compressed request-body size.
+    /// Guarantees: The failed outcome records the resolved request-body bytes.
     #[tokio::test]
     async fn test_handle_export_failure() {
         let config = create_test_config();
@@ -826,7 +852,7 @@ mod tests {
         };
 
         let _ = exporter
-            .handle_export_failure(&effect_handler, batch_id, 10, error)
+            .handle_export_failure(&effect_handler, batch_id, 10, 512, error)
             .await;
 
         // Verify stats
@@ -835,6 +861,7 @@ mod tests {
         assert_eq!(failure.batches.get(), 1);
         assert_eq!(failure.messages.get(), 1);
         assert_eq!(failure.items.get(), 10);
+        assert_eq!(failure.bytes.get(), 512);
         drop(m);
 
         // Verify state cleared
@@ -936,21 +963,28 @@ mod tests {
         assert!(!TokenExpiry::None.is_usable(now, margin));
     }
 
+    /// Scenario: derive a `TokenExpiry` from a token that carries an explicit
+    /// expiry instant.
+    /// Guarantees: the expiry is mapped to `TokenExpiry::At` at the token's
+    /// exact instant.
     #[test]
     fn expiry_uses_token_expiry_when_present() {
         let expires_on = Instant::now() + Duration::from_secs(3600);
-        let token = BearerToken::new("secret".to_owned(), Some(expires_on));
+        let token = BearerToken::with_expiry("secret".to_owned(), Some(expires_on));
         assert_eq!(
             TokenExpiry::from_token(&token),
             TokenExpiry::At(tokio::time::Instant::from_std(expires_on))
         );
     }
 
+    /// Scenario: derive a `TokenExpiry` from a token with no expiry set.
+    /// Guarantees: it maps to `TokenExpiry::NeverExpires` and always reads as
+    /// usable, so a non-expiring token is never treated as stale.
     #[test]
     fn non_expiring_token_never_expires_and_stays_usable() {
         let now = tokio::time::Instant::now();
         let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
-        let token = BearerToken::new("secret".to_owned(), None);
+        let token = BearerToken::without_expiry("secret".to_owned());
         let expiry = TokenExpiry::from_token(&token);
         assert_eq!(expiry, TokenExpiry::NeverExpires);
         assert!(expiry.is_usable(now, margin));

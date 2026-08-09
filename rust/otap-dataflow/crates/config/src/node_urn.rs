@@ -7,7 +7,7 @@
 //! `<kind>` is one of `receiver`, `processor`, or `exporter`. The shortcut
 //! `<kind>:<id>` (no scheme/namespace) expands to `urn:otel:<kind>:<id>`.
 //!
-//! Extensions deliberately do NOT use this type — they have a separate
+//! Extensions deliberately do NOT use this type -- they have a separate
 //! [`crate::extension_urn::ExtensionUrn`] type so the rest of the codebase
 //! cannot accidentally treat extensions as nodes. The underlying parsing
 //! primitives are shared via the private [`crate::urn`] module.
@@ -210,14 +210,13 @@ pub fn infer_node_kind(raw: &str) -> Result<NodeKind, Error> {
 const fn kind_suffix(expected_kind: NodeKind) -> &'static str {
     match expected_kind {
         NodeKind::Receiver => "receiver",
-        NodeKind::Processor | NodeKind::ProcessorChain => "processor",
+        NodeKind::Processor => "processor",
         NodeKind::Exporter => "exporter",
     }
 }
 
 /// Returns true if `expected` and `actual` correspond to the same URN
-/// kind segment. Treats `Processor` and `ProcessorChain` as equivalent
-/// because they both serialize to the `processor` segment.
+/// kind segment.
 fn kinds_match(expected: NodeKind, actual: NodeKind) -> bool {
     kind_suffix(expected) == kind_suffix(actual)
 }

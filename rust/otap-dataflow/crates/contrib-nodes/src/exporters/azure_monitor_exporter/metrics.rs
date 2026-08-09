@@ -8,9 +8,15 @@ use std::rc::Rc;
 
 use otap_df_config::SignalType;
 use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::common_attributes::{HttpResponse, Outcome};
+use otap_df_telemetry::common_attributes::{
+    HttpResponse, Outcome, OutcomeAttributes, SignalRegistrationAttributes,
+};
+pub use otap_df_telemetry::common_attributes::{
+    HttpResponseAttributes, OutcomeAttributes as ExportOutcomeAttributes,
+    SignalRegistrationAttributes as ExportSignalAttributes,
+};
 use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc, MmscSnapshot};
+use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -18,7 +24,7 @@ use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 /// Shared handle to the metrics tracker.
 ///
 /// The exporter runs on a single-threaded runtime (`#[async_trait(?Send)]`),
-/// so `Rc<RefCell<…>>` is sufficient—no `Arc`/`Mutex` overhead needed.
+/// so `Rc<RefCell<...>>` is sufficient--no `Arc`/`Mutex` overhead needed.
 pub type AzureMonitorExporterMetricsRc = Rc<RefCell<AzureMonitorExporterMetricsTracker>>;
 
 /// Metrics without bounded item dimensions.
@@ -45,47 +51,26 @@ pub struct AzureMonitorExporterOperationalMetrics {
     pub log_entries_too_large: Counter<u64>,
 }
 
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-/// Attributes that partition completed exports by outcome.
-pub struct ExportOutcomeAttributes {
-    /// Outcome of the completed export.
-    pub outcome: Outcome,
-}
-
-#[attribute_set(item, registration)]
-#[derive(Debug, Clone, Copy)]
-/// Fixed signal context for Azure Monitor exports.
-pub struct ExportSignalAttributes {
-    /// Signal exported by this logs-only component.
-    pub signal: SignalType,
-}
-
 /// Export completion metrics partitioned by outcome.
 #[metric_set(
     name = "exporter.azure_monitor.exports",
-    registration_attributes = ExportSignalAttributes,
-    measurement_attributes = ExportOutcomeAttributes
+    registration_attributes = SignalRegistrationAttributes,
+    measurement_attributes = OutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterExportMetrics {
-    /// Number of items resolved by export outcome.
+    /// Number of items in completed export attempts.
     #[metric(unit = "{item}")]
     pub items: Counter<u64>,
-    /// Number of batches resolved by export outcome.
+    /// Number of completed export batches.
     #[metric(unit = "{batch}")]
     pub batches: Counter<u64>,
-    /// Number of messages resolved by export outcome.
+    /// Number of messages in completed export attempts.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
-}
-
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-/// Attributes that partition HTTP attempts by response category.
-pub struct HttpResponseAttributes {
-    /// Response category from an HTTP export attempt.
-    pub response: HttpResponse,
+    /// Compressed request-body bytes in completed export attempts.
+    #[metric(unit = "By")]
+    pub bytes: Counter<u64>,
 }
 
 /// HTTP export attempts partitioned by response category.
@@ -131,11 +116,11 @@ struct AzureMonitorExporterStateMetrics {
 /// Heartbeat send metrics partitioned by outcome.
 #[metric_set(
     name = "exporter.azure_monitor.heartbeats",
-    measurement_attributes = ExportOutcomeAttributes
+    measurement_attributes = OutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterHeartbeatMetrics {
-    /// Number of heartbeat sends resolved by outcome.
+    /// Number of completed heartbeat send attempts.
     #[metric(unit = "{heartbeat}")]
     pub sends: Counter<u64>,
 }
@@ -164,7 +149,7 @@ impl AzureMonitorExporterMetricsTracker {
             operational_metrics: AzureMonitorExporterOperationalMetrics::register(pipeline_ctx),
             export_metrics: AzureMonitorExporterExportMetrics::register(
                 pipeline_ctx,
-                &ExportSignalAttributes {
+                &SignalRegistrationAttributes {
                     signal: SignalType::Logs,
                 },
             ),
@@ -200,7 +185,7 @@ impl AzureMonitorExporterMetricsTracker {
     #[inline]
     #[must_use]
     pub(super) fn export_for(&self, outcome: Outcome) -> &AzureMonitorExporterExportMetrics {
-        self.export_metrics.get(ExportOutcomeAttributes { outcome })
+        self.export_metrics.get(OutcomeAttributes { outcome })
     }
 
     #[inline]
@@ -211,18 +196,23 @@ impl AzureMonitorExporterMetricsTracker {
 
     #[inline]
     #[must_use]
-    pub(super) fn batch_size(&self) -> MmscSnapshot {
+    pub(super) fn batch_size(&self) -> Mmsc {
         self.operational_metrics.batch_size.get()
     }
 
     #[inline]
-    pub(super) fn record_export(&mut self, outcome: Outcome, items: u64, messages: u64) {
-        let metrics = self
-            .export_metrics
-            .with(ExportOutcomeAttributes { outcome });
+    pub(super) fn record_export(
+        &mut self,
+        outcome: Outcome,
+        items: u64,
+        messages: u64,
+        bytes: u64,
+    ) {
+        let metrics = self.export_metrics.with(OutcomeAttributes { outcome });
         metrics.items.add(items);
         metrics.batches.inc();
         metrics.messages.add(messages);
+        metrics.bytes.add(bytes);
     }
 
     #[inline]
@@ -270,7 +260,7 @@ impl AzureMonitorExporterMetricsTracker {
     #[inline]
     pub(super) fn record_heartbeat(&mut self, outcome: Outcome) {
         self.heartbeat_metrics
-            .with(ExportOutcomeAttributes { outcome })
+            .with(OutcomeAttributes { outcome })
             .sends
             .inc();
     }
@@ -295,18 +285,20 @@ mod tests {
     #[test]
     fn export_metrics_are_partitioned_by_outcome() {
         let mut metrics = new_test_tracker();
-        metrics.record_export(Outcome::Success, 100, 50);
-        metrics.record_export(Outcome::Failure, 10, 5);
+        metrics.record_export(Outcome::Success, 100, 50, 1_024);
+        metrics.record_export(Outcome::Failure, 10, 5, 512);
 
         let success = metrics.export_for(Outcome::Success);
         assert_eq!(success.items.get(), 100);
         assert_eq!(success.batches.get(), 1);
         assert_eq!(success.messages.get(), 50);
+        assert_eq!(success.bytes.get(), 1_024);
 
         let failure = metrics.export_for(Outcome::Failure);
         assert_eq!(failure.items.get(), 10);
         assert_eq!(failure.batches.get(), 1);
         assert_eq!(failure.messages.get(), 5);
+        assert_eq!(failure.bytes.get(), 512);
     }
 
     /// Scenario: HTTP attempts receive successful, throttled, and network-error responses.
@@ -388,7 +380,7 @@ mod tests {
         assert_eq!(
             metrics
                 .heartbeat_metrics
-                .get(ExportOutcomeAttributes {
+                .get(OutcomeAttributes {
                     outcome: Outcome::Success,
                 })
                 .sends
@@ -398,7 +390,7 @@ mod tests {
         assert_eq!(
             metrics
                 .heartbeat_metrics
-                .get(ExportOutcomeAttributes {
+                .get(OutcomeAttributes {
                     outcome: Outcome::Failure,
                 })
                 .sends
@@ -412,7 +404,7 @@ mod tests {
     #[test]
     fn terminal_snapshots_include_touched_measurement_metrics() {
         let mut metrics = new_test_tracker();
-        metrics.record_export(Outcome::Success, 10, 1);
+        metrics.record_export(Outcome::Success, 10, 1, 100);
 
         let snapshots = metrics.terminal_snapshots();
         let export_snapshot = snapshots
@@ -439,7 +431,7 @@ mod tests {
         let mut metrics = new_test_tracker();
         let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(16);
         metrics.add_batch_size(42.0);
-        metrics.record_export(Outcome::Success, 42, 1);
+        metrics.record_export(Outcome::Success, 42, 1, 420);
 
         metrics.report(&mut reporter).unwrap();
 
