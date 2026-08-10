@@ -303,6 +303,37 @@ mod tests {
         });
     }
 
+    /// Scenario: a span-scoped directive changes while a matching span is entered.
+    /// Guarantees: the existing span falls back to the new base directive, while a new span uses the new span directive.
+    #[test]
+    fn runtime_update_applies_span_directive_only_to_new_spans() {
+        crate::with_cleared_rust_log(|| {
+            let count = Arc::new(AtomicUsize::new(0));
+            let (filter, handle) = RuntimeLogFilter::new(&level("warn,[reload_span]=debug"));
+            let subscriber = Registry::default()
+                .with(filter.layer())
+                .with(CountingLayer(Arc::clone(&count)));
+
+            tracing::subscriber::with_default(subscriber, || {
+                let span = tracing::info_span!("reload_span");
+                let entered = span.enter();
+                tracing::debug!("old span directive permits this event");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 1);
+
+                handle.apply(&level("warn,[reload_span]=trace"));
+                tracing::debug!("existing span falls back to warn");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 0);
+                drop(entered);
+                drop(span);
+
+                let span = tracing::info_span!("reload_span");
+                let _entered = span.enter();
+                tracing::trace!("new span directive permits this event");
+                assert_eq!(count.load(Ordering::SeqCst), 1);
+            });
+        });
+    }
+
     /// Scenario: two independent dispatchers are created from one runtime filter.
     /// Guarantees: one update refreshes both dispatcher-local EnvFilter instances.
     #[test]

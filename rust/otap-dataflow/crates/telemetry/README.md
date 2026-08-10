@@ -111,8 +111,9 @@ Reconciliation installs a newly built `EnvFilter` into each live dispatcher.
 replacement filter has no record of spans entered before it was installed and
 never pushes them onto its scope stack. A reconciled span directive applies to
 matching spans created after the update, including spans created by replacement
-pipeline threads. A long-lived `pipeline_thread` span that was already entered
-continues with its previous behavior until that pipeline thread is recreated.
+pipeline threads. Events inside a long-lived `pipeline_thread` span that was
+already entered fall back to the new filter's non-span directives until that
+pipeline thread and its span are recreated.
 The non-span part of the reconciled `logs.level` takes effect immediately.
 
 There are four aspects that can be configured:
