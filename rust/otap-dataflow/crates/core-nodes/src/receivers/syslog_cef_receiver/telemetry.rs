@@ -3,12 +3,12 @@
 
 #![allow(missing_docs)]
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
-#[attribute_set(item, registration)]
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct SyslogOutcomeAttributes {
     pub outcome: SyslogOutcome,
 }
@@ -43,7 +43,7 @@ impl std::fmt::Display for SyslogOutcome {
 
 #[metric_set(
     name = "receiver.syslog_cef",
-    registration_attributes = SyslogOutcomeAttributes
+    measurement_attributes = SyslogOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogItemMetrics {
@@ -51,8 +51,8 @@ pub struct SyslogItemMetrics {
     pub items: Counter<u64>,
 }
 
-#[attribute_set(item, registration)]
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct TcpConnectionAttributes {
     pub state: TcpConnectionState,
 }
@@ -81,7 +81,7 @@ impl std::fmt::Display for TcpConnectionState {
 
 #[metric_set(
     name = "receiver.syslog_cef.tcp",
-    registration_attributes = TcpConnectionAttributes
+    measurement_attributes = TcpConnectionAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogTcpMetrics {
@@ -100,72 +100,37 @@ pub struct SyslogGlobalMetrics {
 
 /// Aggregate struct holding the registered metric sets.
 pub struct SyslogCefReceiverMetrics {
-    pub forwarded: MetricSet<SyslogItemMetrics>,
-    pub invalid: MetricSet<SyslogItemMetrics>,
-    pub truncated: MetricSet<SyslogItemMetrics>,
-    pub forward_failed: MetricSet<SyslogItemMetrics>,
-    pub rejected_memory_pressure: MetricSet<SyslogItemMetrics>,
-
-    pub tcp_active: MetricSet<SyslogTcpMetrics>,
-    pub tcp_rejected: MetricSet<SyslogTcpMetrics>,
-
+    pub items: MeasurementMetricSet<SyslogItemMetrics>,
+    pub tcp_connections: MeasurementMetricSet<SyslogTcpMetrics>,
     pub global: MetricSet<SyslogGlobalMetrics>,
 }
 
 impl SyslogCefReceiverMetrics {
     pub fn new(telemetry_registry: &TelemetryRegistryHandle) -> Self {
         Self {
-            forwarded: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: SyslogOutcome::Forwarded,
-            }),
-            invalid: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: SyslogOutcome::Invalid,
-            }),
-            truncated: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: SyslogOutcome::Truncated,
-            }),
-            forward_failed: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: SyslogOutcome::ForwardFailed,
-            }),
-            rejected_memory_pressure: telemetry_registry.register_metric_set(
-                SyslogOutcomeAttributes {
-                    outcome: SyslogOutcome::RejectedMemoryPressure,
-                },
+            items: telemetry_registry.register_metric_set_with_measurement_attributes(
+                otap_df_telemetry::testing::EmptyAttributes(),
             ),
-
-            tcp_active: telemetry_registry.register_metric_set(TcpConnectionAttributes {
-                state: TcpConnectionState::Active,
-            }),
-            tcp_rejected: telemetry_registry.register_metric_set(TcpConnectionAttributes {
-                state: TcpConnectionState::RejectedMemoryPressure,
-            }),
-
-            global: telemetry_registry
-                .register_metric_set(otap_df_telemetry::testing::EmptyAttributes()),
+            tcp_connections: telemetry_registry.register_metric_set_with_measurement_attributes(
+                otap_df_telemetry::testing::EmptyAttributes(),
+            ),
+            global: telemetry_registry.register_metric_set(
+                otap_df_telemetry::testing::EmptyAttributes(),
+            ),
         }
     }
 
-    pub fn snapshots(&self) -> Vec<otap_df_telemetry::metrics::MetricSetSnapshot> {
-        vec![
-            self.forwarded.snapshot(),
-            self.invalid.snapshot(),
-            self.truncated.snapshot(),
-            self.forward_failed.snapshot(),
-            self.rejected_memory_pressure.snapshot(),
-            self.tcp_active.snapshot(),
-            self.tcp_rejected.snapshot(),
-            self.global.snapshot(),
-        ]
+    pub fn snapshots(&mut self) -> Vec<otap_df_telemetry::metrics::MetricSetSnapshot> {
+        let mut snaps = Vec::new();
+        snaps.extend(self.items.terminal_snapshots());
+        snaps.extend(self.tcp_connections.terminal_snapshots());
+        snaps.push(self.global.snapshot());
+        snaps
     }
 
     pub fn report(&mut self, reporter: &mut otap_df_telemetry::reporter::MetricsReporter) {
-        let _ = reporter.report(&mut self.forwarded);
-        let _ = reporter.report(&mut self.invalid);
-        let _ = reporter.report(&mut self.truncated);
-        let _ = reporter.report(&mut self.forward_failed);
-        let _ = reporter.report(&mut self.rejected_memory_pressure);
-        let _ = reporter.report(&mut self.tcp_active);
-        let _ = reporter.report(&mut self.tcp_rejected);
+        let _ = reporter.report_measurement(&mut self.items);
+        let _ = reporter.report_measurement(&mut self.tcp_connections);
         let _ = reporter.report(&mut self.global);
     }
 }
