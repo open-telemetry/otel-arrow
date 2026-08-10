@@ -737,12 +737,17 @@ pub fn make_bytes_batches_owned(
                     if field == RESOURCE_ENTRY_FIELD && wire == wire_types::LEN {
                         // Reserve outbound slots for every top-level unit that
                         // still follows this entry, by projecting how many
-                        // output batches their greedy packing will produce.
-                        let reserved_after = if output_budget == usize::MAX {
-                            0
-                        } else {
-                            project_output_batches(&field_sizes[field_idx + 1..], max_size)
-                        };
+                        // output batches their greedy packing will produce. Only
+                        // an entry that itself exceeds `max_size` can split (and
+                        // thus consult the reservation), so skip the projection
+                        // scan for entries that pack normally -- this keeps the
+                        // common small-entry path linear instead of O(N^2).
+                        let reserved_after =
+                            if output_budget == usize::MAX || full.len() <= max_size {
+                                0
+                            } else {
+                                project_output_batches(&field_sizes[field_idx + 1..], max_size)
+                            };
                         push_resource_entry(
                             signal,
                             full,

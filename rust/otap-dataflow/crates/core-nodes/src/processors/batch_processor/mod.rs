@@ -3595,6 +3595,9 @@ mod tests {
         otlp_message_to_bytes(&OtlpProtoMessage::Logs(logs))
     }
 
+    /// Scenario: a subscribed oversize single-resource logs input is flushed
+    /// immediately (max_batch_duration = 0), splitting into multiple fragments;
+    /// every fragment except the last is Acked and the last fragment is Nacked.
     ///
     /// Guarantees: Ack/Nack ownership is apportioned by input-byte weight (which
     /// sums to the input total even though header duplication inflates the
@@ -4340,6 +4343,112 @@ mod tests {
                     ),
                     0,
                     "no capacity fallback: greedy count fits within capacity"
+                );
+            });
+    }
+
+    /// Scenario: a subscribed flush carries many (200) small resource entries
+    /// that each fit within `max_size` and pack together into a handful of output
+    /// batches -- none of them needs splitting -- under a finite
+    /// `outbound_request_limit`.
+    ///
+    /// Guarantees: entries that pack normally take the linear path and never
+    /// consult the outbound-capacity projection (which is only computed for an
+    /// entry that itself exceeds `max_size`), so no capacity or budget fallback
+    /// is triggered, every packed output stays within `max_size`, and Acking all
+    /// outputs yields coherent Acks to every input.
+    #[test]
+    fn test_split_capacity_many_small_entries_no_projection_fallback() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "otlp": {
+                "min_size": null,
+                // Large enough that many ~58-byte entries pack per output batch,
+                // and no single entry ever exceeds it (so none splits).
+                "max_size": 2000,
+                "sizer": "bytes",
+            },
+            "format": "otlp",
+            "max_batch_duration": "0s",
+            "outbound_request_limit": 512,
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(16);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                let bytes = multi_resource_logs_bytes(200, 1);
+                let pdata = OtapPdata::new_default(bytes.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    1,
+                );
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("process input");
+
+                let outputs = ctx.drain_pdata().await;
+                assert!(
+                    outputs.len() > 1,
+                    "200 small entries must pack into several batches, got {}",
+                    outputs.len()
+                );
+                assert!(
+                    outputs.len() < 200,
+                    "small entries must pack together, not one batch each, got {}",
+                    outputs.len()
+                );
+                for out in &outputs {
+                    let out_bytes = out
+                        .clone()
+                        .payload()
+                        .num_bytes()
+                        .expect("otlp bytes size known");
+                    assert!(
+                        out_bytes <= 2000,
+                        "no packed batch may exceed max_size, got {out_bytes}"
+                    );
+                    assert!(
+                        out.has_subscribers(),
+                        "every packed batch must remain subscribed"
+                    );
+                }
+
+                for out in outputs {
+                    ctx.process(Message::Control(NodeControlMsg::Ack(
+                        next_ack(AckMsg::new(out)).expect("has subs").1,
+                    )))
+                    .await
+                    .expect("process ack");
+                }
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert_eq!(
+                    counter_metric_value(
+                        &telemetry_registry,
+                        "otap.processor.batch",
+                        "split.capacity.fallbacks"
+                    ),
+                    0,
+                    "no capacity fallback: small entries never split or project"
+                );
+                assert_eq!(
+                    counter_metric_value(
+                        &telemetry_registry,
+                        "otap.processor.batch",
+                        "split.budget.fallbacks"
+                    ),
+                    0,
+                    "no budget fallback: small entries never split"
                 );
             });
     }

@@ -27,6 +27,9 @@ subtext: |
   duplicated-wrapper-byte amplification; over-budget entries are emitted whole
   (best-effort) and counted by the otap.processor.batch split.budget.fallbacks metric.
   Splitting is additionally bounded per flush by the remaining outbound_request_limit
-  capacity so a split input is never partially subscribed across the outbound pool
+  capacity so an oversize entry's split fan-out never exceeds the free outbound slots
   (no fragment Nacked mid-flush while siblings are in flight); over-capacity entries
-  fall back to whole and are counted by the split.capacity.fallbacks metric.
+  fall back to whole and are counted by the split.capacity.fallbacks metric. (A
+  degenerate input whose mandatory minimum outputs alone exceed the outbound limit,
+  e.g. limit 1 with an oversize entry plus an oversize opaque field, can still be
+  partly subscribed -- pre-existing behavior, unchanged here.)

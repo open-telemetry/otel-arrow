@@ -98,10 +98,19 @@ per entry), so many small trailing entries that pack together are not
 over-reserved and an early greedy split still cannot starve later entries. An
 entry that would exceed the remaining capacity is emitted whole instead
 (best-effort, possibly exceeding `max_size`) and counted by the
-`split.capacity.fallbacks` metric. This keeps a split input all-or-nothing: it
-is never partially subscribed across the outbound pool, so a late fragment can
-never be Nacked for outbound-slot exhaustion while its siblings are already in
-flight.
+`split.capacity.fallbacks` metric. For a split resource entry this keeps the
+entry's own fragments all-or-nothing: an oversize entry is never fanned into
+more subscribed fragments than the pool can track, so a late fragment is never
+Nacked for outbound-slot exhaustion while its siblings are already in flight.
+
+The reservation bounds an entry's *split fan-out*; it does not force a whole
+multi-output input down to a single batch. If one subscribed input's minimum
+output floor still exceeds the flush's remaining capacity -- for example
+`outbound_request_limit = 1` with an input carrying both an oversize resource
+entry and an oversize opaque top-level field, which must produce at least two
+batches -- one output can be subscribed while another Nacks that input. This
+degenerate case (an input whose mandatory minimum outputs alone exceed the
+outbound limit) predates this feature and is not changed here.
 
 ## Examples
 

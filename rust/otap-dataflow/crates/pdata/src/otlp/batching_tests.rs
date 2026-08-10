@@ -656,6 +656,10 @@ fn test_single_metric_many_datapoints_not_split() {
     let out_msgs: Vec<OtlpProtoMessage> = outputs.into_iter().map(otlp_bytes_to_message).collect();
     assert_equivalent(&[data.into()], &out_msgs);
 }
+/// Scenario: a single resource entry contains a valid Resource and ScopeLogs
+/// followed by a truncated top-level field (declares 127 payload bytes but none
+/// follow), so the entry cannot be safely split at field granularity.
+///
 /// Guarantees: Rather than folding the corrupt tail into a duplicated header
 /// (which would reorder/duplicate it ahead of every fragment), the whole
 /// resource entry is emitted byte-for-byte as a single batch.
