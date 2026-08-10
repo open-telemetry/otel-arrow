@@ -23,23 +23,6 @@ pub enum SyslogOutcome {
     RejectedMemoryPressure,
 }
 
-impl SyslogOutcome {
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Forwarded => "forwarded",
-            Self::Invalid => "invalid",
-            Self::Truncated => "truncated",
-            Self::ForwardFailed => "forward_failed",
-            Self::RejectedMemoryPressure => "rejected_memory_pressure",
-        }
-    }
-}
-
-impl std::fmt::Display for SyslogOutcome {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
 
 #[metric_set(
     name = "receiver.syslog_cef",
@@ -64,20 +47,6 @@ pub enum TcpConnectionState {
     RejectedMemoryPressure,
 }
 
-impl TcpConnectionState {
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::RejectedMemoryPressure => "rejected_memory_pressure",
-        }
-    }
-}
-
-impl std::fmt::Display for TcpConnectionState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
 
 #[metric_set(
     name = "receiver.syslog_cef.tcp",
