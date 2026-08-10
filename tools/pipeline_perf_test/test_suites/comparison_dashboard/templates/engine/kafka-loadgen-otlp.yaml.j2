@@ -2,40 +2,51 @@ version: otel_dataflow/v1
 policies:
   channel_capacity:
     control:
-      node: 100
-      pipeline: 100
-    pdata: 100
+      pipeline: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
+      node: {{ default_node_ctrl_msg_channel_size | default(100) }}
+    pdata: {{ default_pdata_channel_size | default(100) }}
   resources:
     core_allocation:
       type: core_set
       set:
         - start: {{core_start}}
           end: {{core_end}}
-engine:
-  telemetry:
-    logs:
-      level: info
+
+engine: {}
+
 groups:
   default:
     pipelines:
       main:
         nodes:
           receiver:
-            type: urn:otel:receiver:otlp
+            type: "urn:otel:receiver:traffic_generator"
             config:
-              protocols:
-                grpc:
-                  listening_addr: 0.0.0.0:4317
-                  wait_for_result: {% if wait_for_result | default(false) %}true{% else %}false{% endif %}
+              data_source: {{ data_source | default("semantic_conventions") }}
+              generation_strategy: {{ generation_strategy | default("pre_generated") }}
+              traffic_config:
+                production_mode: {{ production_mode | default("smooth") }}
+                max_batch_size: {{ loadgen_max_batch_size | default(1000) }}
+                signals_per_second: {{ (signals_per_second | default(100000)) }}
+                metric_weight: {{ metric_weight | default(0) }}
+                trace_weight: {{ trace_weight | default(0) }}
+                log_weight: {{ log_weight | default(100) }}
+{%- if num_log_attributes is defined %}
+                num_log_attributes: {{ num_log_attributes }}
+{%- endif %}
+{%- if num_metric_attributes is defined %}
+                num_metric_attributes: {{ num_metric_attributes }}
+{%- endif %}
+
           exporter:
-            # Benchmarked DFE Kafka exporter (exporter-isolation suites).
-            # Aligned producer tuning injected from canonical kafka_producer_*
-            # suite variables so DFE and Rotel are byte-identical at the
-            # librdkafka level.
+            # Fixed DFE reference producer for receiver-isolation suites.
+            # Aligned Kafka producer tuning is injected from the canonical
+            # kafka_producer_* suite variables so the reference side is
+            # identical across every benchmarked receiver variant.
             type: urn:otel:exporter:kafka
             config:
               brokers: "{{kafka_hostname}}:9092"
-              client_id: "dfe-kafka-producer"
+              client_id: "dfe-kafka-loadgen"
               required_acks: {{ kafka_producer_acks | default("one") }}
 {%- if kafka_producer_compression is defined and kafka_producer_compression != "none" %}
               compression: {{ kafka_producer_compression }}
@@ -55,6 +66,7 @@ groups:
               traces:
                 topic: "otel-spans"
                 encoding: otlp_proto
+
         connections:
           - from: receiver
             to: exporter

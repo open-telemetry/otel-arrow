@@ -5,12 +5,20 @@ receivers:
         endpoint: 0.0.0.0:4317
 
 exporters:
+  # Benchmarked Go collector (Sarama) Kafka exporter. Aligned with the
+  # canonical kafka_producer_* suite variables to the extent Sarama exposes
+  # each knob; librdkafka-only knobs (linger, queue buffering, partitioner
+  # strategy names) cannot be expressed here and are documented in the
+  # comparison writeup.
   kafka:
     brokers:
       - '{{kafka_hostname}}:9092'
     protocol_version: '3.0.0'
     producer:
-      flush_max_messages: 1000
+      required_acks: {{ kafka_producer_acks_sarama | default(1) }}
+      compression: {{ kafka_producer_compression | default("none") }}
+      max_message_bytes: {{ kafka_producer_max_message_bytes | default(1000000) }}
+      flush_max_messages: {{ kafka_producer_flush_max_messages | default(0) }}
     logs:
       topic: otel-logs
       encoding: otlp_proto

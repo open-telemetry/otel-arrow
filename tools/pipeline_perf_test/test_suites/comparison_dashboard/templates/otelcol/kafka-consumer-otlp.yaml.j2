@@ -1,13 +1,22 @@
 receivers:
+  # Benchmarked Go collector (Sarama) Kafka receiver. Aligned with the
+  # canonical kafka_consumer_* suite variables to the extent Sarama exposes
+  # each knob.
   kafka:
     brokers:
       - '{{kafka_hostname}}:9092'
     protocol_version: '3.0.0'
-    group_id: 'otc-kafka-consumer'
-    initial_offset: earliest
+    group_id: '{{ kafka_consumer_group_id | default("kafka-benchmark-consumer") }}'
+    initial_offset: {{ kafka_consumer_auto_offset_reset | default("earliest") }}
     autocommit:
       enable: true
-      interval: 1s
+      interval: {{ kafka_consumer_commit_interval_ms | default(1000) }}ms
+    session_timeout: {{ kafka_consumer_session_timeout_ms | default(30000) }}ms
+    heartbeat_interval: {{ kafka_consumer_heartbeat_interval_ms | default(3000) }}ms
+    min_fetch_size: {{ kafka_consumer_fetch_min_bytes | default(1) }}
+    default_fetch_size: {{ kafka_consumer_max_partition_fetch_bytes | default(1048576) }}
+    max_fetch_size: {{ kafka_consumer_fetch_max_bytes | default(1048576) }}
+    isolation_level: {{ kafka_consumer_isolation_level_sarama | default("ReadUncommitted") }}
     logs:
       topic: otel-logs
       encoding: otlp_proto

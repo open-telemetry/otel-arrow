@@ -1,34 +1,36 @@
 version: otel_dataflow/v1
 policies:
+  telemetry:
+    runtime_metrics: normal
   channel_capacity:
     control:
-      node: 100
-      pipeline: 100
-    pdata: 100
+      pipeline: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
+      node: {{ default_node_ctrl_msg_channel_size | default(100) }}
+    pdata: {{ default_pdata_channel_size | default(100) }}
   resources:
     core_allocation:
       type: core_set
       set:
         - start: {{core_start}}
           end: {{core_end}}
-engine:
-  telemetry:
-    logs:
-      level: info
+
+engine: {}
+
 groups:
   default:
     pipelines:
       main:
         nodes:
           receiver:
-            # Benchmarked DFE Kafka receiver (receiver-isolation suites).
-            # Aligned consumer tuning injected from canonical kafka_consumer_*
-            # suite variables.
+            # Fixed DFE reference consumer for exporter-isolation suites.
+            # Aligned Kafka consumer tuning is injected from the canonical
+            # kafka_consumer_* suite variables so the reference side is
+            # identical across every benchmarked exporter variant.
             type: urn:otel:receiver:kafka
             config:
               brokers: "{{kafka_hostname}}:9092"
               group_id: "{{ kafka_consumer_group_id | default('kafka-benchmark-consumer') }}"
-              client_id: "dfe-kafka-consumer"
+              client_id: "dfe-kafka-backend"
               auto_offset_reset: {{ kafka_consumer_auto_offset_reset | default("earliest") }}
               commit:
                 mode: auto
@@ -52,11 +54,19 @@ groups:
                 topics:
                   - "otel-spans"
                 encoding: otlp_proto
-          exporter:
-            type: urn:otel:exporter:otlp_grpc
+
+          perf:
+            type: "urn:otel:exporter:perf"
+            policies:
+              telemetry:
+                item_counts: true
             config:
-              grpc_endpoint: http://{{backend_hostname}}:1235
-              compression_method: {% if compression_method == "none" %}null{% else %}{{compression_method}}{% endif %}
+              frequency: 500
+              cpu_usage: false
+              mem_usage: false
+              disk_usage: false
+              io_usage: false
+
         connections:
           - from: receiver
-            to: exporter
+            to: perf
