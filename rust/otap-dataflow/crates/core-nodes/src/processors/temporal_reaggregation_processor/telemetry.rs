@@ -19,8 +19,6 @@ pub const INVALID_CALLDATA_EVENT: &str = "temporal_reaggregation.calldata.invali
 /// Emitted when there is an erroneous ack/nack event
 pub const ERRONEOUS_ACK_EVENT: &str = "temporal_reaggregation.ack.erroneous";
 
-
-
 /// Metrics for the temporal reaggregation processor.
 #[metric_set(name = "processor.temporal_reaggregation")]
 #[derive(Debug, Default, Clone)]
