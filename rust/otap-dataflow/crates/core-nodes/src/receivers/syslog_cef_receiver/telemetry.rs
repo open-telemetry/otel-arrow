@@ -16,16 +16,15 @@
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry_macros::{attribute_set, metric_set};
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
-#[attribute_set(name = "outcome")]
+#[attribute_set(item, registration)]
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SyslogOutcomeAttributes {
-    #[attribute]
-    pub outcome: std::borrow::Cow<'static, str>,
+    pub outcome: SyslogOutcome,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, AttributeEnum)]
 pub enum SyslogOutcome {
     #[default]
     Forwarded,
@@ -55,7 +54,7 @@ impl std::fmt::Display for SyslogOutcome {
 
 #[metric_set(
     name = "receiver.syslog_cef",
-    registration_attributes = "SyslogOutcomeAttributes"
+    registration_attributes = SyslogOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogItemMetrics {
@@ -63,14 +62,13 @@ pub struct SyslogItemMetrics {
     pub items: Counter<u64>,
 }
 
-#[attribute_set(name = "state")]
+#[attribute_set(item, registration)]
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct TcpConnectionAttributes {
-    #[attribute]
-    pub state: std::borrow::Cow<'static, str>,
+    pub state: TcpConnectionState,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, AttributeEnum)]
 pub enum TcpConnectionState {
     #[default]
     Active,
@@ -94,7 +92,7 @@ impl std::fmt::Display for TcpConnectionState {
 
 #[metric_set(
     name = "receiver.syslog_cef.tcp",
-    registration_attributes = "TcpConnectionAttributes"
+    registration_attributes = TcpConnectionAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogTcpMetrics {
@@ -129,28 +127,26 @@ impl SyslogCefReceiverMetrics {
     pub fn new(telemetry_registry: &TelemetryRegistryHandle) -> Self {
         Self {
             forwarded: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: std::borrow::Cow::Borrowed("forwarded"),
+                outcome: SyslogOutcome::Forwarded,
             }),
             invalid: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: std::borrow::Cow::Borrowed("invalid"),
+                outcome: SyslogOutcome::Invalid,
             }),
             truncated: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: std::borrow::Cow::Borrowed("truncated"),
+                outcome: SyslogOutcome::Truncated,
             }),
             forward_failed: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: std::borrow::Cow::Borrowed("forward_failed"),
+                outcome: SyslogOutcome::ForwardFailed,
             }),
-            rejected_memory_pressure: telemetry_registry.register_metric_set(
-                SyslogOutcomeAttributes {
-                    outcome: std::borrow::Cow::Borrowed("rejected_memory_pressure"),
-                },
-            ),
+            rejected_memory_pressure: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
+                outcome: SyslogOutcome::RejectedMemoryPressure,
+            }),
 
             tcp_active: telemetry_registry.register_metric_set(TcpConnectionAttributes {
-                state: std::borrow::Cow::Borrowed("active"),
+                state: TcpConnectionState::Active,
             }),
             tcp_rejected: telemetry_registry.register_metric_set(TcpConnectionAttributes {
-                state: std::borrow::Cow::Borrowed("rejected_memory_pressure"),
+                state: TcpConnectionState::RejectedMemoryPressure,
             }),
 
             global: telemetry_registry
