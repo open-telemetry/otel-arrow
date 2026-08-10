@@ -2509,39 +2509,6 @@ fn reconcile_engine_config_applies_runtime_log_level() {
     assert_eq!(event_count.load(Ordering::SeqCst), 0);
 }
 
-/// Scenario: full-config reconciliation requests a malformed log-filter directive.
-/// Guarantees: preflight fails before rollout and preserves the active filter and live config.
-#[test]
-fn reconcile_engine_config_rejects_invalid_runtime_log_level() {
-    let mut config = empty_engine_config();
-    config.engine.telemetry.logs.level =
-        serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse");
-    let (runtime, log_filter_handle, log_filter) =
-        test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
-    let event_count = Arc::new(AtomicUsize::new(0));
-    let subscriber = Registry::default()
-        .with(log_filter.layer())
-        .with(CountingLayer(Arc::clone(&event_count)));
-
-    let mut desired = config.clone();
-    desired.engine.telemetry.logs.level =
-        serde_json::from_value(serde_json::json!("info,[")).expect("log level should deserialize");
-    let error = runtime
-        .reconcile_engine_config(reconcile_request(desired, true))
-        .expect_err("invalid log level should fail preflight");
-
-    let ControlPlaneError::InvalidRequest { message } = error else {
-        panic!("expected invalid request");
-    };
-    assert!(message.contains("invalid logs.level directive"));
-    assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
-    assert_eq!(runtime.engine_config_snapshot(), config);
-    tracing::subscriber::with_default(subscriber, || {
-        otel_info!("test.controller.rejected_runtime_filter");
-    });
-    assert_eq!(event_count.load(Ordering::SeqCst), 0);
-}
-
 /// Scenario: a full-config reconciliation request omits live stopped
 /// resources with `delete_missing` enabled.
 /// Guarantees: reconciliation deletes the omitted pipeline and then the

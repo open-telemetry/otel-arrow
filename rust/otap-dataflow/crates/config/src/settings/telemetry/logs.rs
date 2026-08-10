@@ -76,7 +76,8 @@ pub struct InternalLogTapConfig {
 ///
 /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
 pub struct LogLevel(String);
 
 impl Default for LogLevel {
@@ -90,6 +91,23 @@ impl LogLevel {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for LogLevel {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        _ = EnvFilter::try_new(&value).map_err(|error| Error::InvalidUserConfig {
+            error: format!("invalid logs.level directive: {error}"),
+        })?;
+        Ok(Self(value))
+    }
+}
+
+impl From<LogLevel> for String {
+    fn from(value: LogLevel) -> Self {
+        value.0
     }
 }
 
@@ -241,14 +259,9 @@ impl LogsConfig {
     /// Validate the logs configuration.
     ///
     /// Returns an error if:
-    /// - `level` is not a valid `EnvFilter` directive string
     /// - `internal` is configured to use ITS, ConsoleAsync (needs_reporter())
     /// - `admin` is configured to use ConsoleAsync (would loop to itself)
     pub fn validate(&self) -> Result<(), Error> {
-        _ = EnvFilter::try_new(self.level.as_str()).map_err(|error| Error::InvalidUserConfig {
-            error: format!("invalid logs.level directive: {error}"),
-        })?;
-
         if self.providers.internal.uses_any_internal_provider() {
             return Err(Error::InvalidUserConfig {
                 error: format!(
@@ -409,12 +422,13 @@ mod tests {
     }
 
     /// Scenario: logs.level contains a malformed EnvFilter directive.
-    /// Guarantees: validation rejects the directive instead of accepting a lossy filter.
+    /// Guarantees: deserialization rejects the directive before typed config is constructed.
     #[test]
-    fn test_validate_rejects_invalid_log_level_directive() {
-        let config = parse("level: 'info,['");
+    fn test_deserialize_rejects_invalid_log_level_directive() {
+        let error = serde_yaml::from_str::<LogsConfig>("level: 'info,['")
+            .expect_err("invalid log level should fail deserialization");
 
-        assert_invalid(&config, "invalid logs.level directive");
+        assert!(error.to_string().contains("invalid logs.level directive"));
     }
 
     #[test]
