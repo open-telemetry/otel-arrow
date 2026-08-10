@@ -1278,7 +1278,13 @@ fn parse_metric_field_attr(attr: &Attribute) -> syn::Result<Option<(Option<Strin
         }
         Ok(())
     })?;
-    Ok(unit.map(|u| (name, u)))
+    let unit = unit.ok_or_else(|| {
+        syn::Error::new(
+            attr.span(),
+            "metric field attribute requires the `unit` argument",
+        )
+    })?;
+    Ok(Some((name, unit)))
 }
 
 fn parse_attributes_name_attr(attr: &Attribute) -> Option<String> {
@@ -1334,6 +1340,31 @@ mod tests {
         assert_eq!(
             parsed,
             Some((Some("dropped.items".to_string()), "{item}".to_string()))
+        );
+    }
+
+    /// Scenario: A metric field declares a unit without overriding its derived name.
+    /// Guarantees: The parser accepts the unit and leaves the optional name unset.
+    #[test]
+    fn metric_field_arguments_accept_unit_without_name() {
+        let attr: Attribute = parse_quote!(#[metric(unit = "{item}")]);
+
+        let parsed = parse_metric_field_attr(&attr).expect("a metric name is optional");
+
+        assert_eq!(parsed, Some((None, "{item}".to_string())));
+    }
+
+    /// Scenario: A metric field declares a custom name without declaring a unit.
+    /// Guarantees: The parser rejects the field instead of silently omitting the metric.
+    #[test]
+    fn metric_field_arguments_require_unit() {
+        let attr: Attribute = parse_quote!(#[metric(name = "dropped.items")]);
+
+        let err = parse_metric_field_attr(&attr).expect_err("metric fields require a unit");
+
+        assert_eq!(
+            err.to_string(),
+            "metric field attribute requires the `unit` argument"
         );
     }
 
