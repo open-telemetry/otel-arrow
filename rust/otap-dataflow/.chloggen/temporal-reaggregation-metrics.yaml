@@ -4,7 +4,7 @@
 change_type: breaking
 
 # The name of the component, or a single word describing the area of concern, (e.g. filelogreceiver)
-component: temporal_reaggregation_processor
+component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
 note: Migrate internal telemetry to enum attributes. Replace batches_rejected with dropped.items.
