@@ -333,7 +333,7 @@ pub struct DurableBuffer {
     /// same segment across telemetry ticks.
     metadata_load_warned_segments: HashSet<u64>,
 
-    /// Last cumulative Quiver loss values folded into delta counters.
+    /// Last cumulative Quiver retention-loss totals used to compute segment/bundle deltas.
     last_loss_snapshot: RetentionLossSnapshot,
 }
 
