@@ -114,25 +114,60 @@ fn next_field(buf: &[u8], pos: usize) -> Option<(u64, u64, usize, usize)> {
     }
 }
 
-/// Counts top-level repeated resource entries (`RESOURCE_ENTRY_FIELD`, LEN
-/// wire type) in `buf`, skipping payloads. A malformed tail stops the count.
-/// Used to reserve one outbound slot per not-yet-processed entry when bounding
-/// a split against the flush's remaining outbound capacity.
-fn count_resource_entries(buf: &[u8]) -> usize {
+/// Records the encoded length of every top-level field in `buf`, in order,
+/// appending to `sizes`. Each length is the full field span (tag, length prefix
+/// and payload); a malformed tail is recorded as one final unit spanning the
+/// rest of the buffer. The enumeration matches the main packing loop exactly, so
+/// `sizes` is a faithful stand-in for the top-level units used to project the
+/// remaining output-batch count when bounding a split against outbound capacity.
+fn collect_top_level_sizes(buf: &[u8], sizes: &mut Vec<usize>) {
     let mut pos = 0;
-    let mut count = 0;
     while pos < buf.len() {
         match next_field(buf, pos) {
-            Some((field, wire, _, field_end)) => {
-                if field == RESOURCE_ENTRY_FIELD && wire == wire_types::LEN {
-                    count += 1;
-                }
+            Some((_, _, _, field_end)) => {
+                sizes.push(field_end - pos);
                 pos = field_end;
             }
-            None => break,
+            None => {
+                sizes.push(buf.len() - pos);
+                pos = buf.len();
+            }
         }
     }
-    count
+}
+
+/// Projects how many output batches the greedy top-level packing will produce
+/// for a run of top-level units whose encoded lengths are `sizes`, starting from
+/// an empty accumulator. Small units (`<= max_size`) pack together into shared
+/// batches exactly as [`push_opaque`]/[`push_resource_entry`] do; a unit larger
+/// than `max_size` flushes any pending accumulator and then counts as at least
+/// one batch of its own (its floor -- an oversize resource entry that keeps its
+/// split produces more, but self-limits against the same capacity bound). Used
+/// to reserve outbound slots for not-yet-processed units so an early split does
+/// not starve them: because small units share batches and oversize opaque units
+/// are counted too, this neither over-reserves packable entries nor omits
+/// separately-emitted opaque outputs.
+fn project_output_batches(sizes: &[usize], max_size: usize) -> usize {
+    let mut batches = 0;
+    let mut cur = 0usize;
+    for &size in sizes {
+        if size > max_size {
+            if cur > 0 {
+                batches += 1;
+                cur = 0;
+            }
+            batches += 1;
+        } else if cur + size <= max_size {
+            cur += size;
+        } else {
+            batches += 1;
+            cur = size;
+        }
+    }
+    if cur > 0 {
+        batches += 1;
+    }
+    batches
 }
 
 /// Returns `true` when every field in `buf` parses cleanly through to the end
@@ -226,7 +261,7 @@ fn push_resource_entry(
     fragment_budget: usize,
     overhead_budget: usize,
     output_budget: usize,
-    entries_after: usize,
+    reserved_after: usize,
     cur: &mut Vec<u8>,
     batches: &mut Vec<OwnedBatch>,
     budget_fallbacks: &mut u64,
@@ -255,19 +290,20 @@ fn push_resource_entry(
     );
     // Bound cumulative fan-out across the whole flush. `batches.len()` is the
     // running total of committed outputs (the `cur` accumulator was just
-    // flushed, so nothing is pending). Reserve one outbound slot for every
-    // resource entry still to be processed (`entries_after`): even if each of
-    // them falls back to a single whole batch, they need a slot, so this entry
-    // may only keep its split if the running total plus those reservations still
-    // fits `output_budget` -- the flush's remaining outbound capacity. Without
-    // the reservation a greedy early entry could consume the whole budget and
-    // force later entries to be Nacked. Collapsing back to a single whole entry
-    // keeps the input's Ack/Nack coherent: a real split would create more
-    // subscribed fragments than the outbound pool can track, so a later fragment
-    // would be Nacked while its siblings are already in flight. Nothing has been
-    // sent yet (the caller builds the entire output vec first), so truncation is
-    // safe.
-    if batches.len() - start > 1 && batches.len().saturating_add(entries_after) > output_budget {
+    // flushed, so nothing is pending). `reserved_after` is the projected number
+    // of output batches the not-yet-processed top-level units will produce (their
+    // greedy packing, including separately-emitted opaque units): each of those
+    // needs an outbound slot, so this entry may only keep its split if the
+    // running total plus those reservations still fits `output_budget` -- the
+    // flush's remaining outbound capacity. Without the reservation a greedy early
+    // entry could consume the whole budget and force later outputs to be Nacked.
+    // Collapsing back to a single whole entry keeps the input's Ack/Nack
+    // coherent: a real split would create more subscribed fragments than the
+    // outbound pool can track, so a later fragment (or a sibling opaque output of
+    // the same input) would be Nacked while its siblings are already in flight.
+    // Nothing has been sent yet (the caller builds the entire output vec first),
+    // so truncation is safe.
+    if batches.len() - start > 1 && batches.len().saturating_add(reserved_after) > output_budget {
         batches.truncate(start);
         emit_top(signal, payload, batches);
         *capacity_fallbacks += 1;
@@ -285,14 +321,18 @@ fn push_resource_entry(
 /// any unknown fields) is preserved and duplicated across the produced
 /// fragments.
 ///
-/// Before emitting anything, an upper bound on the fragment count is projected
-/// (worst case: one fragment per record, plus one per empty scope) and an upper
-/// bound on the duplicated wrapper bytes (resource header re-encoded per
-/// fragment plus each scope header re-encoded per record). If either exceeds its
-/// budget (`fragment_budget` / `overhead_budget`), the entry is emitted whole
-/// (best-effort, may exceed `max_size`) and `budget_fallbacks` is incremented,
-/// so the caller can always fall back without having already emitted -- and thus
-/// duplicated -- some of the entry's records.
+/// Two budgets guard the split, and because nothing is sent until the caller
+/// finishes building the output vec, an over-budget entry is always collapsed
+/// back to a single whole batch (best-effort, may exceed `max_size`) with
+/// `budget_fallbacks` incremented -- never leaving some records already emitted:
+///   1. `fragment_budget`: a cheap up-front ceiling on the worst-case fragment
+///      count (one per record, or one per empty scope), bounding the work done
+///      before a possible fallback. The real count is always smaller.
+///   2. `overhead_budget`: the duplicated wrapper bytes, measured from the
+///      *actual* greedy packing (total emitted fragment bytes minus a single
+///      whole encoding) rather than a per-record worst case, so many small
+///      records under a large header are not falsely collapsed when they pack
+///      into only a few fragments.
 fn split_resource_entry(
     signal: SignalType,
     entry_payload: &[u8],
@@ -347,36 +387,36 @@ fn split_resource_entry(
         return;
     }
 
-    // Bound fan-out before emitting anything. Two projections, both worst-case
-    // (one fragment per record), so falling back here -- before any fragment is
-    // emitted -- never duplicates records already placed in earlier fragments:
-    //
-    //   1. fragment count: one per record (or one for an empty scope);
-    //   2. duplicated wrapper bytes: the resource header is re-encoded once per
-    //      fragment, and each scope header is re-encoded once per record in that
-    //      scope. A large header split across many records amplifies output far
-    //      beyond the input even when the fragment count stays low.
-    let per_scope_records: Vec<usize> = scope_payloads
+    // Fragment-count ceiling: a cheap up-front guard, checked worst-case (one
+    // fragment per record, or one for an empty scope). This bounds how much work
+    // the greedy pack below can do before we would fall back, so falling back
+    // here -- before any fragment is emitted -- never duplicates records already
+    // placed in earlier fragments. The real fragment count can only be smaller
+    // (records pack together), so it always stays within `fragment_budget`.
+    let projected_fragments: usize = scope_payloads
         .iter()
         .map(|sp| count_records(sp).max(1))
-        .collect();
-    let projected_fragments: usize = per_scope_records.iter().sum();
-    let projected_overhead: usize = projected_fragments
-        .saturating_mul(header.len())
-        .saturating_add(
-            scope_payloads
-                .iter()
-                .zip(&per_scope_records)
-                .map(|(sp, records)| scope_header_len(sp).saturating_mul(*records))
-                .fold(0usize, |acc, n| acc.saturating_add(n)),
-        );
-    if projected_fragments > fragment_budget || projected_overhead > overhead_budget {
+        .sum();
+    if projected_fragments > fragment_budget {
         emit_top(signal, entry_payload, batches);
         *budget_fallbacks += 1;
         return;
     }
 
-    // Greedily pack whole scopes into a resource-entry fragment.
+    // Greedily pack whole scopes into resource-entry fragments, tracking the
+    // running duplicated-wrapper overhead so we can both (a) fall back to a
+    // single whole batch when the *real* amplification exceeds `overhead_budget`
+    // and (b) abort early -- bounding transient memory to about the budget rather
+    // than letting up to `fragment_budget` header-duplicating fragments
+    // materialize first. Overhead is measured from the actual packing (total
+    // emitted fragment bytes minus one whole encoding), not a per-record worst
+    // case, so many small records under a large header are not falsely collapsed.
+    // Nothing is sent until the caller finishes the vec, so truncation is safe.
+    let start = batches.len();
+    let whole_bytes = wrapped_len(RESOURCE_ENTRY_FIELD, entry_payload.len());
+    let abort_at = whole_bytes.saturating_add(overhead_budget);
+    let mut emitted: usize = 0;
+    let mut over_budget = false;
     let mut frag: Vec<u8> = header.clone();
     for (i, scope_full) in scope_fulls.iter().enumerate() {
         let prospective = frag.len() + scope_full.len();
@@ -387,18 +427,43 @@ fn split_resource_entry(
         // Flush what we have so far (if it carries at least one scope).
         if frag.len() > header.len() {
             emit_top(signal, &frag, batches);
+            emitted = emitted.saturating_add(batches.last().map_or(0, |(_, w)| *w));
             frag.truncate(header.len());
+            if emitted > abort_at {
+                over_budget = true;
+                break;
+            }
         }
         // Try the scope on its own.
         if wrapped_len(RESOURCE_ENTRY_FIELD, header.len() + scope_full.len()) <= max_size {
             frag.extend_from_slice(scope_full);
         } else {
             // The scope alone is still too large: split it by records.
-            split_scope_entry(signal, &header, scope_payloads[i], max_size, batches);
+            split_scope_entry(
+                signal,
+                &header,
+                scope_payloads[i],
+                max_size,
+                abort_at,
+                &mut emitted,
+                batches,
+            );
+            if emitted > abort_at {
+                over_budget = true;
+                break;
+            }
         }
     }
-    if frag.len() > header.len() {
+    if !over_budget && frag.len() > header.len() {
         emit_top(signal, &frag, batches);
+        emitted = emitted.saturating_add(batches.last().map_or(0, |(_, w)| *w));
+        over_budget = emitted > abort_at;
+    }
+
+    if over_budget {
+        batches.truncate(start);
+        emit_top(signal, entry_payload, batches);
+        *budget_fallbacks += 1;
     }
 }
 
@@ -416,23 +481,6 @@ fn count_records(scope_payload: &[u8]) -> usize {
     count
 }
 
-/// Total encoded length of a scope's non-record (header) fields -- the
-/// `InstrumentationScope`, `schema_url`, and any unknown fields, i.e. everything
-/// except the repeated records (field 2). These bytes are re-encoded into every
-/// record-fragment when a scope is split, so they drive the byte-amplification
-/// projection in [`split_resource_entry`].
-fn scope_header_len(scope_payload: &[u8]) -> usize {
-    let mut len = 0;
-    let mut pos = 0;
-    while let Some((field, wire, _payload_start, field_end)) = next_field(scope_payload, pos) {
-        if !(field == CHILD_LIST_FIELD && wire == wire_types::LEN) {
-            len += field_end - pos;
-        }
-        pos = field_end;
-    }
-    len
-}
-
 /// Split one oversize scope entry into multiple resource-entry fragments, each
 /// carrying `resource_header` + a scope wrapping a subset of the records. A
 /// single record that is larger than `max_size` (with minimal wrappers) is
@@ -441,11 +489,19 @@ fn scope_header_len(scope_payload: &[u8]) -> usize {
 /// The caller (`split_resource_entry`) only descends here after verifying the
 /// whole entry -- including this scope's payload -- is `fully_parseable`, so the
 /// field scan always terminates cleanly at the end of the payload.
+///
+/// `emitted` accumulates the encoded length of every fragment produced (here and
+/// by the caller); emission stops early once it exceeds `abort_at`, so a large
+/// scope header re-encoded across many record fragments cannot amplify transient
+/// memory far past the overhead budget before the caller rolls the entry back to
+/// a single whole batch.
 fn split_scope_entry(
     signal: SignalType,
     resource_header: &[u8],
     scope_payload: &[u8],
     max_size: usize,
+    abort_at: usize,
+    emitted: &mut usize,
     batches: &mut Vec<OwnedBatch>,
 ) {
     let mut scope_header: Vec<u8> = Vec::new();
@@ -479,6 +535,7 @@ fn split_scope_entry(
     if record_fulls.is_empty() {
         // Preserve an empty scope rather than dropping it.
         emit_frag(&[], batches);
+        *emitted = emitted.saturating_add(batches.last().map_or(0, |(_, w)| *w));
         return;
     }
 
@@ -492,7 +549,14 @@ fn split_scope_entry(
         }
         if !recs.is_empty() {
             emit_frag(&recs, batches);
+            *emitted = emitted.saturating_add(batches.last().map_or(0, |(_, w)| *w));
             recs.clear();
+            // Abort early so a large scope header re-encoded across many record
+            // fragments cannot amplify transient memory past the budget; the
+            // caller rolls the whole entry back to a single batch.
+            if *emitted > abort_at {
+                return;
+            }
         }
         recs.extend_from_slice(rec);
         let alone_inner = scope_header.len() + rec.len();
@@ -500,11 +564,16 @@ fn split_scope_entry(
         if wrapped_len(RESOURCE_ENTRY_FIELD, alone_entry) > max_size {
             // Indivisible record larger than max_size: emit it on its own.
             emit_frag(&recs, batches);
+            *emitted = emitted.saturating_add(batches.last().map_or(0, |(_, w)| *w));
             recs.clear();
+            if *emitted > abort_at {
+                return;
+            }
         }
     }
     if !recs.is_empty() {
         emit_frag(&recs, batches);
+        *emitted = emitted.saturating_add(batches.last().map_or(0, |(_, w)| *w));
     }
 }
 
@@ -564,14 +633,16 @@ pub fn make_bytes_batches(
 ///
 /// `output_budget` caps the *cumulative* number of output batches across the
 /// whole call, tying split fan-out to the caller's remaining outbound capacity.
-/// When deciding whether to keep an entry's split, one slot is reserved for
-/// every resource entry still to be processed (each may need at least a whole
-/// batch), so an early greedy split cannot consume the whole budget and starve
-/// later entries. If keeping the split would push the running total (plus those
-/// reservations) past this bound, the entry is instead emitted whole and counted
-/// in `capacity_fallbacks`, so a single input never fans out into more subscribed
-/// fragments than the caller can track (which would otherwise Nack a late
-/// fragment while its siblings are in flight). Pass `usize::MAX` for unbounded.
+/// When deciding whether to keep an entry's split, it reserves a slot for the
+/// output batches the not-yet-processed top-level units will produce -- projected
+/// from the same greedy packing, so small units that pack together reserve one
+/// shared slot and separately-emitted opaque units are still counted. If keeping
+/// the split would push the running total (plus those reservations) past this
+/// bound, the entry is instead emitted whole and counted in `capacity_fallbacks`,
+/// so a single input never fans out into more subscribed fragments than the
+/// caller can track (which would otherwise Nack a late fragment, or a sibling
+/// opaque output of the same input, while its siblings are in flight). Pass
+/// `usize::MAX` for unbounded.
 pub fn make_bytes_batches_owned(
     signal: SignalType,
     max_bytes: Option<NonZeroU64>,
@@ -639,20 +710,21 @@ pub fn make_bytes_batches_owned(
     let mut budget_fallbacks: u64 = 0;
     let mut capacity_fallbacks: u64 = 0;
 
-    // Total number of top-level resource entries across all inputs. Used to
-    // reserve one outbound slot per not-yet-processed entry when bounding a
-    // split against `output_budget`, so an early greedy split cannot starve
-    // later entries. Only meaningful when `output_budget` is finite; the count
-    // is cheap (field tags only, payloads skipped).
-    let total_entries: usize = if output_budget == usize::MAX {
-        0
+    // Encoded length of every top-level unit across all inputs, in packing
+    // order. Used to project the number of output batches the not-yet-processed
+    // units will produce, so a split can reserve outbound slots for them (their
+    // greedy packing, including separately-emitted opaque units). Only needed
+    // when `output_budget` is finite; the scan is cheap (field tags only).
+    let field_sizes: Vec<usize> = if output_budget == usize::MAX {
+        Vec::new()
     } else {
-        inputs
-            .iter()
-            .map(|input| count_resource_entries(input.as_bytes()))
-            .sum()
+        let mut sizes = Vec::new();
+        for input in &inputs {
+            collect_top_level_sizes(input.as_bytes(), &mut sizes);
+        }
+        sizes
     };
-    let mut entries_seen: usize = 0;
+    let mut field_idx: usize = 0;
 
     for input in &inputs {
         let buf = input.as_bytes();
@@ -663,8 +735,14 @@ pub fn make_bytes_batches_owned(
                     let full = &buf[pos..field_end];
                     pos = field_end;
                     if field == RESOURCE_ENTRY_FIELD && wire == wire_types::LEN {
-                        entries_seen += 1;
-                        let entries_after = total_entries.saturating_sub(entries_seen);
+                        // Reserve outbound slots for every top-level unit that
+                        // still follows this entry, by projecting how many
+                        // output batches their greedy packing will produce.
+                        let reserved_after = if output_budget == usize::MAX {
+                            0
+                        } else {
+                            project_output_batches(&field_sizes[field_idx + 1..], max_size)
+                        };
                         push_resource_entry(
                             signal,
                             full,
@@ -673,7 +751,7 @@ pub fn make_bytes_batches_owned(
                             fragment_budget,
                             overhead_budget,
                             output_budget,
-                            entries_after,
+                            reserved_after,
                             &mut cur,
                             &mut batches,
                             &mut budget_fallbacks,
@@ -682,12 +760,14 @@ pub fn make_bytes_batches_owned(
                     } else {
                         push_opaque(signal, full, max_size, &mut cur, &mut batches);
                     }
+                    field_idx += 1;
                 }
                 None => {
                     // Malformed field: treat the rest of the buffer as opaque.
                     let full = &buf[pos..];
                     pos = buf.len();
                     push_opaque(signal, full, max_size, &mut cur, &mut batches);
+                    field_idx += 1;
                 }
             }
         }

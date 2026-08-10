@@ -80,21 +80,28 @@ Each format object contains:
   `null` for unbounded (default 8 MiB). Because each fragment re-encodes the
   resource/scope headers, a large header split across many records can amplify
   output far beyond the input even when the fragment count stays under
-  `max_split_fragments`. When the projected duplicated wrapper bytes exceed this
-  budget the entry is emitted whole (best-effort, possibly exceeding `max_size`)
-  and counted by the same `split.budget.fallbacks` metric.
+  `max_split_fragments`. The amplification is measured from the *actual* greedy
+  packing (the emitted fragments' total bytes minus one whole encoding of the
+  entry), not a per-record worst case, so many small records under a large
+  header are not falsely collapsed. When it exceeds this budget the entry is
+  emitted whole (best-effort, possibly exceeding `max_size`) and counted by the
+  same `split.budget.fallbacks` metric; emission also aborts early once the
+  running amplification passes the budget, bounding transient memory.
 
 In addition to these per-entry budgets, splitting is bounded per *flush* by the
 remaining outbound request capacity (`outbound_request_limit`). When a flush is
 subscribed (its inputs carry Ack/Nack interest), the splitter will not fan an
 oversize entry out into more fragments than there are free outbound slots left
-for the whole flush -- reserving one slot for each resource entry still to be
-processed so an early greedy split cannot starve later entries. An entry that
-would exceed the remaining capacity is emitted whole instead (best-effort,
-possibly exceeding `max_size`) and counted by the `split.capacity.fallbacks`
-metric. This keeps a split input all-or-nothing: it is never partially
-subscribed across the outbound pool, so a late fragment can never be Nacked for
-outbound-slot exhaustion while its siblings are already in flight.
+for the whole flush -- reserving, for each resource entry still to be processed,
+the number of output batches its own greedy packing would produce (not one slot
+per entry), so many small trailing entries that pack together are not
+over-reserved and an early greedy split still cannot starve later entries. An
+entry that would exceed the remaining capacity is emitted whole instead
+(best-effort, possibly exceeding `max_size`) and counted by the
+`split.capacity.fallbacks` metric. This keeps a split input all-or-nothing: it
+is never partially subscribed across the outbound pool, so a late fragment can
+never be Nacked for outbound-slot exhaustion while its siblings are already in
+flight.
 
 ## Examples
 
