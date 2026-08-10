@@ -7,7 +7,8 @@ use otap_df_telemetry_macros::{attribute_set, metric_set};
 #[attribute_set(name = "outcome")]
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SyslogOutcomeAttributes {
-    pub outcome: SyslogOutcome,
+    #[attribute]
+    pub outcome: std::borrow::Cow<'static, str>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
@@ -51,7 +52,8 @@ pub struct SyslogItemMetrics {
 #[attribute_set(name = "state")]
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct TcpConnectionAttributes {
-    pub state: TcpConnectionState,
+    #[attribute]
+    pub state: std::borrow::Cow<'static, str>,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
@@ -113,26 +115,26 @@ impl SyslogCefReceiverMetrics {
     pub fn new(telemetry_registry: &TelemetryRegistryHandle) -> Self {
         Self {
             forwarded: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: SyslogOutcome::Forwarded,
+                outcome: std::borrow::Cow::Borrowed("forwarded"),
             }),
             invalid: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: SyslogOutcome::Invalid,
+                outcome: std::borrow::Cow::Borrowed("invalid"),
             }),
             truncated: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: SyslogOutcome::Truncated,
+                outcome: std::borrow::Cow::Borrowed("truncated"),
             }),
             forward_failed: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: SyslogOutcome::ForwardFailed,
+                outcome: std::borrow::Cow::Borrowed("forward_failed"),
             }),
             rejected_memory_pressure: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: SyslogOutcome::RejectedMemoryPressure,
+                outcome: std::borrow::Cow::Borrowed("rejected_memory_pressure"),
             }),
 
             tcp_active: telemetry_registry.register_metric_set(TcpConnectionAttributes {
-                state: TcpConnectionState::Active,
+                state: std::borrow::Cow::Borrowed("active"),
             }),
             tcp_rejected: telemetry_registry.register_metric_set(TcpConnectionAttributes {
-                state: TcpConnectionState::RejectedMemoryPressure,
+                state: std::borrow::Cow::Borrowed("rejected_memory_pressure"),
             }),
 
             global: telemetry_registry.register_metric_set(otap_df_telemetry::testing::EmptyAttributes()),

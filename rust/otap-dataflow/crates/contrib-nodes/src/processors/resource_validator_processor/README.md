@@ -1,9 +1,30 @@
 # Resource Validator Processor
 
+## Metadata
+
+- Type: `processor:resource_validator` (`urn:otel:processor:resource_validator`)
+- Feature gate: `resource-validator-processor`
+- Stability: Experimental
+
+## Overview
+
 The Resource Validator Processor validates that telemetry data contains a
 required resource attribute with a value from an allowed list. Requests that
 fail validation are permanently NACKed, enabling clients to detect
 misconfiguration immediately rather than having data silently dropped.
+
+## Getting Started
+
+Validate that each resource contains an allowed resource identifier:
+
+```yaml
+type: processor:resource_validator
+config:
+  required_attribute_key: cloud.resource_id
+  allowed_values:
+    - "/subscriptions/xxx/resourceGroups/yyy/..."
+  case_sensitive: false
+```
 
 ## Example Use Case
 
@@ -32,18 +53,18 @@ to client.
 ## Configuration
 
 ```yaml
-processors:
-  resource_validator:
-    # The resource attribute key that must be present (required, no default)
-    required_attribute_key: "cloud.resource_id"
+type: processor:resource_validator
+config:
+  # Resource attribute key that must be present (required, no default).
+  required_attribute_key: "cloud.resource_id"
 
-    # List of allowed values (required - empty list rejects all values)
-    allowed_values:
-      - "/subscriptions/xxx/resourceGroups/yyy/..."
-      - "/subscriptions/aaa/resourceGroups/bbb/..."
+  # List of allowed values (required; empty list rejects all values).
+  allowed_values:
+    - "/subscriptions/xxx/resourceGroups/yyy/..."
+    - "/subscriptions/aaa/resourceGroups/bbb/..."
 
-    # Case-sensitive comparison (default: true)
-    case_sensitive: false
+  # Case-sensitive comparison (default: true).
+  case_sensitive: false
 ```
 
 ## Behavior
@@ -92,10 +113,11 @@ auth context:
 Uses `allowed_values` from configuration:
 
 ```yaml
-processors:
-  resource_validator:
-    allowed_values:
-      - "/subscriptions/xxx/..."  # Static list from config
+type: processor:resource_validator
+config:
+  required_attribute_key: cloud.resource_id
+  allowed_values:
+    - "/subscriptions/xxx/..."  # Static list from config
 ```
 
 ### Future Implementation (Dynamic)

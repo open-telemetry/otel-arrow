@@ -71,7 +71,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
         result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml.j2
         loadgen_exporter_type: otap
         backend_receiver_type: otap
         generation_strategy: fresh
@@ -85,7 +85,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
         result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         generation_strategy: fresh
@@ -102,7 +102,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
         result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml.j2
         loadgen_exporter_type: otap
         backend_receiver_type: otap
         generation_strategy: fresh
@@ -117,7 +117,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
         result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         generation_strategy: fresh
@@ -135,7 +135,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
         result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otap-batch-otap.yaml.j2
         loadgen_exporter_type: otap
         backend_receiver_type: otap
         generation_strategy: fresh
@@ -150,7 +150,7 @@ tests:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
         result_dir: nightly_batch_processor
-        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml
+        engine_config_template: test_suites/integration/templates/configs/engine/batch_processor/otlp-batch-otlp.yaml.j2
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         generation_strategy: fresh

@@ -36,7 +36,9 @@
 //! long-running commands are classified correctly, and high-impact mutations
 //! expose safety, dry-run, wait/watch, stdin, and schema metadata.
 
+use crate::Cli;
 use crate::args::CommandsArgs;
+use crate::branding;
 use crate::commands::output::write_read_command_output;
 use crate::commands::schemas::{
     AGENT_ENVELOPE_SCHEMA, COMMAND_CATALOG_SCHEMA, DIAGNOSE_REPORT_SCHEMA, ERROR_SCHEMA,
@@ -45,7 +47,6 @@ use crate::commands::schemas::{
 };
 use crate::error::CliError;
 use crate::style::HumanStyle;
-use crate::{BIN_NAME, Cli};
 use clap::builder::ValueRange;
 use clap::{Arg, ArgAction, Command as ClapCommand, CommandFactory};
 use serde::Serialize;
@@ -87,10 +88,11 @@ fn build_catalog() -> CommandCatalog {
         collect_command(command, &mut path, &mut commands);
     }
 
+    let bin_name = branding::active().bin_name;
     CommandCatalog {
         schema_version: SCHEMA_VERSION,
         generated_at: humantime::format_rfc3339_seconds(SystemTime::now()).to_string(),
-        binary: BIN_NAME,
+        binary: bin_name,
         version: env!("CARGO_PKG_VERSION"),
         global_arguments: global_arguments.clone(),
         commands,
@@ -344,12 +346,16 @@ fn supports_dry_run(arguments: &[ArgumentEntry]) -> bool {
 
 /// Builds a stable, dot-separated command identifier.
 fn command_id(path: &[String]) -> String {
-    format!("{BIN_NAME}.{}", path.join(".").replace('-', "_"))
+    format!(
+        "{}.{}",
+        branding::active().bin_name,
+        path.join(".").replace('-', "_")
+    )
 }
 
 /// Builds the shortest command-line prefix for a command path.
 fn command_line(path: &[String]) -> String {
-    format!("{BIN_NAME} {}", path.join(" "))
+    format!("{} {}", branding::active().bin_name, path.join(" "))
 }
 
 /// Builds a compact usage string from catalog argument metadata.
@@ -553,9 +559,9 @@ fn curated_examples(path: &[String]) -> Vec<String> {
     }
 }
 
-/// Builds a curated command example from the shared binary name.
+/// Builds a curated command example from the active binary name.
 fn command_example(args: &str) -> String {
-    format!("{BIN_NAME} {args}")
+    format!("{} {args}", branding::active().bin_name)
 }
 
 /// Returns the best display placeholder for an argument value.
@@ -746,8 +752,9 @@ fn render_human(style: &HumanStyle, catalog: &CommandCatalog) -> String {
         })
         .collect::<Vec<_>>();
 
+    let bin_name = branding::active().bin_name;
     let lines = [
-        style.header(format!("{BIN_NAME} command catalog")),
+        style.header(format!("{bin_name} command catalog")),
         format!("{}: {}", style.label("schema"), catalog.schema_version),
         format!("{}: {}", style.label("commands"), catalog.commands.len()),
         String::new(),
@@ -760,7 +767,7 @@ fn render_human(style: &HumanStyle, catalog: &CommandCatalog) -> String {
             rows,
         ),
         String::new(),
-        format!("Use `{BIN_NAME} commands --output json` for the machine-readable catalog."),
+        format!("Use `{bin_name} commands --output json` for the machine-readable catalog."),
     ];
     lines.join("\n")
 }
@@ -1111,7 +1118,10 @@ mod tests {
             pipeline_get.output_modes,
             vec!["human", "json", "yaml", "agent-json"]
         );
-        assert_eq!(pipeline_get.id, format!("{BIN_NAME}.pipelines.get"));
+        assert_eq!(
+            pipeline_get.id,
+            format!("{}.pipelines.get", branding::active().bin_name)
+        );
         assert_eq!(pipeline_get.default_output.as_deref(), Some("human"));
         assert_eq!(
             pipeline_get.agent_default_output.as_deref(),

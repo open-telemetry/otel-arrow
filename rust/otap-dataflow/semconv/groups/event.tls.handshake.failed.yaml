@@ -1,0 +1,8 @@
+groups:
+  - id: event.otap_dataflow.tls.handshake.failed
+    type: event
+    name: tls.handshake.failed
+    stability: development
+    brief: >
+      A TLS handshake failed before a usable session could be established
+      between a df_engine TLS-enabled listener and a remote peer.

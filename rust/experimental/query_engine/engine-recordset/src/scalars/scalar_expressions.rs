@@ -417,10 +417,10 @@ where
 
                     for e in expressions {
                         match e {
-                            PipelineFunctionExpression::Conditional(c) => {
+                            PipelineFunctionExpression::Branch(b) => {
                                 return Err(ExpressionError::NotSupported(
-                                    c.get_query_location().clone(),
-                                    format!("{} not supported in pipeline function", c.get_name()),
+                                    b.get_query_location().clone(),
+                                    format!("{} not supported in pipeline function", b.get_name()),
                                 ));
                             }
                             PipelineFunctionExpression::Discard(d) => {

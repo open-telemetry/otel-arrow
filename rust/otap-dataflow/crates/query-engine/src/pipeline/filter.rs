@@ -54,7 +54,7 @@ impl PipelineStage for FilterPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_state: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         let root_rb = match otap_batch.root_record_batch() {
             Some(rb) => rb,
@@ -71,7 +71,7 @@ impl PipelineStage for FilterPipelineStage {
         // Convert the result to a root-aligned BooleanArray selection vector.
         let selection_vec = match result {
             None => {
-                // expression data was absent — no rows pass the filter
+                // expression data was absent -- no rows pass the filter
                 BooleanArray::new(BooleanBuffer::new_unset(num_rows), None)
             }
             Some(scoped_value) => {
@@ -87,6 +87,13 @@ impl PipelineStage for FilterPipelineStage {
                 }
             }
         };
+
+        // Record the number of root records removed by this filter so callers
+        // can observe genuine drops without inferring them from batch sizes.
+        // Rows whose predicate result is null are treated as not passing (see
+        // `scoped_value_to_boolean_array`), so `true_count` is exactly the rows
+        // kept.
+        exec_state.add_filtered(num_rows.saturating_sub(selection_vec.true_count()));
 
         let otap_batch = filter_otap_batch(&selection_vec, &otap_batch, &mut self.id_bitmap_pool)?;
 
@@ -119,10 +126,10 @@ impl PipelineStage for FilterPipelineStage {
 /// Convert a `ColumnarValue` into a `BooleanArray` selection vector of the given number of rows.
 ///
 /// Handles:
-/// - `ColumnarValue::Array` — casts to `BooleanArray`, strips null buffer by ANDing values with
+/// - `ColumnarValue::Array` -- casts to `BooleanArray`, strips null buffer by ANDing values with
 ///   the null buffer (null predicate results are treated as false)
-/// - `ColumnarValue::Scalar(Boolean(true))` — all-true array
-/// - `ColumnarValue::Scalar(Boolean(false))` or `Scalar(Null)` — all-false array
+/// - `ColumnarValue::Scalar(Boolean(true))` -- all-true array
+/// - `ColumnarValue::Scalar(Boolean(false))` or `Scalar(Null)` -- all-false array
 pub(crate) fn scoped_value_to_boolean_array(
     values: ColumnarValue,
     num_rows: usize,
@@ -252,7 +259,7 @@ fn align_selection_vec_from_atts(
             });
         }
         None => {
-            // no ID column means no attributes exist — return all-null for the root
+            // no ID column means no attributes exist -- return all-null for the root
             return Ok(ScopedValue::new(
                 null_columnar_value_for_rows(&value.values, num_rows)?,
                 DataScope::Root,
@@ -541,7 +548,92 @@ mod test {
 
     #[tokio::test]
     async fn test_simple_filter_opl_parser() {
-        test_simple_filter::<OplParser, _>(|dt| format!("date_time\"{dt}\"")).await
+        test_simple_filter::<OplParser, _>(|dt| format!("timestamp\"{dt}\"")).await
+    }
+
+    /// Tests the `drop` operator, which unconditionally discards all data (equivalent to
+    /// `where false`).
+    #[tokio::test]
+    async fn test_drop_operator_opl_parser() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("2")
+                .finish(),
+        ];
+
+        // `drop` should discard all records, same as `where false`
+        let result =
+            exec_logs_pipeline::<OplParser>("logs | drop", to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0);
+
+        // verify equivalence: `where false` should produce the same result
+        let result_where_false =
+            exec_logs_pipeline::<OplParser>("logs | where false", to_logs_data(log_records)).await;
+        assert_eq!(result_where_false.resource_logs.len(), 0);
+    }
+
+    /// The engine must report the exact number of root records removed by a
+    /// filter predicate via `ExecutionState`, so callers can observe genuine
+    /// drops without inferring them from batch sizes.
+    #[tokio::test]
+    async fn test_filter_reports_dropped_count_in_exec_state() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("TRACE")
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("3")
+                .finish(),
+        ];
+
+        async fn dropped_count(query: &str, records: &[LogRecord]) -> usize {
+            let parser_result = KqlParser::parse(query).unwrap();
+            let mut pipeline = Pipeline::new(parser_result.pipeline);
+            let mut exec_state = ExecutionState::new();
+            let _ = pipeline
+                .execute_with_state(to_otap_logs(records.to_vec()), &mut exec_state)
+                .await
+                .unwrap();
+            exec_state.counters().filtered
+        }
+
+        // 2 of 3 records removed.
+        assert_eq!(
+            dropped_count("logs | where severity_text == \"ERROR\"", &log_records).await,
+            2
+        );
+        // All records removed.
+        assert_eq!(dropped_count("logs | where false", &log_records).await, 3);
+        // No records removed.
+        assert_eq!(dropped_count("logs | where true", &log_records).await, 0);
+        // A non-filtering transform drops nothing.
+        assert_eq!(
+            dropped_count("logs | extend attributes[\"x\"] = 1", &log_records).await,
+            0
+        );
+
+        // Counters accumulate across stages and reset on demand.
+        let parser_result = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut exec_state = ExecutionState::new();
+        let _ = pipeline
+            .execute_with_state(to_otap_logs(log_records.clone()), &mut exec_state)
+            .await
+            .unwrap();
+        assert_eq!(exec_state.counters().filtered, 2);
+        exec_state.reset_counters();
+        assert_eq!(exec_state.counters().filtered, 0);
     }
 
     async fn test_simple_attrs_filter<P: Parser>() {
@@ -701,6 +793,44 @@ mod test {
         ];
 
         let query = "logs | where matches(body, \"hello .*\")";
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_logs_body_using_matches_with_escape_sequences() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello 1"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello 12"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = r#"logs | where matches(body, "hello \\d$")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone()]
+        );
+
+        let query = r#"logs | where matches(body, "hello \\d+")"#;
         let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
 
         assert_eq!(
@@ -3338,6 +3468,1009 @@ mod test {
         run_filter_attribute_is_not_null_no_attrs::<OplParser>("null").await;
     }
 
+    /// Test to ensure that we correctly combine the results of filtering with predicates on
+    /// attributes that are kept in different OTAP record batches
+    #[tokio::test]
+    async fn test_attribute_and_attribute_different_record_batches() {
+        let log_record0 = LogRecord::build()
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+            .finish();
+        let log_record1 = LogRecord::build()
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+            .finish();
+        let log_record2 = LogRecord::build()
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("3"))])
+            .finish();
+
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("y", AnyValue::new_string("1"))])
+                        .finish(),
+                    vec![log_record0.clone(), log_record1.clone()],
+                ),
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("y", AnyValue::new_string("2"))])
+                        .finish(),
+                    vec![log_record2.clone()],
+                ),
+            ],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == \"3\" and instrumentation_scope.attributes[\"y\"] == \"2\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record2)
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == \"2\" and instrumentation_scope.attributes[\"y\"] == \"1\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record1)
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == \"1\" and instrumentation_scope.attributes[\"y\"] == \"1\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record0)
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == \"1\" and instrumentation_scope.attributes[\"y\"] != \"2\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record0)
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] != \"3\" and instrumentation_scope.attributes[\"y\"] != \"2\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record0.clone(), log_record1.clone()]
+        );
+    }
+
+    /// Test to ensure that we correctly combine the results of filtering with predicates on
+    /// attributes that are kept in different OTAP record batches using or
+    #[tokio::test]
+    async fn test_attribute_or_attribute_different_record_batches() {
+        let log_record0 = LogRecord::build()
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+            .finish();
+        let log_record1 = LogRecord::build()
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+            .finish();
+        let log_record2 = LogRecord::build()
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("3"))])
+            .finish();
+
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("y", AnyValue::new_string("1"))])
+                        .finish(),
+                    vec![log_record0.clone(), log_record1.clone()],
+                ),
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("y", AnyValue::new_string("2"))])
+                        .finish(),
+                    vec![log_record2.clone()],
+                ),
+            ],
+        )]);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == \"3\" or instrumentation_scope.attributes[\"y\"] == \"2\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record2)
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == \"1\" or instrumentation_scope.attributes[\"y\"] == \"2\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 2);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record0)
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record2)
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == \"2\" or instrumentation_scope.attributes[\"y\"] == \"2\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 2);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record1)
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record2)
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == \"1\" or instrumentation_scope.attributes[\"y\"] == \"1\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record0.clone(), log_record1.clone()]
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == \"1\" or instrumentation_scope.attributes[\"y\"] != \"2\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record0.clone(), log_record1.clone()]
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] != \"1\" or instrumentation_scope.attributes[\"y\"] != \"2\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 2);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record0.clone(), log_record1.clone()]
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record2)
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] != \"3\" or instrumentation_scope.attributes[\"y\"] != \"2\"",
+            logs_data.clone()
+        ).await;
+
+        assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record0.clone(), log_record1.clone()]
+        );
+    }
+
+    /// Tests the behaviour of evaluating a filter where one or both sides evaluate to null, but
+    /// the fact that we're comparing with null isn't known at compile time. This should use the
+    /// [`compare`](super::compare::compare) function which has proper null comparison semantics
+    #[tokio::test]
+    async fn test_filter_compare_null_eq_null_evaluated_at_runtime() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("ERROR")
+                .severity_text("ERROR")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("ERROR")),
+                    KeyValue::new("y", AnyValue::new_string("ERROR")),
+                ])
+                .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build()
+                .event_name("ERROR")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("ERROR")),
+                    KeyValue::new("z", AnyValue::new_string("test")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("ERROR")
+                .severity_text("asdf")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("ERROR")),
+                    KeyValue::new("y", AnyValue::new_string("b")),
+                ])
+                .finish(),
+        ];
+
+        // compare col containing null w/ other column also containing nulls
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_text == event_name",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare col w/ nulls to all null column
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_text == trace_id",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[1].clone(), log_records[2].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare col containing nulls w/ all null struct column
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_text == instrumentation_scope.version",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[1].clone(), log_records[2].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // two all null columns
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where trace_id == span_id",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[
+            log_records[0].clone(),
+            log_records[1].clone(),
+            log_records[2].clone(),
+            log_records[3].clone(),
+        ];
+        assert_eq!(result_log_records, expected);
+
+        // compare col w/ nulls to all null column
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_text == trace_id",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[1].clone(), log_records[2].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare col w/ nulls to attr which is sometimes null
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_text == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // same as above, but with left/right reversed
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == severity_text",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare all null column to attr which is sometimes null
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where trace_id == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[1].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare all null struct column to attr which is sometimes null
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where instrumentation_scope.name == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[1].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare attributes which are sometimes null
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where  attributes[\"x\"] == attributes[\"y\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // comparisons that get or'd w/ something that will be misaligned, and so we need to do
+        // a bitmap OR, except that the left side has a 'true' in a place where there is no ID
+        // because null == null evaluated to true.
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where  attributes[\"x\"] == attributes[\"y\"] or attributes[\"z\"] == \"test\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[
+            log_records[0].clone(),
+            log_records[1].clone(),
+            log_records[2].clone(),
+        ];
+        assert_eq!(result_log_records, expected);
+
+        // same as case above but left/right of "or" reversed
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where  attributes[\"z\"] == \"test\" or attributes[\"x\"] == attributes[\"y\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[
+            log_records[0].clone(),
+            log_records[1].clone(),
+            log_records[2].clone(),
+        ];
+        assert_eq!(result_log_records, expected);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where  attributes[\"x\"] == attributes[\"y\"] and attributes[\"z\"] == null",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(result_log_records, expected);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where  attributes[\"z\"] == null and attributes[\"x\"] == attributes[\"y\"] ",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(result_log_records, expected);
+    }
+
+    /// This is similar to the test above, but the nulls on either side of the comparison are
+    /// coming from either struct columns or non-root attributes (scope attrs).
+    #[tokio::test]
+    async fn test_filter_compare_null_eq_null_eval_at_runtime_with_parent_data() {
+        let log_record0 = LogRecord::build()
+            .severity_text("ERROR")
+            .attributes(vec![
+                KeyValue::new("x", AnyValue::new_string("hello")),
+                KeyValue::new("y", AnyValue::new_string("hello")),
+            ])
+            .event_name("hello")
+            .finish();
+        let log_record1 = LogRecord::build().finish();
+        let log_record2 = LogRecord::build()
+            .severity_text("ERROR")
+            .event_name("asdf")
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("asdf"))])
+            .finish();
+        let log_record3 = LogRecord::build().severity_text("ERROR").finish();
+        let log_record4 = LogRecord::build()
+            .severity_text("ERROR")
+            .event_name("hello")
+            .attributes(vec![
+                KeyValue::new("x", AnyValue::new_string("hello")),
+                KeyValue::new("y", AnyValue::new_string("hello")),
+            ])
+            .finish();
+
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name("hello")
+                        .attributes(vec![KeyValue::new("z", AnyValue::new_string("hello"))])
+                        .finish(),
+                    vec![
+                        log_record0.clone(),
+                        log_record1.clone(),
+                        log_record2.clone(),
+                    ],
+                ),
+                ScopeLogs::new(
+                    InstrumentationScope::build().finish(),
+                    vec![log_record3.clone(), log_record4.clone()],
+                ),
+            ],
+        )]);
+
+        // compare column w/ nulls to null struct column w/ nulls
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where event_name == instrumentation_scope.name",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record0)
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record3)
+        );
+
+        // compare column w/ nulls to all null struct column (where struct column is present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where event_name == instrumentation_scope.version",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record1)
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record3)
+        );
+
+        // compare column w/ nulls to all null struct column (where struct column is present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where event_name == instrumentation_scope.attributes[\"z\"]",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record0)
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record3)
+        );
+
+        // compare column w/ nulls to all null struct column (where struct column is present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] == instrumentation_scope.attributes[\"z\"]",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record0)
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record3)
+        );
+
+        // compare column w/ nulls to all null struct column (where struct column is present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | 
+                where 
+                    attributes[\"x\"] == attributes[\"y\"]
+                    or instrumentation_scope.attributes[\"z\"] == \"hello\"
+            ",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_record0.clone(),
+                log_record1.clone(),
+                log_record2.clone()
+            ]
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            &[log_record3.clone(), log_record4.clone()]
+        );
+
+        // compare column w/ nulls to all null struct column (where struct column is present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | 
+                where 
+                    attributes[\"x\"] == attributes[\"y\"]
+                    and instrumentation_scope.attributes[\"w\"] == null
+            ",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record0.clone(), log_record1.clone()]
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            &[log_record3.clone(), log_record4.clone()]
+        );
+    }
+
+    /// Basically the same as the test above testing null == null but all the predicates are
+    /// inverted
+    #[tokio::test]
+    async fn test_filter_compare_null_neq_null_evaluated_at_runtime() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("ERROR")
+                .severity_text("ERROR")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("ERROR")),
+                    KeyValue::new("y", AnyValue::new_string("ERROR")),
+                ])
+                .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build()
+                .event_name("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("ERROR"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("ERROR")
+                .severity_text("asdf")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("ERROR")),
+                    KeyValue::new("y", AnyValue::new_string("b")),
+                ])
+                .finish(),
+        ];
+
+        // fields containing nulls
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_text != event_name",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[2].clone(), log_records[3].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare col w/ nulls to all null column
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_text != trace_id",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone(), log_records[3].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare col w/ nulls to all null struct column
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_text != instrumentation_scope.version",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone(), log_records[3].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // two all null columns
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where trace_id != span_id",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(result.resource_logs.len(), 0);
+
+        // compare col w/ nulls to all null column
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_text != trace_id",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone(), log_records[3].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare col w/ nulls to attr which is sometimes null
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_text != attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[2].clone(), log_records[3].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // same as above, but with left/right reversed
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] != severity_text",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[2].clone(), log_records[3].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare all null column to attr which is sometimes null
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where trace_id != attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[
+            log_records[0].clone(),
+            log_records[2].clone(),
+            log_records[3].clone(),
+        ];
+        assert_eq!(result_log_records, expected);
+
+        // compare all null struct column to attr which is sometimes null
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where instrumentation_scope.version != attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[
+            log_records[0].clone(),
+            log_records[2].clone(),
+            log_records[3].clone(),
+        ];
+        assert_eq!(result_log_records, expected);
+
+        // compare attributes which are sometimes null
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where  attributes[\"x\"] != attributes[\"y\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[2].clone(), log_records[3].clone()];
+        assert_eq!(result_log_records, expected);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where  attributes[\"x\"] != attributes[\"y\"] or attributes[\"x\"] == null",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[
+            log_records[1].clone(),
+            log_records[2].clone(),
+            log_records[3].clone(),
+        ];
+        assert_eq!(result_log_records, expected);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where  attributes[\"x\"] != null and attributes[\"x\"] != attributes[\"y\"] ",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[2].clone(), log_records[3].clone()];
+        assert_eq!(result_log_records, expected);
+    }
+
+    /// This is similar to the test above, testing null == null w/ struct columns except
+    /// all the predicates are inverted
+    #[tokio::test]
+    async fn test_filter_compare_null_neq_null_eval_at_runtime_with_parent_data() {
+        let log_record0 = LogRecord::build()
+            .severity_text("ERROR")
+            .attributes(vec![
+                KeyValue::new("x", AnyValue::new_string("hello")),
+                KeyValue::new("y", AnyValue::new_string("hello")),
+            ])
+            .event_name("hello")
+            .finish();
+        let log_record1 = LogRecord::build().finish();
+        let log_record2 = LogRecord::build()
+            .severity_text("ERROR")
+            .event_name("asdf")
+            .attributes(vec![KeyValue::new("x", AnyValue::new_string("asdf"))])
+            .finish();
+        let log_record3 = LogRecord::build().severity_text("ERROR").finish();
+        let log_record4 = LogRecord::build()
+            .severity_text("ERROR")
+            .event_name("hello")
+            .attributes(vec![
+                KeyValue::new("x", AnyValue::new_string("hello")),
+                KeyValue::new("y", AnyValue::new_string("hello")),
+            ])
+            .finish();
+
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name("hello")
+                        .attributes(vec![KeyValue::new("z", AnyValue::new_string("hello"))])
+                        .finish(),
+                    vec![
+                        log_record0.clone(),
+                        log_record1.clone(),
+                        log_record2.clone(),
+                    ],
+                ),
+                ScopeLogs::new(
+                    InstrumentationScope::build().finish(),
+                    vec![log_record3.clone(), log_record4.clone()],
+                ),
+            ],
+        )]);
+
+        // compare column w/ nulls to null struct column w/ nulls
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where event_name != instrumentation_scope.name",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record1.clone(), log_record2.clone()]
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record4)
+        );
+
+        // compare column w/ nulls to all null struct column (where struct column is present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where event_name != instrumentation_scope.version",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record0.clone(), log_record2.clone()]
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record4)
+        );
+
+        // compare column w/ nulls to all null struct column (where struct column is present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where event_name != instrumentation_scope.attributes[\"z\"]",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record1.clone(), log_record2.clone()]
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record4)
+        );
+
+        // compare column w/ nulls to all null struct column (where struct column is present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] != instrumentation_scope.attributes[\"z\"]",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_record1.clone(), log_record2.clone()]
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            std::slice::from_ref(&log_record4)
+        );
+
+        // compare column w/ nulls to all null struct column (where struct column is present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | 
+                where 
+                    attributes[\"x\"] != attributes[\"y\"]
+                    or instrumentation_scope.attributes[\"z\"] != \"hello\"
+            ",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record2)
+        );
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[1].log_records,
+            &[log_record3.clone(), log_record4.clone()]
+        );
+        // compare column w/ nulls to all null struct column (where struct column is present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | 
+                where 
+                    attributes[\"x\"] != attributes[\"y\"]
+                    and instrumentation_scope.attributes[\"z\"] != null
+            ",
+            logs_data.clone(),
+        )
+        .await;
+        assert_eq!(result.resource_logs.len(), 1);
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            std::slice::from_ref(&log_record2)
+        );
+    }
+
+    /// This is similar to the two tests above, except for operations other than equals/not equals
+    /// there is no case where `null <op> null` is true. E.g. x > y is always false if either side
+    /// is null
+    #[tokio::test]
+    async fn test_filter_numeric_compare_null_with_null_evaluated_at_runtime() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_number(5)
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_int(2)),
+                    KeyValue::new("y", AnyValue::new_int(5)),
+                ])
+                .finish(),
+            LogRecord::build().finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_int(5)),
+                    KeyValue::new("y", AnyValue::new_int(5)),
+                ])
+                .finish(),
+            LogRecord::build()
+                .severity_number(1)
+                .attributes(vec![KeyValue::new("x", AnyValue::new_int(2))])
+                .finish(),
+        ];
+
+        // compare field containing nulls with attributes which are sometimes null
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_number > attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone()];
+        assert_eq!(result_log_records, expected);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_number >= attributes[\"y\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // same as case above, but the left/right are switched
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] < severity_number",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone()];
+        assert_eq!(result_log_records, expected);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"y\"] <= severity_number",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone()];
+        assert_eq!(result_log_records, expected);
+
+        // compare field containing nulls with field that is all null (hence not present)
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_number > dropped_attributes_count",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert!(result.resource_logs.is_empty());
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where severity_number < dropped_attributes_count",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert!(result.resource_logs.is_empty());
+
+        // attribute compared with sometimes null attribute:
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] < attributes[\"y\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[0].clone()];
+        assert_eq!(result_log_records, expected);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"y\"] <= attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[2].clone()];
+        assert_eq!(result_log_records, expected);
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] > attributes[\"y\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert!(result.resource_logs.is_empty());
+
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where attributes[\"x\"] >= attributes[\"y\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[2].clone()];
+        assert_eq!(result_log_records, expected);
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_attributes_where_some_log_has_no_id() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("ERROR")
+                .severity_text("ERROR")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("ERROR")),
+                    KeyValue::new("y", AnyValue::new_string("ERROR")),
+                ])
+                .finish(),
+            // no attributes, so no ID
+            LogRecord::build().finish(),
+            LogRecord::build()
+                .event_name("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("ERROR"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("ERROR")
+                .severity_text("asdf")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("b")),
+                    KeyValue::new("y", AnyValue::new_string("b")),
+                ])
+                .finish(),
+        ];
+
+        // fields containing nulls
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | where not(attributes[\"x\"] == substring(\"ERROR\", 0, 5))",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        let result_log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        let expected = &[log_records[1].clone(), log_records[3].clone()];
+        assert_eq!(result_log_records, expected);
+    }
+
     async fn test_optional_attrs_existence_changes<P: Parser>() {
         // what happens if some optional attributes are present one batch, then not present in the
         // next, then present in the next, etc.
@@ -4680,6 +5813,56 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_filter_by_attr_bytes_type() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("attr_bytes", AnyValue::new_bytes(b"hello")),
+                    KeyValue::new("mixed_types", AnyValue::new_bytes(b"world")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("attr_bytes", AnyValue::new_bytes(b"hello")),
+                    KeyValue::new("mixed_types", AnyValue::new_string("text")),
+                ])
+                .finish(),
+        ];
+
+        // all rows match when all have a Bytes attribute
+        let query = r#"logs | where attributes["attr_bytes"] is Bytes"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        // inverted: no rows
+        let query = r#"logs | where not(attributes["attr_bytes"] is Bytes)"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+
+        // Bytes attribute is not matched by String
+        let query = r#"logs | where attributes["attr_bytes"] is String"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+
+        // only the row whose mixed_types is Bytes is selected
+        let query = r#"logs | where attributes["mixed_types"] is Bytes"#;
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+        let expected = vec![log_records[0].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+    }
+
+    #[tokio::test]
     async fn test_filter_by_known_type() {
         let log_records = vec![
             LogRecord::build().severity_text("DEBUG").finish(),
@@ -4700,5 +5883,84 @@ mod test {
         let result =
             exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
         assert_eq!(result.resource_logs.len(), 0, "expected empty result");
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_type_before_predicate_requiring_type() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("DEBUG")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("hi"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("HELLO"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("goodbye"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_bool(false))])
+                .finish(),
+        ];
+
+        let query = "logs | where attributes[\"x\"] is String and matches(lower_case(attributes[\"x\"]), r\"h.*\")";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+
+        let expected = vec![log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+
+        let query = "logs | where attributes[\"x\"] is String and contains(lower_case(attributes[\"x\"]), \"h\")";
+        let result =
+            exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records.clone())).await;
+
+        let expected = vec![log_records[0].clone(), log_records[1].clone()];
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &expected
+        );
+    }
+
+    /// Scenario: A five-attribute traffic-generator-shaped log record joins two attribute predicates.
+    /// Guarantees: Scalar false filters the record, while scalar true keeps it without terminating filtering.
+    #[tokio::test]
+    async fn test_filter_attributes_all_scalar_result() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("thread.id", AnyValue::new_int(0)),
+                    KeyValue::new("thread.name", AnyValue::new_string("worker")),
+                    KeyValue::new("code.function", AnyValue::new_string("run")),
+                    KeyValue::new("code.namespace", AnyValue::new_string("example")),
+                    KeyValue::new("code.filepath", AnyValue::new_string("main.rs")),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where (attributes["code.function"] == "foo") and not(contains(attributes["thread.name"], "bar"))"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        assert!(result.resource_logs.is_empty());
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where (attributes["code.function"] == "run") and not(contains(attributes["thread.name"], "bar"))"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        assert!(!result.resource_logs.is_empty());
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
     }
 }

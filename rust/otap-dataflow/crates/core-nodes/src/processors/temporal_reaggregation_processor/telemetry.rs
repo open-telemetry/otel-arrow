@@ -36,10 +36,7 @@ impl Default for TemporalReaggregationRegistrationAttributes {
 }
 
 /// Metrics for the temporal reaggregation processor.
-#[metric_set(
-    name = "processor.temporal_reaggregation",
-    registration_attributes = "TemporalReaggregationRegistrationAttributes"
-)]
+#[metric_set(name = "processor.temporal_reaggregation")]
 #[derive(Debug, Default, Clone)]
 pub struct TemporalReaggregationMetrics {
     /// Number of flushes triggered by the regular timer.

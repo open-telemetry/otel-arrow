@@ -4,9 +4,11 @@
 //! Context providing general information on the current controller and the current pipeline.
 
 use crate::attributes::{
-    ChannelAttributeSet, CustomAttributeSet, EngineAttributeSet, NodeAttributeSet,
-    NodeWithCustomAttributeSet, NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet,
-    PipelineAttributeSet, config_map_to_telemetry,
+    CustomAttributeSet, EngineAttributeSet, EngineEntityAttributeSet, ExtensionAttributeSet,
+    ExtensionChannelAttributeSet, ExtensionScopeAttributeSet, NodeAttributeSet,
+    NodeChannelAttributeSet, NodeWithCustomAttributeSet, NodeWithCustomChannelAttributeSet,
+    NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet, PipelineAttributeSet,
+    config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::memory_limiter::MemoryPressureState;
@@ -15,9 +17,14 @@ use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::telemetry::TelemetryAttribute;
 use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::InternalTelemetrySettings;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
+use otap_df_telemetry::metrics::MetricSetRegistrar;
+use otap_df_telemetry::metrics::{
+    MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetHandler,
+    RegistrationMetricSetHandler,
+};
+use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -26,81 +33,10 @@ use std::sync::Arc;
 /// (without index numbers) to their engine-specific pipeline indices.
 pub type NodeNameIndex = Arc<HashMap<ConfigNodeId, EngineNodeId>>;
 
-// Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
-// Choose UUID v7 for better sortability in telemetry signals
-use data_encoding::BASE32_NOPAD;
-use std::borrow::Cow;
-use std::sync::LazyLock;
-use uuid::Uuid;
-
-static PROCESS_INSTANCE_ID: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
-    let uuid = Uuid::now_v7();
-    let encoded = BASE32_NOPAD.encode(uuid.as_bytes());
-    Cow::Owned(encoded)
-});
-
-// Best-effort host id detection
-fn detect_host_id() -> Option<String> {
-    // Priority 1: HOSTNAME env var
-    if let Ok(h) = std::env::var("HOSTNAME") {
-        if !h.is_empty() {
-            return Some(h);
-        }
-    }
-    // Priority 2: /etc/hostname
-    if let Ok(s) = std::fs::read_to_string("/etc/hostname") {
-        let h = s.trim().to_string();
-        if !h.is_empty() {
-            return Some(h);
-        }
-    }
-    None
-}
-
-// Best-effort container id detection (Docker/containerd/k8s) from /proc/self/cgroup
-fn detect_container_id() -> Option<String> {
-    let Ok(cg) = std::fs::read_to_string("/proc/self/cgroup") else {
-        return None;
-    };
-    // Look for 64-hex tokens which commonly represent container IDs
-    for line in cg.lines() {
-        // Format: hierarchy-ID:controller-list:cgroup-path
-        let path = line.split(':').nth(2).unwrap_or("");
-        for part in path.split('/') {
-            let token = part.trim();
-            if token.len() >= 32 && token.len() <= 128 {
-                // Heuristic: mostly hex
-                if token
-                    .chars()
-                    .all(|c| c.is_ascii_hexdigit() || c == '.' || c == '-' || c == '_')
-                {
-                    // Pick the longest plausible hex-ish token
-                    // Further refine: prefer 64-hex
-                    let hex_only: String =
-                        token.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-                    if hex_only.len() >= 32 {
-                        return Some(token.to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-static HOST_ID: LazyLock<Cow<'static, str>> =
-    LazyLock::new(|| detect_host_id().map_or(Cow::Borrowed(""), Cow::Owned));
-
-static CONTAINER_ID: LazyLock<Cow<'static, str>> =
-    LazyLock::new(|| detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned));
-
 /// A lightweight/cloneable controller context.
 #[derive(Clone, Debug)]
 pub struct ControllerContext {
     telemetry_registry_handle: TelemetryRegistryHandle,
-    process_instance_id: Cow<'static, str>,
-    host_id: Cow<'static, str>,
-    container_id: Cow<'static, str>,
     numa_node_id: usize,
     memory_pressure_state: MemoryPressureState,
 }
@@ -132,6 +68,7 @@ pub struct PipelineContext {
     node_urn: NodeUrn,
     node_kind: NodeKind,
     node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
+    admission: crate::admission::AdmissionBinder,
 
     /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
     /// Only the ITR factory reads this; other receivers ignore it.
@@ -146,14 +83,21 @@ pub struct PipelineContext {
     topic_set: Option<Arc<dyn Any + Send + Sync>>,
 }
 
+/// Registrar that binds generated metric-set registration to an existing entity.
+///
+/// Channel-owned metric sets use this when their scope is an input or output
+/// channel rather than the node entity selected by [`PipelineContext`] itself.
+pub struct EntityMetricSetRegistrar<'a> {
+    pipeline_context: &'a PipelineContext,
+    entity_key: EntityKey,
+}
+
 impl ControllerContext {
     /// Creates a new `ControllerContext`.
+    #[must_use]
     pub fn new(telemetry_registry_handle: TelemetryRegistryHandle) -> Self {
         Self {
             telemetry_registry_handle,
-            process_instance_id: PROCESS_INSTANCE_ID.clone(),
-            host_id: HOST_ID.clone(),
-            container_id: CONTAINER_ID.clone(),
             numa_node_id: 0, // ToDo(LQ): Set NUMA node ID if available
             memory_pressure_state: MemoryPressureState::default(),
         }
@@ -204,20 +148,14 @@ impl ControllerContext {
         )
     }
 
-    /// Registers the engine-level entity for engine-wide metrics.
+    /// Registers the engine-level entity for engine-wide metrics with no scope attributes.
     ///
     /// Returns the [`EntityKey`] to pass to
     /// [`EngineMetricsMonitor::new`](crate::engine_metrics::EngineMetricsMonitor::new).
     #[must_use]
     pub fn register_engine_entity(&self) -> EntityKey {
-        use crate::attributes::ResourceAttributeSet;
-
         self.telemetry_registry_handle
-            .register_entity(ResourceAttributeSet {
-                process_instance_id: self.process_instance_id.clone(),
-                host_id: self.host_id.clone(),
-                container_id: self.container_id.clone(),
-            })
+            .register_entity(EngineEntityAttributeSet)
     }
 
     /// Returns a handle to the telemetry registry.
@@ -257,6 +195,7 @@ impl PipelineContext {
             node_urn: Default::default(),
             node_kind: Default::default(),
             node_telemetry_attrs: HashMap::new(),
+            admission: crate::admission::AdmissionBinder::none(),
             pipeline_telemetry_attrs: HashMap::new(),
             internal_telemetry: None,
             node_names: Arc::new(HashMap::new()),
@@ -320,6 +259,21 @@ impl PipelineContext {
         self.controller_context.memory_pressure_state()
     }
 
+    /// Returns the node's construction-time ingress admission binder.
+    ///
+    /// Participating components must bind exactly once during their factory
+    /// `create` call. The returned local or shared gate is then retained for
+    /// the component's runtime lifetime.
+    #[must_use]
+    pub const fn admission(&self) -> &crate::admission::AdmissionBinder {
+        &self.admission
+    }
+
+    /// Attaches the node's resolved admission binding before factory construction.
+    pub(crate) fn set_admission(&mut self, admission: crate::admission::AdmissionBinder) {
+        self.admission = admission;
+    }
+
     /// Sets the shared node-name-to-index mapping for this pipeline context.
     pub fn set_node_names(&mut self, node_names: NodeNameIndex) {
         self.node_names = node_names;
@@ -372,34 +326,69 @@ impl PipelineContext {
         metrics
     }
 
-    /// Registers a metric set for the current node entity.
+    /// Registers a measurement metric set for the given entity key and tracks it in node telemetry if present.
     #[must_use]
-    pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
+    pub fn register_measurement_metric_set_for_entity<
+        T: MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
         &self,
-    ) -> MetricSet<T> {
+        entity_key: EntityKey,
+    ) -> MeasurementMetricSet<T> {
+        let metrics = self
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_measurement_attributes_for_entity::<T>(entity_key);
         if let Some(telemetry) = current_node_telemetry_handle() {
-            telemetry.register_metric_set::<T>()
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+
+    /// Returns a registrar for metric sets scoped to an existing entity.
+    #[must_use]
+    pub const fn metric_set_registrar_for_entity(
+        &self,
+        entity_key: EntityKey,
+    ) -> EntityMetricSetRegistrar<'_> {
+        EntityMetricSetRegistrar {
+            pipeline_context: self,
+            entity_key,
+        }
+    }
+
+    /// Shared entity-resolution skeleton for the `register_*_metrics` family.
+    ///
+    /// Resolves the current node's telemetry scope in priority order -- active node
+    /// telemetry handle, then ambient node entity key -- and registers the metric set
+    /// via `for_entity`. When registering against an active node handle, the resulting
+    /// metric-set key (obtained through `metric_set_key`) is tracked so the set is
+    /// unregistered as part of node cleanup.
+    ///
+    /// Tests often construct nodes directly without the engine's entity scoping, so a
+    /// final fallback registers the set against this context's own attribute set via
+    /// `with_scope` (test builds only); production builds panic.
+    fn register_scoped_metrics<R>(
+        &self,
+        for_entity: impl FnOnce(&TelemetryRegistryHandle, EntityKey) -> R,
+        metric_set_key: impl FnOnce(&R) -> MetricSetKey,
+        with_scope: impl FnOnce(&Self, &TelemetryRegistryHandle) -> R,
+    ) -> R {
+        let handle = &self.controller_context.telemetry_registry_handle;
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            let metrics = for_entity(handle, telemetry.entity_key());
+            telemetry.track_metric_set(metric_set_key(&metrics));
+            metrics
         } else if let Some(entity_key) = node_entity_key() {
-            self.controller_context
-                .telemetry_registry_handle
-                .register_metric_set_for_entity::<T>(entity_key)
+            for_entity(handle, entity_key)
         } else {
-            // Tests often construct nodes directly without the engine's entity scoping. So the
-            // following code path is only enabled for test builds.
             #[cfg(feature = "test-utils")]
             {
-                if self.node_telemetry_attrs.is_empty() {
-                    self.controller_context
-                        .telemetry_registry_handle
-                        .register_metric_set::<T>(self.node_attribute_set())
-                } else {
-                    self.controller_context
-                        .telemetry_registry_handle
-                        .register_metric_set::<T>(self.node_with_custom_attribute_set())
-                }
+                with_scope(self, handle)
             }
+
             #[cfg(not(feature = "test-utils"))]
             {
+                let _ = with_scope;
                 panic!(
                     "node entity key not set; ensure node entity is registered and instrumented"
                 );
@@ -407,7 +396,29 @@ impl PipelineContext {
         }
     }
 
-    /// Registers a metric set for the current node entity extended with a topic attribute.
+    /// Compatibility registration for metric sets declared before `#[metric_set]`.
+    ///
+    /// New component metrics use their generated `MyMetrics::register(self)`
+    /// method, which chooses the correct registration shape automatically.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<T> {
+        self.register_scoped_metrics(
+            |handle, entity_key| handle.register_metric_set_for_entity::<T>(entity_key),
+            MetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set::<T>(ctx.node_attribute_set())
+                } else {
+                    handle.register_metric_set::<T>(ctx.node_with_custom_attribute_set())
+                }
+            },
+        )
+    }
+
+    /// Registers a metric set for the current node entity, scoped by an additional `topic` attribute.
     ///
     /// This is used by topic-aware nodes so their metric series can be filtered by `topic`.
     #[must_use]
@@ -452,6 +463,15 @@ impl PipelineContext {
             .register_entity(self.pipeline_attribute_set())
     }
 
+    /// Returns an [`ExtensionContext`] scoped to this pipeline.
+    #[must_use]
+    pub fn extension_context(&self) -> ExtensionContext {
+        ExtensionContext::new(
+            self.controller_context.clone(),
+            ExtensionScopeAttributeSet::pipeline(self.pipeline_attribute_set()),
+        )
+    }
+
     /// Registers the node entity for this context.
     ///
     /// If the node has custom telemetry attributes configured, they are included
@@ -471,14 +491,7 @@ impl PipelineContext {
     }
 
     fn engine_attribute_set(&self) -> EngineAttributeSet {
-        use crate::attributes::ResourceAttributeSet;
-
         EngineAttributeSet {
-            resource_attrs: ResourceAttributeSet {
-                process_instance_id: self.controller_context.process_instance_id.clone(),
-                host_id: self.controller_context.host_id.clone(),
-                container_id: self.controller_context.container_id.clone(),
-            },
             core_id: self.pipeline_context_params.core_id,
             numa_node_id: self.controller_context.numa_node_id,
         }
@@ -521,7 +534,7 @@ impl PipelineContext {
 
     /// Returns a channel attribute set tied to this node context.
     #[must_use]
-    pub fn channel_attribute_set(
+    pub fn node_channel_attribute_set(
         &self,
         channel_id: Cow<'static, str>,
         node_port: Cow<'static, str>,
@@ -529,8 +542,8 @@ impl PipelineContext {
         channel_mode: &'static str,
         channel_type: &'static str,
         channel_impl: &'static str,
-    ) -> ChannelAttributeSet {
-        ChannelAttributeSet {
+    ) -> NodeChannelAttributeSet {
+        NodeChannelAttributeSet {
             node_attrs: self.node_attribute_set(),
             node_port,
             channel_id,
@@ -541,9 +554,9 @@ impl PipelineContext {
         }
     }
 
-    /// Registers a channel entity for the given channel attributes.
+    /// Registers a node-scoped channel entity for the given channel attributes.
     #[must_use]
-    pub fn register_channel_entity(
+    pub fn register_node_channel_entity(
         &self,
         channel_id: Cow<'static, str>,
         node_port: Cow<'static, str>,
@@ -552,7 +565,7 @@ impl PipelineContext {
         channel_type: &'static str,
         channel_impl: &'static str,
     ) -> EntityKey {
-        let attrs = self.channel_attribute_set(
+        let attrs = self.node_channel_attribute_set(
             channel_id,
             node_port,
             channel_kind,
@@ -560,9 +573,18 @@ impl PipelineContext {
             channel_type,
             channel_impl,
         );
-        self.controller_context
-            .telemetry_registry_handle
-            .register_entity(attrs)
+        let registry = &self.controller_context.telemetry_registry_handle;
+
+        if self.node_telemetry_attrs.is_empty() {
+            registry.register_entity(attrs)
+        } else {
+            registry.register_entity(NodeWithCustomChannelAttributeSet {
+                channel_attrs: attrs,
+                custom_attrs: CustomAttributeSet::new(config_map_to_telemetry(
+                    &self.node_telemetry_attrs,
+                )),
+            })
+        }
     }
 
     /// Returns a metrics registry handle.
@@ -589,9 +611,359 @@ impl PipelineContext {
             node_urn,
             node_kind,
             node_telemetry_attrs,
+            admission: crate::admission::AdmissionBinder::none(),
             internal_telemetry: None,
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
         }
+    }
+}
+
+impl MetricSetRegistrar for EntityMetricSetRegistrar<'_> {
+    fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<M> {
+        self.pipeline_context
+            .register_metric_set_for_entity(self.entity_key)
+    }
+
+    fn register_registration_metric_set<M: RegistrationMetricSetHandler + Debug + Send + Sync>(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MetricSet<M> {
+        let metrics = self
+            .pipeline_context
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_registration_attributes_for_entity::<M>(
+                self.entity_key,
+                registration_attrs,
+            );
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+
+    fn register_measurement_metric_set<M: MeasurementMetricSetHandler + Debug + Send + Sync>(
+        &self,
+    ) -> MeasurementMetricSet<M> {
+        self.pipeline_context
+            .register_measurement_metric_set_for_entity(self.entity_key)
+    }
+
+    fn register_registration_and_measurement_metric_set<
+        M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MeasurementMetricSet<M> {
+        let metrics = self
+            .pipeline_context
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_registration_and_measurement_attributes_for_entity::<M>(
+                self.entity_key,
+                registration_attrs,
+            );
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+}
+
+impl MetricSetRegistrar for PipelineContext {
+    fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<M> {
+        self.register_metrics::<M>()
+    }
+
+    fn register_registration_metric_set<M: RegistrationMetricSetHandler + Debug + Send + Sync>(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MetricSet<M> {
+        self.register_scoped_metrics(
+            |handle, entity_key| {
+                handle.register_metric_set_with_registration_attributes_for_entity::<M>(
+                    entity_key,
+                    registration_attrs,
+                )
+            },
+            MetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set_with_registration_attributes::<M>(
+                        ctx.node_attribute_set(),
+                        registration_attrs,
+                    )
+                } else {
+                    handle.register_metric_set_with_registration_attributes::<M>(
+                        ctx.node_with_custom_attribute_set(),
+                        registration_attrs,
+                    )
+                }
+            },
+        )
+    }
+
+    fn register_measurement_metric_set<M: MeasurementMetricSetHandler + Debug + Send + Sync>(
+        &self,
+    ) -> MeasurementMetricSet<M> {
+        self.register_scoped_metrics(
+            |handle, entity_key| {
+                handle.register_metric_set_with_measurement_attributes_for_entity::<M>(entity_key)
+            },
+            MeasurementMetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set_with_measurement_attributes::<M>(
+                        ctx.node_attribute_set(),
+                    )
+                } else {
+                    handle.register_metric_set_with_measurement_attributes::<M>(
+                        ctx.node_with_custom_attribute_set(),
+                    )
+                }
+            },
+        )
+    }
+
+    fn register_registration_and_measurement_metric_set<
+        M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MeasurementMetricSet<M> {
+        self.register_scoped_metrics(
+            |handle, entity_key| {
+                handle
+                    .register_metric_set_with_registration_and_measurement_attributes_for_entity::<M>(
+                    entity_key,
+                    registration_attrs,
+                )
+            },
+            MeasurementMetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set_with_registration_and_measurement_attributes::<M>(
+                        ctx.node_attribute_set(),
+                        registration_attrs,
+                    )
+                } else {
+                    handle.register_metric_set_with_registration_and_measurement_attributes::<M>(
+                        ctx.node_with_custom_attribute_set(),
+                        registration_attrs,
+                    )
+                }
+            },
+        )
+    }
+}
+
+/// Host-scope context for extensions.
+#[derive(Clone, Debug)]
+pub struct ExtensionContext {
+    controller_context: ControllerContext,
+    extension_scope: ExtensionScopeAttributeSet,
+}
+
+impl ExtensionContext {
+    /// Creates an `ExtensionContext` for the supplied host scope.
+    ///
+    /// # Panics (debug builds)
+    ///
+    /// Panics if `extension_scope.kind` is empty.
+    #[must_use]
+    pub fn new(
+        controller_context: ControllerContext,
+        extension_scope: ExtensionScopeAttributeSet,
+    ) -> Self {
+        debug_assert!(
+            !extension_scope.kind.is_empty(),
+            "ExtensionContext requires a non-empty scope kind"
+        );
+        Self {
+            controller_context,
+            extension_scope,
+        }
+    }
+
+    /// Returns the telemetry registry handle for this scope.
+    #[must_use]
+    pub fn metrics_registry(&self) -> TelemetryRegistryHandle {
+        self.controller_context.telemetry_registry_handle.clone()
+    }
+
+    /// Returns the attribute set for an extension hosted at this scope.
+    #[must_use]
+    pub fn extension_attribute_set(
+        &self,
+        extension_id: Cow<'static, str>,
+        variant: crate::extension::wrapper::ExtensionVariant,
+    ) -> ExtensionAttributeSet {
+        ExtensionAttributeSet {
+            extension_id,
+            extension_variant: Cow::Borrowed(variant.as_str()),
+            extension_scope: self.extension_scope.clone(),
+        }
+    }
+
+    /// Registers an extension entity at this scope.
+    #[must_use]
+    pub fn register_extension_entity(
+        &self,
+        extension_id: Cow<'static, str>,
+        variant: crate::extension::wrapper::ExtensionVariant,
+    ) -> EntityKey {
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(self.extension_attribute_set(extension_id, variant))
+    }
+
+    /// Returns a channel attribute set tied to the given extension.
+    #[must_use]
+    pub fn extension_channel_attribute_set(
+        &self,
+        extension_id: Cow<'static, str>,
+        variant: crate::extension::wrapper::ExtensionVariant,
+        channel_id: Cow<'static, str>,
+        channel_mode: &'static str,
+        channel_impl: &'static str,
+    ) -> ExtensionChannelAttributeSet {
+        ExtensionChannelAttributeSet {
+            extension_attrs: self.extension_attribute_set(extension_id, variant),
+            channel_id,
+            channel_mode: Cow::Borrowed(channel_mode),
+            channel_impl: Cow::Borrowed(channel_impl),
+        }
+    }
+
+    /// Registers an extension-scoped channel entity for the given attributes.
+    #[must_use]
+    pub fn register_extension_channel_entity(
+        &self,
+        extension_id: Cow<'static, str>,
+        variant: crate::extension::wrapper::ExtensionVariant,
+        channel_id: Cow<'static, str>,
+        channel_mode: &'static str,
+        channel_impl: &'static str,
+    ) -> EntityKey {
+        let attrs = self.extension_channel_attribute_set(
+            extension_id,
+            variant,
+            channel_id,
+            channel_mode,
+            channel_impl,
+        );
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(attrs)
+    }
+
+    /// Registers a metric set for the given entity key.
+    ///
+    /// Unlike [`PipelineContext::register_metric_set_for_entity`], this does
+    /// not hook into any ambient node telemetry -- extension entities own their
+    /// own lifecycle via the per-variant `EntityTelemetryGuard`.
+    #[must_use]
+    pub fn register_metric_set_for_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+        entity_key: EntityKey,
+    ) -> MetricSet<T> {
+        self.controller_context
+            .telemetry_registry_handle
+            .register_metric_set_for_entity::<T>(entity_key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_config::pipeline::telemetry::AttributeValue;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use std::collections::HashMap;
+
+    fn pipeline_ctx_with_custom_attrs(
+        registry: TelemetryRegistryHandle,
+        custom: HashMap<String, TelemetryAttribute>,
+    ) -> PipelineContext {
+        let controller_ctx = ControllerContext::new(registry);
+        let pipeline_params = PipelineContextParams {
+            pipeline_group_id: Cow::Borrowed("group1"),
+            pipeline_id: Cow::Borrowed("pipe1"),
+            core_id: 0,
+            num_cores: 1,
+            thread_id: 0,
+        };
+        PipelineContext::new(controller_ctx, pipeline_params).with_node_context(
+            Cow::Borrowed("test-node"),
+            NodeUrn::parse("urn:otel:receiver:test").unwrap(),
+            NodeKind::Receiver,
+            custom,
+        )
+    }
+
+    fn register_channel(ctx: &PipelineContext) -> EntityKey {
+        ctx.register_node_channel_entity(
+            Cow::Borrowed("channel-1"),
+            Cow::Borrowed("out"),
+            "test_kind",
+            "test_mode",
+            "test_type",
+            "test_impl",
+        )
+    }
+
+    /// Scenario: a node configured with `entity.extend.identity_attributes` registers a
+    /// channel endpoint entity.
+    /// Guarantees: the channel entity carries the configured custom attributes in addition to
+    /// the base channel attributes, so channel metrics keep the node's configured identity.
+    #[test]
+    fn register_node_channel_entity_includes_custom_attributes() {
+        let registry = TelemetryRegistryHandle::new();
+        let mut custom = HashMap::new();
+        let _ = custom.insert(
+            "custom.identity.foo".to_string(),
+            TelemetryAttribute::new(AttributeValue::String("bar".to_string())),
+        );
+        let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), custom);
+        let key = register_channel(&ctx);
+
+        let (schema, rendered) = registry
+            .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
+            .expect("channel entity registered");
+
+        assert_eq!(schema, "node.channel.custom.attrs");
+        assert!(
+            rendered.contains("custom={custom.identity.foo=bar}"),
+            "custom identity attributes missing from channel entity: {rendered}"
+        );
+        assert!(
+            rendered.contains("channel.id=channel-1") && rendered.contains("node.id=test-node"),
+            "base channel attributes must be preserved: {rendered}"
+        );
+    }
+
+    /// Scenario: a node with no `entity.extend.identity_attributes` registers a channel
+    /// endpoint entity.
+    /// Guarantees: the entity stays on the plain channel schema and emits no empty
+    /// `custom={}` attribute, keeping telemetry output clean for unconfigured nodes.
+    #[test]
+    fn register_node_channel_entity_omits_empty_custom_attributes() {
+        let registry = TelemetryRegistryHandle::new();
+        let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), HashMap::new());
+        let key = register_channel(&ctx);
+
+        let (schema, rendered) = registry
+            .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
+            .expect("channel entity registered");
+
+        assert_eq!(schema, "node.channel.attrs");
+        assert!(
+            !rendered.contains("custom="),
+            "nodes without custom attributes must not emit a custom attribute: {rendered}"
+        );
     }
 }

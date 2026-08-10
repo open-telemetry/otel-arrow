@@ -1,19 +1,162 @@
-# OTAP Dataflow Configuration Model (v1)
+# OTAP Dataflow Configuration Model Reference (v1)
 
-This document describes the runtime configuration model used by the OTAP
+This reference describes the exact runtime configuration model used by the OTAP
 Dataflow Engine.
 
-If you want background on why this model is structured this way, see the
-`Design Rationale` section below.
+If you are learning how to write an engine configuration, start with
+[Configuration](configuration.md). Use this document when you need field
+semantics, defaults, precedence rules, validation behavior, and reference
+details.
+
+If you want background on why this model is structured this way, see
+`Design Principles` and `Design Decisions` below.
 
 If you implement receivers/processors/exporters and need crate-level API
 details plus custom node config guidance, see:
 
 - [crates/config/README.md](../crates/config/README.md)
+- [crates/core-nodes/README.md](../crates/core-nodes/README.md)
+
+## Related Documentation
+
+- Progressive configuration guide: [configuration.md](configuration.md).
+- Runtime configuration reference: this document.
+- Core node catalog:
+  [crates/core-nodes/README.md](../crates/core-nodes/README.md).
+- Node URN syntax: [docs/urns.md](urns.md).
+- Processor behavior taxonomy: [docs/processors.md](processors.md).
+- Runnable configuration examples: [configs/README.md](../configs/README.md).
+- Transport header policies: [docs/transport-headers.md](transport-headers.md).
+- Memory limiter policy: [docs/memory-limiter-phase1.md](memory-limiter-phase1.md).
+- Admin live pipeline reconfiguration:
+  [docs/admin/live-reconfiguration.md](admin/live-reconfiguration.md).
+
+Per-node documentation lives next to the node implementation under
+`crates/core-nodes/src`. Each node README uses predictable headings such as
+`Metadata`, `Configuration`, `Examples`, `Telemetry`, and `Limits`, so it can
+be read directly by humans and discovered by agents.
+
+## Design Principles
+
+The configuration model is intentionally different from the OpenTelemetry
+Collector YAML model. The OTel Arrow Dataflow Engine can interoperate with
+Collector protocols and concepts, but its configuration is shaped around the
+engine's runtime model rather than YAML shape parity.
+
+The main configuration principles are:
+
+- **Explicit topology**: dataflow edges are declared as `connections`, not
+  inferred from ordered receiver, processor, and exporter lists.
+- **Predictable runtime shape**: the resolved config should make it clear which
+  graph runs in each pipeline, which policies apply, and which topic bindings
+  exist.
+- **Bounded resources by construction**: channel capacities, topic queues,
+  runtime metrics levels, core allocation, and memory limiter behavior are
+  modeled as explicit policies.
+- **Node-local configuration ownership**: each node owns its `config` payload,
+  validation, limits, telemetry, and compatibility notes.
+- **Strict validation over permissive loading**: unknown fields and invalid graph
+  references are rejected early to catch operator mistakes before startup.
+- **Composable advanced topology**: fan-in, fan-out, named output ports, topics,
+  and observability pipelines are first-class concepts rather than special cases.
+- **Operational debuggability**: stable group, pipeline, node, topic, and output
+  identifiers are visible in configuration and can be correlated with runtime
+  telemetry.
+
+For broader project-level principles, see
+[design-principles.md](design-principles.md).
+
+## Design Decisions
+
+This section records the intentional choices behind the v1 model.
+
+### Root Config, Groups, and Pipelines
+
+The engine accepts a single root spec with `version`, optional defaults, and
+`groups`. A group scopes related pipelines and group-level policies. A pipeline
+is an executable graph identified by `(group_id, pipeline_id)`.
+
+This hierarchy gives the controller a stable unit for deployment,
+observability, resource assignment, and live reconfiguration. It also keeps room
+for multiple related pipelines in one engine process without flattening every
+runtime concern into one global namespace.
+
+### Nodes and Explicit Connections
+
+Nodes are declared separately from graph wiring. Connections define the DAG.
+This is a deliberate difference from Collector pipelines, where a pipeline lists
+receivers, processors, and exporters in order.
+
+Explicit connections make branching, fan-in, fan-out, fallback paths, route
+outputs, and test topologies visible in one graph. They also let validation
+reject missing nodes, invalid output ports, and cycles before the runtime starts.
+
+### Node Types and Node-Local Config
+
+Each node has a `type` expressed as a URN or OTel shortcut, such as
+`receiver:otlp`. The `type` selects the implementation and implies the node
+kind. The `config` object is then owned by that implementation.
+
+This keeps the common engine schema small while letting each receiver,
+processor, and exporter evolve its own configuration and documentation close to
+the code that validates it.
+
+### Output Port Semantics
+
+Every receiver and processor has a default output. Multi-output processors can
+declare named `outputs`, and connections can select them with syntax such as
+`router["logs"]`.
+
+This makes route semantics explicit. It avoids hiding branches inside an
+ordered processor chain and lets the engine validate output selectors.
+
+### Policies
+
+Policies are scoped runtime controls. Top-level policies provide defaults,
+group policies override those defaults for a group, and pipeline policies
+override them for a single pipeline.
+
+Precedence normally applies by policy family instead of deep-merging nested
+fragments. The `resources` family is the deliberate exception: its
+`core_allocation`, `memory_limiter`, and `rate_limiters` members resolve
+independently, while the named `rate_limiters` map resolves as one member rather
+than being merged entry by entry. Some policies are intentionally constrained
+to specific scopes; for example, the memory limiter is process-wide and only
+supported at top-level `policies.resources`.
+
+### Topics
+
+Topics are the supported way to decouple pipelines in the same process. A topic
+is declared once, then used by `exporter:topic` and `receiver:topic` nodes.
+
+This keeps direct pipeline wiring local and understandable while still
+supporting worker-pool delivery, fan-out, taps, and staged ingest/processing/
+egress designs. Topic validation happens during startup so same-pipeline and
+cross-pipeline loops through topics are rejected early.
+
+### Internal Observability Pipeline
+
+The internal observability pipeline is configured under
+`engine.observability.pipeline`. It uses the same node and connection model as a
+regular pipeline, but it has constrained policy support. The engine installs a
+default pipeline when the field is omitted, and the pipeline cannot be disabled.
+
+This makes internal telemetry routing explicit without treating observability as
+ordinary user dataflow. Resource policies are rejected there because the
+observability pipeline is part of engine operation, not an independent workload.
+
+### Strict Loading and Validation
+
+The model favors fail-fast loading and early, actionable errors because a
+permissive configuration loader can hide mistakes until traffic flows.
+Configuration issues such as unknown fields, invalid schema versions, missing
+connection endpoints, graph cycles, invalid output selectors, unsupported policy
+placements, and invalid node configs are rejected before startup.
 
 ## Configuration File Spec
 
-The engine runtime accepts a single configuration file format (v1).
+At startup, the engine runtime accepts a single root configuration file format
+(v1).
 
 - `version`: required schema version (`otel_dataflow/v1`)
 - `policies`: optional top-level defaults
@@ -28,12 +171,38 @@ argument accepts a URI that selects the config source:
 | --- | --- |
 | `file:/path/to/config.yaml` | Read from a local file |
 | `env:MY_VAR` | Read the full config from an environment variable |
+| `yaml:<content>` | Read inline YAML; `::` expands nested key paths |
+| `http://host/path` | Read via unauthenticated HTTP GET with retry |
 | `/path/to/config.yaml` | Bare path, same as `file:` |
 
 If `--config` is omitted, the engine falls back to `config.yaml` in
 the current working directory.
 
-Standalone pipeline files are not a runtime root format.
+Standalone pipeline files are not a startup root format.
+
+After startup, the admin API supports live pipeline reconfiguration. A live
+reconfigure request submits a pipeline-level config, not a second root file, and
+targets exactly one existing `(group_id, pipeline_id)` address. The controller
+patches the candidate pipeline into the current in-memory root spec, validates
+the resulting full engine snapshot, and then creates, replaces, resizes, or
+noops the logical pipeline through a rollout operation.
+
+Live reconfiguration is intentionally narrower than root-file loading:
+
+- The startup YAML file is not rewritten.
+- The target pipeline group must already exist.
+- Pipeline topology, node configuration, and pipeline-level policy changes are
+  supported for the target pipeline.
+- Scale-only changes use the same pipeline update path when the effective
+  runtime change is `policies.resources.core_allocation`.
+- Group-level, engine-level, and topic-broker mutation are out of scope for the
+  current live reconfiguration API.
+
+For the API flow, rollout behavior, rollback handling, and current limits, see
+[admin/live-reconfiguration.md](admin/live-reconfiguration.md).
+
+`https:`, authenticated config sources, and multi-file merge are not
+implemented.
 
 Contributor note: this top-level model is represented in code as
 `OtelDataflowSpec`.
@@ -59,7 +228,7 @@ groups:
           otlp/export:
             type: exporter:otlp_grpc
             config:
-              grpc_endpoint: "http://127.0.0.1:4318"
+              grpc_endpoint: "http://192.0.2.10:4317"
         connections:
           - from: otlp/ingest
             to: batcher
@@ -72,19 +241,24 @@ groups:
 The runtime model is hierarchical:
 
 - top-level configuration (root)
+- top-level `topics` (optional global topic declarations)
 - `groups` (map of pipeline groups)
+- group-local `topics` (optional topic declarations inside a group)
 - `pipelines` (map of pipelines inside each group)
 
 A **pipeline group** is a logical container for related pipelines.
 
 - It scopes a set of pipelines under one group id.
 - It can define group-level `policies` applied to pipelines in that group.
+- It can define group-local `topics` that override top-level topics with the
+  same local name for pipelines in that group.
 - It is the intermediate level between root defaults and
   pipeline-specific overrides.
 
 A **pipeline** is an executable dataflow graph.
 
-- It contains `nodes`, `connections`, and optional pipeline-level `policies`.
+- It contains `nodes`, optional `extensions`, `connections`, and optional
+  pipeline-level `policies`.
 - It is identified by `(group_id, pipeline_id)`.
 - Pipeline ids must be unique within their group.
 
@@ -130,9 +304,11 @@ Topic declaration precedence for a pipeline in a given group:
 
 At pipeline level:
 
-- `nodes`: map of node id -> node declaration
-- `connections`: explicit graph wiring
+- `type`: pipeline data type, defaulting to `otap`
 - `policies` (optional)
+- `nodes`: map of node id -> node declaration
+- `extensions`: optional map of extension id -> extension declaration
+- `connections`: explicit graph wiring
 
 At node level:
 
@@ -140,6 +316,13 @@ At node level:
 - `config`: node-specific payload
 - `outputs` (optional): named output ports for multi-output nodes
 - `default_output` (optional): explicit default output port for implicit sends
+- `capabilities` (optional): capability bindings to pipeline extensions
+- `entity` (optional): node entity enrichment metadata
+- `header_capture` (optional): receiver-only transport header capture override
+- `header_propagation` (optional): exporter-only transport header propagation
+  override
+- `rate_limiters` (optional): select one named admission limiter with `[name]`;
+  omit the field or use `[]` to leave the node unbound
 
 At connection level:
 
@@ -165,6 +348,7 @@ Important behavior:
 - `telemetry`
 - `observed_state`
 - `observability`
+- `controller/extensions`
 - `custom`
 
 ### Engine Topic Settings
@@ -178,26 +362,69 @@ Engine-wide topic runtime defaults are declared at `engine.topics`.
 
 Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 
+### Engine Telemetry
+
+Internal telemetry settings are declared at `engine.telemetry`. The
+`reporting_interval` controls the metric-set snapshot cadence and supplies the
+internal telemetry receiver's default registry drain and export interval.
+
+The internal telemetry receiver's `signals` field defaults to `[logs,
+metrics]`. A custom receiver may select either `[logs]` or `[metrics]`; logs
+must remain enabled whenever the global, engine, or admin log provider uses
+`its`. When metrics are selected, the optional `metrics.interval` overrides the
+receiver's cold-path interval, and `metrics.views` defines supported name and
+description transformations.
+When metrics are not selected, the receiver still drains their private ITS
+export accumulator without converting or emitting OTLP data. This preserves
+registry cleanup and does not consume the admin endpoint's metric view.
+
+The Prometheus replacement is the admin endpoint at `/api/v1/metrics`; its bind
+address comes from `engine.http_admin`. The path is fixed, receiver views are
+not applied, and reading it does not reset or consume snapshots waiting for ITS
+export.
+
+The ITS bridge projects each multivariate metric set into standard univariate
+OTLP metrics, which normal OTLP and OTAP exporters can consume. This projection
+is transitional pending native multivariate metric-set support in OTAP.
+
 ### Observability Pipeline
 
-Internal telemetry pipeline wiring is declared at:
-`engine.observability.pipeline`.
+Engine observability pipeline wiring is declared at
+`engine.observability.pipeline`. The field cannot be null. When it is omitted,
+the engine installs the following topology: metrics are continuously consumed
+by the noop exporter, while logs explicitly configured to use ITS are rendered
+by the console exporter. The default `console_async` log path bypasses this
+pipeline.
 
 ```yaml
 engine:
   observability:
     pipeline:
       nodes:
-        itr:
+        internal:
           type: "urn:otel:receiver:internal_telemetry"
           config: {}
-        sink:
+        router:
+          type: "urn:otel:processor:type_router"
+          outputs: [logs, metrics]
+          config: {}
+        logs_console:
           type: "urn:otel:exporter:console"
           config: {}
+        metrics_noop:
+          type: "urn:otel:exporter:noop"
+          config: {}
       connections:
-        - from: itr
-          to: sink
+        - from: internal
+          to: router
+        - from: router["logs"]
+          to: logs_console
+        - from: router["metrics"]
+          to: metrics_noop
 ```
+
+A custom pipeline replaces this default and must retain exactly one connected
+`receiver:internal_telemetry`.
 
 Optional observability policies are supported at:
 `engine.observability.pipeline.policies` for:
@@ -207,6 +434,44 @@ Optional observability policies are supported at:
 - `telemetry`
 
 `resources` is intentionally not supported for observability and is rejected.
+
+### Controller Extensions
+
+Trusted in-process controller extensions can be declared at
+`engine.controller.extensions`. Each entry uses a standard extension envelope
+with a `type` URN and optional extension-specific `config`. These extensions
+run with controller-level handles and are not exposed to pipeline nodes as
+extension capabilities.
+
+Controller extension implementations are discovered from statically linked Rust
+factories registered with `linkme` distributed slices. Custom distributions can
+add proprietary controller extensions by depending on the extension crate and
+linking it with a side-effect import. See
+[Developing Controller Extensions](../README.md#developing-controller-extensions)
+for implementation guidance.
+
+Each controller extension factory provides static config validation, so
+`--validate-and-exit` rejects unknown controller extension types and invalid
+extension-specific config without starting the extension.
+
+The built-in read-only controller monitor is available in the stock
+`df_engine` binary:
+
+```yaml
+engine:
+  controller:
+    extensions:
+      controller_monitor:
+        type: "urn:otel:extension:controller_monitor"
+        config:
+          interval: "30s"
+          log_snapshots: true
+```
+
+The monitor periodically records controller-level metrics under
+`controller.monitor` and can emit compact internal snapshot logs. It only reads
+observed state and telemetry registry state; it does not reconfigure or shut
+down pipelines.
 
 ### Custom Embedder Configuration
 
@@ -228,7 +493,7 @@ engine:
 ## Policy Hierarchy
 
 Policies include channel capacity, health, runtime telemetry, resources
-controls, and transport headers:
+controls, runtime recovery, and transport headers:
 
 ```yaml
 policies:
@@ -252,6 +517,23 @@ policies:
       source: auto
       soft_limit: 7 GiB
       hard_limit: 8 GiB
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket:
+          allow: 10485760
+          interval: 1s
+          burst: 10485760
+  runtime_recovery:
+    enabled: true
+    max_restarts: 5
+    initial_backoff: 250ms
+    max_backoff: 30s
+    startup_timeout: 30s
+    reset_after: 60s
   transport_headers:
     header_capture:
       headers:
@@ -284,7 +566,28 @@ Defaults at top-level:
 - `telemetry.tokio_metrics = true`
 - `telemetry.runtime_metrics = basic`
 - `resources.core_allocation = all_cores`
+- `runtime_recovery.enabled = true`
+- `runtime_recovery.max_restarts = 5`
+- `runtime_recovery.initial_backoff = 250ms`
+- `runtime_recovery.max_backoff = 30s`
+- `runtime_recovery.startup_timeout = 30s`
+- `runtime_recovery.reset_after = 60s`
 - `transport_headers = not set` (opt-in; no headers captured or propagated)
+
+Runtime recovery notes:
+
+- `runtime_recovery` applies to regular pipelines and inherits through the
+  pipeline, group, and top-level policy scopes. It is not supported by the
+  system observability pipeline.
+- A panic or ordinary runtime error on a serving core starts a per-core
+  recovery streak. Clean runtime exits are not restarted.
+- Replacements use newer deployment generations and exponential backoff capped
+  by `max_backoff`. A replacement must become admitted and ready within
+  `startup_timeout` before it can serve.
+- A healthy replacement keeps the streak count until it has remained ready for
+  `reset_after`. A later failure after that window starts a fresh streak.
+- Exhausting `max_restarts`, or setting `enabled: false`, converts the runtime
+  failure into a fatal engine error and requests coordinated process shutdown.
 
 Memory limiter configuration:
 
@@ -295,6 +598,26 @@ Memory limiter configuration:
 - In Phase 1, `Soft` remains informational; `Hard` is the ingress-shedding
   threshold.
 - Detailed runtime behavior and rollout guidance are documented in
+  [memory-limiter-phase1.md](memory-limiter-phase1.md).
+
+Rate limiter configuration:
+
+- Named limiters are declared under `policies.resources.rate_limiters`.
+- Any non-empty rate-limiter declaration requires a top-level
+  `policies.resources.memory_limiter`, which supplies the process pressure
+  signal that activates enforcement.
+- A declaration may appear at top-level, group, or pipeline policy scope. The
+  nearest declared map replaces the broader map; entries are not deep-merged.
+- `rate_limiters: {}` at a narrower policy scope disables an inherited map.
+- A node selects one effective limiter with `rate_limiters: [name]` and opts out
+  with `rate_limiters: []`.
+- Omitting the node field leaves the node unbound, regardless of how many
+  limiters are effective.
+- An unknown or dimension-incompatible selection fails startup.
+- V1 creates one bucket per bound receiver instance. Reusing a declaration does
+  not aggregate rate state across receivers or pipelines.
+- OTLP supports `request_bytes`; Syslog / CEF supports `messages`.
+- Detailed runtime behavior and limits are documented in
   [memory-limiter-phase1.md](memory-limiter-phase1.md).
 
 Control channel keys:
@@ -315,13 +638,18 @@ Telemetry policy notes:
 - `normal` adds message and phase counters
 - `detailed` adds latency/duration summaries and completion unwind-depth
   distribution
+- See [Node and Flow Metrics](node-and-flow-metrics.md) to configure and
+  interpret node item metrics and processor flow metrics.
 
 Resolution semantics:
 
 - precedence is applied at policy-family level (`channel_capacity`, `health`,
-  `telemetry`, `resources`)
+  `telemetry`, and others)
 - selected lower scope replaces upper scope for that family
 - no cross-scope deep merge of nested fields
+- `resources` is the exception: `core_allocation`, `memory_limiter`, and
+  `rate_limiters` resolve independently across scopes; the selected
+  `rate_limiters` map still replaces the broader map as a whole
 - policy objects are default-filled: if a lower-scope `policies` block exists,
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)
@@ -385,7 +713,7 @@ topics:
 Supported `backend` values:
 
 - `in_memory` (default, currently implemented)
-- `quiver` (accepted by config, not implemented by the runtime yet)
+- `quiver` (reserved in the schema and rejected by the current runtime)
 
 Unsupported backend or policy combinations are rejected during startup topic
 declaration with explicit errors.
@@ -482,8 +810,10 @@ Terminology:
 Node behavior:
 
 - Receivers and processors emit data through output ports.
-- They always have a default output port named `default`.
-- They can explicitly declare additional named output ports with `outputs`.
+- Connections without an explicit selector use an output port named `default`.
+- Nodes can explicitly declare named output ports with `outputs`.
+- If a node declares `outputs`, each selected source port must be listed there;
+  this includes `default` when a connection omits a selector.
 - Exporters are sinks and do not expose output ports.
 
 ## Multi-Output Example
@@ -510,7 +840,7 @@ groups:
           logs_exporter:
             type: exporter:otlp_grpc
             config:
-              grpc_endpoint: "http://127.0.0.1:4318"
+              grpc_endpoint: "http://192.0.2.10:4317"
 
           metrics_exporter:
             type: exporter:noop
@@ -567,7 +897,26 @@ Config loading validates:
 - Observability constraints (`engine.observability.pipeline.policies.resources`
   is rejected).
 
-## Go Collector Users: Mapping and Differences
+## Core Node Catalog
+
+Core nodes are provided by the `otap-df-core-nodes` crate. Use the shortcut
+form in YAML, such as `receiver:otlp`, or the full `urn:otel:<kind>:<id>` form.
+
+The authoritative catalog is
+[crates/core-nodes/README.md](../crates/core-nodes/README.md). Each catalog row
+links to a README beside the node implementation with node-specific
+configuration, examples, telemetry, limits, and stability.
+
+## Relationship to the OpenTelemetry Collector
+
+OpenTelemetry Collector compatibility is an important goal, but YAML shape
+compatibility is not the goal of this model. The engine uses OTel concepts and
+protocols, and many components have Collector analogs, but the runtime has a
+different execution model: explicit DAGs, bounded channels, per-core pipeline
+instances, explicit Ack/Nack paths, and topics for cross-pipeline decoupling.
+
+The configuration model therefore preserves familiar concepts while making
+runtime topology and resource behavior more explicit.
 
 ### Conceptual Mapping
 
@@ -578,7 +927,7 @@ Config loading validates:
 - Collector branch routing patterns -> node `outputs` +
   `from: node["output_port_name"]`
 
-### Key Differences vs Go Collector Config
+### Key Differences from Collector YAML
 
 - Wiring is explicit in a DAG, not implicit from ordered arrays.
 - A single pipeline can express richer fan-in/fan-out relationships directly.
@@ -586,10 +935,14 @@ Config loading validates:
   etc.).
 - Complex topologies (branching, routing, fallback patterns) are modeled through
   graph shape and node semantics.
+- Topics are explicit cross-pipeline transports, not implicit component reuse.
+- Policy precedence is resolved by engine scope and policy family, not by
+  Collector component merge conventions.
+- Strict parsing rejects unknown fields and invalid topology early.
 
-## Design Rationale
+## Rationale Summary
 
-The design goals behind this model are:
+The core rationale is:
 
 - Make topology explicit.
 - Avoid implicit behaviors that hide fan-in/fan-out semantics.
@@ -613,8 +966,8 @@ The following ideas are discussed and intentionally left for later steps:
   - policy-level `attributes`
 - Global defaults section (for example edge policy defaults).
 - Node-level lifecycle/tenancy/telemetry policies.
-- Topic receiver/exporter runtime wiring and additional topic policy families
-  (slow consumer handling, persistence, delivery guarantees).
+- Additional topic policy families, such as slow consumer handling,
+  persistence, and delivery guarantees.
 
 ## URN Reference
 

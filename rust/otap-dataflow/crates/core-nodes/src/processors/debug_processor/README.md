@@ -1,29 +1,119 @@
-# Debug Proccessor
+# Debug Processor
 
-Status: **WIP**
+<!-- markdownlint-disable MD013 -->
 
-This crate will contain the implementation of the debug processor.
+## Metadata
 
-## Example Config
+- Type: `processor:debug` (`urn:otel:processor:debug`)
+- Feature gate: Default
+- Stability: Experimental
+
+## Overview
+
+The debug processor observes pdata passing through a pipeline and emits
+human-readable output. It supports configurable verbosity, display mode, signal
+selection, filtering, sampling, and output target.
+
+## Getting Started
+
+Start with console output and the signal types you want to inspect:
 
 ```yaml
+type: processor:debug
 config:
-   verbosity: basic
-   mode: batch
-   signals:
-   - metrics
-   - spans
-   - logs
-   filters:
-   - predicate:
-      field: attribute
-      value:
-      - key: service.name
-        value: service_name
-   sampling:
-      type: no_sampling
-   mode: exclude
+  verbosity: basic
+  mode: batch
+  signals:
+    - metrics
+    - spans
+    - logs
+  filters:
+    - predicate:
+        field: attribute
+        value:
+          - key: service.name
+            value: service_name
+      mode: exclude
+  sampling:
+    type: no_sampling
 ```
+
+## Configuration
+
+```yaml
+type: processor:debug
+config:
+  # Output detail: "basic", "normal", or "detailed" (default: normal).
+  verbosity: normal
+
+  # Display mode: "batch" or "signal" (default: batch).
+  mode: batch
+
+  # Active signals (default: metrics, logs, and spans).
+  signals:
+    - metrics
+    - logs
+    - spans
+
+  # Output target. Omit for console output, set a string for file output, or
+  # set a list of output ports for pipeline-node output.
+  output: debug-output.txt
+
+  # Optional filter rules.
+  filters:
+    - predicate:
+        field: attribute
+        value:
+          - key: service.name
+            value: service_name
+      mode: exclude
+
+  # Optional sampling policy (default: no_sampling).
+  sampling:
+    type: no_sampling
+```
+
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+Request and primary signal item throughput are reported by the engine's
+universal `node.consumer` metrics instead of being duplicated by this
+processor. Use `node.consumer.consumed.messages` for requests and enable item
+counts to use `node.consumer.consumed.items`.
+
+Named events and span links remain debug processor metrics because they are
+nested signal details, not the primary log records, metric data points, or
+spans counted by universal channel item metrics.
+
+### Metric Sets
+
+#### `processor.debug`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `processor.debug.consumed.events` | `{event}` | Named log events for logs, or span events for traces. |
+| `processor.debug.consumed.links` | `{link}` | Span links. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| *None* | N/A | No internal telemetry events are emitted; configured debug output is data-plane diagnostic output. |
+
+## Limits
+
+- Debug output is diagnostic and not a stable machine-readable export format.
+- File or console output can become expensive for high-volume streams.
+- Configuration changes are not applied dynamically after node creation.
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Node and flow metrics](../../../../../docs/node-and-flow-metrics.md)
+- [Processor taxonomy](../../../../../docs/processors.md)
+- [Core node catalog](../../../README.md)
 
 ### Verbosity
 
@@ -52,13 +142,13 @@ signals will be displayed `metrics`, `logs`, and `spans`
 
 You can filter the signals that get displayed, you can select the filter
 mode `include` or `exclude` and then define the predicate to match the
-signals against, currently we support the following fields `attribute`
-Multiple filter rules can be definied and will be applied in order
+signals against, currently the supported field is `attribute`.
+Multiple filter rules can be defined and are applied in order
 (top to bottom).
 
 ### Output
 
-The DebugProcessor is a pass-through processor which allows the normal
+The debug processor is a pass-through processor which allows the normal
 flow of signals, this processor outputs various debug information on the
 signals/batches passing through. You can configure how the debug information
 is received.
@@ -66,9 +156,10 @@ is received.
 #### Output to file
 
 ```yaml
+type: processor:debug
 config:
-   verbosity: normal
-   output: file_name.txt
+  verbosity: normal
+  output: file_name.txt
 ```
 
 In this config the debug-processor will write to a file named `file_name.txt`
@@ -77,24 +168,15 @@ it will append to the file rather than overwriting
 #### Output to pipeline node
 
 ```yaml
-  debug:
-    type: "processor:debug"
-    outputs: ["passthrough_port", "logging_port"]
-    config:
-      verbosity: basic
-      output:
-        - logging_port
-connections:
-  - from: debug["passthrough_port"]
-    to: noop
-  - from: debug["logging_port"]
-    to: some_node
+type: processor:debug
+outputs: ["passthrough_port", "logging_port"]
+config:
+  verbosity: basic
+  output:
+    - logging_port
 ```
 
-In this config we create a processor with multiple outputs.
-In the config setting we tell the debug-processor to use `logging_port`
-which will send data to another node that has been defined outside of
-this configuration named `some_node`
+Connect the `logging_port` output to the node that should receive debug output.
 
 ### Sampling
 
@@ -107,11 +189,13 @@ The default mode is `no_sampling`.
 Below is how you would configure `zap_sampling` if you were to enable it
 
 ```yaml
-   sampling:
-      type: zap_sampling
-      sampling_initial: 2
-      sampling_thereafter: 5
-      sampling_interval: 2
+type: processor:debug
+config:
+  sampling:
+    type: zap_sampling
+    sampling_initial: 2
+    sampling_thereafter: 5
+    sampling_interval: 2
 ```
 
 The `sampling_initial` value is the number of values that is sent before

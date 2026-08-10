@@ -12,7 +12,7 @@ mod metrics;
 mod samplers;
 
 use self::config::Config;
-use self::metrics::LogSamplingMetrics;
+use self::metrics::{LogSamplingMetrics, LogSamplingRegistrationAttributes};
 use self::samplers::{Sampler, sampler_from_config};
 
 use arrow::array::BooleanBufferBuilder;
@@ -31,7 +31,7 @@ use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
@@ -45,6 +45,7 @@ use std::sync::Arc;
 const LOG_SAMPLING_PROCESSOR_URN: &str = "urn:otel:processor:log_sampling";
 
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 static LOG_SAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
@@ -82,7 +83,12 @@ impl LogSamplingProcessor {
         config.validate()?;
 
         let sampler = sampler_from_config(&config.policy);
-        let metrics = pipeline_ctx.register_metrics::<LogSamplingMetrics>();
+        let metrics = LogSamplingMetrics::register(
+            &pipeline_ctx,
+            &LogSamplingRegistrationAttributes {
+                signal: SignalType::Logs,
+            },
+        );
 
         Ok(Self {
             sampler,
@@ -99,7 +105,6 @@ impl LogSamplingProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         let total = pdata.num_items();
-        self.metrics.log_signals_consumed.add(total as u64);
 
         // Convert to Arrow records (no-op if already Arrow)
         let (context, payload) = pdata.into_parts();
@@ -152,7 +157,13 @@ impl LogSamplingProcessor {
         // Compute dropped count from the difference in item counts.
         let kept = filtered.num_items();
         let dropped = total - kept;
-        self.metrics.log_signals_dropped.add(dropped as u64);
+        if dropped > 0 {
+            self.metrics.dropped_items.add(dropped as u64);
+        }
+
+        // Record the drop flow-metric. A no-op unless this node is a
+        // decision node in a flow that enables `dropped.items`.
+        effect_handler.record_flow_dropped_items(SignalType::Logs, dropped as u64);
 
         let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(filtered));
         if kept == 0 {
@@ -167,6 +178,12 @@ impl LogSamplingProcessor {
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for LogSamplingProcessor {
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        // The log sampling processor drops log records, so it records
+        // `dropped.items` when it lies within a flow that enables it.
+        ProcessorRuntimeRequirements::none().with_drop_decisions()
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,

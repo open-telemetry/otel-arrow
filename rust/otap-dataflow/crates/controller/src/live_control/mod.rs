@@ -17,7 +17,9 @@
 use super::*;
 use chrono::Utc;
 use otap_df_admin::{
-    ControlPlane, ControlPlaneError, PipelineDetails,
+    ConfigChangeAction, ConfigChangeStatus, ControlPlane, ControlPlaneError,
+    EngineConfigReconcileRequest, EngineConfigReconcileState, EngineConfigReconcileStatus,
+    GroupDeleteStatus, PipelineDeleteStatus, PipelineDetails,
     PipelineRolloutState as ApiPipelineRolloutState,
     PipelineRolloutSummary as ApiPipelineRolloutSummary, ReconfigureRequest, RolloutCoreStatus,
     RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
@@ -42,9 +44,10 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LogicalPipelineRecord, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
-    RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
-    ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT,
+    LogicalPipelineRecord, PipelineOperationKind, PipelineOperationReservationState, RolloutAction,
+    RolloutCoreProgress, RolloutExecutionError, RolloutLifecycleState, RolloutRecord,
+    RuntimeInstanceLifecycle, RuntimeInstanceRecord, RuntimeRecoveryState, ShutdownCoreProgress,
+    ShutdownLifecycleState, ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT,
     TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile, is_expired, timestamp_now,
 };
 pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
@@ -80,6 +83,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     telemetry_reporting_interval: Duration,
     /// Memory-pressure signal fanout shared with pipeline runtimes.
     memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
+    /// Main controller thread unparked when recovery becomes fatal.
+    controller_thread: thread::Thread,
     /// All mutable live-control state protected by a single mutex.
     state: Mutex<ControllerRuntimeState>,
     /// Wakes global shutdown waiters when runtime instance liveness changes.
@@ -137,10 +142,14 @@ impl<
             engine_tracing_setup,
             telemetry_reporting_interval,
             memory_pressure_tx,
+            controller_thread: thread::current(),
             state: Mutex::new(ControllerRuntimeState {
                 live_config,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
+                runtime_recoveries: HashMap::new(),
+                deferred_runtime_recoveries: HashMap::new(),
+                pipeline_operation_reservations: HashMap::new(),
                 pending_instance_exits: HashMap::new(),
                 rollouts: HashMap::new(),
                 active_rollouts: HashMap::new(),
@@ -150,10 +159,16 @@ impl<
                 terminal_shutdowns: HashMap::new(),
                 generation_counters: HashMap::new(),
                 active_instances: 0,
+                active_engine_operation: None,
+                next_reconcile_id: 0,
                 next_rollout_id: 0,
                 next_shutdown_id: 0,
                 next_thread_id: 1,
+                next_recovery_id: 0,
+                next_pipeline_operation_reservation_id: 0,
                 first_error: None,
+                global_shutdown_requested: false,
+                global_shutdown_coordinators: 0,
             }),
             state_changed: Condvar::new(),
         }
@@ -215,13 +230,20 @@ impl<
         })
     }
 
-    /// Checks whether a logical pipeline still has an active rollout or shutdown.
+    /// Checks whether a logical pipeline still has an explicit or recovery owner.
     fn pipeline_has_active_operation_locked(
         state: &ControllerRuntimeState,
         pipeline_key: &PipelineKey,
     ) -> bool {
         state.active_rollouts.contains_key(pipeline_key)
             || state.active_shutdowns.contains_key(pipeline_key)
+            || state
+                .pipeline_operation_reservations
+                .contains_key(pipeline_key)
+            || state
+                .runtime_recoveries
+                .iter()
+                .any(|((key, _), recovery)| key == pipeline_key && recovery.worker_id.is_some())
     }
 
     /// Applies a terminal instance exit to controller state after the instance
@@ -235,11 +257,6 @@ impl<
             instance.lifecycle = RuntimeInstanceLifecycle::Exited(exit.clone());
         }
         state.active_instances = state.active_instances.saturating_sub(1);
-        if let RuntimeInstanceExit::Error(error) = exit {
-            if state.first_error.is_none() {
-                state.first_error = Some(error.message.clone());
-            }
-        }
         let logical_pipeline_key = PipelineKey::new(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
@@ -466,10 +483,8 @@ impl<
         pipeline_id: &str,
         request: ReconfigureRequest,
     ) -> Result<RolloutStatus, ControlPlaneError> {
-        let plan = self
-            .runtime
-            .prepare_rollout_plan(pipeline_group_id, pipeline_id, &request)?;
-        self.runtime.spawn_rollout(plan)
+        self.runtime
+            .request_reconfigure_pipeline(pipeline_group_id, pipeline_id, &request)
     }
 
     fn pipeline_details(
@@ -523,6 +538,53 @@ impl<
             return Err(ControlPlaneError::ShutdownNotFound);
         }
         Ok(Some(status))
+    }
+
+    fn group_details(
+        &self,
+        pipeline_group_id: &str,
+    ) -> Result<Option<PipelineGroupConfig>, ControlPlaneError> {
+        Ok(self
+            .runtime
+            .group_details_snapshot(&pipeline_group_id.to_owned().into()))
+    }
+
+    fn create_group(
+        &self,
+        pipeline_group_id: &str,
+        group: PipelineGroupConfig,
+    ) -> Result<PipelineGroupConfig, ControlPlaneError> {
+        self.runtime.create_group(pipeline_group_id, group)
+    }
+
+    fn engine_config_snapshot(&self) -> Result<OtelDataflowSpec, ControlPlaneError> {
+        Ok(self.runtime.engine_config_snapshot())
+    }
+
+    fn reconcile_engine_config(
+        &self,
+        request: EngineConfigReconcileRequest,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        self.runtime.reconcile_engine_config(request)
+    }
+
+    fn delete_pipeline(
+        &self,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+    ) -> Result<PipelineDeleteStatus, ControlPlaneError> {
+        self.runtime
+            .request_delete_pipeline(pipeline_group_id, pipeline_id, timeout_secs)
+    }
+
+    fn delete_group(
+        &self,
+        pipeline_group_id: &str,
+        timeout_secs: u64,
+    ) -> Result<GroupDeleteStatus, ControlPlaneError> {
+        self.runtime
+            .request_delete_group(pipeline_group_id, timeout_secs)
     }
 }
 

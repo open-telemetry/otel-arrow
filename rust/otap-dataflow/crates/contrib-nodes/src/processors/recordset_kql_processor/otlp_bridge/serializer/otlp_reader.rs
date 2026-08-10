@@ -135,12 +135,10 @@ fn read_log_record(reader: &mut ProtobufReader) -> Result<LogRecord, SerializerE
                             if let Some(i) = v.convert_to_integer() {
                                 log_record.diagnostic_level =
                                     RecordSetEngineDiagnosticLevel::from_usize(i as usize);
-                            } else {
-                                v.convert_to_string(&mut |s| {
-                                    if let Ok(v) = RecordSetEngineDiagnosticLevel::from_str(s) {
-                                        log_record.diagnostic_level = Some(v);
-                                    }
-                                });
+                            } else if let Ok(v) = RecordSetEngineDiagnosticLevel::from_str(
+                                v.convert_to_string().as_ref(),
+                            ) {
+                                log_record.diagnostic_level = Some(v);
                             }
                         } else {
                             log_record.attributes.get_values_mut().insert(key, value);
@@ -522,16 +520,19 @@ mod tests {
                         OtlpKeyValue {
                             key: "key1".into(),
                             value: None,
+                            ..Default::default()
                         },
                         OtlpKeyValue {
                             key: "key2".into(),
                             value: Some(OtlpAnyValue { value: None }),
+                            ..Default::default()
                         },
                         OtlpKeyValue {
                             key: "key3".into(),
                             value: Some(OtlpAnyValue {
                                 value: Some(OtlpValue::IntValue(18)),
                             }),
+                            ..Default::default()
                         },
                     ],
                 })),
@@ -604,6 +605,7 @@ mod tests {
             OtlpKeyValue {
                 key: "".into(),
                 value: None,
+                ..Default::default()
             },
             None,
         );
@@ -612,6 +614,7 @@ mod tests {
             OtlpKeyValue {
                 key: "".into(),
                 value: Some(OtlpAnyValue { value: None }),
+                ..Default::default()
             },
             None,
         );
@@ -620,6 +623,7 @@ mod tests {
             OtlpKeyValue {
                 key: "key1".into(),
                 value: None,
+                ..Default::default()
             },
             Some(("key1".into(), AnyValue::Null)),
         );
@@ -628,6 +632,7 @@ mod tests {
             OtlpKeyValue {
                 key: "key1".into(),
                 value: Some(OtlpAnyValue { value: None }),
+                ..Default::default()
             },
             Some(("key1".into(), AnyValue::Null)),
         );
@@ -638,6 +643,7 @@ mod tests {
                 value: Some(OtlpAnyValue {
                     value: Some(OtlpValue::IntValue(18)),
                 }),
+                ..Default::default()
             },
             Some((
                 "key1".into(),
@@ -684,12 +690,14 @@ mod tests {
                     OtlpKeyValue {
                         key: "key1".into(),
                         value: None,
+                        ..Default::default()
                     },
                     OtlpKeyValue {
                         key: "key2".into(),
                         value: Some(OtlpAnyValue {
                             value: Some(OtlpValue::IntValue(18)),
                         }),
+                        ..Default::default()
                     },
                 ],
                 dropped_attributes_count: 0,
@@ -773,12 +781,14 @@ mod tests {
                     OtlpKeyValue {
                         key: "key1".into(),
                         value: None,
+                        ..Default::default()
                     },
                     OtlpKeyValue {
                         key: "key2".into(),
                         value: Some(OtlpAnyValue {
                             value: Some(OtlpValue::IntValue(18)),
                         }),
+                        ..Default::default()
                     },
                 ],
                 dropped_attributes_count: 0,
@@ -932,20 +942,24 @@ mod tests {
                     OtlpKeyValue {
                         key: "".into(),
                         value: None,
+                        ..Default::default()
                     },
                     OtlpKeyValue {
                         key: "key1".into(),
                         value: None,
+                        ..Default::default()
                     },
                     OtlpKeyValue {
                         key: "key2".into(),
                         value: Some(OtlpAnyValue { value: None }),
+                        ..Default::default()
                     },
                     OtlpKeyValue {
                         key: "key3".into(),
                         value: Some(OtlpAnyValue {
                             value: Some(OtlpValue::IntValue(18)),
                         }),
+                        ..Default::default()
                     },
                 ],
                 dropped_attributes_count: 0,

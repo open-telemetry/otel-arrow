@@ -57,9 +57,9 @@ use super::types::{AckOutcome, BundleIndex, BundleRef, SubscriberId};
 
 use crate::record_bundle::SlotId;
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // SegmentProvider
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Lightweight summary of a single bundle within a segment.
 ///
@@ -103,8 +103,7 @@ pub trait SegmentProvider: Send + Sync {
     /// Quiver needing to understand signal semantics.
     fn bundle_metadata(&self, segment_seq: SegmentSeq) -> Result<Vec<BundleMetadata>>;
 
-    /// Returns the bundle and total item counts for a segment in a single
-    /// lock acquisition.
+    /// Returns the bundle and total item counts for a segment in a single lock acquisition.
     fn segment_drop_counts(&self, segment_seq: SegmentSeq) -> Result<(u32, u64)>;
 
     /// Reads a bundle from a segment.
@@ -114,9 +113,9 @@ pub trait SegmentProvider: Send + Sync {
     fn available_segments(&self) -> Vec<SegmentSeq>;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // RegistryConfig
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Configuration for the subscriber registry.
 #[derive(Debug, Clone)]
@@ -135,9 +134,9 @@ impl RegistryConfig {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // SubscriberRegistry
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Central registry for subscriber management.
 ///
@@ -329,7 +328,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Permanently unregisters a subscriber.
     ///
     /// This removes all state for the subscriber and deletes its progress file.
-    /// Use with caution—any unprocessed bundles will be lost.
+    /// Use with caution--any unprocessed bundles will be lost.
     ///
     /// # Errors
     ///
@@ -996,9 +995,9 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // RegistryCallback
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Resolution callback that writes to the registry.
 pub struct RegistryCallback<P: SegmentProvider> {
@@ -1114,10 +1113,8 @@ mod tests {
 
         fn segment_drop_counts(&self, segment_seq: SegmentSeq) -> Result<(u32, u64)> {
             let info = self.get_info(segment_seq)?;
-            Ok((
-                info.bundle_count,
-                info.bundle_count as u64 * info.items_per_bundle,
-            ))
+            let total_items = info.bundle_count as u64 * info.items_per_bundle;
+            Ok((info.bundle_count, total_items))
         }
 
         fn read_bundle(&self, bundle_ref: BundleRef) -> Result<ReconstructedBundle> {
@@ -1142,9 +1139,9 @@ mod tests {
         (registry, dir)
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Registration tests
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     #[test]
     fn register_new_subscriber() {
@@ -1227,9 +1224,9 @@ mod tests {
         assert!(matches!(result, Err(SubscriberError::NotFound { .. })));
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Bundle delivery tests
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     #[test]
     fn next_bundle_empty() {
@@ -1414,9 +1411,9 @@ mod tests {
         ));
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Segment notification tests
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     #[test]
     fn on_segment_finalized_updates_active() {
@@ -1459,9 +1456,9 @@ mod tests {
         handle.ack();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Multi-subscriber tests
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     #[test]
     fn multiple_subscribers_independent() {
@@ -1530,9 +1527,9 @@ mod tests {
         );
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Async method tests
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     #[tokio::test]
     async fn next_bundle_returns_bundle_when_available() {
@@ -1937,9 +1934,9 @@ mod tests {
         );
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Item-count propagation tests
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     #[test]
     fn poll_next_bundle_propagates_item_count() {

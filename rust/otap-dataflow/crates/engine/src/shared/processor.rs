@@ -40,8 +40,9 @@ use crate::effect_handler::{
 };
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    EndFlowMetrics, FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
-    IncomingFlowMetrics, SharedFlowMetricState, nanos_u64,
+    ConsumedFlowMetrics, DecisionFlowMetrics, EndFlowMetrics, FLOW_SIGNALS,
+    FlowConsumedItemsMetrics, FlowDroppedItemsMetrics, FlowDurationMetrics,
+    FlowProducedItemsMetrics, SharedFlowMetricState, flow_signal_index, nanos_u64,
 };
 use crate::message::Message;
 use crate::node::NodeId;
@@ -50,10 +51,11 @@ use crate::processor::ProcessorRuntimeRequirements;
 use crate::shared::message::SharedSender;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
-use otap_df_config::PortName;
+use otap_df_config::{PortName, SignalType};
+use otap_df_telemetry::common_attributes::SignalAttributes;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::Mmsc;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -133,7 +135,7 @@ pub struct EffectHandler<PData> {
     /// [`EndFlowMetrics`] for field-level documentation.
     ///
     /// `Mutex` is used inside the marker/accumulator cells because shared
-    /// processors run on worker threads — contention is bounded to the
+    /// processors run on worker threads -- contention is bounded to the
     /// per-processor sequential `process()` loop and the periodic
     /// telemetry drain.
     pub(crate) flow: SharedFlowMetricState,
@@ -199,23 +201,31 @@ impl<PData> EffectHandler<PData> {
         &mut self,
         is_start: bool,
         is_end: bool,
-        signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
-        duration_metric: Option<MetricSet<FlowDurationMetrics>>,
-        signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
+        consumed_items_metric: Option<MeasurementMetricSet<FlowConsumedItemsMetrics>>,
+        duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>>,
+        produced_items_metric: Option<MeasurementMetricSet<FlowProducedItemsMetrics>>,
+        dropped_items_metric: Option<MeasurementMetricSet<FlowDroppedItemsMetrics>>,
         flow_metrics_active: bool,
+        flow_needs_timing: bool,
     ) {
         self.flow.is_start = is_start;
         self.flow.is_end = is_end;
+        self.flow.is_decision = dropped_items_metric.is_some();
         self.flow.active = flow_metrics_active;
-        self.flow.incoming = IncomingFlowMetrics {
-            signals_incoming: signals_incoming_metric
-                .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
+        self.flow.needs_timing = flow_needs_timing;
+        self.flow.consumed = ConsumedFlowMetrics {
+            consumed_items: consumed_items_metric
+                .map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
         };
         self.flow.end = EndFlowMetrics {
             duration: duration_metric
-                .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
-            signals_outgoing: signals_outgoing_metric
-                .map(|metrics| (metrics, Arc::new(Mutex::new(Mmsc::default())))),
+                .map(|metrics| (metrics, Arc::new(Mutex::new([Mmsc::default(); 3])))),
+            produced_items: produced_items_metric
+                .map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
+        };
+        self.flow.decision = DecisionFlowMetrics {
+            dropped_items: dropped_items_metric
+                .map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
         };
     }
 
@@ -231,6 +241,12 @@ impl<PData> EffectHandler<PData> {
         self.flow.is_end
     }
 
+    /// Returns whether this node is a decision node for some flow.
+    #[must_use]
+    pub fn is_flow_decision(&self) -> bool {
+        self.flow.is_decision
+    }
+
     /// Returns whether any flow_metric is configured in this pipeline.
     #[must_use]
     pub fn flow_metrics_active(&self) -> bool {
@@ -242,9 +258,11 @@ impl<PData> EffectHandler<PData> {
     /// Sets the send-marker to "now" so that the first
     /// [`take_elapsed_since_send_marker_ns`] call (typically from the send
     /// hook) measures elapsed time from the start of `process()`.
-    /// No-op when no flow_metrics are configured.
+    /// No-op unless some flow in this pipeline tracks `compute.duration`
+    /// (`needs_timing`); a count-only flow such as `dropped.items` pays no
+    /// per-message `Instant::now()` cost.
     pub(crate) fn begin_process_timing(&self) {
-        if self.flow.active {
+        if self.flow.needs_timing {
             *self
                 .flow
                 .last_send_marker
@@ -273,49 +291,74 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Record `total` nanoseconds into the shared flow_metric accumulator.
-    pub fn record_flow_duration(&self, total: u64) {
+    pub fn record_flow_duration(&self, signal: SignalType, total: u64) {
         let Some((_, acc_mutex)) = self.flow.end.duration.as_ref() else {
             return;
         };
         let mut acc = acc_mutex
             .lock()
             .expect("flow duration accumulator poisoned");
-        acc.record(total as f64);
+        acc[flow_signal_index(signal)].record(total as f64);
     }
 
-    /// Record signal-item count into the shared incoming flow accumulator.
-    pub fn record_flow_signals_incoming(&self, signals: u64) {
-        let Some((_, acc_mutex)) = self.flow.incoming.signals_incoming.as_ref() else {
+    /// Record consumed items into the shared flow accumulator.
+    pub fn record_flow_consumed_items(&self, signal: SignalType, items: u64) {
+        let Some((_, acc_mutex)) = self.flow.consumed.consumed_items.as_ref() else {
             return;
         };
         let mut acc = acc_mutex
             .lock()
-            .expect("flow signals_incoming accumulator poisoned");
-        acc.record(signals as f64);
+            .expect("flow consumed_items accumulator poisoned");
+        let index = flow_signal_index(signal);
+        acc[index] = acc[index].saturating_add(items);
     }
 
-    /// Record signal-item count into the shared outgoing flow accumulator.
-    pub fn record_flow_signals_outgoing(&self, signals: u64) {
-        let Some((_, acc_mutex)) = self.flow.end.signals_outgoing.as_ref() else {
+    /// Record produced items into the shared flow accumulator.
+    pub fn record_flow_produced_items(&self, signal: SignalType, items: u64) {
+        let Some((_, acc_mutex)) = self.flow.end.produced_items.as_ref() else {
             return;
         };
         let mut acc = acc_mutex
             .lock()
-            .expect("flow signals_outgoing accumulator poisoned");
-        acc.record(signals as f64);
+            .expect("flow produced_items accumulator poisoned");
+        let index = flow_signal_index(signal);
+        acc[index] = acc[index].saturating_add(items);
+    }
+
+    /// Record the count of items this decision node chose to drop.
+    ///
+    /// No-op unless this node is wired as a decision node for a flow
+    /// that enables `dropped.items`.
+    pub fn record_flow_dropped_items(&self, signal: SignalType, items: u64) {
+        let Some((_, acc_mutex)) = self.flow.decision.dropped_items.as_ref() else {
+            return;
+        };
+        let mut acc = acc_mutex
+            .lock()
+            .expect("flow dropped_items accumulator poisoned");
+        let index = flow_signal_index(signal);
+        acc[index] = acc[index].saturating_add(items);
     }
 
     /// Drain accumulated flow_metric observations into the MetricSet and report.
     pub(crate) fn report_flow_metrics(&mut self) {
-        if let Some((metrics, acc_mutex)) = self.flow.incoming.signals_incoming.as_mut() {
+        if let Some((metrics, acc_mutex)) = self.flow.consumed.consumed_items.as_mut() {
             let drained = {
                 let mut guard = acc_mutex
                     .lock()
-                    .expect("flow signals_incoming accumulator poisoned");
+                    .expect("flow consumed_items accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
-            metrics.signals_incoming.merge(drained);
-            let _ = self.core.metrics_reporter.report(metrics);
+            for signal in FLOW_SIGNALS {
+                let count = drained[flow_signal_index(signal)];
+                if count != 0 {
+                    metrics
+                        .with(SignalAttributes { signal })
+                        .consumed_items
+                        .add(count);
+                }
+            }
+            let _ = self.core.metrics_reporter.report_measurement(metrics);
         }
         if let Some((metrics, acc_mutex)) = self.flow.end.duration.as_mut() {
             let drained = {
@@ -324,19 +367,145 @@ impl<PData> EffectHandler<PData> {
                     .expect("flow duration accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
-            metrics.compute_duration.merge(drained);
-            let _ = self.core.metrics_reporter.report(metrics);
+            for signal in FLOW_SIGNALS {
+                let duration = drained[flow_signal_index(signal)];
+                if duration.get().count != 0 {
+                    metrics
+                        .with(SignalAttributes { signal })
+                        .compute_duration
+                        .merge(duration);
+                }
+            }
+            let _ = self.core.metrics_reporter.report_measurement(metrics);
         }
-        if let Some((metrics, acc_mutex)) = self.flow.end.signals_outgoing.as_mut() {
+        if let Some((metrics, acc_mutex)) = self.flow.end.produced_items.as_mut() {
             let drained = {
                 let mut guard = acc_mutex
                     .lock()
-                    .expect("flow signals_outgoing accumulator poisoned");
+                    .expect("flow produced_items accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
-            metrics.signals_outgoing.merge(drained);
-            let _ = self.core.metrics_reporter.report(metrics);
+            for signal in FLOW_SIGNALS {
+                let count = drained[flow_signal_index(signal)];
+                if count != 0 {
+                    metrics
+                        .with(SignalAttributes { signal })
+                        .produced_items
+                        .add(count);
+                }
+            }
+            let _ = self.core.metrics_reporter.report_measurement(metrics);
         }
+        if let Some((metrics, acc_mutex)) = self.flow.decision.dropped_items.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow dropped_items accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let count = drained[flow_signal_index(signal)];
+                if count != 0 {
+                    metrics
+                        .with(SignalAttributes { signal })
+                        .dropped_items
+                        .add(count);
+                }
+            }
+            let _ = self.core.metrics_reporter.report_measurement(metrics);
+        }
+    }
+
+    /// Drains and reliably hands off final flow metrics during processor shutdown.
+    ///
+    /// Every metric set shares the same absolute `deadline`, bounding the
+    /// complete handoff rather than giving each set a fresh timeout.
+    pub(crate) async fn report_flow_metrics_reliably(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<(), TelemetryError> {
+        let reporter = self.core.metrics_reporter.clone();
+        if let Some((metrics, acc_mutex)) = self.flow.consumed.consumed_items.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow consumed_items accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let count = drained[flow_signal_index(signal)];
+                if count != 0 {
+                    metrics
+                        .with(SignalAttributes { signal })
+                        .consumed_items
+                        .add(count);
+                }
+            }
+            let _ = reporter
+                .report_measurement_reliably_until(metrics, deadline)
+                .await?;
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.end.duration.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow duration accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let duration = drained[flow_signal_index(signal)];
+                if duration.get().count != 0 {
+                    metrics
+                        .with(SignalAttributes { signal })
+                        .compute_duration
+                        .merge(duration);
+                }
+            }
+            let _ = reporter
+                .report_measurement_reliably_until(metrics, deadline)
+                .await?;
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.end.produced_items.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow produced_items accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let count = drained[flow_signal_index(signal)];
+                if count != 0 {
+                    metrics
+                        .with(SignalAttributes { signal })
+                        .produced_items
+                        .add(count);
+                }
+            }
+            let _ = reporter
+                .report_measurement_reliably_until(metrics, deadline)
+                .await?;
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.decision.dropped_items.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow dropped_items accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let count = drained[flow_signal_index(signal)];
+                if count != 0 {
+                    metrics
+                        .with(SignalAttributes { signal })
+                        .dropped_items
+                        .add(count);
+                }
+            }
+            let _ = reporter
+                .report_measurement_reliably_until(metrics, deadline)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Sends a message to the next node(s) in the pipeline.
@@ -529,16 +698,16 @@ impl<PData> crate::processor::FlowMetricEffectHandler for EffectHandler<PData> {
         EffectHandler::take_elapsed_since_send_marker_ns(self)
     }
     #[inline]
-    fn record_flow_duration(&self, total: u64) {
-        EffectHandler::record_flow_duration(self, total);
+    fn record_flow_duration(&self, signal: SignalType, total: u64) {
+        EffectHandler::record_flow_duration(self, signal, total);
     }
     #[inline]
-    fn record_flow_signals_incoming(&self, signals: u64) {
-        EffectHandler::record_flow_signals_incoming(self, signals);
+    fn record_flow_consumed_items(&self, signal: SignalType, items: u64) {
+        EffectHandler::record_flow_consumed_items(self, signal, items);
     }
     #[inline]
-    fn record_flow_signals_outgoing(&self, signals: u64) {
-        EffectHandler::record_flow_signals_outgoing(self, signals);
+    fn record_flow_produced_items(&self, signal: SignalType, items: u64) {
+        EffectHandler::record_flow_produced_items(self, signal, items);
     }
 }
 
@@ -557,7 +726,7 @@ impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for Effect
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::flow_metrics::{FlowAttributeSet, FlowSignalsOutgoingMetrics};
+    use crate::flow_metrics::{FlowAttributeSet, FlowProducedItemsMetrics};
     use crate::shared::message::SharedSender;
     use crate::testing::{test_node, test_pipeline_ctx};
     use otap_df_channel::error::SendError;
@@ -688,9 +857,10 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_flow_roles(true, false, None, None, None, true);
+        eh.set_flow_roles(true, false, None, None, None, None, true, true);
         assert!(eh.is_flow_start());
         assert!(eh.flow.active);
+        assert!(eh.flow.needs_timing);
 
         eh.begin_process_timing();
 
@@ -707,23 +877,45 @@ mod tests {
         );
     }
 
+    /// Scenario: an active shared flow tracks no compute duration.
+    /// Guarantees: processing leaves the send marker unarmed and reports zero duration.
+    #[test]
+    fn flow_metric_marker_not_armed_when_timing_disabled_shared() {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut eh =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        // active = true, needs_timing = false.
+        eh.set_flow_roles(true, false, None, None, None, None, true, false);
+        assert!(eh.flow.active);
+        assert!(!eh.flow.needs_timing);
+
+        eh.begin_process_timing();
+
+        let mut value = 0u64;
+        for i in 0..10_000 {
+            value = value.wrapping_add(std::hint::black_box(i));
+        }
+        let _ = std::hint::black_box(value);
+
+        assert_eq!(
+            eh.take_elapsed_since_send_marker_ns(),
+            0,
+            "send marker must stay unarmed when timing is disabled"
+        );
+    }
+
     #[test]
     fn shared_handler_record_flow_duration_drains_to_metric_set() {
         let (ctx, _) = test_pipeline_ctx();
         let entity_key = ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let start_metric_set = ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowSignalsIncomingMetrics>(entity_key);
-        let duration_metric_set = ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key);
-        let outgoing_metric_set = ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowSignalsOutgoingMetrics>(entity_key);
+        let registrar = ctx.metric_set_registrar_for_entity(entity_key);
+        let start_metric_set = FlowConsumedItemsMetrics::register(&registrar);
+        let duration_metric_set = FlowDurationMetrics::register(&registrar);
+        let outgoing_metric_set = FlowProducedItemsMetrics::register(&registrar);
 
-        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(3);
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
         eh.set_flow_roles(
@@ -732,125 +924,140 @@ mod tests {
             Some(start_metric_set),
             Some(duration_metric_set),
             Some(outgoing_metric_set),
+            None,
+            true,
             true,
         );
         assert!(eh.is_flow_start());
         assert!(eh.is_flow_end());
 
-        eh.record_flow_signals_incoming(10);
-        eh.record_flow_signals_incoming(20);
+        eh.record_flow_consumed_items(SignalType::Logs, 10);
+        eh.record_flow_consumed_items(SignalType::Metrics, 20);
         for ns in [1000, 2000, 3000] {
-            eh.record_flow_duration(ns);
+            eh.record_flow_duration(SignalType::Logs, ns);
         }
-        eh.record_flow_signals_outgoing(7);
-        eh.record_flow_signals_outgoing(8);
+        eh.record_flow_produced_items(SignalType::Logs, 7);
+        eh.record_flow_produced_items(SignalType::Metrics, 8);
 
         let start_before_report = eh
             .flow
-            .incoming
-            .signals_incoming
+            .consumed
+            .consumed_items
             .as_ref()
             .unwrap()
             .1
             .lock()
-            .unwrap()
-            .get();
-        assert_eq!(start_before_report.count, 2);
-        assert!((start_before_report.sum - 30.0).abs() < f64::EPSILON);
+            .unwrap();
+        assert_eq!(*start_before_report, [0, 20, 10]);
 
-        let before_report = eh
-            .flow
-            .end
-            .duration
-            .as_ref()
-            .unwrap()
-            .1
-            .lock()
-            .unwrap()
-            .get();
-        assert_eq!(before_report.count, 3);
-        assert!((before_report.sum - 6000.0).abs() < f64::EPSILON);
+        let before_report = eh.flow.end.duration.as_ref().unwrap().1.lock().unwrap();
+        assert_eq!(before_report[2].get().count, 3);
+        assert!((before_report[2].get().sum - 6000.0).abs() < f64::EPSILON);
+        drop(before_report);
         let produced_before_report = eh
             .flow
             .end
-            .signals_outgoing
+            .produced_items
             .as_ref()
             .unwrap()
             .1
             .lock()
-            .unwrap()
-            .get();
-        assert_eq!(produced_before_report.count, 2);
-        assert!((produced_before_report.sum - 15.0).abs() < f64::EPSILON);
+            .unwrap();
+        assert_eq!(*produced_before_report, [0, 8, 7]);
 
+        drop(start_before_report);
+        drop(produced_before_report);
         eh.report_flow_metrics();
 
         let start_drained = eh
             .flow
-            .incoming
-            .signals_incoming
+            .consumed
+            .consumed_items
             .as_ref()
             .unwrap()
             .1
             .lock()
-            .unwrap()
-            .get();
+            .unwrap();
         assert_eq!(
-            start_drained.count, 0,
+            *start_drained, [0; 3],
             "start accumulator should be drained"
         );
 
-        let drained = eh
-            .flow
-            .end
-            .duration
-            .as_ref()
-            .unwrap()
-            .1
-            .lock()
-            .unwrap()
-            .get();
-        assert_eq!(drained.count, 0, "duration accumulator should be drained");
+        let drained = eh.flow.end.duration.as_ref().unwrap().1.lock().unwrap();
+        assert_eq!(
+            drained[2].get().count,
+            0,
+            "duration accumulator should be drained"
+        );
         let produced_drained = eh
             .flow
             .end
-            .signals_outgoing
+            .produced_items
             .as_ref()
             .unwrap()
             .1
             .lock()
-            .unwrap()
-            .get();
+            .unwrap();
         assert_eq!(
-            produced_drained.count, 0,
+            *produced_drained, [0; 3],
             "stop item accumulator should be drained"
         );
 
         let snapshot = metrics_rx
             .try_recv()
             .expect("start flow_metric metric should be reported");
-        let [MetricValue::Mmsc(consumed_snapshot)] = snapshot.get_metrics() else {
-            panic!("expected one start flow_metric MMSC metric");
+        let [MetricValue::U64(consumed_snapshot)] = snapshot.get_metrics() else {
+            panic!("expected one start flow consumed-item metric");
         };
-        assert_eq!(consumed_snapshot.count, 2);
-        assert!((consumed_snapshot.sum - 30.0).abs() < f64::EPSILON);
+        assert_eq!(
+            snapshot.measurement_attribute_value("signal"),
+            Some("metrics")
+        );
+        assert_eq!(*consumed_snapshot, 20);
+
+        let snapshot = metrics_rx
+            .try_recv()
+            .expect("logs flow consumed-item metric should be reported");
+        let [MetricValue::U64(consumed_snapshot)] = snapshot.get_metrics() else {
+            panic!("expected one start flow consumed-item metric");
+        };
+        assert_eq!(snapshot.measurement_attribute_value("signal"), Some("logs"));
+        assert_eq!(*consumed_snapshot, 10);
 
         let snapshot = metrics_rx
             .try_recv()
             .expect("flow duration metric should be reported");
-        let [MetricValue::Mmsc(duration_snapshot)] = snapshot.get_metrics() else {
+        let [
+            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
+                duration_snapshot,
+            )),
+        ] = snapshot.get_metrics()
+        else {
             panic!("expected flow duration MMSC metric");
         };
         assert_eq!(duration_snapshot.count, 3);
         assert!((duration_snapshot.sum - 6000.0).abs() < f64::EPSILON);
+        assert_eq!(snapshot.measurement_attribute_value("signal"), Some("logs"));
 
         let snapshot = metrics_rx
             .try_recv()
-            .expect("flow outgoing metric should be reported");
-        let [MetricValue::Mmsc(produced_snapshot)] = snapshot.get_metrics() else {
-            panic!("expected flow outgoing MMSC metric");
+            .expect("metrics flow produced-item metric should be reported");
+        let [MetricValue::U64(produced_snapshot)] = snapshot.get_metrics() else {
+            panic!("expected flow produced-item metric");
         };
-        assert_eq!(produced_snapshot.count, 2);
-        assert!((produced_snapshot.sum - 15.0).abs() < f64::EPSILON);
+        assert_eq!(
+            snapshot.measurement_attribute_value("signal"),
+            Some("metrics")
+        );
+        assert_eq!(*produced_snapshot, 8);
+
+        let snapshot = metrics_rx
+            .try_recv()
+            .expect("logs flow produced-item metric should be reported");
+        let [MetricValue::U64(produced_snapshot)] = snapshot.get_metrics() else {
+            panic!("expected flow produced-item metric");
+        };
+        assert_eq!(snapshot.measurement_attribute_value("signal"), Some("logs"));
+        assert_eq!(*produced_snapshot, 7);
     }
 }

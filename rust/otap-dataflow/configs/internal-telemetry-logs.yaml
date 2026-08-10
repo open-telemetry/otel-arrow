@@ -1,0 +1,112 @@
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      node: 256
+      pipeline: 256
+    pdata: 128
+  telemetry:
+    runtime_metrics: none
+engine:
+  telemetry:
+    logs:
+      level: "info"
+      providers:
+        global: its
+        engine: its
+        internal: console_direct
+        admin: its
+    resource:
+      service.id: 1234
+      service.name: test
+  observability:
+    pipeline:
+      policies:
+        channel_capacity:
+          control:
+            node: 64
+            pipeline: 64
+          pdata: 64
+        telemetry:
+          pipeline_metrics: false
+          tokio_metrics: false
+          runtime_metrics: none
+      # Internal logs telemetry pipeline
+      # Runs on a single thread (controller-managed) and can use dedicated policies.
+      nodes:
+        telemetry:
+          type: "receiver:internal_telemetry"
+          config:
+            signals: [logs]
+        console:
+          type: "exporter:console"
+          config:
+            format: pretty  # Change to record_json to emit NDJSON.
+            # record_json:
+            #   timestamp_format: rfc3339  # rfc3339 (default) or unix_nano
+            #   body_field: body           # body (default) or message
+            #   int64_format: number       # number (default) or string
+            #   resource: false            # Include resource attributes; default: false
+            #   scope: true                # Include scope context; default: true
+            #   otel: false                # Include OTel bookkeeping; default: false
+      connections:
+        - from: telemetry
+          to: console
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 200
+              pipeline: 200
+            pdata: 20
+          telemetry:
+            pipeline_metrics: false
+            tokio_metrics: false
+            runtime_metrics: none
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              traffic_config:
+                max_signal_count: 100000
+                max_batch_size: 1000
+                signals_per_second: 1000
+                log_weight: 100
+            entity:
+              extend:
+                identity_attributes:
+                  pipeline_name:
+                    value: "MyCustomPipelineName"
+                    brief: "Custom pipeline name for identification"
+                  node_sequence: 1
+          debug:
+            type: processor:debug
+            config:
+              verbosity: basic
+              signals: []
+            entity:
+              extend:
+                identity_attributes:
+                  pipeline_name:
+                    value: "MyCustomPipelineName"
+                    brief: "Custom pipeline name for identification"
+                  node_sequence: 2
+          noop:
+            type: exporter:noop
+            config: {}
+            entity:
+              extend:
+                identity_attributes:
+                  pipeline_name:
+                    value: "MyCustomPipelineName"
+                    brief: "Custom pipeline name for identification"
+                  node_sequence: 3
+        connections:
+          - from: generator
+            to: debug
+          - from: debug
+            to: noop

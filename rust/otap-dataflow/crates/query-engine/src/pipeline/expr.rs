@@ -163,6 +163,9 @@ impl From<&ColumnAccessor> for DataScope {
             ColumnAccessor::Attributes(attrs_id, attrs_key) => {
                 Self::Attribute(*attrs_id, attrs_key.clone())
             }
+            ColumnAccessor::NestedAttribute(attrs_id, attrs_key, _) => {
+                Self::Attribute(*attrs_id, attrs_key.clone())
+            }
         }
     }
 }
@@ -171,16 +174,17 @@ impl From<&ColumnAccessor> for DataScope {
 ///
 /// Every node supports two execution methods:
 ///
-/// - [`execute_as_value`](Self::execute_as_value) — produces a [`ScopedValue`] containing actual
+/// - [`execute_as_value`](Self::execute_as_value) -- produces a [`ScopedValue`] containing actual
 ///   values. Used when the consumer needs materialized data (assignment, arithmetic, function
 ///   arguments).
 ///
-/// - [`execute_as_id_mask`](Self::execute_as_id_mask) — produces an
+/// - [`execute_as_id_mask`](Self::execute_as_id_mask) -- produces an
 ///   [`IdMask`](crate::pipeline::id_mask::IdMask) bitmap of matching IDs. Used when the consumer
 ///   only needs membership information (filtering, boolean combination).
 ///
 /// The dual-mode design allows chains of boolean operations to stay in ID bitmap space without
 /// materializing intermediate arrays.
+#[derive(Debug)]
 pub(crate) enum ScopedExpr {
     /// Leaf: evaluate an expression on a specific data scope (RecordBatch).
     ///
@@ -197,6 +201,23 @@ pub(crate) enum ScopedExpr {
     JoinAndEval {
         children: Vec<ScopedExpr>,
         eval: LeafEval,
+
+        /// Whether to produce a null placeholder when some child evaluates to `None`, likely due
+        /// to some optional column used by an expression not being present.
+        ///
+        /// Ordinarily, we propagate what equates to a null value by having this expression node
+        /// also evaluate to `None`. However, some expressions may have special null handling
+        /// semantics where they expect the null value to be passed.
+        default_null_children: bool,
+
+        /// Whether to force the children to be aligned to the root row order before joining the
+        /// results.
+        ///
+        /// When this is false, the expression evaluation will attempt to choose the most
+        /// appropriate join type to avoid reordering the child results if possible. Setting this
+        /// flag overrides the dynamic join choice and forces root alignment when combining the
+        /// child results.
+        align_children_to_root: bool,
     },
 
     /// Combine two boolean-producing children via IdMask bitmap intersection (AND).
@@ -289,7 +310,7 @@ pub(crate) enum LeafEval {
 
         /// When true, absent data (missing columns, missing attribute keys) should be
         /// treated as "passes" rather than "fails". This is set to true for `is_null()`
-        /// expressions, where a missing field means the field IS null — which is a match.
+        /// expressions, where a missing field means the field IS null -- which is a match.
         missing_data_passes: bool,
     },
 
@@ -323,6 +344,7 @@ impl LeafEval {
             projection,
             projection_opts: ProjectionOptions {
                 downcast_dicts: requires_dict_downcast,
+                ..Default::default()
             },
             eval_anyval_as_struct: true,
             attr_key_case_sensitive: true,
@@ -346,6 +368,7 @@ impl LeafEval {
             projection,
             projection_opts: ProjectionOptions {
                 downcast_dicts: requires_dict_downcast,
+                ..Default::default()
             },
             eval_anyval_as_struct,
             attr_key_case_sensitive,
@@ -526,12 +549,12 @@ mod test {
         // severity_number > 14
         let mut op = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(14i32)));
 
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
         // exactly one row (index 1) passes
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 // the root batch should have id values [0, 1, 2]
                 // only id=1 (severity_number=17) passes
@@ -583,10 +606,10 @@ mod test {
         }
 
         // execute_as_id_mask: should return IdMask::All
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
-        assert_eq!(mask, IdMask::All);
+        assert_eq!(result.mask, IdMask::All);
     }
 
     #[test]
@@ -595,7 +618,7 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let mut pool = IdBitmapPool::new();
 
-        // checking for Traces on a Logs batch → false
+        // checking for Traces on a Logs batch -> false
         let mut op = signal_type_eval(SignalType::Traces);
 
         let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
@@ -604,10 +627,10 @@ mod test {
             other => panic!("expected false scalar, got {other:?}"),
         }
 
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
-        assert_eq!(mask, IdMask::None);
+        assert_eq!(result.mask, IdMask::None);
     }
 
     #[test]
@@ -619,9 +642,9 @@ mod test {
         // This requires joining root (severity_number) with attributes (code.line.number value).
         //
         // Data:
-        //   row 0: severity_number=13, code.line.number=42  → 13 > 42 → false
-        //   row 1: severity_number=17, code.line.number=100 → 17 > 100 → false
-        //   row 2: severity_number=13, code.line.number=7   → 13 > 7 → true
+        //   row 0: severity_number=13, code.line.number=42  -> 13 > 42 -> false
+        //   row 1: severity_number=17, code.line.number=100 -> 17 > 100 -> false
+        //   row 2: severity_number=13, code.line.number=7   -> 13 > 7 -> true
         //
         // Note: severity_number is Int32 on the root batch, but the AnyValue int column is
         // Int64. We cast the left side to Int64 to match.
@@ -650,6 +673,8 @@ mod test {
 
         let mut op = ScopedExpr::JoinAndEval {
             children: vec![left_child, right_child],
+            default_null_children: false,
+            align_children_to_root: false,
             eval: LeafEval::new_df_expr(
                 Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
                     Box::new(col(arg_column_name(0))),
@@ -679,9 +704,9 @@ mod test {
         // severity_text == "WARN" AND attributes["code.namespace"] == "main"
         //
         // Data:
-        //   row 0: severity_text="WARN", code.namespace="main" → true AND true → true
-        //   row 1: severity_text="ERROR", code.namespace="test" → false AND false → false
-        //   row 2: severity_text="WARN", code.namespace="main" → true AND true → true
+        //   row 0: severity_text="WARN", code.namespace="main" -> true AND true -> true
+        //   row 1: severity_text="ERROR", code.namespace="test" -> false AND false -> false
+        //   row 2: severity_text="WARN", code.namespace="main" -> true AND true -> true
         //
         // Note: attribute str values are dictionary-encoded, so we need dict downcast enabled.
 
@@ -695,11 +720,11 @@ mod test {
         let mut op = ScopedExpr::BitmapAnd(Box::new(left), Box::new(right));
 
         // test execute_as_id_mask
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0));
                 assert!(!bitmap.contains(1));
@@ -735,8 +760,8 @@ mod test {
 
         // attributes["nonexistent"] == "x" OR severity_text == "WARN"
         //
-        // Left side: "nonexistent" attribute doesn't exist → IdMask::None
-        // Right side: severity_text == "WARN" → rows 0 and 2 pass
+        // Left side: "nonexistent" attribute doesn't exist -> IdMask::None
+        // Right side: severity_text == "WARN" -> rows 0 and 2 pass
         // OR result: should be rows 0 and 2
 
         let left = attrs_eval(
@@ -748,11 +773,11 @@ mod test {
 
         let mut op = ScopedExpr::BitmapOr(Box::new(left), Box::new(right));
 
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0));
                 assert!(!bitmap.contains(1));
@@ -776,11 +801,11 @@ mod test {
         let inner = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
         let mut op = ScopedExpr::BitmapNot(Box::new(inner));
 
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::NotSome(bitmap) => {
                 // NotSome means "everything except what's in the bitmap"
                 // The inner produced Some({0, 2}), so NOT is NotSome({0, 2})
@@ -814,9 +839,9 @@ mod test {
         //   AND severity_text == "WARN"
         //
         // Data:
-        //   row 0: namespace="main", line=42, severity="WARN" → true
-        //   row 1: namespace="test", line=100, severity="ERROR" → false
-        //   row 2: namespace="main", line=7, severity="WARN" → false (line != 42)
+        //   row 0: namespace="main", line=42, severity="WARN" -> true
+        //   row 1: namespace="test", line=100, severity="ERROR" -> false
+        //   row 2: namespace="main", line=7, severity="WARN" -> false (line != 42)
 
         // Note: attribute str values are dictionary-encoded, so we need dict downcast.
         // Attribute int values are stored in the "int" column (Int64).
@@ -836,11 +861,11 @@ mod test {
         let inner_and = ScopedExpr::BitmapAnd(Box::new(attr_namespace), Box::new(attr_line));
         let mut op = ScopedExpr::BitmapAnd(Box::new(inner_and), Box::new(severity));
 
-        let mask = op
+        let result = op
             .execute_as_id_mask(&otap, &session_ctx, &mut pool)
             .unwrap();
 
-        match &mask {
+        match &result.mask {
             IdMask::Some(bitmap) => {
                 assert!(bitmap.contains(0), "row 0 should match");
                 assert!(!bitmap.contains(1), "row 1 should not match");

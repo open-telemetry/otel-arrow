@@ -147,6 +147,7 @@ struct PendingForward {
 
 /// Declares the topic receiver as a local receiver factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: TOPIC_RECEIVER_URN,
@@ -743,8 +744,8 @@ mod tests {
     use otap_df_engine::testing::exporter::create_test_pipeline_context;
     use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
     use otap_df_engine::topic::{
-        PipelineTopicBinding, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
-        TrackedPublishOutcome,
+        PipelineTopicBinding, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy, TopicBroker,
+        TopicOptions, TopicSet, TrackedPublishOutcome,
     };
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_otap::testing::{create_test_pdata, next_ack};
@@ -814,6 +815,7 @@ mod tests {
                         balanced_capacity: 16,
                         broadcast_capacity: 16,
                         on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                        ack_mode: TopicBroadcastAckMode::First,
                     },
                 )
                 .expect("topic should be created");
@@ -919,6 +921,7 @@ mod tests {
                     TopicOptions::BroadcastOnly {
                         capacity: 4,
                         on_lag: TopicBroadcastOnLagPolicy::Disconnect,
+                        ack_mode: TopicBroadcastAckMode::First,
                     },
                 )
                 .expect("topic should be created");
@@ -1015,6 +1018,7 @@ mod tests {
                         balanced_capacity: 16,
                         broadcast_capacity: 16,
                         on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                        ack_mode: TopicBroadcastAckMode::First,
                     },
                 )
                 .expect("topic should be created");
@@ -1110,6 +1114,7 @@ mod tests {
                         balanced_capacity: 16,
                         broadcast_capacity: 16,
                         on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                        ack_mode: TopicBroadcastAckMode::First,
                     },
                 )
                 .expect("topic should be created");
@@ -1230,6 +1235,7 @@ mod tests {
                         balanced_capacity: 16,
                         broadcast_capacity: 16,
                         on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                        ack_mode: TopicBroadcastAckMode::First,
                     },
                 )
                 .expect("topic should be created");

@@ -47,6 +47,35 @@ impl OperationOptions {
     }
 }
 
+/// Timeout options for terminal admin delete operations.
+///
+/// Delete operations exposed through the first lifecycle endpoints are
+/// synchronous from the caller's perspective: the server drains any running
+/// runtime work it owns, removes committed state, and returns a terminal
+/// status. `timeout_secs` controls the graceful drain window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteOptions {
+    /// Maximum number of seconds to wait for graceful drain before delete fails.
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+impl Default for DeleteOptions {
+    fn default() -> Self {
+        Self {
+            timeout_secs: default_timeout_secs(),
+        }
+    }
+}
+
+impl DeleteOptions {
+    /// Converts these options into URL query pairs for SDK transports.
+    #[must_use]
+    pub fn to_query_pairs(&self) -> Vec<(&'static str, String)> {
+        vec![("timeout_secs", self.timeout_secs.to_string())]
+    }
+}
+
 /// Typed request rejection for live admin operations.
 ///
 /// This is returned when the server refuses to start the requested operation at
@@ -120,6 +149,16 @@ mod tests {
         assert_eq!(
             serde_json::to_value(parsed).expect("model should serialize"),
             value
+        );
+    }
+
+    /// Scenario: the SDK serializes terminal delete operation options.
+    /// Guarantees: the query shape remains stable for HTTP transports.
+    #[test]
+    fn delete_options_query_pairs_include_timeout() {
+        assert_eq!(
+            DeleteOptions { timeout_secs: 30 }.to_query_pairs(),
+            vec![("timeout_secs", "30".to_string())]
         );
     }
 }

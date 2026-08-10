@@ -1,0 +1,19 @@
+[package]
+name = "severity-filter-guest"
+description = "Reference WASM guest plugin: filter log records where severity == ERROR"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.46", default-features = false, features = ["macros", "realloc"] }
+dlmalloc = { version = "0.2", features = ["global"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Rust Dataflow Engine</title>
+  <title>OTel-Arrow Dataflow Engine</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- External UI helpers: utility classes and chart runtime. -->
@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="/static/css/ui.css" />
 </head>
 <body class="min-h-screen text-slate-100">
-<div class="max-w-6xl mx-auto px-4 py-6">
+<div class="max-w-6xl mx-auto px-4 py-6 page-shell">
   <!-- Sticky zone: remains pinned on desktop and contains global controls + summary cards. -->
   <div id="top-panels" class="sticky-panels space-y-6">
   <!-- App header: time controls, connection, and theme toggles. -->
@@ -23,7 +23,7 @@
       <div class="flex items-center gap-3">
         <img src="/static/opentelemetry-logo.svg" alt="OpenTelemetry logo" class="brand-logo" />
         <h1 class="text-2xl font-semibold tracking-tight">
-          Rust Dataflow Engine
+          OTel-Arrow Dataflow Engine
         </h1>
       </div>
       <div class="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
@@ -45,6 +45,13 @@
           <input id="toggle-zero" type="checkbox" class="sr-only" />
           <span>Hide zero activity</span>
           <span id="toggle-zero-track" class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+        <label id="toggle-fullwidth-wrap" class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-300 cursor-pointer">
+          <input id="toggle-fullwidth" type="checkbox" class="sr-only" />
+          <span>Full width</span>
+          <span id="toggle-fullwidth-track" class="toggle-track">
             <span class="toggle-thumb"></span>
           </span>
         </label>

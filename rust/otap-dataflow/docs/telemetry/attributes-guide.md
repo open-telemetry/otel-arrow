@@ -89,6 +89,46 @@ Do not duplicate information:
   signal-specific attribute.
 - Prefer a single canonical key.
 
+### How the layers are rendered
+
+The self-telemetry pipeline emits each category on its correct OpenTelemetry
+layer for **every exported signal** - both metrics and logs (see issue #3161).
+The mapping is signal-independent:
+
+| Category | OTLP metrics and logs | Admin Prometheus metrics |
+| --- | --- | --- |
+| Resource | Resource attributes | `target_info` gauge labels |
+| Entity | Instrumentation scope attributes | `otel_scope_*` series labels |
+| Signal-specific | Point or record attributes | Inline point labels |
+
+Notes:
+
+- Resource attributes are produced by the detectors listed in
+  `engine.telemetry.detectors` (default `service_instance`, `env`, `service_name`);
+  `host`, `os`, `process`, `container`, and `k8s` are opt-in, and an unrecognized
+  detector name fails engine startup. Precedence is explicitly configured
+  `engine.telemetry.resource` attributes > detectors > the build-info defaults for
+  `service.name`/`service.version`.
+- The opt-in `process` detector emits `process.command_args` (the full command
+  line), which can include secrets passed as arguments. Enable it only where
+  that is acceptable.
+- The **same** resolved resource map feeds every consumer: the native OTLP
+  metric and log resource encoders and the admin `target_info` gauge - so
+  resource identity is consistent across metrics, logs, and the admin
+  endpoint.
+- Entity identity is resolved from the telemetry registry once per entity and
+  attached as `InstrumentationScope.attributes` for both metrics and logs
+  (logs carry entity keys via their `LogContext`). On the admin Prometheus
+  endpoint the same entity attributes are rendered as `otel_scope_*` labels per
+  the OpenTelemetry-to-Prometheus specification; the reserved keys
+  `otel_scope_name`, `otel_scope_version`, and `otel_scope_schema_url` are not
+  overridden.
+- Engine-global signals (e.g. the `memory_rss` metric) carry no scope
+  attributes; their identity comes entirely from the Resource layer.
+- Metric sets support bounded enum attributes on the signal-specific data-point
+  layer. See
+  [Item Attributes for Metrics](item-attributes.md).
+
 ### Core rule
 
 Attributes attached to core system metrics MUST have bounded cardinality.

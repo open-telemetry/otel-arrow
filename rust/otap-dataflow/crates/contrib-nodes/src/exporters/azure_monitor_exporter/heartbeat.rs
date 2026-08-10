@@ -112,14 +112,18 @@ fn default_heartbeat_os_type() -> String {
 impl Heartbeat {
     /// Create a new Heartbeat instance.
     pub fn new(config: &ApiConfig, overrides: &HeartbeatOverrides) -> Result<Self, Error> {
-        let http_client = Client::builder()
+        let mut builder = Client::builder()
             .http1_only()
             .timeout(Duration::from_secs(30))
             .pool_max_idle_per_host(MAX_IDLE_CONNECTIONS_PER_HOST)
             .pool_idle_timeout(Duration::from_secs(90))
-            .tcp_nodelay(true)
-            .build()
-            .map_err(Error::CreateClient)?;
+            .tcp_nodelay(true);
+
+        if let Some(ua) = &config.user_agent {
+            builder = builder.user_agent(ua.as_str());
+        }
+
+        let http_client = builder.build().map_err(Error::CreateClient)?;
 
         let (os_major, os_minor) = parse_os_version();
 
@@ -350,6 +354,7 @@ mod tests {
             },
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
+            user_agent: None,
         };
 
         let expected = format!(
@@ -639,6 +644,7 @@ mod tests {
             },
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
+            user_agent: None,
         }
     }
 

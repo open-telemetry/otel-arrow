@@ -3,6 +3,7 @@
 
 use bytes::Bytes;
 
+use otap_df_telemetry::common_attributes::HttpResponse;
 use otap_df_telemetry::otel_debug;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use reqwest::{
@@ -60,18 +61,26 @@ impl LogsIngestionClientPool {
         }
     }
 
-    fn create_http_clients(&self, count: usize) -> Result<Vec<Client>, Error> {
+    fn create_http_clients(
+        &self,
+        count: usize,
+        user_agent: Option<&str>,
+    ) -> Result<Vec<Client>, Error> {
         let mut clients = Vec::with_capacity(count);
 
         for _ in 0..count {
-            let http_client = Client::builder()
+            let mut builder = Client::builder()
                 .http1_only()
                 .timeout(Duration::from_secs(30))
                 .pool_max_idle_per_host(MAX_IDLE_CONNECTIONS_PER_HOST)
                 .pool_idle_timeout(Duration::from_secs(90))
-                .tcp_nodelay(true)
-                .build()
-                .map_err(Error::CreateClient)?;
+                .tcp_nodelay(true);
+
+            if let Some(ua) = user_agent {
+                builder = builder.user_agent(ua);
+            }
+
+            let http_client = builder.build().map_err(Error::CreateClient)?;
 
             clients.push(http_client);
         }
@@ -80,7 +89,8 @@ impl LogsIngestionClientPool {
     }
 
     pub async fn initialize(&mut self, config: &ApiConfig) -> Result<(), Error> {
-        let http_clients = self.create_http_clients(self.clients.capacity())?;
+        let http_clients =
+            self.create_http_clients(self.clients.capacity(), config.user_agent.as_deref())?;
 
         for http_client in http_clients {
             let client = LogsIngestionClient::new(config, http_client, self.metrics.clone())?;
@@ -263,7 +273,10 @@ impl LogsIngestionClient {
         let response = match request.body(body).send().await {
             Ok(resp) => resp,
             Err(e) => {
-                self.metrics.borrow_mut().add_network_error();
+                self.metrics.borrow_mut().record_http_attempt(
+                    HttpResponse::NetworkError,
+                    start.elapsed().as_millis() as f64,
+                );
                 return Err(Error::network(e));
             }
         };
@@ -271,15 +284,12 @@ impl LogsIngestionClient {
         let status_code = response.status().as_u16();
         let elapsed = start.elapsed();
 
-        // Record per-attempt status code
-        self.metrics
-            .borrow_mut()
-            .record_laclient_status_code(status_code);
+        self.metrics.borrow_mut().record_http_attempt(
+            http_response_for_status(status_code),
+            elapsed.as_millis() as f64,
+        );
 
         if response.status().is_success() {
-            self.metrics
-                .borrow_mut()
-                .add_client_success_latency(elapsed.as_millis() as f64);
             return Ok(elapsed);
         }
 
@@ -315,13 +325,26 @@ impl LogsIngestionClient {
     }
 }
 
+fn http_response_for_status(status: u16) -> HttpResponse {
+    match status {
+        200..=299 => HttpResponse::Http2xx,
+        400 => HttpResponse::Http400,
+        401 => HttpResponse::Http401,
+        403 => HttpResponse::Http403,
+        404 => HttpResponse::Http404,
+        413 => HttpResponse::Http413,
+        429 => HttpResponse::Http429,
+        500..=599 => HttpResponse::Http5xx,
+        _ => HttpResponse::Other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::metrics::AzureMonitorExporterMetrics;
     use super::super::metrics::AzureMonitorExporterMetricsTracker;
     use super::*;
+    use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::testing::EmptyAttributes;
     use reqwest::header::HeaderValue;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -330,10 +353,11 @@ mod tests {
 
     fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
         let registry = TelemetryRegistryHandle::new();
-        let metric_set =
-            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
-        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
-            metric_set,
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx: PipelineContext =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::register(
+            &pipeline_ctx,
         )))
     }
 
@@ -345,6 +369,7 @@ mod tests {
             schema: Default::default(),
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
+            user_agent: None,
         }
     }
 
@@ -354,6 +379,15 @@ mod tests {
             .timeout(Duration::from_secs(5))
             .build()
             .expect("failed to create HTTP client")
+    }
+
+    /// Scenario: Azure Monitor returns classified client-error and unclassified HTTP statuses.
+    /// Guarantees: 400 and 404 have dedicated metric buckets; other statuses use `Other`.
+    #[test]
+    fn classifies_client_error_and_unexpected_statuses() {
+        assert_eq!(http_response_for_status(400), HttpResponse::Http400);
+        assert_eq!(http_response_for_status(404), HttpResponse::Http404);
+        assert_eq!(http_response_for_status(418), HttpResponse::Other);
     }
 
     // ==================== Construction Tests ====================
@@ -367,6 +401,7 @@ mod tests {
             schema: Default::default(),
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
+            user_agent: None,
         };
 
         let http_client = create_test_http_client();
@@ -389,6 +424,7 @@ mod tests {
             schema: Default::default(),
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
+            user_agent: None,
         };
 
         let http_client = create_test_http_client();
@@ -634,7 +670,7 @@ mod tests {
         otap_df_otap::crypto::ensure_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
-        let result = pool.create_http_clients(4);
+        let result = pool.create_http_clients(4, None);
 
         assert!(result.is_ok());
         let clients = result.unwrap();
@@ -646,11 +682,22 @@ mod tests {
         otap_df_otap::crypto::ensure_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
-        let result = pool.create_http_clients(0);
+        let result = pool.create_http_clients(0, None);
 
         assert!(result.is_ok());
         let clients = result.unwrap();
         assert_eq!(clients.len(), 0);
+    }
+
+    #[test]
+    fn test_pool_create_http_clients_with_user_agent() {
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let pool = LogsIngestionClientPool::new(4, create_test_metrics());
+
+        let result = pool.create_http_clients(4, Some("my-app/1.0"));
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 4);
     }
 
     // ==================== Resource ID Header Tests ====================

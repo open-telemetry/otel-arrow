@@ -6,13 +6,13 @@ context through the bridge.
 To run the exporting side of the bridge,
 
 ```shell
-$COLLECTOR --config edge-collector.yaml
+collector --config edge-collector.yaml
 ```
 
 To run the receiving side of the bridge,
 
 ```shell
-$COLLECTOR --config saas-collector.yaml
+collector --config saas-collector.yaml
 ```
 
 You may use the

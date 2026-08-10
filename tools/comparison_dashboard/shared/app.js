@@ -139,11 +139,15 @@ function filterComparison(comparison, suiteData, filterState) {
 }
 
 function buildFilterHtml(categories, filterState) {
+  const descriptions = (typeof window !== "undefined" && window.META_DESCRIPTIONS) || {};
   const groups = Object.entries(categories).map(([cat, vals]) => {
     const checked = filterState.get(cat) || new Set();
-    const opts = vals.map((v) =>
-      `<label class="chart-filter-option"><input type="checkbox" data-filter-category="${escapeHtml(cat)}" data-filter-value="${escapeHtml(v)}" ${checked.has(v) ? "checked" : ""}> ${escapeHtml(v)}</label>`
-    ).join("");
+    const catDescs = descriptions[cat] || {};
+    const opts = vals.map((v) => {
+      const desc = catDescs[v];
+      const descAttr = desc ? ` data-meta-description="${escapeHtml(desc)}"` : "";
+      return `<label class="chart-filter-option"${descAttr}><input type="checkbox" data-filter-category="${escapeHtml(cat)}" data-filter-value="${escapeHtml(v)}" ${checked.has(v) ? "checked" : ""}> ${escapeHtml(v)}</label>`;
+    }).join("");
     const label = FILTER_LABELS[cat] || cat.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     return `<div class="chart-filter-group"><span class="chart-filter-label">${escapeHtml(label)}:</span>${opts}</div>`;
   }).join("");
@@ -160,6 +164,21 @@ function wireFilters(container, compSlug, categories, onChange) {
       cb.checked ? s.add(cb.dataset.filterValue) : s.delete(cb.dataset.filterValue);
       onChange();
     };
+  }
+  for (const opt of container.querySelectorAll(".chart-filter-option[data-meta-description]")) {
+    const desc = opt.dataset.metaDescription;
+    if (!desc) continue;
+    opt.addEventListener("mouseenter", (e) => showAxisHoverTooltip(e.clientX, e.clientY, desc));
+    opt.addEventListener("mouseleave", hideAxisHoverTooltip);
+    // Keyboard parity: focusin/focusout bubble up from the nested <input>,
+    // so tabbing through filter checkboxes also reveals the description.
+    // Anchor the tooltip to the option's bounding box since focus events
+    // have no pointer coordinates.
+    opt.addEventListener("focusin", () => {
+      const r = opt.getBoundingClientRect();
+      showAxisHoverTooltip(r.left, r.bottom, desc);
+    });
+    opt.addEventListener("focusout", hideAxisHoverTooltip);
   }
   const resetBtn = container.querySelector(".chart-filter-reset");
   if (resetBtn) {
@@ -701,32 +720,15 @@ function highlightFileContent(name, content) {
 
 const perComparisonMetrics = new Map();
 
-function renderColorblindToggle() {
-  const label = colorblindMode ? "Standard Colors" : "Colorblind Mode";
-  return `<button class="colorblind-toggle${colorblindMode ? " active" : ""}" type="button" title="Toggle colorblind-friendly palette">${label}</button>`;
-}
-
-function wireColorblindToggle(container, rerender) {
-  const btn = container.querySelector(".colorblind-toggle");
-  if (!btn) return;
-  btn.onclick = () => {
-    colorblindMode = !colorblindMode;
-    localStorage.setItem("colorblindMode", String(colorblindMode));
-    patternCache.clear();
-    rerender();
-  };
-}
-
 function renderLandingPage() {
   const app = document.getElementById("app");
   const cardsEl = document.getElementById("comparison-cards");
   if (!app) return;
   const suiteData = loadSuiteData();
   const comparisons = window.COMPARISONS || [];
-  app.innerHTML = renderColorblindToggle();
+  app.innerHTML = "";
   for (const c of activeCharts.values()) c.destroy();
   activeCharts.clear();
-  wireColorblindToggle(app, renderLandingPage);
   if (!comparisons.length) { if (cardsEl) cardsEl.innerHTML = '<div class="muted" style="padding:16px">No comparisons defined.</div>'; return; }
   if (cardsEl) {
     cardsEl.innerHTML = comparisons.map((comp) => renderComparisonSection(suiteData, comp)).join("");
@@ -810,7 +812,6 @@ function renderComparisonPage(compSlug) {
       <div class="sub">${escapeHtml(comparison.description || "")}</div>
     </div>
     ${envHeaderHtml}
-    ${renderColorblindToggle()}
     ${filterHtml}
     <div id="comparison-chart"></div>
     <div id="comparison-detail"></div>`;
@@ -828,7 +829,6 @@ function renderComparisonPage(compSlug) {
     renderComparisonChart(suiteData, filtered, tests, (si, tn) => { detailSuiteIdx = si; detailTestName = tn; setDetail(si, tn); });
   }
 
-  wireColorblindToggle(app, () => renderComparisonPage(compSlug));
   const fc = app.querySelector(".chart-filters");
   if (fc) wireFilters(fc, compSlug, categories, renderAll);
   renderAll();
@@ -1085,6 +1085,93 @@ async function openFileModal(suiteSlug, testName, fileName) {
   }
 }
 
+// ── Controls bar + legend banner ──────────────────────────────────────────
+
+const LEGEND_STORAGE_KEY = "legend-banner-expanded";
+
+function readBoolPref(key, defaultValue) {
+  try {
+    const v = window.localStorage.getItem(key);
+    if (v === null) return defaultValue;
+    return v === "1" || v === "true";
+  } catch { return defaultValue; }
+}
+
+function writeBoolPref(key, value) {
+  try { window.localStorage.setItem(key, value ? "1" : "0"); } catch { /* ignore */ }
+}
+
+function renderSwitch(id, label, checked) {
+  return `
+    <label class="switch-control" for="${id}">
+      <span class="switch-label">${escapeHtml(label)}</span>
+      <button id="${id}" class="switch${checked ? " on" : ""}" type="button" role="switch" aria-checked="${checked ? "true" : "false"}">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+      </button>
+    </label>`;
+}
+
+function initLegendBanner() {
+  const banner = document.getElementById("legend-banner");
+  if (!banner) return;
+  const glossary = (typeof window !== "undefined" && window.GLOSSARY) || [];
+  if (!Array.isArray(glossary) || glossary.length === 0) {
+    banner.hidden = true;
+    return;
+  }
+  const items = glossary.map((g) =>
+    `<div class="legend-item"><dt class="legend-term">${escapeHtml(g.term)}</dt><dd class="legend-def">${escapeHtml(g.definition)}</dd></div>`
+  ).join("");
+  banner.innerHTML = `<dl class="legend-banner-body" id="legend-banner-body">${items}</dl>`;
+  const expanded = readBoolPref(LEGEND_STORAGE_KEY, true);
+  banner.classList.toggle("collapsed", !expanded);
+}
+
+function setLegendVisible(visible) {
+  const banner = document.getElementById("legend-banner");
+  if (banner) banner.classList.toggle("collapsed", !visible);
+  writeBoolPref(LEGEND_STORAGE_KEY, visible);
+}
+
+function initControlsBar() {
+  const bar = document.getElementById("controls-bar");
+  if (!bar) return;
+  const glossary = (typeof window !== "undefined" && window.GLOSSARY) || [];
+  const hasGlossary = Array.isArray(glossary) && glossary.length > 0;
+  const legendOn = readBoolPref(LEGEND_STORAGE_KEY, true);
+  const parts = [];
+  if (hasGlossary) parts.push(renderSwitch("switch-glossary", "Glossary", legendOn));
+  parts.push(renderSwitch("switch-colorblind", "Colorblind mode", colorblindMode));
+  bar.innerHTML = parts.join("");
+
+  const glossaryBtn = bar.querySelector("#switch-glossary");
+  if (glossaryBtn) {
+    glossaryBtn.addEventListener("click", () => {
+      const next = !glossaryBtn.classList.contains("on");
+      glossaryBtn.classList.toggle("on", next);
+      glossaryBtn.setAttribute("aria-checked", next ? "true" : "false");
+      setLegendVisible(next);
+    });
+  }
+  const cbBtn = bar.querySelector("#switch-colorblind");
+  if (cbBtn) {
+    cbBtn.addEventListener("click", () => {
+      const next = !cbBtn.classList.contains("on");
+      cbBtn.classList.toggle("on", next);
+      cbBtn.setAttribute("aria-checked", next ? "true" : "false");
+      colorblindMode = next;
+      try { localStorage.setItem("colorblindMode", String(colorblindMode)); } catch { /* private-mode storage may throw */ }
+      patternCache.clear();
+      rerenderCurrentPage();
+    });
+  }
+}
+
+function rerenderCurrentPage() {
+  if (window.COMPARISON_SLUG) renderComparisonPage(window.COMPARISON_SLUG);
+  else if (window.COMPARISONS) renderLandingPage();
+}
+
 // ── Modal init + Bootstrap ─────────────────────────────────────────────────
 
 function initModal() {
@@ -1097,6 +1184,8 @@ function initModal() {
 }
 
 function main() {
+  initLegendBanner();
+  initControlsBar();
   initModal();
   if (window.COMPARISON_SLUG) renderComparisonPage(window.COMPARISON_SLUG);
   else if (window.COMPARISONS) renderLandingPage();

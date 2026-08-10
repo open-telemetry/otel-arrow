@@ -11,6 +11,41 @@ changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.50.0
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Go dependencies. ([#3429](https://github.com/open-telemetry/otel-arrow/issues/3429), [#3460](https://github.com/open-telemetry/otel-arrow/issues/3460))
+
+<!-- previous-version -->
+
+## v0.49.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `collector/cmd/otelarrowcol`: Remove the generated `collector/cmd/otelarrowcol` collector module and its `go.mod`/`go.sum` ([#1482](https://github.com/open-telemetry/otel-arrow/issues/1482), [#2439](https://github.com/open-telemetry/otel-arrow/issues/2439), [#2440](https://github.com/open-telemetry/otel-arrow/issues/2440))
+  The `github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol` module
+  is no longer published. The OpenTelemetry Protocol with Apache Arrow (OTAP)
+  components are now exercised using the upstream OpenTelemetry Collector
+  Contrib distribution instead of a collector generated in this repository.
+  This removes a large set of test-only collector dependencies (and the
+  associated dependency/security alerts) from the repository.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Go dependencies. ([#3185](https://github.com/open-telemetry/otel-arrow/issues/3185), [#3295](https://github.com/open-telemetry/otel-arrow/issues/3295), [#3338](https://github.com/open-telemetry/otel-arrow/issues/3338), [#3339](https://github.com/open-telemetry/otel-arrow/issues/3339))
+
+<!-- previous-version -->
+
+## v0.48.0
+
+### :bulb: Enhancements :bulb:
+
+- `all`: Adopt the chloggen tool for managing changelog entries. ([#1423](https://github.com/open-telemetry/otel-arrow/issues/1423))
+- `dependencies`: Upgrade various Go dependencies. ([#2546](https://github.com/open-telemetry/otel-arrow/issues/2546), [#2547](https://github.com/open-telemetry/otel-arrow/issues/2547), [#2595](https://github.com/open-telemetry/otel-arrow/issues/2595), [#2625](https://github.com/open-telemetry/otel-arrow/issues/2625), [#2708](https://github.com/open-telemetry/otel-arrow/issues/2708), [#2801](https://github.com/open-telemetry/otel-arrow/issues/2801), [#2814](https://github.com/open-telemetry/otel-arrow/issues/2814), [#2815](https://github.com/open-telemetry/otel-arrow/issues/2815), [#2903](https://github.com/open-telemetry/otel-arrow/issues/2903), [#2911](https://github.com/open-telemetry/otel-arrow/issues/2911), [#2923](https://github.com/open-telemetry/otel-arrow/issues/2923), [#2999](https://github.com/open-telemetry/otel-arrow/issues/2999), [#3099](https://github.com/open-telemetry/otel-arrow/issues/3099), [#3131](https://github.com/open-telemetry/otel-arrow/issues/3131), [#3136](https://github.com/open-telemetry/otel-arrow/issues/3136), [#3162](https://github.com/open-telemetry/otel-arrow/issues/3162))
+
+<!-- previous-version -->
+
 ## [0.47.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.47.0) - 2026-04-02
 
 - Upgrade various Go dependencies.

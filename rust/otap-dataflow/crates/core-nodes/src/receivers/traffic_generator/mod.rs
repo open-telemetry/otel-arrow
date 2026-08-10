@@ -40,6 +40,9 @@ use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
 use self::producer::{GenerateError, TrafficProducer};
 
 pub mod attributes;
+
+#[cfg(all(test, feature = "dev-tools"))]
+mod compression_ratio_tests;
 /// allows the user to configure their traffic generator receiver
 pub mod config;
 /// provides synthetic data for generated signals
@@ -90,6 +93,7 @@ fn elapsed_nanos(start: StdInstant) -> f64 {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: TRAFFIC_GENERATOR_RECEIVER_URN,
@@ -381,12 +385,18 @@ impl TrafficGeneratorReceiver {
     ) -> Result<Result<u64, OtapPdata>, Error> {
         let signal = pdata.signal_type();
         let count = pdata.num_items() as u64;
+        let payload_bytes = pdata.payload_ref().num_bytes();
         match handler.try_send_message_with_source_node(pdata) {
             Ok(()) => {
                 match signal {
                     otap_df_config::SignalType::Traces => self.metrics.spans_produced.add(count),
                     otap_df_config::SignalType::Metrics => self.metrics.metrics_produced.add(count),
-                    otap_df_config::SignalType::Logs => self.metrics.logs_produced.add(count),
+                    otap_df_config::SignalType::Logs => {
+                        self.metrics.logs_produced.add(count);
+                        if let Some(bytes) = payload_bytes {
+                            self.metrics.logs_bytes_produced.add(bytes as u64);
+                        }
+                    }
                 };
                 Ok(Ok(count))
             }
@@ -1244,7 +1254,7 @@ mod tests {
 
     /// Regression test: verifies that a non-terminal control message
     /// (CollectTelemetry) arriving during the rate-limit sleep does NOT
-    /// break the sleep early – the receiver should still respect the
+    /// break the sleep early - the receiver should still respect the
     /// original wait_till deadline.
     #[test]
     fn test_non_terminal_ctrl_msg_does_not_break_rate_limit_sleep() {

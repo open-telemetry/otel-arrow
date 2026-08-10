@@ -11,7 +11,9 @@
 //! Note 2: Other runtime-control messages can be added in the future, but currently only timers
 //! are supported.
 
-use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
+use crate::channel_metrics::{
+    ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
+};
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::context::PipelineContext;
@@ -25,13 +27,16 @@ use crate::control_plane_metrics::{PipelineCompletionMetricsState, RuntimeContro
 use crate::error::Error;
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
+use crate::terminal_state::TerminalMetricsDeadline;
 use crate::{Interests, RequestOutcome, Unwindable};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::MetricLevel;
+use otap_df_config::SignalType;
 use otap_df_config::policy::TelemetryPolicy;
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::event::{EngineEvent, ObservedEventReporter};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_debug, otel_warn};
@@ -193,10 +198,14 @@ fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
 pub(crate) struct NodeMetricHandles {
     /// Registry handle for automatic unregistration on drop.
     pub(crate) registry: TelemetryRegistryHandle,
-    /// Consumed-request metrics for the node's input channel.
-    pub(crate) input: Option<MetricSet<ConsumedMetrics>>,
-    /// Produced-request metrics indexed by output port.
-    pub(crate) outputs: Vec<MetricSet<ProducedMetrics>>,
+    /// Consumed-message metrics for the node's input channel.
+    pub(crate) input: Option<MeasurementMetricSet<ConsumedMetrics>>,
+    /// Optional consumed-item metrics for the node's input channel.
+    pub(crate) input_items: Option<MeasurementMetricSet<ConsumedItemMetrics>>,
+    /// Produced-message metrics indexed by output port.
+    pub(crate) outputs: Vec<MeasurementMetricSet<ProducedMetrics>>,
+    /// Optional produced-item metrics indexed by output port.
+    pub(crate) output_items: Vec<MeasurementMetricSet<ProducedItemMetrics>>,
     /// Completion-emission metrics for completions routed by the node.
     pub(crate) completion_emission: Option<CompletionEmissionMetricsHandle>,
 }
@@ -208,10 +217,16 @@ pub(crate) fn report_node_metrics_with_handles(
     let mut handles_guard = node_metric_handles.borrow_mut();
     for handles in handles_guard.iter_mut().flatten() {
         if let Some(input) = &mut handles.input {
-            metrics_reporter.report(input)?;
+            metrics_reporter.report_measurement(input)?;
+        }
+        if let Some(input_items) = &mut handles.input_items {
+            metrics_reporter.report_measurement(input_items)?;
         }
         for output in &mut handles.outputs {
-            metrics_reporter.report(output)?;
+            metrics_reporter.report_measurement(output)?;
+        }
+        for output_items in &mut handles.output_items {
+            metrics_reporter.report_measurement(output_items)?;
         }
         if let Some(completion_emission) = &handles.completion_emission {
             let mut completion_emission = completion_emission
@@ -223,13 +238,54 @@ pub(crate) fn report_node_metrics_with_handles(
     Ok(())
 }
 
+/// Takes owned snapshots of non-empty per-node metric sets for terminal reporting.
+pub(crate) fn snapshot_node_metrics_with_handles(
+    node_metric_handles: &Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
+) -> Vec<MetricSetSnapshot> {
+    let mut handles_guard = node_metric_handles.borrow_mut();
+    let mut snapshots = Vec::new();
+    for handles in handles_guard.iter_mut().flatten() {
+        if let Some(input) = &mut handles.input {
+            snapshots.extend(input.terminal_snapshots());
+        }
+        if let Some(input_items) = &mut handles.input_items {
+            snapshots.extend(input_items.terminal_snapshots());
+        }
+        for output in &mut handles.outputs {
+            snapshots.extend(output.terminal_snapshots());
+        }
+        for output_items in &mut handles.output_items {
+            snapshots.extend(output_items.terminal_snapshots());
+        }
+        if let Some(completion_emission) = &handles.completion_emission
+            && let Some(snapshot) = completion_emission
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .snapshot()
+        {
+            snapshots.push(snapshot);
+        }
+    }
+    snapshots
+}
+
 impl Drop for NodeMetricHandles {
     fn drop(&mut self) {
         if let Some(input) = self.input.take() {
             let _ = self.registry.unregister_metric_set(input.metric_set_key());
         }
+        if let Some(input_items) = self.input_items.take() {
+            let _ = self
+                .registry
+                .unregister_metric_set(input_items.metric_set_key());
+        }
         for output in self.outputs.drain(..) {
             let _ = self.registry.unregister_metric_set(output.metric_set_key());
+        }
+        for output_items in self.output_items.drain(..) {
+            let _ = self
+                .registry
+                .unregister_metric_set(output_items.metric_set_key());
         }
     }
 }
@@ -264,6 +320,8 @@ pub struct RuntimeCtrlMsgManager<PData> {
     control_plane_metrics_flush_interval: Duration,
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
+    /// Admission refusal metrics handles for periodic reporting.
+    admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
 
     /// Per-node metrics handles for recording consumed/produced outcomes.
     node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
@@ -277,6 +335,8 @@ pub struct RuntimeCtrlMsgManager<PData> {
     /// LocalSet runtime.
     pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
     runtime_control_metrics: RuntimeControlMetricsState,
+    /// One absolute deadline shared by all pipeline terminal metric handoffs.
+    terminal_metrics_deadline: TerminalMetricsDeadline,
 }
 
 impl<PData> RuntimeCtrlMsgManager<PData> {
@@ -293,7 +353,9 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         control_plane_metrics_flush_interval: Duration,
         telemetry_policy: TelemetryPolicy,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
+        admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
     ) -> Self {
         let mut result = Self {
             runtime_control_metrics: RuntimeControlMetricsState::new(
@@ -316,9 +378,11 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             metrics_reporter,
             control_plane_metrics_flush_interval,
             channel_metrics,
+            admission_metrics,
             node_metric_handles,
             telemetry: telemetry_policy,
             pending_sends: VecDeque::new(),
+            terminal_metrics_deadline,
         };
 
         // Register telemetry timers for all nodes centrally, using the
@@ -447,6 +511,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     consecutive_runtime_ctrl += 1;
                     match msg {
                         RuntimeControlMsg::Shutdown { deadline, reason } => {
+                            self.terminal_metrics_deadline.record(deadline);
                             if is_draining_ingress {
                                 continue;
                             }
@@ -699,10 +764,71 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             self.runtime_control_metrics
                 .record_shutdown_completed(clock::now());
         }
+
+        // The monitor owns registered metric-set keys. Take and reliably hand
+        // off one final sample before it is dropped so a full collector channel
+        // cannot turn the terminal pipeline/Tokio measurements into tombstones.
+        let terminal_metrics_deadline = self.terminal_metrics_deadline.get();
+        if let Some(pipeline_metrics_monitor) = pipeline_metrics_monitor.as_mut() {
+            if self.telemetry.pipeline_metrics {
+                pipeline_metrics_monitor.update_pipeline_metrics();
+                if let Err(err) = self
+                    .metrics_reporter
+                    .report_reliably_until(
+                        pipeline_metrics_monitor.metrics_mut(),
+                        terminal_metrics_deadline,
+                    )
+                    .await
+                {
+                    otel_warn!(
+                        "pipeline.metrics.final_reporting.fail",
+                        error = err.to_string()
+                    );
+                }
+            }
+
+            if self.telemetry.tokio_metrics {
+                pipeline_metrics_monitor.update_tokio_metrics();
+                if let Err(err) = self
+                    .metrics_reporter
+                    .report_reliably_until(
+                        pipeline_metrics_monitor.tokio_metrics_mut(),
+                        terminal_metrics_deadline,
+                    )
+                    .await
+                {
+                    otel_warn!(
+                        "tokio.metrics.final_reporting.fail",
+                        error = err.to_string()
+                    );
+                }
+            }
+
+            if let Err(err) = self
+                .metrics_reporter
+                .flush_until(terminal_metrics_deadline)
+                .await
+            {
+                otel_warn!(
+                    "pipeline.metrics.final_collection.flush.fail",
+                    error = err.to_string()
+                );
+            }
+        }
+
         // Flush one last time on actor exit so late counters and zero-valued
         // backlog transitions are not lost if the loop terminates before the
         // next periodic interval elapses.
-        self.report_runtime_control_metrics();
+        if let Err(err) = self
+            .runtime_control_metrics
+            .finish_reporting_until(terminal_metrics_deadline)
+            .await
+        {
+            otel_warn!(
+                "pipeline.runtime_control.metrics.final_reporting.fail",
+                error = err.to_string()
+            );
+        }
 
         if self.telemetry.runtime_metrics >= MetricLevel::Normal {
             let _ = self.report_node_metrics();
@@ -813,6 +939,11 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
                 }
             }
+            for metrics in &self.admission_metrics {
+                if let Err(err) = metrics.report(&mut self.metrics_reporter) {
+                    otel_warn!("admission.metrics.reporting.fail", error = err.to_string());
+                }
+            }
         }
         if self.telemetry.runtime_metrics >= MetricLevel::Normal {
             if let Err(err) = self.report_node_metrics() {
@@ -904,6 +1035,7 @@ pub struct PipelineCompletionMsgDispatcher<PData> {
     pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
     completion_metrics: PipelineCompletionMetricsState,
     control_plane_metrics_flush_interval: Duration,
+    terminal_metrics_deadline: TerminalMetricsDeadline,
 }
 
 impl<PData> PipelineCompletionMsgDispatcher<PData> {
@@ -916,6 +1048,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         metrics_reporter: MetricsReporter,
         control_plane_metrics_flush_interval: Duration,
         telemetry_policy: TelemetryPolicy,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
     ) -> Self {
         Self {
             pipeline_completion_msg_receiver,
@@ -928,6 +1061,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                 metrics_reporter,
                 telemetry_policy.runtime_metrics,
             ),
+            terminal_metrics_deadline,
         }
     }
 
@@ -997,6 +1131,9 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         node_id: usize,
         interests: Interests,
         route: &RouteData,
+        signal: Option<SignalType>,
+        produced_items: u32,
+        consumed_items: u32,
         outcome: RequestOutcome,
         now_ns: u64,
     ) {
@@ -1004,31 +1141,55 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         if let Some(Some(handles)) = handles_guard.get_mut(node_id) {
             if interests.contains(Interests::CONSUMER_METRICS) {
                 if let Some(input) = &mut handles.input {
-                    match outcome {
-                        RequestOutcome::Success => input.consumed_success.inc(),
-                        RequestOutcome::Failure => input.consumed_failure.inc(),
-                        RequestOutcome::Refused => input.consumed_refused.inc(),
-                    }
-                    if route.entry_time_ns > 0 && now_ns > 0 {
-                        let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                        input.consumed_duration_ns.record(duration_ns as f64);
+                    if let Some(signal) = signal {
+                        let outcome = match outcome {
+                            RequestOutcome::Success => Outcome::Success,
+                            RequestOutcome::Failure => Outcome::Failure,
+                            RequestOutcome::Refused => Outcome::Refused,
+                        };
+                        let input = input.with(SignalOutcomeAttributes { signal, outcome });
+                        input.consumed_messages.inc();
+                        if consumed_items > 0
+                            && let Some(input_items) = &mut handles.input_items
+                        {
+                            input_items
+                                .with(SignalOutcomeAttributes { signal, outcome })
+                                .consumed_items
+                                .add(consumed_items as u64);
+                        }
+                        if route.entry_time_ns > 0 && now_ns > 0 {
+                            let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
+                            input.consumed_duration_ns.record(duration_ns as f64);
+                        }
                     }
                 }
             }
             if interests.contains(Interests::PRODUCER_METRICS) {
                 let port = route.output_port_index as usize;
                 if let Some(output) = handles.outputs.get_mut(port) {
-                    match outcome {
-                        RequestOutcome::Success => output.produced_success.inc(),
-                        RequestOutcome::Failure => output.produced_failure.inc(),
-                        RequestOutcome::Refused => output.produced_refused.inc(),
-                    }
-                    if !interests.contains(Interests::CONSUMER_METRICS)
-                        && route.entry_time_ns > 0
-                        && now_ns > 0
-                    {
-                        let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                        output.produced_duration_ns.record(duration_ns as f64);
+                    if let Some(signal) = signal {
+                        let outcome = match outcome {
+                            RequestOutcome::Success => Outcome::Success,
+                            RequestOutcome::Failure => Outcome::Failure,
+                            RequestOutcome::Refused => Outcome::Refused,
+                        };
+                        let output = output.with(SignalOutcomeAttributes { signal, outcome });
+                        output.produced_messages.inc();
+                        if produced_items > 0
+                            && let Some(output_items) = handles.output_items.get_mut(port)
+                        {
+                            output_items
+                                .with(SignalOutcomeAttributes { signal, outcome })
+                                .produced_items
+                                .add(produced_items as u64);
+                        }
+                        if !interests.contains(Interests::CONSUMER_METRICS)
+                            && route.entry_time_ns > 0
+                            && now_ns > 0
+                        {
+                            let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
+                            output.produced_duration_ns.record(duration_ns as f64);
+                        }
                     }
                 }
             }
@@ -1109,7 +1270,16 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
         // Flush one final completion snapshot on exit so short-lived completion
         // bursts are still observed even if the dispatcher stops before the
         // next periodic interval.
-        self.report_completion_metrics();
+        if let Err(err) = self
+            .completion_metrics
+            .finish_reporting_until(self.terminal_metrics_deadline.get())
+            .await
+        {
+            otel_warn!(
+                "pipeline.completion.metrics.final_reporting.fail",
+                error = err.to_string()
+            );
+        }
         Ok(())
     }
 
@@ -1120,6 +1290,10 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
         outcome: RequestOutcome,
         interest: Interests,
     ) -> (Option<(usize, RouteData)>, usize) {
+        // Signal is a pdata-level property (one per homogeneous batch) stored on
+        // the pdata context, so read it once and attribute every frame's
+        // per-signal item counts to it. It survives payload drop.
+        let signal = pdata.signal();
         let mut unwind_depth = 0usize;
         loop {
             match pdata.pop_frame() {
@@ -1135,6 +1309,9 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
                             frame.node_id,
                             frame.interests,
                             &frame.route,
+                            signal,
+                            frame.produced_items,
+                            frame.consumed_items,
                             outcome,
                             now_ns,
                         );
@@ -1231,7 +1408,9 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
+    use crate::channel_metrics::{
+        ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
+    };
     use crate::context::{ControllerContext, PipelineContextParams};
     use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_birth};
     use crate::control::{
@@ -1242,6 +1421,7 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
+    use otap_df_channel::error::RecvError;
     use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
@@ -1263,6 +1443,30 @@ mod tests {
 
     fn empty_node_metric_handles() -> Rc<RefCell<Vec<Option<NodeMetricHandles>>>> {
         Rc::new(RefCell::new(Vec::new()))
+    }
+
+    async fn yield_cycles(count: usize) {
+        for _ in 0..count {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn expect_timer_tick(receiver: &mut Receiver<NodeControlMsg<()>>, node_name: &str) {
+        let result = timeout(Duration::from_secs(1), receiver.recv()).await;
+        match result {
+            Ok(Ok(NodeControlMsg::TimerTick {})) => {}
+            Ok(Ok(other)) => panic!("Expected TimerTick for {node_name}, got {other:?}"),
+            Ok(Err(e)) => panic!("Failed to receive message for {node_name}: {e:?}"),
+            Err(_) => panic!("Timed out waiting for TimerTick for {node_name}"),
+        }
+    }
+
+    fn assert_no_control_msg(receiver: &mut Receiver<NodeControlMsg<()>>, node_name: &str) {
+        match receiver.try_recv() {
+            Err(RecvError::Empty) => {}
+            Ok(msg) => panic!("Expected no control message for {node_name}, got {msg:?}"),
+            Err(e) => panic!("Unexpected receive error for {node_name}: {e:?}"),
+        }
     }
 
     fn create_test_pipeline_context()
@@ -1355,7 +1559,9 @@ mod tests {
             TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             TelemetryPolicy::default(),
             Vec::new(),
+            Vec::new(),
             empty_node_metric_handles(),
+            TerminalMetricsDeadline::default(),
         );
 
         (manager, pipeline_tx, pipeline_entity_guard)
@@ -1550,95 +1756,70 @@ mod tests {
     #[tokio::test]
     async fn test_run_multiple_timers_integration() {
         let local = LocalSet::new();
+        let clock = clock::SimClock::new();
+        let _clock_guard = clock.install();
 
-        local.run_until(async {
-            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                setup_test_manager::<()>();
+        local
+            .run_until(async {
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<()>();
 
-            let node1 = nodes.first().expect("ok");
-            let node2 = nodes.get(1).expect("ok");
-            let duration1 = Duration::from_millis(80);  // Shorter - should fire first
-            let duration2 = Duration::from_millis(120); // Longer - should fire second
+                let node1 = nodes.first().expect("ok");
+                let node2 = nodes.get(1).expect("ok");
+                let duration1 = Duration::from_millis(80); // Shorter - should fire first
+                let duration2 = Duration::from_millis(120); // Longer - should fire second
 
-            // Start the manager in the background
-            let manager_handle = tokio::task::spawn_local(async move {
-                manager.run().await
-            });
+                // Start the manager in the background
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-            // Schedule timers for both nodes
-            let start_msg1 = RuntimeControlMsg::StartTimer {
-                node_id: node1.index,
-                duration: duration1,
-            };
-            let start_msg2 = RuntimeControlMsg::StartTimer {
-                node_id: node2.index,
-                duration: duration2,
-            };
+                // Schedule timers for both nodes
+                let start_msg1 = RuntimeControlMsg::StartTimer {
+                    node_id: node1.index,
+                    duration: duration1,
+                };
+                let start_msg2 = RuntimeControlMsg::StartTimer {
+                    node_id: node2.index,
+                    duration: duration2,
+                };
 
-            pipeline_tx.send(start_msg1).await.unwrap();
-            pipeline_tx.send(start_msg2).await.unwrap();
+                pipeline_tx.send(start_msg1).await.unwrap();
+                pipeline_tx.send(start_msg2).await.unwrap();
+                yield_cycles(2).await;
 
-            // Extract receivers for both nodes
-            let mut receiver1 = control_receivers.remove(&node1.index).unwrap();
-            let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
+                // Extract receivers for both nodes
+                let mut receiver1 = control_receivers.remove(&node1.index).unwrap();
+                let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
 
-            // Use select! to handle whichever timer fires first, with overall timeout
-            let mut node1_received = false;
-            let mut node2_received = false;
-            let start_time = Instant::now();
+                clock.advance(Duration::from_millis(79));
+                yield_cycles(2).await;
+                assert_no_control_msg(&mut receiver1, "node1");
+                assert_no_control_msg(&mut receiver2, "node2");
 
-            // Wait for both timers to fire (within a reasonable timeout)
-            while (!node1_received || !node2_received) && start_time.elapsed() < Duration::from_millis(300) {
-                tokio::select! {
-                    // Node1 timer tick
-                    result1 = receiver1.recv(), if !node1_received => {
-                        match result1 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node1_received = true;
-                                // Verify node1 fired within expected timeframe (should be ~80ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(60) && elapsed <= Duration::from_millis(140),
-                                       "Node1 timer should fire around 80ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node1, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node1: {e:?}"),
-                        }
-                    }
+                clock.advance(Duration::from_millis(1));
+                yield_cycles(2).await;
+                expect_timer_tick(&mut receiver1, "node1").await;
+                assert_no_control_msg(&mut receiver2, "node2");
 
-                    // Node2 timer tick
-                    result2 = receiver2.recv(), if !node2_received => {
-                        match result2 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node2_received = true;
-                                // Verify node2 fired within expected timeframe (should be ~120ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(100) && elapsed <= Duration::from_millis(180),
-                                       "Node2 timer should fire around 120ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node2, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node2: {e:?}"),
-                        }
-                    }
+                clock.advance(Duration::from_millis(39));
+                yield_cycles(2).await;
+                assert_no_control_msg(&mut receiver2, "node2");
 
-                    // Timeout protection
-                    _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                        // Continue the loop - this prevents infinite blocking
-                    }
-                }
-            }
+                clock.advance(Duration::from_millis(1));
+                yield_cycles(2).await;
+                expect_timer_tick(&mut receiver2, "node2").await;
 
-            // Verify both timers fired
-            assert!(node1_received, "Node1 should have received TimerTick");
-            assert!(node2_received, "Node2 should have received TimerTick");
-
-            // Clean shutdown
-            pipeline_tx.send(RuntimeControlMsg::Shutdown {
-                deadline: Instant::now() + Duration::from_secs(1),
-                reason: "".to_owned()
-            }).await.unwrap();
-            drop(pipeline_tx);
-            let _ = timeout(Duration::from_millis(100), manager_handle).await;
-        }).await;
+                // Clean shutdown
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: clock.now() + Duration::from_secs(1),
+                        reason: "".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+                drop(pipeline_tx);
+                let _ = timeout(Duration::from_millis(100), manager_handle).await;
+            })
+            .await;
     }
 
     /// Validates that starting a new timer for an existing node properly replaces
@@ -1650,20 +1831,20 @@ mod tests {
     #[tokio::test]
     async fn test_run_timer_replacement_integration() {
         let local = LocalSet::new();
+        let clock = clock::SimClock::new();
+        let _clock_guard = clock.install();
 
         local
             .run_until(async {
                 let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
                     setup_test_manager::<()>();
 
-		let node = nodes.first().expect("ok");
+                let node = nodes.first().expect("ok");
                 let first_duration = Duration::from_millis(150); // Original (longer)
                 let second_duration = Duration::from_millis(80); // Replacement (shorter)
 
                 // Start the manager in the background
-                let manager_handle = tokio::task::spawn_local(async move {
-                    manager.run().await
-                });
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
                 // Schedule initial timer
                 let start_msg1 = RuntimeControlMsg::StartTimer {
@@ -1671,37 +1852,37 @@ mod tests {
                     duration: first_duration,
                 };
                 pipeline_tx.send(start_msg1).await.unwrap();
+                yield_cycles(2).await;
 
                 // Wait a bit, then replace with a shorter timer
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                clock.advance(Duration::from_millis(20));
+                yield_cycles(2).await;
                 let start_msg2 = RuntimeControlMsg::StartTimer {
                     node_id: node.index,
                     duration: second_duration,
                 };
                 pipeline_tx.send(start_msg2).await.unwrap();
+                yield_cycles(2).await;
 
-                // Measure timing to verify the replacement worked
                 let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let start_time = Instant::now();
 
-                let tick_result =
-                    timeout(Duration::from_millis(200), async { receiver.recv().await }).await;
+                clock.advance(Duration::from_millis(79));
+                yield_cycles(2).await;
+                assert_no_control_msg(&mut receiver, "node");
 
-                let elapsed = start_time.elapsed();
-
-                assert!(tick_result.is_ok(), "Should receive TimerTick");
-                // Should fire approximately after second_duration (80ms), not first_duration (150ms)
-                // Allow some tolerance for timing variations in test environment
-                assert!(
-                    elapsed >= Duration::from_millis(70) && elapsed <= Duration::from_millis(130),
-                    "Timer should fire based on second duration (~80ms), but fired after {elapsed:?}"
-                );
+                // Should fire after second_duration (80ms), not first_duration (150ms).
+                clock.advance(Duration::from_millis(1));
+                yield_cycles(2).await;
+                expect_timer_tick(&mut receiver, "node").await;
 
                 // Clean shutdown
-                pipeline_tx.send(RuntimeControlMsg::Shutdown {
-                    deadline: Instant::now() + Duration::from_secs(1),
-                    reason: "".to_owned()
-                }).await.unwrap();
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: clock.now() + Duration::from_secs(1),
+                        reason: "".to_owned(),
+                    })
+                    .await
+                    .unwrap();
                 drop(pipeline_tx);
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
@@ -1858,7 +2039,9 @@ mod tests {
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
                     Vec::new(),
+                    Vec::new(),
                     empty_node_metric_handles(),
+                    TerminalMetricsDeadline::default(),
                 );
                 let duration = Duration::from_millis(50);
 
@@ -1902,134 +2085,91 @@ mod tests {
     /// 1. Timers are registered in non-chronological order
     /// 2. They fire in chronological order (shortest duration first)
     /// 3. This tests the BinaryHeap priority queue implementation
-    /// 4. Uses select! to handle timers in any order while validating proper sequencing
+    /// 4. Uses simulated time to validate proper sequencing without wall-clock sensitivity
     #[tokio::test]
     async fn test_run_timer_ordering_integration() {
         let local = LocalSet::new();
+        let clock = clock::SimClock::new();
+        let _clock_guard = clock.install();
 
-        local.run_until(async {
-            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                setup_test_manager::<()>();
+        local
+            .run_until(async {
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<()>();
 
-            // Use different durations to test timer ordering
-            let node1 = nodes.first().expect("ok");
-            let node2 = nodes.get(1).expect("ok");
-            let node3 = nodes.get(2).expect("ok");
+                // Use different durations to test timer ordering
+                let node1 = nodes.first().expect("ok");
+                let node2 = nodes.get(1).expect("ok");
+                let node3 = nodes.get(2).expect("ok");
 
-            // Start the manager in the background
-            let manager_handle = tokio::task::spawn_local(async move {
-                manager.run().await
-            });
+                // Start the manager in the background
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
 
-            // Send timers in non-chronological order to test priority queue
-            let start_msg1 = RuntimeControlMsg::StartTimer {
-                node_id: node1.index,
-                duration: Duration::from_millis(120), // Should fire third
-            };
-            let start_msg2 = RuntimeControlMsg::StartTimer {
-                node_id: node2.index,
-                duration: Duration::from_millis(60),  // Should fire first
-            };
-            let start_msg3 = RuntimeControlMsg::StartTimer {
-                node_id: node3.index,
-                duration: Duration::from_millis(90),  // Should fire second
-            };
+                // Send timers in non-chronological order to test priority queue
+                let start_msg1 = RuntimeControlMsg::StartTimer {
+                    node_id: node1.index,
+                    duration: Duration::from_millis(120), // Should fire third
+                };
+                let start_msg2 = RuntimeControlMsg::StartTimer {
+                    node_id: node2.index,
+                    duration: Duration::from_millis(60), // Should fire first
+                };
+                let start_msg3 = RuntimeControlMsg::StartTimer {
+                    node_id: node3.index,
+                    duration: Duration::from_millis(90), // Should fire second
+                };
 
-            pipeline_tx.send(start_msg1).await.unwrap();
-            pipeline_tx.send(start_msg2).await.unwrap();
-            pipeline_tx.send(start_msg3).await.unwrap();
+                pipeline_tx.send(start_msg1).await.unwrap();
+                pipeline_tx.send(start_msg2).await.unwrap();
+                pipeline_tx.send(start_msg3).await.unwrap();
+                yield_cycles(2).await;
 
-            let mut receiver1 = control_receivers.remove(&node1.index).unwrap();
-            let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
-            let mut receiver3 = control_receivers.remove(&node3.index).unwrap();
+                let mut receiver1 = control_receivers.remove(&node1.index).unwrap();
+                let mut receiver2 = control_receivers.remove(&node2.index).unwrap();
+                let mut receiver3 = control_receivers.remove(&node3.index).unwrap();
 
-            // Track which timers have fired and in what order
-            let mut node1_received = false;
-            let mut node2_received = false;
-            let mut node3_received = false;
-            let mut firing_order = Vec::new();
-            let start_time = Instant::now();
+                clock.advance(Duration::from_millis(59));
+                yield_cycles(2).await;
+                assert_no_control_msg(&mut receiver1, "node1");
+                assert_no_control_msg(&mut receiver2, "node2");
+                assert_no_control_msg(&mut receiver3, "node3");
 
-            // Use select! to handle whichever timer fires first, validating the order
-            while (!node1_received || !node2_received || !node3_received) && start_time.elapsed() < Duration::from_millis(400) {
-                tokio::select! {
-                    // Node1 timer tick (120ms - should be last)
-                    result1 = receiver1.recv(), if !node1_received => {
-                        match result1 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node1_received = true;
-                                firing_order.push((node1.index, start_time.elapsed()));
-                                // Verify node1 fired within expected timeframe (should be ~120ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(100) && elapsed <= Duration::from_millis(180),
-                                       "Node1 timer should fire around 120ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node1, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node1: {e:?}"),
-                        }
-                    }
+                clock.advance(Duration::from_millis(1));
+                yield_cycles(2).await;
+                expect_timer_tick(&mut receiver2, "node2").await;
+                assert_no_control_msg(&mut receiver1, "node1");
+                assert_no_control_msg(&mut receiver3, "node3");
 
-                    // Node2 timer tick (60ms - should be first)
-                    result2 = receiver2.recv(), if !node2_received => {
-                        match result2 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node2_received = true;
-                                firing_order.push((node2.index, start_time.elapsed()));
-                                // Verify node2 fired within expected timeframe (should be ~60ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(40) && elapsed <= Duration::from_millis(100),
-                                       "Node2 timer should fire around 60ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node2, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node2: {e:?}"),
-                        }
-                    }
+                clock.advance(Duration::from_millis(29));
+                yield_cycles(2).await;
+                assert_no_control_msg(&mut receiver1, "node1");
+                assert_no_control_msg(&mut receiver3, "node3");
 
-                    // Node3 timer tick (90ms - should be second)
-                    result3 = receiver3.recv(), if !node3_received => {
-                        match result3 {
-                            Ok(NodeControlMsg::TimerTick {}) => {
-                                node3_received = true;
-                                firing_order.push((node3.index, start_time.elapsed()));
-                                // Verify node3 fired within expected timeframe (should be ~90ms)
-                                let elapsed = start_time.elapsed();
-                                assert!(elapsed >= Duration::from_millis(70) && elapsed <= Duration::from_millis(130),
-                                       "Node3 timer should fire around 90ms, but fired after {elapsed:?}");
-                            }
-                            Ok(other) => panic!("Expected TimerTick for node3, got {other:?}"),
-                            Err(e) => panic!("Failed to receive message for node3: {e:?}"),
-                        }
-                    }
+                clock.advance(Duration::from_millis(1));
+                yield_cycles(2).await;
+                expect_timer_tick(&mut receiver3, "node3").await;
+                assert_no_control_msg(&mut receiver1, "node1");
 
-                    // Timeout protection
-                    _ = tokio::time::sleep(Duration::from_millis(30)) => {
-                        // Continue the loop - this prevents infinite blocking
-                    }
-                }
-            }
+                clock.advance(Duration::from_millis(29));
+                yield_cycles(2).await;
+                assert_no_control_msg(&mut receiver1, "node1");
 
-            // Verify all timers fired
-            assert!(node1_received, "Node1 should have received TimerTick");
-            assert!(node2_received, "Node2 should have received TimerTick");
-            assert!(node3_received, "Node3 should have received TimerTick");
+                clock.advance(Duration::from_millis(1));
+                yield_cycles(2).await;
+                expect_timer_tick(&mut receiver1, "node1").await;
 
-            // Verify the firing order is correct (node2 first, node3 second, node1 third)
-            // Sort by elapsed time to get the actual firing order
-            firing_order.sort_by_key(|&(_, elapsed)| elapsed);
-
-            assert_eq!(firing_order.len(), 3, "Should have received exactly 3 timer events");
-            assert_eq!(firing_order[0].0, node2.index, "Node2 (60ms) should fire first");
-            assert_eq!(firing_order[1].0, node3.index, "Node3 (90ms) should fire second");
-            assert_eq!(firing_order[2].0, node1.index, "Node1 (120ms) should fire third");
-
-            // Clean shutdown
-            pipeline_tx.send(RuntimeControlMsg::Shutdown {
-                deadline: Instant::now() + Duration::from_secs(1),
-                reason: "".to_owned()
-            }).await.unwrap();
-            drop(pipeline_tx);
-            let _ = timeout(Duration::from_millis(100), manager_handle).await;
-        }).await;
+                // Clean shutdown
+                pipeline_tx
+                    .send(RuntimeControlMsg::Shutdown {
+                        deadline: clock.now() + Duration::from_secs(1),
+                        reason: "".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+                drop(pipeline_tx);
+                let _ = timeout(Duration::from_millis(100), manager_handle).await;
+            })
+            .await;
     }
 
     /// Validates that the RuntimeCtrlMsgManager is created with correct
@@ -2532,6 +2672,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    TerminalMetricsDeadline::default(),
                 );
 
                 // Start the manager in the background
@@ -2604,6 +2745,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    TerminalMetricsDeadline::default(),
                 );
 
                 // Start the manager in the background
@@ -3011,11 +3153,15 @@ mod tests {
     #[derive(Debug, Clone)]
     struct TestPData {
         frames: Vec<Frame>,
+        signal: Option<SignalType>,
     }
 
     impl TestPData {
         fn new() -> Self {
-            Self { frames: Vec::new() }
+            Self {
+                frames: Vec::new(),
+                signal: None,
+            }
         }
 
         fn push_frame(&mut self, frame: Frame) {
@@ -3030,6 +3176,9 @@ mod tests {
         fn pop_frame(&mut self) -> Option<Frame> {
             self.frames.pop()
         }
+        fn signal(&self) -> Option<SignalType> {
+            self.signal
+        }
         fn drop_payload(&mut self) {}
     }
 
@@ -3041,9 +3190,13 @@ mod tests {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     enum MetricLabel {
         RecvProduced,
+        RecvProducedItems,
         ProcConsumed,
+        ProcConsumedItems,
         ProcProduced,
+        ProcProducedItems,
         ExpConsumed,
+        ExpConsumedItems,
     }
 
     /// Return value from setup_test_manager_with_metrics.
@@ -3102,7 +3255,7 @@ mod tests {
 
         let registry = pipeline_context.metrics_registry();
 
-        let recv_out_key = pipeline_context.register_channel_entity(
+        let recv_out_key = pipeline_context.register_node_channel_entity(
             "recv:out".into(),
             "output".into(),
             "pdata",
@@ -3110,7 +3263,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let proc_in_key = pipeline_context.register_channel_entity(
+        let proc_in_key = pipeline_context.register_node_channel_entity(
             "proc:in".into(),
             "input".into(),
             "pdata",
@@ -3118,7 +3271,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let proc_out_key = pipeline_context.register_channel_entity(
+        let proc_out_key = pipeline_context.register_node_channel_entity(
             "proc:out".into(),
             "output".into(),
             "pdata",
@@ -3126,7 +3279,7 @@ mod tests {
             "mpsc",
             "internal",
         );
-        let exp_in_key = pipeline_context.register_channel_entity(
+        let exp_in_key = pipeline_context.register_node_channel_entity(
             "exp:in".into(),
             "input".into(),
             "pdata",
@@ -3135,21 +3288,45 @@ mod tests {
             "internal",
         );
 
-        let recv_produced: MetricSet<ProducedMetrics> =
-            registry.register_metric_set_for_entity(recv_out_key);
-        let proc_consumed: MetricSet<ConsumedMetrics> =
-            registry.register_metric_set_for_entity(proc_in_key);
-        let proc_produced: MetricSet<ProducedMetrics> =
-            registry.register_metric_set_for_entity(proc_out_key);
-        let exp_consumed: MetricSet<ConsumedMetrics> =
-            registry.register_metric_set_for_entity(exp_in_key);
+        let recv_produced: MeasurementMetricSet<ProducedMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
+        let recv_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
+        let proc_consumed: MeasurementMetricSet<ConsumedMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
+        let proc_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
+        let proc_produced: MeasurementMetricSet<ProducedMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
+        let proc_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
+        let exp_consumed: MeasurementMetricSet<ConsumedMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
+        let exp_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
 
         // Save metric set keys for snapshot identification.
         let mut key_labels = HashMap::new();
         let _ = key_labels.insert(recv_produced.metric_set_key(), MetricLabel::RecvProduced);
+        let _ = key_labels.insert(
+            recv_produced_items.metric_set_key(),
+            MetricLabel::RecvProducedItems,
+        );
         let _ = key_labels.insert(proc_consumed.metric_set_key(), MetricLabel::ProcConsumed);
+        let _ = key_labels.insert(
+            proc_consumed_items.metric_set_key(),
+            MetricLabel::ProcConsumedItems,
+        );
         let _ = key_labels.insert(proc_produced.metric_set_key(), MetricLabel::ProcProduced);
+        let _ = key_labels.insert(
+            proc_produced_items.metric_set_key(),
+            MetricLabel::ProcProducedItems,
+        );
         let _ = key_labels.insert(exp_consumed.metric_set_key(), MetricLabel::ExpConsumed);
+        let _ = key_labels.insert(
+            exp_consumed_items.metric_set_key(),
+            MetricLabel::ExpConsumedItems,
+        );
 
         let mut node_metric_handles: Vec<Option<NodeMetricHandles>> = Vec::new();
         let max_idx = nodes.iter().map(|n| n.index).max().unwrap_or(0);
@@ -3159,19 +3336,25 @@ mod tests {
         node_metric_handles[nodes[0].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: None,
+            input_items: None,
             outputs: vec![recv_produced],
+            output_items: vec![recv_produced_items],
             completion_emission: None,
         });
         node_metric_handles[nodes[1].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(proc_consumed),
+            input_items: Some(proc_consumed_items),
             outputs: vec![proc_produced],
+            output_items: vec![proc_produced_items],
             completion_emission: None,
         });
         node_metric_handles[nodes[2].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(exp_consumed),
+            input_items: Some(exp_consumed_items),
             outputs: Vec::new(),
+            output_items: Vec::new(),
             completion_emission: None,
         });
 
@@ -3200,7 +3383,9 @@ mod tests {
             TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             telemetry_policy.clone(),
             Vec::new(),
+            Vec::new(),
             node_metric_handles.clone(),
+            TerminalMetricsDeadline::default(),
         );
 
         MetricsTestHarness {
@@ -3233,7 +3418,7 @@ mod tests {
                 .entry(label)
                 .and_modify(|existing| {
                     for (dst, src) in existing.iter_mut().zip(values.iter()) {
-                        dst.add_in_place(*src);
+                        dst.add_in_place(src);
                     }
                 })
                 .or_insert(values);
@@ -3243,41 +3428,41 @@ mod tests {
 
     /// Extract u64 from a MetricValue, panicking with context on mismatch.
     fn assert_u64(values: &[MetricValue], index: usize, expected: u64, msg: &str) {
-        match values[index] {
-            MetricValue::U64(v) => assert_eq!(v, expected, "{msg}"),
+        match &values[index] {
+            MetricValue::U64(v) => assert_eq!(*v, expected, "{msg}"),
             other => panic!("{msg}: expected U64, got {other:?}"),
         }
     }
 
     fn assert_u64_gte(values: &[MetricValue], index: usize, min: u64, msg: &str) {
-        match values[index] {
-            MetricValue::U64(v) => assert!(v >= min, "{msg}: expected >= {min}, got {v}"),
+        match &values[index] {
+            MetricValue::U64(v) => assert!(*v >= min, "{msg}: expected >= {min}, got {v}"),
             other => panic!("{msg}: expected U64, got {other:?}"),
         }
     }
 
-    /// Extract Mmsc from a MetricValue, returning the snapshot for further assertions.
-    fn assert_mmsc(
+    /// Extract the MMSC from a MetricValue for further assertions.
+    fn assert_dist_is_mmsc(
         values: &[MetricValue],
         index: usize,
         msg: &str,
-    ) -> otap_df_telemetry::instrument::MmscSnapshot {
-        match values[index] {
-            MetricValue::Mmsc(snap) => snap,
-            other => panic!("{msg}: expected Mmsc, got {other:?}"),
+    ) -> otap_df_telemetry::instrument::Mmsc {
+        match &values[index] {
+            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
+                mmsc,
+            )) => **mmsc,
+            other => panic!("{msg}: expected a basic-tier distribution, got {other:?}"),
         }
     }
 
-    // ConsumerMetrics field indices (defined by #[metric_set] field order):
+    // ConsumedMetrics field indices (defined by #[metric_set] field order):
     const CONSUMER_DURATION: usize = 0;
-    const CONSUMER_SUCCESS: usize = 1;
-    const CONSUMER_FAILURE: usize = 2;
-    const CONSUMER_REFUSED: usize = 3;
+    const CONSUMER_REQUESTS: usize = 1;
     // ProducedMetrics field indices:
     const PRODUCER_DURATION: usize = 0;
-    const PRODUCER_SUCCESS: usize = 1;
-    const PRODUCER_FAILURE: usize = 2;
-    const PRODUCER_REFUSED: usize = 3;
+    const PRODUCER_REQUESTS: usize = 1;
+    // Item metric set field index:
+    const ITEMS: usize = 0;
 
     const RUNTIME_DRAIN_ACTIVE: usize = 0;
     const RUNTIME_DRAIN_PENDING_RECEIVERS: usize = 1;
@@ -3320,9 +3505,9 @@ mod tests {
         for values in iter {
             for (index, value) in values.iter().enumerate() {
                 if gauge_indices.contains(&index) {
-                    merged[index] = *value;
+                    merged[index] = value.clone();
                 } else {
-                    merged[index].add_in_place(*value);
+                    merged[index].add_in_place(value);
                 }
             }
         }
@@ -3447,7 +3632,9 @@ mod tests {
                 flow_metrics: Vec::new(),
             },
             Vec::new(),
+            Vec::new(),
             empty_node_metric_handles(),
+            TerminalMetricsDeadline::default(),
         );
         let runtime_metrics_key = manager.runtime_control_metrics.metric_set_key();
 
@@ -3525,7 +3712,9 @@ mod tests {
                 flow_metrics: Vec::new(),
             },
             Vec::new(),
+            Vec::new(),
             empty_node_metric_handles(),
+            TerminalMetricsDeadline::default(),
         );
 
         MemoryPressureFanoutHarness {
@@ -3633,6 +3822,7 @@ mod tests {
                 runtime_metrics: metric_level,
                 flow_metrics: Vec::new(),
             },
+            TerminalMetricsDeadline::default(),
         );
         let completion_metrics_key = dispatcher.completion_metrics.metric_set_key();
 
@@ -3648,11 +3838,14 @@ mod tests {
     }
 
     /// Build a TestPData with frames simulating a 3-node pipeline:
-    /// receiver(node0) → processor(node1) → exporter(node2).
+    /// receiver(node0) -> processor(node1) -> exporter(node2).
     ///
-    /// Frames are pushed bottom-to-top (receiver first, exporter last on top).
+    /// Frames are pushed bottom-to-top.  Frames carry per-signal item
+    /// counts: the receiver produces 10, the processor consumes 10
+    /// and produces 7, and the exporter consumes 7.
     fn build_3node_pdata(nodes: &[NodeId], with_timestamp: bool) -> TestPData {
         let mut pdata = TestPData::new();
+        pdata.signal = Some(SignalType::Logs);
 
         // Node 0 (receiver): producer metrics + acks/nacks (receives the ack back)
         pdata.push_frame(Frame {
@@ -3663,6 +3856,8 @@ mod tests {
                 entry_time_ns: 0,
                 output_port_index: 0,
             },
+            produced_items: 10,
+            consumed_items: 0,
         });
 
         // Node 1 (processor): consumer + producer metrics + acks/nacks
@@ -3683,9 +3878,11 @@ mod tests {
                 entry_time_ns,
                 output_port_index: 0,
             },
+            produced_items: 7,
+            consumed_items: 10,
         });
 
-        // Node 2 (exporter): consumer metrics only (no acks subscription — terminal node)
+        // Node 2 (exporter): consumer metrics only (no acks subscription -- terminal node)
         let entry_time_ns = if with_timestamp {
             nanos_since_birth()
         } else {
@@ -3699,6 +3896,8 @@ mod tests {
                 entry_time_ns,
                 output_port_index: 0,
             },
+            produced_items: 0,
+            consumed_items: 7,
         });
 
         pdata
@@ -3710,8 +3909,9 @@ mod tests {
     /// including the receiver's producer-only frame.
     fn build_3node_pdata_no_subscribers(nodes: &[NodeId], with_timestamp: bool) -> TestPData {
         let mut pdata = TestPData::new();
+        pdata.signal = Some(SignalType::Logs);
 
-        // Node 0 (receiver): producer metrics only — no ACKS/NACKS, no CONSUMER_METRICS.
+        // Node 0 (receiver): producer metrics only -- no ACKS/NACKS, no CONSUMER_METRICS.
         let entry_time_ns = if with_timestamp {
             nanos_since_birth()
         } else {
@@ -3725,6 +3925,8 @@ mod tests {
                 entry_time_ns,
                 output_port_index: 0,
             },
+            produced_items: 10,
+            consumed_items: 0,
         });
 
         // Node 1 (processor): consumer + producer metrics, no ACKS/NACKS.
@@ -3743,6 +3945,8 @@ mod tests {
                 entry_time_ns,
                 output_port_index: 0,
             },
+            produced_items: 7,
+            consumed_items: 10,
         });
 
         // Node 2 (exporter): consumer metrics only.
@@ -3759,6 +3963,8 @@ mod tests {
                 entry_time_ns,
                 output_port_index: 0,
             },
+            produced_items: 0,
+            consumed_items: 7,
         });
 
         pdata
@@ -3795,6 +4001,7 @@ mod tests {
                     metrics_reporter.clone(),
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     telemetry_policy.clone(),
+                    TerminalMetricsDeadline::default(),
                 );
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
                 let dispatcher_handle =
@@ -3827,8 +4034,8 @@ mod tests {
             .await
     }
 
-    /// Verify that ack correctly records consumed_success and produced_success
-    /// via the full manager lifecycle and shutdown metrics flush.
+    /// Scenario: a successful acknowledgment unwinds a receiver, processor, and exporter.
+    /// Guarantees: each unwound node records one request in its `outcome=success` bucket.
     #[tokio::test]
     async fn test_ack_lifecycle_consumed_produced_metrics() {
         let harness = setup_test_manager_with_metrics();
@@ -3841,22 +4048,20 @@ mod tests {
         })
         .await;
 
-        // Exporter consumed: success=1, failure=0, refused=0
+        // Exporter consumed one successful request.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
-        assert_u64(exp, CONSUMER_FAILURE, 0, "Exporter consumed_failure");
-        assert_u64(exp, CONSUMER_REFUSED, 0, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
 
-        // Processor consumed: success=1
+        // Processor consumed one successful request.
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
+        assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
 
-        // Processor produced: success=1
+        // Processor produced one successful request.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
+        assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
 
         // Receiver produced: unwind_ack delivers to first ACKS subscriber (processor)
-        // so receiver frame is never popped → no metrics recorded.
+        // so receiver frame is never popped -> no metrics recorded.
         assert!(
             !snapshots.contains_key(&MetricLabel::RecvProduced),
             "Receiver produced should have no metrics (ack delivered at processor)"
@@ -3865,7 +4070,8 @@ mod tests {
         drop(nodes_clone);
     }
 
-    /// Verify that non-permanent nack records consumed_failure / produced_failure.
+    /// Scenario: a retryable nack unwinds a processor and exporter.
+    /// Guarantees: each unwound node records one request in its `outcome=failure` bucket.
     #[tokio::test]
     async fn test_nack_lifecycle_failure_metrics() {
         let harness = setup_test_manager_with_metrics();
@@ -3878,18 +4084,17 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_FAILURE, 1, "Exporter consumed_failure");
-        assert_u64(exp, CONSUMER_SUCCESS, 0, "Exporter consumed_success");
-        assert_u64(exp, CONSUMER_REFUSED, 0, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_FAILURE, 1, "Processor consumed_failure");
+        assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
 
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_FAILURE, 1, "Processor produced_failure");
+        assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
     }
 
-    /// Verify that permanent nack records consumed_refused / produced_refused.
+    /// Scenario: a permanent nack unwinds a processor and exporter.
+    /// Guarantees: each unwound node records one request in its `outcome=refused` bucket.
     #[tokio::test]
     async fn test_permanent_nack_lifecycle_refused_metrics() {
         let harness = setup_test_manager_with_metrics();
@@ -3902,18 +4107,16 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_REFUSED, 1, "Exporter consumed_refused");
-        assert_u64(exp, CONSUMER_SUCCESS, 0, "Exporter consumed_success");
-        assert_u64(exp, CONSUMER_FAILURE, 0, "Exporter consumed_failure");
+        assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_REFUSED, 1, "Processor consumed_refused");
+        assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
 
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_REFUSED, 1, "Processor produced_refused");
+        assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
     }
 
-    /// Verify that consumed_duration_ns (Mmsc histogram) is recorded
+    /// Verify that consumed_duration_ns, an Mmsc histogram, is recorded
     /// when entry_time_ns > 0 and return_time_ns > 0.
     #[tokio::test]
     async fn test_ack_lifecycle_duration_histogram() {
@@ -3928,14 +4131,14 @@ mod tests {
 
         // Exporter consumed duration: 1 observation, min > 0
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
+        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
         assert_eq!(snap.count, 1, "Exporter should have 1 duration observation");
         assert!(snap.min > 0.0, "Duration min should be > 0");
         assert!(snap.max >= snap.min, "Duration max >= min");
 
         // Processor consumed duration: 1 observation, min > 0
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
         assert_eq!(
             snap.count, 1,
             "Processor should have 1 consumed duration observation"
@@ -3944,9 +4147,9 @@ mod tests {
 
         // Processor produced duration: should be 0 observations because the
         // processor frame has CONSUMER_METRICS, so produced_duration_ns is
-        // suppressed (one duration histogram per component).
+        // suppressed.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        let snap = assert_dist_is_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
         assert_eq!(
             snap.count, 0,
             "Processor should have 0 produced duration observations (suppressed by CONSUMER_METRICS)"
@@ -3968,9 +4171,8 @@ mod tests {
         .await;
 
         // Receiver produced duration: 1 observation, min > 0
-        // (producer-only frame, no CONSUMER_METRICS → produced_duration recorded)
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
             snap.count, 1,
             "Receiver should have 1 produced duration observation"
@@ -3982,9 +4184,9 @@ mod tests {
         );
 
         // Processor produced duration: 0 observations
-        // (merged frame has CONSUMER_METRICS → produced_duration suppressed)
+        // (merged frame has CONSUMER_METRICS -> produced_duration suppressed)
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        let snap = assert_dist_is_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
         assert_eq!(
             snap.count, 0,
             "Processor should have 0 produced duration observations"
@@ -3992,11 +4194,251 @@ mod tests {
 
         // Processor consumed duration: 1 observation (still works)
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
         assert_eq!(
             snap.count, 1,
             "Processor should have 1 consumed duration observation"
         );
+    }
+
+    /// Scenario: a logs batch flows through receiver, processor, and exporter nodes.
+    /// Guarantees: each node reports its produced or consumed item count in the `signal=logs` bucket.
+    #[tokio::test]
+    async fn test_per_signal_item_counts() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineCompletionMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        // Receiver produced 10 log records.
+        let recv_p = &snapshots[&MetricLabel::RecvProducedItems];
+        assert_u64(recv_p, ITEMS, 10, "Receiver produced logs");
+
+        // Processor consumed 10, produced 7 (filtering drop of 3).
+        let proc_c = &snapshots[&MetricLabel::ProcConsumedItems];
+        assert_u64(proc_c, ITEMS, 10, "Processor consumed logs");
+        let proc_p = &snapshots[&MetricLabel::ProcProducedItems];
+        assert_u64(proc_p, ITEMS, 7, "Processor produced logs");
+
+        // Exporter consumed 7 log records.
+        let exp = &snapshots[&MetricLabel::ExpConsumedItems];
+        assert_u64(exp, ITEMS, 7, "Exporter consumed logs");
+    }
+
+    /// Scenario: request metrics are enabled while per-signal item counting is not.
+    /// Guarantees: request series are emitted but no zero-valued item series are reported.
+    #[tokio::test]
+    async fn node_metrics_omit_items_without_optin() {
+        let harness = setup_test_manager_with_metrics();
+        for handles in harness
+            .node_metric_handles
+            .borrow_mut()
+            .iter_mut()
+            .flatten()
+        {
+            let _ = handles.input_items.take();
+            handles.output_items.clear();
+        }
+
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineCompletionMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        assert!(
+            snapshots.contains_key(&MetricLabel::RecvProduced),
+            "Request metrics should remain enabled"
+        );
+        assert!(
+            !snapshots.contains_key(&MetricLabel::RecvProducedItems)
+                && !snapshots.contains_key(&MetricLabel::ProcConsumedItems)
+                && !snapshots.contains_key(&MetricLabel::ProcProducedItems)
+                && !snapshots.contains_key(&MetricLabel::ExpConsumedItems),
+            "Item metrics should be absent when item counting is disabled"
+        );
+    }
+
+    /// Scenario: one processor records successful logs and failed traces.
+    /// Guarantees: produced and consumed request and item snapshots retain distinct `signal` and `outcome` datapoint attributes.
+    #[test]
+    fn node_metrics_export_signal_and_outcome_attributes() {
+        let mut harness = setup_test_manager_with_metrics();
+        let processor_id = harness.nodes[1].index;
+        let interests = Interests::CONSUMER_METRICS | Interests::PRODUCER_METRICS;
+        let route = RouteData::default();
+        let (_completion_tx, completion_rx) = pipeline_completion_msg_channel::<TestPData>(1);
+        let mut dispatcher = PipelineCompletionMsgDispatcher::new(
+            harness.pipeline_context.clone(),
+            completion_rx,
+            ControlSenders::new(),
+            harness.node_metric_handles.clone(),
+            harness.metrics_reporter.clone(),
+            TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
+            harness.telemetry_policy.clone(),
+            TerminalMetricsDeadline::default(),
+        );
+
+        dispatcher.record_frame_metrics(
+            processor_id,
+            interests,
+            &route,
+            Some(SignalType::Logs),
+            4,
+            5,
+            RequestOutcome::Success,
+            0,
+        );
+        dispatcher.record_frame_metrics(
+            processor_id,
+            interests,
+            &route,
+            Some(SignalType::Traces),
+            6,
+            7,
+            RequestOutcome::Failure,
+            0,
+        );
+        report_node_metrics_with_handles(
+            &harness.node_metric_handles,
+            &mut harness.metrics_reporter,
+        )
+        .expect("node metric reporting should succeed");
+
+        let mut request_snapshots = Vec::new();
+        let mut item_snapshots = Vec::new();
+        while let Ok(snapshot) = harness.snapshot_rx.try_recv() {
+            let Some(&label) = harness.key_labels.get(&snapshot.key()) else {
+                continue;
+            };
+            let snapshot = (
+                label,
+                snapshot.measurement_attribute_value("signal"),
+                snapshot.measurement_attribute_value("outcome"),
+                snapshot.get_metrics().to_vec(),
+            );
+            match label {
+                MetricLabel::ProcConsumed | MetricLabel::ProcProduced => {
+                    request_snapshots.push(snapshot);
+                }
+                MetricLabel::ProcConsumedItems | MetricLabel::ProcProducedItems => {
+                    item_snapshots.push(snapshot);
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            request_snapshots.len(),
+            4,
+            "two signal/outcome request buckets per direction"
+        );
+        assert_eq!(
+            item_snapshots.len(),
+            4,
+            "two signal/outcome item buckets per direction"
+        );
+        let find =
+            |snapshots: &Vec<(MetricLabel, Option<&str>, Option<&str>, Vec<MetricValue>)>,
+             label,
+             signal,
+             outcome| {
+                snapshots
+                    .iter()
+                    .find(|(actual_label, actual_signal, actual_outcome, _)| {
+                        *actual_label == label
+                            && *actual_signal == Some(signal)
+                            && *actual_outcome == Some(outcome)
+                    })
+                    .map(|(_, _, _, values)| values.clone())
+                    .expect("expected datapoint attribute bucket")
+            };
+
+        let consumed_logs = find(
+            &request_snapshots,
+            MetricLabel::ProcConsumed,
+            "logs",
+            "success",
+        );
+        assert_u64(
+            &consumed_logs,
+            CONSUMER_REQUESTS,
+            1,
+            "logs success consumed requests",
+        );
+
+        let consumed_traces = find(
+            &request_snapshots,
+            MetricLabel::ProcConsumed,
+            "traces",
+            "failure",
+        );
+        assert_u64(
+            &consumed_traces,
+            CONSUMER_REQUESTS,
+            1,
+            "traces failure consumed requests",
+        );
+
+        let produced_logs = find(
+            &request_snapshots,
+            MetricLabel::ProcProduced,
+            "logs",
+            "success",
+        );
+        assert_u64(
+            &produced_logs,
+            PRODUCER_REQUESTS,
+            1,
+            "logs success produced requests",
+        );
+
+        let produced_traces = find(
+            &request_snapshots,
+            MetricLabel::ProcProduced,
+            "traces",
+            "failure",
+        );
+        assert_u64(
+            &produced_traces,
+            PRODUCER_REQUESTS,
+            1,
+            "traces failure produced requests",
+        );
+        let consumed_logs = find(
+            &item_snapshots,
+            MetricLabel::ProcConsumedItems,
+            "logs",
+            "success",
+        );
+        assert_u64(&consumed_logs, ITEMS, 5, "logs success consumed items");
+        let consumed_traces = find(
+            &item_snapshots,
+            MetricLabel::ProcConsumedItems,
+            "traces",
+            "failure",
+        );
+        assert_u64(&consumed_traces, ITEMS, 7, "traces failure consumed items");
+        let produced_logs = find(
+            &item_snapshots,
+            MetricLabel::ProcProducedItems,
+            "logs",
+            "success",
+        );
+        assert_u64(&produced_logs, ITEMS, 4, "logs success produced items");
+        let produced_traces = find(
+            &item_snapshots,
+            MetricLabel::ProcProducedItems,
+            "traces",
+            "failure",
+        );
+        assert_u64(&produced_traces, ITEMS, 6, "traces failure produced items");
     }
 
     /// Verify that produced_duration_ns is NOT recorded when entry_time_ns is 0.
@@ -4013,7 +4455,7 @@ mod tests {
 
         // Receiver produced duration: 0 observations (no timestamp)
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
             snap.count, 0,
             "No produced duration should be recorded when entry_time_ns == 0"
@@ -4033,21 +4475,22 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
+        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
         assert_eq!(
             snap.count, 0,
             "No duration should be recorded when entry_time_ns == 0"
         );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor duration");
+        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor duration");
         assert_eq!(
             snap.count, 0,
             "No duration should be recorded when entry_time_ns == 0"
         );
     }
 
-    /// Verify multiple acks accumulate counters correctly through the lifecycle.
+    /// Scenario: three successful acknowledgments unwind the same nodes.
+    /// Guarantees: the `outcome=success` request bucket accumulates all three completions.
     #[tokio::test]
     async fn test_multiple_acks_lifecycle_accumulate() {
         let harness = setup_test_manager_with_metrics();
@@ -4066,19 +4509,30 @@ mod tests {
         let exp = &snapshots[&MetricLabel::ExpConsumed];
         assert_u64(
             exp,
-            CONSUMER_SUCCESS,
+            CONSUMER_REQUESTS,
             3,
-            "Exporter 3 consumed_success after 3 acks",
+            "Exporter 3 consumed requests after 3 acks",
         );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_SUCCESS, 3, "Processor 3 consumed_success");
+        assert_u64(
+            proc_c,
+            CONSUMER_REQUESTS,
+            3,
+            "Processor 3 consumed requests",
+        );
 
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_SUCCESS, 3, "Processor 3 produced_success");
+        assert_u64(
+            proc_p,
+            PRODUCER_REQUESTS,
+            3,
+            "Processor 3 produced requests",
+        );
     }
 
-    /// Verify mixed ack and nack messages accumulate correctly.
+    /// Scenario: successful, retryable, and permanent completions unwind the same nodes.
+    /// Guarantees: request buckets retain all three outcome dimensions without overwriting one another.
     #[tokio::test]
     async fn test_mixed_ack_nack_lifecycle() {
         let harness = setup_test_manager_with_metrics();
@@ -4097,30 +4551,25 @@ mod tests {
         })
         .await;
 
-        // Exporter consumed: 1 success + 1 failure + 1 refused
+        // Exporter consumed one request for each outcome.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
-        assert_u64(exp, CONSUMER_FAILURE, 1, "Exporter consumed_failure");
-        assert_u64(exp, CONSUMER_REFUSED, 1, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_REQUESTS, 3, "Exporter consumed requests");
 
-        // Processor consumed: same pattern
+        // Processor consumed one request for each outcome.
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
-        assert_u64(proc_c, CONSUMER_FAILURE, 1, "Processor consumed_failure");
-        assert_u64(proc_c, CONSUMER_REFUSED, 1, "Processor consumed_refused");
+        assert_u64(proc_c, CONSUMER_REQUESTS, 3, "Processor consumed requests");
 
-        // Processor produced: 1 success + 1 failure + 1 refused
+        // Processor produced one request for each outcome.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
-        assert_u64(proc_p, PRODUCER_FAILURE, 1, "Processor produced_failure");
-        assert_u64(proc_p, PRODUCER_REFUSED, 1, "Processor produced_refused");
+        assert_u64(proc_p, PRODUCER_REQUESTS, 3, "Processor produced requests");
     }
 
-    /// Simulate the real two-pass unwind for a receiver→processor→exporter pipeline.
+    /// Scenario: a receiver->processor->exporter acknowledgment requires two unwind passes.
+    /// Guarantees: request and duration metrics remain attributed after the receiver-only second pass.
     ///
-    /// Pass 1: full stack [recv, proc, exp] — unwinds exp and proc frames,
+    /// Pass 1: full stack [recv, proc, exp] -- unwinds exp and proc frames,
     ///         delivers ack to processor (first ACKS subscriber).
-    /// Pass 2: processor re-notifies with just the receiver frame — unwinds recv,
+    /// Pass 2: processor re-notifies with just the receiver frame -- unwinds recv,
     ///         recording producer duration on the receiver's output.
     ///
     /// This is the scenario where producer.duration must be recorded for the receiver.
@@ -4135,6 +4584,7 @@ mod tests {
 
             // --- Pass 2: only the receiver frame remains (processor re-notified) ---
             let mut pdata_recv_only = TestPData::new();
+            pdata_recv_only.signal = Some(SignalType::Logs);
             pdata_recv_only.push_frame(Frame {
                 node_id: nodes[0].index,
                 interests: Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP,
@@ -4143,6 +4593,8 @@ mod tests {
                     entry_time_ns: nanos_since_birth(),
                     output_port_index: 0,
                 },
+                produced_items: 0,
+                consumed_items: 0,
             });
             let mut ack2 = AckMsg::new(pdata_recv_only);
             ack2.unwind.return_time_ns = nanos_since_birth();
@@ -4156,24 +4608,24 @@ mod tests {
 
         // From pass 1: exporter and processor consumer metrics are recorded.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
-        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter consumed duration");
+        assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
+        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter consumed duration");
         assert_eq!(snap.count, 1, "Exporter should have 1 consumed duration");
         assert!(snap.min > 0.0, "Exporter consumed duration > 0");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
-        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
+        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
         assert_eq!(snap.count, 1, "Processor should have 1 consumed duration");
 
         // From pass 1: processor produced counter recorded.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
+        assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
 
         // From pass 2: receiver produced counter AND duration recorded.
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        assert_u64(recv_p, PRODUCER_SUCCESS, 1, "Receiver produced_success");
-        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        assert_u64(recv_p, PRODUCER_REQUESTS, 1, "Receiver produced requests");
+        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
             snap.count, 1,
             "Receiver should have 1 produced duration observation from two-pass unwind"
@@ -4368,7 +4820,7 @@ mod tests {
                     1,
                     "downstream_shutdown.sent should increment once receivers are drained",
                 );
-                let receiver_phase = assert_mmsc(
+                let receiver_phase = assert_dist_is_mmsc(
                     &drain_finish_metrics,
                     RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS,
                     "receiver-phase duration",
@@ -4377,7 +4829,7 @@ mod tests {
                     receiver_phase.count, 1,
                     "receiver phase duration should record once"
                 );
-                let total_drain = assert_mmsc(
+                let total_drain = assert_dist_is_mmsc(
                     &drain_finish_metrics,
                     RUNTIME_DRAIN_TOTAL_DURATION_NS,
                     "total drain duration",
@@ -4463,7 +4915,7 @@ mod tests {
                     1,
                     "shutdown.deadline_forced should increment once",
                 );
-                let total_drain = assert_mmsc(
+                let total_drain = assert_dist_is_mmsc(
                     &forced_metrics,
                     RUNTIME_DRAIN_TOTAL_DURATION_NS,
                     "forced drain duration",
@@ -4660,7 +5112,7 @@ mod tests {
                 // Recurring timers reschedule immediately after firing, so
                 // the 5ms timer may fire more than once before `drop(pipeline_tx)`
                 // closes the manager. Unlike delayed data (one-shot), these are
-                // inherently non-deterministic — we only require at least one
+                // inherently non-deterministic -- we only require at least one
                 // dispatch was recorded.
                 assert_u64_gte(
                     &due_metrics,
@@ -5070,7 +5522,7 @@ mod tests {
                     0,
                     "basic should suppress normal counters",
                 );
-                let receiver_phase = assert_mmsc(
+                let receiver_phase = assert_dist_is_mmsc(
                     &metrics,
                     RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS,
                     "basic receiver-phase duration",
@@ -5163,7 +5615,7 @@ mod tests {
                     1,
                     "normal should export downstream shutdown counter",
                 );
-                let total_drain = assert_mmsc(
+                let total_drain = assert_dist_is_mmsc(
                     &metrics,
                     RUNTIME_DRAIN_TOTAL_DURATION_NS,
                     "normal total drain duration",
@@ -5248,8 +5700,11 @@ mod tests {
                     0,
                     "ack.dropped_no_interest should stay at zero for interested unwind",
                 );
-                let unwind =
-                    assert_mmsc(&metrics, COMPLETION_UNWIND_DEPTH, "completion unwind depth");
+                let unwind = assert_dist_is_mmsc(
+                    &metrics,
+                    COMPLETION_UNWIND_DEPTH,
+                    "completion unwind depth",
+                );
                 assert_eq!(unwind.count, 1, "unwind depth should record one Ack unwind");
                 assert_eq!(
                     unwind.min, 2.0,
@@ -5331,7 +5786,7 @@ mod tests {
                     0,
                     "nack.dropped_no_interest should stay at zero for interested unwind",
                 );
-                let unwind = assert_mmsc(
+                let unwind = assert_dist_is_mmsc(
                     &metrics,
                     COMPLETION_UNWIND_DEPTH,
                     "normal completion unwind depth",
@@ -5496,7 +5951,7 @@ mod tests {
                     1,
                     "ack.dropped_no_interest should count uninterested unwinds",
                 );
-                let unwind = assert_mmsc(
+                let unwind = assert_dist_is_mmsc(
                     &metrics,
                     COMPLETION_UNWIND_DEPTH,
                     "dropped-no-interest unwind depth",
@@ -5621,7 +6076,7 @@ mod tests {
                     0,
                     "basic should suppress completion counters",
                 );
-                let unwind = assert_mmsc(
+                let unwind = assert_dist_is_mmsc(
                     &metrics,
                     COMPLETION_UNWIND_DEPTH,
                     "basic completion unwind depth",
@@ -5699,7 +6154,7 @@ mod tests {
                     1,
                     "normal should export completion delivered counters",
                 );
-                let unwind = assert_mmsc(
+                let unwind = assert_dist_is_mmsc(
                     &metrics,
                     COMPLETION_UNWIND_DEPTH,
                     "normal completion unwind depth",
@@ -5928,6 +6383,8 @@ mod tests {
                     entry_time_ns: 0,
                     output_port_index: 0,
                 },
+                produced_items: 0,
+                consumed_items: 0,
             });
             pdata
         }
@@ -5974,6 +6431,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    TerminalMetricsDeadline::default(),
                 );
 
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
@@ -6012,15 +6470,15 @@ mod tests {
     ///
     /// ```ignore
     /// for (_, context, payload) in completed_messages {
-    ///     effect_handler.notify_ack(AckMsg::new(…)).await?;
+    ///     effect_handler.notify_ack(AckMsg::new(...)).await?;
     ///     //             ^^^^^^^^^ sends DeliverAck to pipeline ctrl channel
     /// }
     /// ```
     ///
     /// Setup:
-    ///   - Pipeline ctrl channel (nodes → manager): capacity 3
-    ///   - Node A control channel (manager → A):    capacity 1
-    ///   - Node B control channel (manager → B):    capacity 10
+    ///   - Pipeline ctrl channel (nodes -> manager): capacity 3
+    ///   - Node A control channel (manager -> A):    capacity 1
+    ///   - Node B control channel (manager -> B):    capacity 10
     ///
     /// The circular wait forms as follows:
     ///   1. Pre-load pipeline ctrl with [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}].
@@ -6030,13 +6488,13 @@ mod tests {
     ///   3. Manager processes the two DeliverAck{A}s (freeing slots that Node A
     ///      promptly refills), sending Acks to A's control channel.
     ///      The first Ack succeeds (fills A's cap-1 channel).
-    ///      The second Ack finds A's channel full → manager blocks on `.await`.
+    ///      The second Ack finds A's channel full -> manager blocks on `.await`.
     ///   4. Now both are stuck:
     ///      - Manager is blocked sending to A's control channel (full)
     ///      - Node A is blocked sending to pipeline ctrl channel (full, refilled
     ///        after manager freed the initial two slots)
     ///      - Neither can make progress.
-    ///   5. DeliverAck{B} sits in the pipeline ctrl queue — never processed.
+    ///   5. DeliverAck{B} sits in the pipeline ctrl queue -- never processed.
     ///
     /// The test asserts Node B receives its ack within 500 ms.  The non-blocking
     /// `try_send` + `pending_sends` buffering in `send()` prevents the manager
@@ -6057,6 +6515,8 @@ mod tests {
                     entry_time_ns: 0,
                     output_port_index: 0,
                 },
+                produced_items: 0,
+                consumed_items: 0,
             });
             pdata
         }
@@ -6073,7 +6533,7 @@ mod tests {
                 let node_a = nodes[0].clone();
                 let node_b = nodes[1].clone();
 
-                // Node A: control channel capacity 1 — fills up after one message
+                // Node A: control channel capacity 1 -- fills up after one message
                 let (tx_a, rx_a) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(1);
                 control_senders.register(
                     node_a.clone(),
@@ -6081,7 +6541,7 @@ mod tests {
                     Sender::Shared(SharedSender::mpsc(tx_a)),
                 );
 
-                // Node B: control channel capacity 10 — plenty of room
+                // Node B: control channel capacity 10 -- plenty of room
                 let (tx_b, rx_b) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(10);
                 control_senders.register(
                     node_b.clone(),
@@ -6098,6 +6558,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    TerminalMetricsDeadline::default(),
                 );
 
                 // Pre-load the shared return channel: [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}]
@@ -6126,7 +6587,7 @@ mod tests {
                 // `for msg in completed_messages { notify_ack(..).await; }` loop).
                 //
                 // Node A keeps sending DeliverAck to the shared return channel.
-                // When the channel is full, Node A blocks — and since it never
+                // When the channel is full, Node A blocks -- and since it never
                 // drains its own control channel (rx_a), the dispatcher can't
                 // deliver acks to it either.
                 let node_a_tx = return_tx.clone();
@@ -6191,6 +6652,8 @@ mod tests {
                     entry_time_ns: 0,
                     output_port_index: 0,
                 },
+                produced_items: 0,
+                consumed_items: 0,
             });
             pdata
         }
@@ -6243,6 +6706,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    TerminalMetricsDeadline::default(),
                 );
 
                 let node_a_tx = return_tx.clone();

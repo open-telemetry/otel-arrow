@@ -15,13 +15,16 @@ pub enum Instrument {
     UpDownCounter,
     /// A value that can arbitrarily go up and down, used for temperature or current memory usage
     Gauge,
-    /// Distribution of recorded values, used for latencies or request sizes
-    Histogram,
     /// Pre-aggregated min/max/sum/count summary.
     ///
-    /// Internally tracked as an `Mmsc` instrument; the dispatcher exports the
-    /// aggregated snapshot as a synthetic OTel histogram without bucket counts.
+    /// Internally tracked as an `Mmsc` instrument; the OTLP bridge exports the
+    /// aggregated snapshot as a bucketless OTel histogram.
     Mmsc,
+    /// Exponential-histogram distribution (normal/detailed tiers).
+    ///
+    /// Tracked as a [`crate::instrument::DistributionValue`]; the OTLP bridge exports
+    /// the aggregation as an OTel exponential-histogram point.
+    ExponentialHistogram,
 }
 
 /// Aggregation temporality for sum-like instruments.
@@ -61,6 +64,39 @@ pub struct MetricsField {
     pub temporality: Option<Temporality>,
     /// The numeric representation for the metric values.
     pub value_type: MetricValueType,
+}
+
+impl MetricsField {
+    /// Returns true when this field's stored value is an increment contributed
+    /// by the reporting instrument, rather than an absolute reading.
+    ///
+    /// This is an input-side property and is independent of the aggregation
+    /// temporality an exporter chooses. Incremental fields are combined into an
+    /// accumulator with `add_in_place` (a merge, for distributions) and are
+    /// cleared once the accumulator that owns them is drained; absolute fields
+    /// (gauges, and sums whose instrument itself holds the running total) are
+    /// replaced on collection and must survive a drain untouched.
+    ///
+    /// Distribution-shaped instruments are always incremental: the instrument
+    /// holds only what was recorded since `clear_values`, so its snapshot is
+    /// per-collection no matter how it is later exported. Delta and cumulative
+    /// output are then a property of the accumulator being read -- the OTLP
+    /// path drains and resets, while the admin path is read without reset for
+    /// a cumulative Prometheus scrape -- not of this classification.
+    ///
+    /// Keeping accumulate, reset, and rollback on one predicate is what stops
+    /// an instrument from being accumulated but never cleared, which silently
+    /// re-exports the previous interval's observations.
+    #[must_use]
+    pub fn accumulates(&self) -> bool {
+        match self.instrument {
+            Instrument::Counter | Instrument::UpDownCounter => {
+                self.temporality == Some(Temporality::Delta)
+            }
+            Instrument::Mmsc | Instrument::ExponentialHistogram => true,
+            Instrument::Gauge => false,
+        }
+    }
 }
 
 /// Descriptor for a multivariate metrics.
@@ -106,4 +142,19 @@ pub struct AttributesDescriptor {
     pub name: &'static str,
     /// Ordered attribute field metadata.
     pub fields: &'static [AttributeField],
+}
+
+/// Descriptor for a single per-measurement enum attribute.
+///
+/// Measurement attributes vary per recorded item. Because the value space is a
+/// closed `enum`, the ordered string forms of every variant are known at compile
+/// time. The number of variants is the attribute's radix in the mixed-radix
+/// bucket index used to address a metric set's items.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct MeasurementAttributeDescriptor {
+    /// Attribute key (e.g. "signal").
+    pub key: &'static str,
+    /// Ordered string forms of the enum variants (declaration order).
+    /// `variants.len()` is the attribute's radix.
+    pub variants: &'static [&'static str],
 }

@@ -27,6 +27,7 @@ otap-df-telemetry-macros = { workspace = true }
 
 arrow = { workspace = true }
 async-trait.workspace = true
+base64.workspace = true
 blake3.workspace = true
 byte-unit.workspace = true
 bytes.workspace = true
@@ -36,11 +37,13 @@ data_engine_expressions.workspace = true
 data_engine_kql_parser.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
+hex.workspace = true
 humantime-serde.workspace = true
 linkme.workspace = true
 object_store = { workspace = true, features = ["fs"] }
 parquet.workspace = true
 prost.workspace = true
+prost-types.workspace = true
 rand.workspace = true
 regex.workspace = true
 serde.workspace = true
@@ -56,6 +59,7 @@ tokio-util.workspace = true
 reqwest.workspace = true
 parking_lot.workspace = true
 http.workspace = true
+secrecy.workspace = true
 async-stream.workspace = true
 arrow-ipc.workspace = true
 uuid.workspace = true
@@ -98,7 +102,7 @@ tokio-stream.workspace = true
 zstd.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
-portpicker.workspace = true
+otap-df-test-net.workspace = true
 otap-test-tls-certs.workspace = true
 criterion.workspace = true
 
@@ -106,3 +110,9 @@ criterion.workspace = true
 name = "temporal_reaggregation_processor"
 harness = false
 path = "benches/temporal_reaggregation_processor/main.rs"
+
+[[bench]]
+name = "journald_decode"
+harness = false
+path = "benches/journald_decode/main.rs"
+required-features = ["bench"]

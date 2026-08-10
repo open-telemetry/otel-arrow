@@ -125,15 +125,6 @@ impl Consumer {
         let record_messages = self.consume_bar(records)?;
         let mut otap_batch = OtapArrowRecords::Metrics(from_record_messages(record_messages)?);
 
-        if otap_batch
-            .get(ArrowPayloadType::UnivariateMetrics)
-            .is_none()
-        {
-            return Err(Error::RecordBatchNotFound {
-                payload_type: ArrowPayloadType::UnivariateMetrics,
-            });
-        }
-
         self.proto_buffer.clear();
         self.metrics_proto_encoder
             .encode(&mut otap_batch, &mut self.proto_buffer)?;
@@ -155,12 +146,6 @@ impl Consumer {
         let record_messages = self.consume_bar(records)?;
         let mut otap_batch = OtapArrowRecords::Logs(from_record_messages(record_messages)?);
 
-        if otap_batch.get(ArrowPayloadType::Logs).is_none() {
-            return Err(Error::RecordBatchNotFound {
-                payload_type: ArrowPayloadType::Logs,
-            });
-        }
-
         self.proto_buffer.clear();
         self.logs_proto_encoder
             .encode(&mut otap_batch, &mut self.proto_buffer)?;
@@ -179,12 +164,6 @@ impl Consumer {
     ) -> Result<ExportTraceServiceRequest> {
         let record_messages = self.consume_bar(records)?;
         let mut otap_batch = OtapArrowRecords::Traces(from_record_messages(record_messages)?);
-
-        if otap_batch.get(ArrowPayloadType::Spans).is_none() {
-            return Err(Error::RecordBatchNotFound {
-                payload_type: ArrowPayloadType::Spans,
-            });
-        }
 
         self.proto_buffer.clear();
         self.traces_proto_encoder
@@ -296,7 +275,6 @@ mod tests {
 
     use super::Consumer;
     use crate::Producer;
-    use crate::error::Error;
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::testing::fixtures::{
         logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
@@ -409,6 +387,10 @@ mod tests {
         );
     }
 
+    // Missing root payloads were originally disallowed, but this
+    // restriction was later removed.
+    //
+    // see https://github.com/open-telemetry/otel-arrow/issues/3444
     #[test]
     fn test_consume_logs_missing_root_payload() {
         let logs_data = logs_with_full_resource_and_scope();
@@ -421,13 +403,13 @@ mod tests {
 
         let mut consumer = Consumer::default();
         let result = consumer.consume_logs_batches(&mut bar);
-        assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), Error::RecordBatchNotFound { payload_type } if payload_type == ArrowPayloadType::Logs),
-            "should return RecordBatchNotFound for Logs"
-        );
+        assert!(result.is_ok());
     }
 
+    // Missing root payloads were originally disallowed, but this
+    // restriction was later removed.
+    //
+    // see https://github.com/open-telemetry/otel-arrow/issues/3444
     #[test]
     fn test_consume_metrics_missing_root_payload() {
         let metrics_data = metrics_sum_with_full_resource_and_scope();
@@ -440,13 +422,13 @@ mod tests {
 
         let mut consumer = Consumer::default();
         let result = consumer.consume_metrics_batches(&mut bar);
-        assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), Error::RecordBatchNotFound { payload_type } if payload_type == ArrowPayloadType::UnivariateMetrics),
-            "should return RecordBatchNotFound for UnivariateMetrics"
-        );
+        assert!(result.is_ok());
     }
 
+    // Missing root payloads were originally disallowed, but this
+    // restriction was later removed.
+    //
+    // see https://github.com/open-telemetry/otel-arrow/issues/3444
     #[test]
     fn test_consume_traces_missing_root_payload() {
         let traces_data = traces_with_full_resource_and_scope();
@@ -459,11 +441,7 @@ mod tests {
 
         let mut consumer = Consumer::default();
         let result = consumer.consume_traces_batches(&mut bar);
-        assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), Error::RecordBatchNotFound { payload_type } if payload_type == ArrowPayloadType::Spans),
-            "should return RecordBatchNotFound for Spans"
-        );
+        assert!(result.is_ok());
     }
 
     #[test]

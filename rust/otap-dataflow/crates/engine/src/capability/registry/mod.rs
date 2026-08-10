@@ -14,10 +14,10 @@
 //! | Submodule        | Contents                                                                      |
 //! |------------------|-------------------------------------------------------------------------------|
 //! | [`entry`]        | [`LocalCapabilityEntry`], [`SharedCapabilityEntry`], plus resolved-entry types |
-//! | [`storage`]      | [`CapabilityRegistry`] — build-phase storage of registrations                  |
-//! | [`capabilities`] | [`Capabilities`] — per-node consumer API                                       |
-//! | [`tracker`]      | [`ConsumedTracker`] — records which variants were consumed                     |
-//! | [`resolve`]      | [`resolve_bindings`] — the per-node resolution pass                            |
+//! | [`storage`]      | [`CapabilityRegistry`] -- build-phase storage of registrations                  |
+//! | [`capabilities`] | [`Capabilities`] -- per-node consumer API                                       |
+//! | [`tracker`]      | [`ConsumedTracker`] -- records which variants were consumed                     |
+//! | [`resolve`]      | [`resolve_bindings`] -- the per-node resolution pass                            |
 
 mod capabilities;
 mod entry;
@@ -31,13 +31,13 @@ mod tests;
 /// Error type alias for capability operations.
 pub type Error = crate::error::Error;
 
-// ── Public re-exports ────────────────────────────────────────────────────────
+// -- Public re-exports --------------------------------------------------------
 
 pub use capabilities::Capabilities;
 pub use entry::{LocalCapabilityEntry, SharedCapabilityEntry};
 pub use storage::CapabilityRegistry;
 
-// ── Crate-internal re-exports ────────────────────────────────────────────────
+// -- Crate-internal re-exports ------------------------------------------------
 
 pub(crate) use entry::{ResolvedLocalEntry, ResolvedSharedEntry};
 // TODO(extension-system): wired by engine build phase in a follow-up PR;

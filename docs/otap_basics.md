@@ -51,7 +51,7 @@ model and meaning of these signals is independent of the format of the data,
 and OTAP makes a few different choices from OTLP in this regard.
 
 OTAP opts for a normalized representation which spreads an OTLP signal across
-multiple tables. These tables are described in the [data_model](./data_model).
+multiple tables. These tables are described in the [data_model](./data_model.md).
 Logs, for example, are split into four tables:
 
 1. A primary Logs table that roughly corresponds to an OTLP

@@ -1,0 +1,23 @@
+name: io.opentelemetry.otap-dataflow
+description: >
+  Semantic conventions for events, metrics, and attributes emitted by the
+  OTAP Dataflow engine (df_engine) for its own internal telemetry.
+
+  This is the home for conventions that describe df_engine's
+  internal-instrumentation surface (the events fired through the
+  `otel_info!` / `otel_warn!` / `otel_debug!` / `otel_error!` /
+  `otel_event!` macros in `crates/telemetry/src/internal_events.rs`).
+
+  The registry is wired into CI via `weaver registry live-check` so that
+  the events the engine actually emits at runtime are validated against
+  the definitions here.
+
+  Tracking issue:
+  https://github.com/open-telemetry/otel-arrow/issues/1613
+schema_url: https://opentelemetry.io/otap-dataflow/schemas/0.1.0
+dependencies:
+  # Pin to the same upstream semantic-conventions tag the host-metrics
+  # CI job uses (see .github/workflows/rust-ci.yml::host-metrics-semconv
+  # and host-metrics-weaver-live-check). Keep these in sync.
+  - schema_url: https://opentelemetry.io/schemas/1.41.0
+    registry_path: https://github.com/open-telemetry/semantic-conventions.git@v1.41.0[model]

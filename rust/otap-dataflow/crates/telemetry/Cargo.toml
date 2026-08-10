@@ -1,6 +1,6 @@
 [package]
 name = "otap-df-telemetry"
-description = "Type-safe and NUMA-aware telemetry SDK"
+description = "Type-safe and NUMA-aware internal telemetry system (ITS)"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -22,8 +22,9 @@ unchecked-arithmetic = []
 otap-df-pdata = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-pdata-views = { workspace = true }
+otap-df-telemetry-macros = { workspace = true }
+otap-df-expohisto = { workspace = true }
 
-axum = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 flume = { workspace = true }
@@ -33,22 +34,22 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 slotmap = { workspace = true }
 parking_lot = { workspace = true }
-prometheus = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 smallvec = { workspace = true }
-# TODO: Note we do not have any compression features enabled for the OTel SDK used for OTLP/Prometheus export.
-opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true, default-features = false, features = ["metrics", "internal-logs"] }
-opentelemetry-stdout = { workspace = true, default-features = false, features = ["metrics"] }
-opentelemetry-otlp = { workspace = true, default-features = false, features = ["grpc-tonic", "tls-provider-agnostic", "metrics"] }
-opentelemetry-prometheus = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
 
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-resource-detectors = { workspace = true }
+
 [dev-dependencies]
-tower = { workspace = true }
+criterion = { workspace = true }
+temp-env = { workspace = true }
 tempfile = { workspace = true }
-opentelemetry_sdk = { workspace = true, features = ["testing"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
+
+[[bench]]
+name = "distribution_record"
+harness = false

@@ -11,7 +11,6 @@ use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeUrn, PortName, TopicName};
 use otap_df_telemetry::event::ErrorSummary;
-use std::borrow::Cow;
 use std::fmt;
 
 use otap_df_config::ExtensionId;
@@ -332,7 +331,7 @@ pub enum Error {
         plugin_urn: NodeUrn,
     },
 
-    /// The specified extension already exists in the pipeline.
+    /// The specified extension already exists in its host scope.
     #[error("The extension `{extension}` already exists")]
     ExtensionAlreadyExists {
         /// The name of the extension that already exists.
@@ -390,13 +389,6 @@ pub enum Error {
         port_name: PortName,
     },
 
-    /// Unsupported node kind.
-    #[error("Unsupported node kind `{kind}`")]
-    UnsupportedNodeKind {
-        /// The kind of the node that is not supported.
-        kind: Cow<'static, str>,
-    },
-
     /// Node wiring violates the node type contract.
     #[error(
         "Invalid wiring for node `{node}` output `{output}`: allowed at most {max_destinations} destination(s), found {actual_destinations:?}"
@@ -423,6 +415,53 @@ pub enum Error {
         error: String,
     },
 
+    /// An active extension's `start()` returned `Ok(())` before shutdown was
+    /// initiated.
+    #[error(
+        "Active extension `{extension}` exited before shutdown was initiated; \
+         active extensions must run until they receive Shutdown"
+    )]
+    ExtensionExitedBeforeShutdown {
+        /// Id of the extension that exited.
+        extension: String,
+    },
+
+    /// An opted-in extension did not signal ready within its configured timeout.
+    #[error(
+        "Extension `{extension}` ({variant}) did not signal readiness within {timeout:?}; \
+         pipeline startup aborted on the readiness gate"
+    )]
+    ExtensionReadinessTimeout {
+        /// Id of the extension.
+        extension: String,
+        /// Variant (`"local"` or `"shared"`).
+        variant: String,
+        /// Configured timeout.
+        timeout: std::time::Duration,
+    },
+
+    /// An opted-in extension dropped its readiness signaller without firing.
+    #[error(
+        "Extension `{extension}` ({variant}) dropped its readiness signaller without \
+         signaling ready; pipeline startup aborted on the readiness gate"
+    )]
+    ExtensionReadinessSignallerDropped {
+        /// Id of the extension.
+        extension: String,
+        /// Variant (`"local"` or `"shared"`).
+        variant: String,
+    },
+
+    /// An extension requested a readiness-probe timeout of zero.
+    #[error(
+        "Extension `{extension}` requested a readiness-probe timeout of zero; the timeout must \
+         be greater than zero (use with_readiness_probe() for the 5s default)"
+    )]
+    ExtensionReadinessZeroTimeout {
+        /// Id of the extension.
+        extension: String,
+    },
+
     /// An internal error that occurred in the pipeline engine.
     #[error("Internal error: {message}")]
     InternalError {
@@ -432,7 +471,7 @@ pub enum Error {
 
     /// All nodes were removed from the pipeline (none are connected).
     #[error(
-        "Pipeline has no connected nodes after removing unconnected entries — check pipeline configuration"
+        "Pipeline has no connected nodes after removing unconnected entries \u{2014} check pipeline configuration"
     )]
     EmptyPipeline,
 
@@ -561,6 +600,12 @@ impl Error {
             Error::InvalidHyperEdge { .. } => "InvalidHyperEdge",
             Error::IoError { .. } => "IoError",
             Error::JoinTaskError { .. } => "JoinTaskError",
+            Error::ExtensionExitedBeforeShutdown { .. } => "ExtensionExitedBeforeShutdown",
+            Error::ExtensionReadinessTimeout { .. } => "ExtensionReadinessTimeout",
+            Error::ExtensionReadinessSignallerDropped { .. } => {
+                "ExtensionReadinessSignallerDropped"
+            }
+            Error::ExtensionReadinessZeroTimeout { .. } => "ExtensionReadinessZeroTimeout",
             Error::NoDefaultOutputPort { .. } => "NoDefaultOutputPort",
             Error::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
             Error::PDataError { .. } => "PDataError",
@@ -584,7 +629,6 @@ impl Error {
             Error::UnknownOutputPort { .. } => "UnknownOutputPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",
             Error::UnknownReceiver { .. } => "UnknownReceiver",
-            Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
             Error::InvalidNodeWiring { .. } => "InvalidNodeWiring",
             Error::TopicAlreadyExists { .. } => "TopicAlreadyExists",
             Error::UnknownTopic { .. } => "UnknownTopic",

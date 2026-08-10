@@ -28,7 +28,7 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
 use otap_df_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
@@ -40,13 +40,14 @@ use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
+use tonic::Code;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
@@ -82,11 +83,12 @@ pub(crate) const fn default_num_connections() -> usize {
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
     config: Config,
-    pdata_metrics: MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
 }
 
 /// Declare the OTLP Exporter as a local exporter factory
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_EXPORTER_URN,
@@ -103,8 +105,27 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    validate_config,
 };
+
+/// Validates the OTLP gRPC exporter configuration at config load time.
+///
+/// Runs before any node is started (initial load and live reconfigure), so bad
+/// configuration is rejected fast and attributed to the offending node rather
+/// than surfacing as an opaque client error at startup.
+fn validate_config(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+    let cfg: Config = serde_json::from_value(config.clone()).map_err(|e| {
+        otap_df_config::error::Error::InvalidUserConfig {
+            error: e.to_string(),
+        }
+    })?;
+    cfg.grpc
+        .validate()
+        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
+    Ok(())
+}
 
 impl OTLPExporter {
     /// create a new instance of the `[OTLPExporter]` from json config value
@@ -112,7 +133,7 @@ impl OTLPExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -143,6 +164,18 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         let exporter_id = effect_handler.exporter_id();
 
+        // Run the optional startup check (dns resolution or eager connect) before creating the
+        // lazy channels used for normal runtime traffic.
+        self.config.grpc.run_startup_check().await.map_err(|e| {
+            let source_detail = format_error_sources(&e);
+            Error::ExporterError {
+                exporter: exporter_id.clone(),
+                kind: ExporterErrorKind::Connect,
+                error: format!("startup check failed: {e}"),
+                source_detail,
+            }
+        })?;
+
         let num_connections = self.config.num_connections.max(1);
         let mut channels = Vec::with_capacity(num_connections);
         for _ in 0..num_connections {
@@ -171,6 +204,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         let compression = self.config.grpc.compression_encoding();
         let max_in_flight = self.config.max_in_flight.max(1);
+
+        // Pre-build the static gRPC metadata template ONCE, outside the hot loop.
+        // Returns `None` when no static headers are configured, which preserves
+        // the zero-allocation fast path in `build_grpc_metadata`.
+        let static_metadata = self.config.grpc.build_static_metadata();
 
         // reuse the encoder and the buffer across pdatas
         let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
@@ -264,12 +302,15 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             grpc_clients.release(client);
                         }
                     }
-                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
+                    return Ok(TerminalState::new(
+                        deadline,
+                        self.pdata_metrics.terminal_snapshots(),
+                    ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report(&mut self.pdata_metrics);
+                    _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
                 }
                 Message::PData(pdata) => {
                     if inflight_exports.len() >= max_in_flight {
@@ -279,11 +320,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
-                    self.pdata_metrics.inc_consumed(signal_type);
 
-                    // Build gRPC metadata from transport headers if a propagation
-                    // policy is configured. Computed once before signal dispatch.
-                    let metadata = build_grpc_metadata(&effect_handler, &context);
+                    // Build gRPC metadata from configured static headers and
+                    // any propagated transport headers. Computed once before
+                    // signal dispatch; the static template is cloned only when
+                    // present so the no-metadata case stays allocation-free.
+                    let metadata =
+                        build_grpc_metadata(&effect_handler, &context, static_metadata.as_ref());
 
                     // Dispatch based on signal type and the concrete payload representation.
                     match (signal_type, payload) {
@@ -301,7 +344,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics.logs_failed,
+                                &mut self.pdata_metrics,
                                 &effect_handler,
                             )
                             .await;
@@ -320,7 +363,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics.metrics_failed,
+                                &mut self.pdata_metrics,
                                 &effect_handler,
                             )
                             .await;
@@ -339,7 +382,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics.traces_failed,
+                                &mut self.pdata_metrics,
                                 &effect_handler,
                             )
                             .await;
@@ -406,13 +449,21 @@ async fn route_export_result<T>(
             Ok(())
         }
         Err(e) => {
+            let retryable = is_retryable_grpc_status(&e);
             let error_msg = e.to_string();
-            effect_handler
-                .notify_nack(NackMsg::new(
-                    &error_msg,
-                    OtapPdata::new(context, saved_payload),
-                ))
-                .await?;
+
+            // TODO(https://github.com/open-telemetry/otel-arrow/issues/3404):
+            // NackMsg has no structured retry-after field yet, so we fold the
+            // server's advisory RetryInfo delay into the human-readable reason.
+            // Replace this with a structured field once #3404 lands.
+            let mut reason = error_msg.clone();
+            if let Some(delay) = retry_after(&e) {
+                reason.push_str(&format!(" (retry after {})", format_retry_delay(&delay)));
+            }
+
+            let mut nack = NackMsg::new(&reason, OtapPdata::new(context, saved_payload));
+            nack.permanent = !retryable;
+            effect_handler.notify_nack(nack).await?;
             let source_detail = format_error_sources(&e);
             Err(Error::ExporterError {
                 exporter: effect_handler.exporter_id(),
@@ -422,6 +473,109 @@ async fn route_export_result<T>(
             })
         }
     }
+}
+
+/// Prost-generated struct for `google.rpc.Status`.
+///
+/// See: <https://github.com/googleapis/googleapis/blob/master/google/rpc/status.proto>
+///
+/// According to the OTLP spec, servers may attach `google.rpc.Status` details for certain
+/// failures. In particular, `RESOURCE_EXHAUSTED` may include a `google.rpc.RetryInfo` entry.
+///
+/// See: <https://opentelemetry.io/docs/specs/otlp/#failures>
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct RpcStatus {
+    #[prost(int32, tag = "1")]
+    pub code: i32,
+    #[prost(string, tag = "2")]
+    pub message: String,
+    #[prost(message, repeated, tag = "3")]
+    pub details: Vec<prost_types::Any>,
+}
+
+/// The `type.googleapis.com` URL for `google.rpc.RetryInfo`.
+const RETRY_INFO_TYPE_URL: &str = "type.googleapis.com/google.rpc.RetryInfo";
+
+/// Prost-generated struct for `google.rpc.RetryInfo` (subset).
+///
+/// Servers may attach this detail to signal how long the client should wait
+/// before retrying. The hint is advisory.
+///
+/// See: <https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto>
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct RetryInfo {
+    #[prost(message, optional, tag = "1")]
+    pub retry_delay: Option<prost_types::Duration>,
+}
+
+/// Determines whether a gRPC status represents a retryable error according to
+/// the OTLP specification.
+///
+/// The retryability mapping follows the table at
+/// <https://opentelemetry.io/docs/specs/otlp/#otlpgrpc-response>.
+///
+/// `RESOURCE_EXHAUSTED` is always treated as retryable. The `google.rpc.RetryInfo`
+/// detail the server may attach is advisory only, so callers are not required to
+/// honor it and its absence must not turn the failure permanent. See
+/// [`retry_after`], which surfaces that advisory delay to callers.
+///
+/// `UNKNOWN` is treated as retryable because the generated gRPC client maps
+/// temporary client-side readiness and transport failures, such as a channel
+/// that is still reconnecting, to `UNKNOWN` before the RPC is sent. Treating
+/// that as permanent would drop payloads that could succeed on retry.
+fn is_retryable_grpc_status(status: &tonic::Status) -> bool {
+    match status.code() {
+        // Retryable per the OTLP spec, plus RESOURCE_EXHAUSTED (advisory
+        // RetryInfo) and UNKNOWN (client-side readiness/transport failures).
+        Code::Cancelled
+        | Code::DeadlineExceeded
+        | Code::Aborted
+        | Code::OutOfRange
+        | Code::Unavailable
+        | Code::DataLoss
+        | Code::ResourceExhausted
+        | Code::Unknown => true,
+
+        // All other codes (INVALID_ARGUMENT, NOT_FOUND, ALREADY_EXISTS,
+        // PERMISSION_DENIED, UNAUTHENTICATED, FAILED_PRECONDITION,
+        // UNIMPLEMENTED, INTERNAL, OK) are not retryable.
+        _ => false,
+    }
+}
+
+/// Extracts the server-suggested retry delay from a `google.rpc.RetryInfo`
+/// detail carried in the status `grpc-status-details-bin` trailer, if present.
+///
+/// The details bytes are a serialized `google.rpc.Status` message whose
+/// `details` field is a `repeated google.protobuf.Any`. We decode this, locate
+/// the `RetryInfo` entry, and return its `retry_delay`.
+///
+/// This advisory hint is not consulted for the retry/permanent decision, which
+/// is driven solely by the status code in [`is_retryable_grpc_status`].
+fn retry_after(status: &tonic::Status) -> Option<prost_types::Duration> {
+    use prost::Message;
+
+    let detail_bytes = status.details();
+    if detail_bytes.is_empty() {
+        return None;
+    }
+
+    let rpc_status = RpcStatus::decode(detail_bytes).ok()?;
+    rpc_status
+        .details
+        .iter()
+        .find(|any| any.type_url == RETRY_INFO_TYPE_URL)
+        .and_then(|any| RetryInfo::decode(any.value.as_slice()).ok())
+        .and_then(|info| info.retry_delay)
+}
+
+/// Formats a `google.rpc.RetryInfo` retry delay as a compact, human-readable
+/// duration for inclusion in a NACK reason string.
+fn format_retry_delay(delay: &prost_types::Duration) -> String {
+    // Normalize to whole seconds plus fractional milliseconds; RetryInfo delays
+    // are advisory and typically coarse, so millisecond precision is sufficient.
+    let millis = delay.seconds * 1_000 + (delay.nanos as i64) / 1_000_000;
+    format!("{}ms", millis)
 }
 
 struct EncodedExport {
@@ -524,7 +678,7 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     encoder: &mut Enc,
     make_future: MakeFuture,
     inflight: &mut InFlightExports<Fut, CompletedExport>,
-    failed_counter: &mut Counter<u64>,
+    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
     effect_handler: &EffectHandler<OtapPdata>,
 ) where
     Enc: ProtoBytesEncoder,
@@ -544,7 +698,13 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
             inflight.push(make_future(encoded));
         }
         Err(error) => {
-            failed_counter.inc();
+            pdata_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: signal_type,
+                    outcome: Outcome::Failure,
+                })
+                .messages
+                .inc();
             _ = notify_prepare_error(error, effect_handler).await;
         }
     }
@@ -560,8 +720,10 @@ async fn notify_prepare_error(
         saved_payload,
     } = *error;
 
+    // Encoding failures are permanent: the data is malformed and retrying the
+    // same payload will not succeed.
     effect_handler
-        .notify_nack(NackMsg::new(
+        .notify_nack(NackMsg::new_permanent(
             error.to_string(),
             OtapPdata::new(context, saved_payload),
         ))
@@ -574,7 +736,7 @@ async fn notify_prepare_error(
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
 ) -> SignalClient {
     let CompletedExport {
         result,
@@ -585,77 +747,123 @@ async fn finalize_completed_export(
     } = completed;
 
     match route_export_result(result, context, saved_payload, effect_handler).await {
-        Ok(()) => pdata_metrics.add_exported(signal_type, 1),
+        Ok(()) => {
+            pdata_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: signal_type,
+                    outcome: Outcome::Success,
+                })
+                .messages
+                .inc();
+        }
         Err(e) => {
             otel_warn!(
                 "otlp.exporter.http.export_error",
                 message = "OTLP Exporter gRPC service request did not succeed",
                 error = %e
             );
-            pdata_metrics.add_failed(signal_type, 1)
+            pdata_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: signal_type,
+                    outcome: Outcome::Failure,
+                })
+                .messages
+                .inc();
         }
     }
 
     client
 }
 
-/// Builds a [`MetadataMap`] from the transport headers attached to a pdata
-/// message, filtered through the exporter's propagation policy.
+/// Builds the per-request gRPC metadata by merging the pre-built static
+/// `static_metadata` template with any headers propagated from the incoming
+/// transport context.
 ///
-/// Returns `None` when either the policy or the transport headers are absent,
-/// or when all headers are dropped by the policy (zero overhead in the common
-/// case).
+/// Hot path: when there is neither static metadata nor a propagation source
+/// this returns `None` without allocating. The static template is cloned only
+/// when present (each tonic request needs its own owned metadata); propagated
+/// headers are appended on top so static and propagated headers coexist.
+///
+/// Static config wins on collision: a propagated header whose key matches a
+/// statically configured one is dropped, so a configured backend credential
+/// (e.g. `authorization`) can never be overridden or duplicated by inbound
+/// transport headers.
 fn build_grpc_metadata(
     effect_handler: &EffectHandler<OtapPdata>,
     context: &Context,
+    static_metadata: Option<&MetadataMap>,
 ) -> Option<MetadataMap> {
-    let policy = effect_handler.propagation_policy()?;
-    let transport_headers = context.transport_headers()?;
+    let propagation = effect_handler
+        .propagation_policy()
+        .zip(context.transport_headers());
 
-    let mut metadata = MetadataMap::new();
-    for header in policy.propagate(transport_headers) {
-        match header.value_kind {
-            ValueKind::Text => {
-                // ASCII metadata: parse the header name and value.
-                let Ok(key) = header
-                    .header_name
-                    .parse::<MetadataKey<tonic::metadata::Ascii>>()
-                else {
-                    otel_debug!(
-                        "otlp.exporter.grpc.header_skip",
-                        reason = "invalid ascii metadata key",
-                        header_name = header.header_name
-                    );
-                    continue;
-                };
-                let Ok(value) = MetadataValue::try_from(header.value) else {
-                    otel_debug!(
-                        "otlp.exporter.grpc.header_skip",
-                        reason = "invalid ascii metadata value",
-                        header_name = header.header_name
-                    );
-                    continue;
-                };
-                let _ = metadata.append(key, value);
-            }
-            ValueKind::Binary => {
-                // Binary metadata: gRPC binary metadata keys must end with `-bin`.
-                // Metadata map will error if attempting to insert key without `-bin`.
-                let key_name = if header.header_name.ends_with("-bin") {
-                    header.header_name.to_string()
-                } else {
-                    format!("{}-bin", header.header_name)
-                };
-                let Ok(key) = key_name.parse::<MetadataKey<tonic::metadata::Binary>>() else {
-                    otel_debug!(
-                        "otlp.exporter.grpc.header_skip",
-                        reason = "invalid binary metadata key",
-                        header_name = header.header_name
-                    );
-                    continue;
-                };
-                let value = MetadataValue::from_bytes(header.value);
-                let _ = metadata.append_bin(key, value);
+    // Zero-alloc fast path: nothing static configured and nothing to propagate.
+    if static_metadata.is_none() && propagation.is_none() {
+        return None;
+    }
+
+    let mut metadata = match static_metadata {
+        Some(static_metadata) => static_metadata.clone(),
+        None => MetadataMap::new(),
+    };
+
+    if let Some((policy, transport_headers)) = propagation {
+        for header in policy.propagate(transport_headers) {
+            match header.value_kind {
+                ValueKind::Text => {
+                    // ASCII metadata: parse the header name and value.
+                    let Ok(key) = header
+                        .header_name
+                        .parse::<MetadataKey<tonic::metadata::Ascii>>()
+                    else {
+                        otel_debug!(
+                            "otlp.exporter.grpc.header_skip",
+                            reason = "invalid ascii metadata key",
+                            header_name = header.header_name
+                        );
+                        continue;
+                    };
+                    let Ok(value) = MetadataValue::try_from(header.value) else {
+                        otel_debug!(
+                            "otlp.exporter.grpc.header_skip",
+                            reason = "invalid ascii metadata value",
+                            header_name = header.header_name
+                        );
+                        continue;
+                    };
+                    // Static config wins: a statically configured header (e.g. an
+                    // `authorization` backend credential) must not be duplicated or
+                    // overridden by a propagated header with the same key. Static
+                    // metadata is ASCII-only, so only text headers can collide.
+                    if static_metadata.is_some_and(|s| s.contains_key(key.as_str())) {
+                        otel_debug!(
+                            "otlp.exporter.grpc.header_skip",
+                            reason = "static header takes precedence over propagated header",
+                            header_name = header.header_name
+                        );
+                        continue;
+                    }
+                    let _ = metadata.append(key, value);
+                }
+                ValueKind::Binary => {
+                    // Binary metadata: gRPC binary metadata keys must end with `-bin`.
+                    // Metadata map will error if attempting to insert key without `-bin`.
+                    let key_name = if header.header_name.ends_with("-bin") {
+                        header.header_name.to_string()
+                    } else {
+                        format!("{}-bin", header.header_name)
+                    };
+                    let Ok(key) = key_name.parse::<MetadataKey<tonic::metadata::Binary>>() else {
+                        otel_debug!(
+                            "otlp.exporter.grpc.header_skip",
+                            reason = "invalid binary metadata key",
+                            header_name = header.header_name
+                        );
+                        continue;
+                    };
+                    let value = MetadataValue::from_bytes(header.value);
+                    let _ = metadata.append_bin(key, value);
+                }
             }
         }
     }
@@ -891,6 +1099,7 @@ mod tests {
     use super::*;
 
     use otap_df_config::node::NodeUserConfig;
+    use std::collections::HashMap;
 
     use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
     use otap_df_config::transport_headers_policy::PropagationSelectorType;
@@ -1090,7 +1299,7 @@ mod tests {
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
         let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         // tokio runtime to run grpc server in the background
@@ -1141,7 +1350,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1180,6 +1389,132 @@ mod tests {
     }
 
     #[test]
+    fn test_otlp_exporter_sends_configured_static_headers() {
+        // End-to-end proof that a configured static header (here an
+        // `authorization` token) is actually transmitted as gRPC metadata on
+        // every outbound export, driving the real `OTLPExporter`.
+        let test_runtime = TestRuntime::new();
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
+        let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let tokio_rt = Runtime::new().unwrap();
+
+        // The server-side interceptor records the inbound `authorization`
+        // metadata so the test can assert the configured header reached the wire.
+        let captured_auth: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let captured_auth_srv = captured_auth.clone();
+
+        _ = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let _ = ready_sender.send(());
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+
+            let interceptor =
+                move |req: tonic::Request<()>| -> Result<tonic::Request<()>, tonic::Status> {
+                    if let Some(value) = req.metadata().get("authorization") {
+                        if let Ok(value) = value.to_str() {
+                            *captured_auth_srv.lock().unwrap() = Some(value.to_string());
+                        }
+                    }
+                    Ok(req)
+                };
+
+            let mock_logs_service = LogsServiceServer::with_interceptor(
+                LogsServiceMock::new(sender.clone()),
+                interceptor.clone(),
+            );
+            let mock_metrics_service = MetricsServiceServer::with_interceptor(
+                MetricsServiceMock::new(sender.clone()),
+                interceptor.clone(),
+            );
+            let mock_trace_service = TraceServiceServer::with_interceptor(
+                TraceServiceMock::new(sender.clone()),
+                interceptor,
+            );
+            Server::builder()
+                .add_service(mock_logs_service)
+                .add_service(mock_metrics_service)
+                .add_service(mock_trace_service)
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = shutdown_signal.await;
+                })
+                .await
+                .expect("Test gRPC server has failed");
+        });
+
+        tokio_rt
+            .block_on(ready_receiver)
+            .expect("Server failed to start");
+
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut headers = HashMap::new();
+        _ = headers.insert(
+            "authorization".to_string(),
+            "Bearer secret-token-123".into(),
+        );
+
+        let exporter = ExporterWrapper::local(
+            OTLPExporter {
+                config: Config {
+                    grpc: GrpcClientSettings {
+                        grpc_endpoint: grpc_endpoint.clone(),
+                        headers,
+                        ..Default::default()
+                    },
+                    max_in_flight: 32,
+                    num_connections: default_num_connections(),
+                },
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(scenario())
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    for i in 0..3 {
+                        wait_for_ack_or_nack(
+                            &mut pipeline_completion_rx,
+                            true,
+                            123,
+                            &format!("for export #{}", i + 1),
+                        )
+                        .await
+                        .expect("Failed to receive Ack");
+                    }
+                    validation_procedure(receiver)(ctx, result).await;
+                })
+            });
+
+        _ = shutdown_sender.send("Shutdown");
+
+        let captured = captured_auth.lock().unwrap().clone();
+        assert_eq!(
+            captured.as_deref(),
+            Some("Bearer secret-token-123"),
+            "the configured authorization header must reach the gRPC server"
+        );
+    }
+
+    /// Scenario: The OTLP gRPC endpoint repeatedly stops and restarts while exporting logs.
+    /// Guarantees: The exporter reconnects and reports one terminal outcome per export operation.
+    #[test]
     fn test_receiver_not_ready_on_start_and_reconnect() {
         // the purpose of this test is to that the exporter behaves as expected in the face of
         // server that may start and stop asynchronously of the exporter. it ensures the exporter
@@ -1187,7 +1522,7 @@ mod tests {
         // client will reconnect in the event of a server shutdown
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
 
         let tokio_rt = Runtime::new().unwrap();
@@ -1211,7 +1546,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
             node_id.clone(),
             node_config,
@@ -1379,10 +1714,25 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let metrics = metrics_receiver.recv_async().await.unwrap();
-            let logs_exported_count = metrics.get_metrics()[4].to_u64_lossy(); // logs exported
+            let mut logs_exported_count = 0;
+            let mut logs_failed_count = 0;
+            for _ in 0..2 {
+                let metrics = metrics_receiver.recv_async().await.unwrap();
+                if metrics.descriptor().name == "exporter.pdata.exports"
+                    && metrics.measurement_attribute_value("signal") == Some("logs")
+                {
+                    match metrics.measurement_attribute_value("outcome") {
+                        Some("success") => {
+                            logs_exported_count = metrics.get_metrics()[0].to_u64_lossy();
+                        }
+                        Some("failure") => {
+                            logs_failed_count = metrics.get_metrics()[0].to_u64_lossy();
+                        }
+                        _ => {}
+                    }
+                }
+            }
             assert_eq!(logs_exported_count, 2);
-            let logs_failed_count = metrics.get_metrics()[5].to_u64_lossy(); // logs failed
             assert_eq!(logs_failed_count, 2);
 
             control_sender
@@ -1446,7 +1796,7 @@ mod tests {
             .await;
         });
 
-        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(3);
 
         let (exporter_result, test_drive_result) = tokio_rt.block_on(async move {
             tokio::join!(
@@ -1479,6 +1829,493 @@ mod tests {
         tokio_rt
             .block_on(server_handle)
             .expect("server shutdown success");
+    }
+
+    /// Helper builds a [`tonic::Status`] with the given code, no details.
+    fn status_with_code(code: Code) -> tonic::Status {
+        tonic::Status::new(code, "test error")
+    }
+
+    /// Helper builds a [`tonic::Status`] carrying a `RetryInfo` in its
+    /// `grpc-status-details-bin` trailer, as a real server would.
+    fn status_with_retry_info(code: Code) -> tonic::Status {
+        let retry_info = RetryInfo {
+            retry_delay: Some(prost_types::Duration {
+                seconds: 5,
+                nanos: 0,
+            }),
+        };
+        let mut retry_info_bytes = Vec::new();
+        retry_info
+            .encode(&mut retry_info_bytes)
+            .expect("encode RetryInfo");
+
+        let any = prost_types::Any {
+            type_url: RETRY_INFO_TYPE_URL.to_string(),
+            value: retry_info_bytes,
+        };
+        let rpc_status = RpcStatus {
+            code: code as i32,
+            message: "resource exhausted".to_string(),
+            details: vec![any],
+        };
+        let mut detail_bytes = Vec::new();
+        rpc_status
+            .encode(&mut detail_bytes)
+            .expect("encode RpcStatus");
+
+        tonic::Status::with_details(code, "resource exhausted", detail_bytes.into())
+    }
+
+    #[test]
+    fn test_retryable_grpc_codes() {
+        // These codes MUST be retryable per the OTLP spec table, plus
+        // RESOURCE_EXHAUSTED (advisory RetryInfo) and UNKNOWN (client-side
+        // readiness/transport failures).
+        let retryable_codes = [
+            Code::Cancelled,
+            Code::DeadlineExceeded,
+            Code::Aborted,
+            Code::OutOfRange,
+            Code::Unavailable,
+            Code::DataLoss,
+            Code::ResourceExhausted,
+            Code::Unknown,
+        ];
+
+        for code in retryable_codes {
+            let status = status_with_code(code);
+            assert!(
+                is_retryable_grpc_status(&status),
+                "expected code {code:?} to be retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_retryable_grpc_codes() {
+        // These codes MUST NOT be retryable per the OTLP spec table.
+        let non_retryable_codes = [
+            Code::InvalidArgument,
+            Code::NotFound,
+            Code::AlreadyExists,
+            Code::PermissionDenied,
+            Code::Unauthenticated,
+            Code::FailedPrecondition,
+            Code::Unimplemented,
+            Code::Internal,
+        ];
+
+        for code in non_retryable_codes {
+            let status = status_with_code(code);
+            assert!(
+                !is_retryable_grpc_status(&status),
+                "expected code {code:?} to be non-retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resource_exhausted_is_retryable_without_retry_info() {
+        // RESOURCE_EXHAUSTED is always retryable; the RetryInfo detail is only
+        // advisory, so its absence must not make the failure permanent.
+        let status = status_with_code(Code::ResourceExhausted);
+        assert!(
+            retry_after(&status).is_none(),
+            "status carries no RetryInfo detail"
+        );
+        assert!(
+            is_retryable_grpc_status(&status),
+            "RESOURCE_EXHAUSTED without RetryInfo should still be retryable"
+        );
+    }
+
+    #[test]
+    fn test_resource_exhausted_is_retryable_with_retry_info() {
+        let status = status_with_retry_info(Code::ResourceExhausted);
+        assert_eq!(
+            retry_after(&status),
+            Some(prost_types::Duration {
+                seconds: 5,
+                nanos: 0,
+            }),
+            "status carries a RetryInfo detail with the expected delay"
+        );
+        assert!(
+            is_retryable_grpc_status(&status),
+            "RESOURCE_EXHAUSTED with RetryInfo should be retryable"
+        );
+    }
+
+    #[test]
+    fn test_retry_after_none_for_empty_details() {
+        // Details bytes present but contain an RpcStatus with no Any entries.
+        let rpc_status = RpcStatus {
+            code: Code::ResourceExhausted as i32,
+            message: "exhausted".to_string(),
+            details: vec![],
+        };
+        let mut detail_bytes = Vec::new();
+        rpc_status
+            .encode(&mut detail_bytes)
+            .expect("encode RpcStatus");
+
+        let status =
+            tonic::Status::with_details(Code::ResourceExhausted, "exhausted", detail_bytes.into());
+        assert!(
+            retry_after(&status).is_none(),
+            "empty details should not report a RetryInfo hint"
+        );
+    }
+
+    #[test]
+    fn test_retry_after_none_for_non_retry_info_detail() {
+        use prost::Message;
+
+        // Details bytes contain an Any with a different type URL.
+        let any = prost_types::Any {
+            type_url: "type.googleapis.com/google.rpc.BadRequest".to_string(),
+            value: vec![],
+        };
+        let rpc_status = RpcStatus {
+            code: Code::ResourceExhausted as i32,
+            message: "exhausted".to_string(),
+            details: vec![any],
+        };
+        let mut detail_bytes = Vec::new();
+        rpc_status
+            .encode(&mut detail_bytes)
+            .expect("encode RpcStatus");
+
+        let status =
+            tonic::Status::with_details(Code::ResourceExhausted, "exhausted", detail_bytes.into());
+        assert!(
+            retry_after(&status).is_none(),
+            "a non-RetryInfo detail should not report a RetryInfo hint"
+        );
+    }
+
+    #[test]
+    fn test_retry_after_none_for_malformed_details() {
+        // Feed garbage bytes as details - should not crash, should report no hint.
+        let status = tonic::Status::with_details(
+            Code::ResourceExhausted,
+            "exhausted",
+            Bytes::from_static(b"not valid protobuf"),
+        );
+        assert!(
+            retry_after(&status).is_none(),
+            "malformed details should not report a RetryInfo hint"
+        );
+    }
+
+    #[test]
+    fn test_ok_code_is_not_retryable() {
+        let status = status_with_code(Code::Ok);
+        assert!(
+            !is_retryable_grpc_status(&status),
+            "OK should not be retryable"
+        );
+    }
+
+    #[test]
+    fn test_format_retry_delay() {
+        assert_eq!(
+            format_retry_delay(&prost_types::Duration {
+                seconds: 5,
+                nanos: 0,
+            }),
+            "5000ms"
+        );
+        assert_eq!(
+            format_retry_delay(&prost_types::Duration {
+                seconds: 0,
+                nanos: 250_000_000,
+            }),
+            "250ms"
+        );
+        assert_eq!(
+            format_retry_delay(&prost_types::Duration {
+                seconds: 1,
+                nanos: 500_000_000,
+            }),
+            "1500ms"
+        );
+    }
+
+    /// A mock `LogsService` that always returns the configured gRPC error.
+    struct ErrorLogsServiceMock {
+        code: Code,
+        message: String,
+        /// Optional serialized `google.rpc.Status` details bytes for
+        /// `grpc-status-details-bin`.
+        detail_bytes: Option<Bytes>,
+    }
+
+    #[tonic::async_trait]
+    impl otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsService
+        for ErrorLogsServiceMock
+    {
+        async fn export(
+            &self,
+            _request: tonic::Request<ExportLogsServiceRequest>,
+        ) -> Result<
+            tonic::Response<
+                otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse,
+            >,
+            tonic::Status,
+        > {
+            if let Some(details) = &self.detail_bytes {
+                Err(tonic::Status::with_details(
+                    self.code,
+                    &self.message,
+                    details.clone(),
+                ))
+            } else {
+                Err(tonic::Status::new(self.code, &self.message))
+            }
+        }
+    }
+
+    /// Runs an integration test that sends a logs payload to the gRPC exporter
+    /// backed by a mock server returning the given status code. Returns the
+    /// `NackMsg.permanent` value observed.
+    fn run_grpc_error_status_test(code: Code, detail_bytes: Option<Bytes>) -> bool {
+        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+
+        let tokio_rt = Runtime::new().unwrap();
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut exporter = ExporterWrapper::local(
+            OTLPExporter {
+                config: Config {
+                    grpc: GrpcClientSettings {
+                        grpc_endpoint: grpc_endpoint.clone(),
+                        connect_timeout: Duration::from_millis(500),
+                        ..Default::default()
+                    },
+                    max_in_flight: 1,
+                    num_connections: default_num_connections(),
+                },
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+            },
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(2);
+        let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(2);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let _ = metrics_rx; // not inspected in this test
+
+        // Start the mock server that always returns the given error code.
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let mock_service = ErrorLogsServiceMock {
+            code,
+            message: format!("mock error: {code:?}"),
+            detail_bytes,
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let server_handle = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            Server::builder()
+                .add_service(LogsServiceServer::new(mock_service))
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("server failed");
+        });
+
+        async fn start_exporter(
+            exporter: ExporterWrapper<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
+            metrics_reporter: MetricsReporter,
+        ) -> Result<(), Error> {
+            exporter
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
+                .await
+                .map(|_| ())
+        }
+
+        async fn drive_test(
+            pdata_tx: Sender<OtapPdata>,
+            control_sender: Sender<NodeControlMsg<OtapPdata>>,
+            mut pipeline_completion_msg_rx: otap_df_engine::control::PipelineCompletionMsgReceiver<
+                OtapPdata,
+            >,
+            shutdown_tx: tokio::sync::oneshot::Sender<()>,
+        ) -> bool {
+            use prost::Message;
+
+            // Give the server a moment to bind.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            // Send a logs payload.
+            let req = ExportLogsServiceRequest::default();
+            let mut req_bytes = vec![];
+            req.encode(&mut req_bytes).unwrap();
+            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(req_bytes)),
+            ))
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                TestCallData::default().into(),
+                123,
+            );
+            pdata_tx.send(pdata).await.unwrap();
+
+            // Wait for the NACK.
+            let permanent = timeout(Duration::from_secs(5), async {
+                match pipeline_completion_msg_rx.recv().await {
+                    Ok(PipelineCompletionMsg::DeliverNack { nack }) => nack.permanent,
+                    Ok(PipelineCompletionMsg::DeliverAck { .. }) => {
+                        panic!("expected NACK but got ACK");
+                    }
+                    Err(_) => panic!("pipeline completion channel closed"),
+                }
+            })
+            .await
+            .expect("timed out waiting for NACK");
+
+            // Shut everything down.
+            control_sender
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_millis(100),
+                    reason: "test done".into(),
+                })
+                .await
+                .unwrap();
+            shutdown_tx.send(()).unwrap();
+
+            permanent
+        }
+
+        let (_, permanent) = tokio_rt.block_on(async move {
+            tokio::join!(
+                start_exporter(
+                    exporter,
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                ),
+                drive_test(
+                    pdata_tx,
+                    control_sender,
+                    pipeline_completion_msg_rx,
+                    shutdown_tx,
+                )
+            )
+        });
+
+        tokio_rt.block_on(server_handle).expect("server join");
+        permanent
+    }
+
+    #[test]
+    fn test_unavailable_produces_non_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::Unavailable, None);
+        assert!(
+            !permanent,
+            "UNAVAILABLE should produce a non-permanent (retryable) NACK"
+        );
+    }
+
+    #[test]
+    fn test_invalid_argument_produces_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::InvalidArgument, None);
+        assert!(
+            permanent,
+            "INVALID_ARGUMENT should produce a permanent NACK"
+        );
+    }
+
+    #[test]
+    fn test_internal_produces_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::Internal, None);
+        assert!(permanent, "INTERNAL should produce a permanent NACK");
+    }
+
+    #[test]
+    fn test_cancelled_produces_non_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::Cancelled, None);
+        assert!(
+            !permanent,
+            "CANCELLED should produce a non-permanent (retryable) NACK"
+        );
+    }
+
+    #[test]
+    fn test_resource_exhausted_without_retry_info_produces_non_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::ResourceExhausted, None);
+        assert!(
+            !permanent,
+            "RESOURCE_EXHAUSTED without RetryInfo should still produce a non-permanent (retryable) NACK"
+        );
+    }
+
+    #[test]
+    fn test_resource_exhausted_with_retry_info_produces_non_permanent_nack() {
+        let retry_info = RetryInfo {
+            retry_delay: Some(prost_types::Duration {
+                seconds: 5,
+                nanos: 0,
+            }),
+        };
+        let mut retry_info_bytes = Vec::new();
+        retry_info
+            .encode(&mut retry_info_bytes)
+            .expect("encode RetryInfo");
+
+        let any = prost_types::Any {
+            type_url: RETRY_INFO_TYPE_URL.to_string(),
+            value: retry_info_bytes,
+        };
+        let rpc_status = RpcStatus {
+            code: Code::ResourceExhausted as i32,
+            message: "resource exhausted".to_string(),
+            details: vec![any],
+        };
+        let mut detail_bytes = Vec::new();
+        rpc_status
+            .encode(&mut detail_bytes)
+            .expect("encode RpcStatus");
+
+        let permanent =
+            run_grpc_error_status_test(Code::ResourceExhausted, Some(detail_bytes.into()));
+        assert!(
+            !permanent,
+            "RESOURCE_EXHAUSTED with RetryInfo should produce a non-permanent (retryable) NACK"
+        );
     }
 
     // ---- build_grpc_metadata unit tests ----------------------------------------
@@ -1530,7 +2367,7 @@ mod tests {
         headers.push(TransportHeader::text("x-tenant-id", "x-tenant-id", b"acme"));
         let context = context_with_headers(headers);
 
-        let result = build_grpc_metadata(&handler, &context);
+        let result = build_grpc_metadata(&handler, &context, None);
         assert!(result.is_none(), "should return None when no policy is set");
     }
 
@@ -1539,7 +2376,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
         let context = context_without_headers();
 
-        let result = build_grpc_metadata(&handler, &context);
+        let result = build_grpc_metadata(&handler, &context, None);
         assert!(
             result.is_none(),
             "should return None when context has no transport headers"
@@ -1563,7 +2400,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context)
+        let metadata = build_grpc_metadata(&handler, &context, None)
             .expect("should produce metadata for text headers");
 
         let tenant = metadata
@@ -1607,7 +2444,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context)
+        let metadata = build_grpc_metadata(&handler, &context, None)
             .expect("should produce metadata (authorization dropped, x-tenant-id remains)");
 
         assert!(
@@ -1633,7 +2470,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context)
+        let metadata = build_grpc_metadata(&handler, &context, None)
             .expect("should produce metadata for binary headers");
 
         let bin_val = metadata
@@ -1660,7 +2497,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context)
+        let metadata = build_grpc_metadata(&handler, &context, None)
             .expect("should produce metadata for binary header without -bin suffix");
 
         let bin_val = metadata
@@ -1691,7 +2528,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context)
+        let metadata = build_grpc_metadata(&handler, &context, None)
             .expect("should produce metadata with duplicate headers");
 
         let values: Vec<&str> = metadata
@@ -1725,10 +2562,109 @@ mod tests {
         headers.push(TransportHeader::text("x-tenant-id", "X-Tenant-Id", b"acme"));
         let context = context_with_headers(headers);
 
-        let result = build_grpc_metadata(&handler, &context);
+        let result = build_grpc_metadata(&handler, &context, None);
         assert!(
             result.is_none(),
             "should return None when policy drops all headers"
+        );
+    }
+
+    #[test]
+    fn test_build_grpc_metadata_static_only() {
+        // No propagation policy, but static headers are configured: the static
+        // template alone must be applied to the request.
+        let handler = make_effect_handler_with_policy(None);
+        let context = context_without_headers();
+
+        let mut headers = HashMap::new();
+        _ = headers.insert("authorization".to_string(), "Basic abc123".into());
+        let static_metadata = GrpcClientSettings {
+            headers,
+            ..Default::default()
+        }
+        .build_static_metadata()
+        .expect("static metadata should be present");
+
+        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata))
+            .expect("should produce metadata from static headers alone");
+        assert_eq!(
+            metadata.get("authorization").unwrap().to_str().unwrap(),
+            "Basic abc123"
+        );
+    }
+
+    #[test]
+    fn test_build_grpc_metadata_static_and_propagation_coexist() {
+        // Static headers and propagated transport headers must both appear.
+        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
+
+        let mut transport = TransportHeaders::new();
+        transport.push(TransportHeader::text(
+            "x-tenant-id",
+            "X-Tenant-Id",
+            b"tenant-abc",
+        ));
+        let context = context_with_headers(transport);
+
+        let mut static_headers = HashMap::new();
+        _ = static_headers.insert("authorization".to_string(), "Basic abc123".into());
+        let static_metadata = GrpcClientSettings {
+            headers: static_headers,
+            ..Default::default()
+        }
+        .build_static_metadata()
+        .expect("static metadata should be present");
+
+        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata))
+            .expect("should merge static and propagated headers");
+        assert_eq!(
+            metadata.get("authorization").unwrap().to_str().unwrap(),
+            "Basic abc123",
+            "static header must be present"
+        );
+        assert_eq!(
+            metadata.get("x-tenant-id").unwrap().to_str().unwrap(),
+            "tenant-abc",
+            "propagated header must be present"
+        );
+    }
+
+    #[test]
+    fn test_build_grpc_metadata_static_wins_over_propagated_collision() {
+        // When a propagated header collides with a statically configured one,
+        // the static value must win and the propagated duplicate must be dropped
+        // so we never send two `authorization` values on the wire.
+        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
+
+        let mut transport = TransportHeaders::new();
+        transport.push(TransportHeader::text(
+            "authorization",
+            "Authorization",
+            b"Bearer propagated",
+        ));
+        let context = context_with_headers(transport);
+
+        let mut static_headers = HashMap::new();
+        _ = static_headers.insert("authorization".to_string(), "Basic static".into());
+        let static_metadata = GrpcClientSettings {
+            headers: static_headers,
+            ..Default::default()
+        }
+        .build_static_metadata()
+        .expect("static metadata should be present");
+
+        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata))
+            .expect("should produce metadata");
+
+        let values: Vec<&str> = metadata
+            .get_all("authorization")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            vec!["Basic static"],
+            "static header must win and the propagated duplicate must be dropped"
         );
     }
 }

@@ -27,3 +27,4 @@ components:
   - pdata
   - query-engine
   - observability
+  - dependencies

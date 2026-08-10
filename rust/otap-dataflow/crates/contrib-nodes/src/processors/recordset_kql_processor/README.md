@@ -1,5 +1,11 @@
 # EXPERIMENTAL KQL "RecordSet" Processor
 
+## Metadata
+
+- Type: `urn:microsoft:processor:recordset_kql`
+- Feature gate: `recordset-kql-processor`
+- Stability: Experimental
+
 An OTAP-Dataflow processor that filters and transforms OpenTelemetry data using
 Kusto Query Language (KQL) expressions over OpenTelemetry data in an opinionated
 way.
@@ -18,6 +24,16 @@ OTAP pipelines.  This was developed as a prototype as we prepare for a direct
 column-oriented implementation, it is functional and production quality however
 not an optimized implementation.
 
+## Getting Started
+
+Configure a KQL query under the node-level config:
+
+```yaml
+type: urn:microsoft:processor:recordset_kql
+config:
+  query: "source | where SeverityText == 'ERROR' | extend processed_time = now()"
+```
+
 ## Features
 
 - **Filters**: Use KQL `where` clauses to filter logs
@@ -28,9 +44,10 @@ not an optimized implementation.
 ## Configuration
 
 ```yaml
-processors:
-  kql:
-    query: "source | where SeverityText == 'ERROR' | extend processed_time = now()"
+type: urn:microsoft:processor:recordset_kql
+config:
+  # KQL query evaluated against the recordset source (required).
+  query: "source | where SeverityText == 'ERROR' | extend processed_time = now()"
 ```
 
 ## LogRecord structure and accessing data
@@ -163,10 +180,12 @@ cargo build --features recordset-kql-processor
 ## Running the Demo
 
 A complete demo configuration is available at
-`configs/fake-kql-debug-noop.yaml`. Run it with:
+`configs/trafficgen-kql-debug-noop.yaml`. Run it with:
 
 ```bash
-cargo run --features recordset-kql-processor --bin df_engine -- --config ./configs/fake-kql-debug-noop.yaml --num-cores 1
+cargo run --features recordset-kql-processor --bin df_engine -- \
+  --config ./configs/trafficgen-kql-debug-noop.yaml \
+  --num-cores 1
 ```
 
 This demonstrates:

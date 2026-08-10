@@ -61,3 +61,11 @@ suites:
   - name: OTC OTLP Baseline
     slug: otc_logs_otlp_none_baseline
     short: OTC OTLP/Baseline
+
+  # Fluent Bit OTLP (modify filter is FB's native enrichment; no OTTL/transform analog)
+  - name: FB OTLP Modify Insert
+    slug: fbit_logs_otlp_none_attr_insert
+    short: FB OTLP/Modify
+  - name: FB OTLP Baseline
+    slug: fbit_logs_otlp_none_baseline
+    short: FB OTLP/Baseline

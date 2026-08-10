@@ -17,12 +17,22 @@ jobs:
   pipeline-perf-test:
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
     steps:
+      # Route tool-created temp files to RUNNER_TEMP, which GitHub Actions empties
+      # at the start and end of every job. Required when running directly on the
+      # shared bare-metal host (no job-level container) per
+      # https://github.com/open-telemetry/community/blob/main/docs/how-to-use-bare-metal-runner.md
+      - name: Route temp files to RUNNER_TEMP
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: System topology (NUMA, CPU, memory)
         run: |
@@ -34,21 +44,21 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Set up Python (non-OL8)
         if: ${{ steps.detect_os.outputs.id != 'ol' }}
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Build dataflow_engine
         run: |
@@ -79,6 +89,17 @@ jobs:
           echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
 
+      # Bare-metal host cleanup: remove only the Docker artifacts created by
+      # this job. Avoid broad commands (e.g. rm -rf /tmp/*) per the shared
+      # runner guidelines.
+      - name: Clean up Docker artifacts created by this job
+        if: always()
+        run: |
+          docker rmi -f df_engine 2>/dev/null || true
+          # Prune dangling (unused) build cache and images only.
+          docker builder prune -f 2>/dev/null || true
+          docker image prune -f 2>/dev/null || true
+
   update-benchmarks:
     runs-on: ubuntu-24.04
     needs: [pipeline-perf-test]
@@ -86,7 +107,7 @@ jobs:
       # contents permission to update benchmark contents in gh-pages branch
       contents: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download benchmark artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -100,7 +121,7 @@ jobs:
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-pipeline output-pipeline.json
 
       - name: Update pipeline benchmark data and deploy to GitHub Pages
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: output-pipeline.json
@@ -115,3 +136,14 @@ jobs:
         run: |
           echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "[View the pipeline benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
+
+  workflow-notification:
+    permissions:
+      issues: write
+    needs:
+      - pipeline-perf-test
+      - update-benchmarks
+    if: always()
+    uses: open-telemetry/shared-workflows/.github/workflows/workflow-failure-issue.yml@62d5939b47144252763c5ff9fffe8c20d76cd806 # v0.4.0
+    with:
+      success: ${{ needs.pipeline-perf-test.result == 'success' && needs.update-benchmarks.result == 'success' }}
