@@ -23,9 +23,11 @@
 //! header-supplied topic is constrained two ways before it is used:
 //!
 //! 1. It must be a syntactically valid Kafka topic ([`validate_kafka_topic`]).
-//! 2. If the signal configures an operator allowlist
-//!    ([`SignalConfig::allowed_topics`]) or prefix allowlist
-//!    ([`SignalConfig::allowed_topic_prefixes`]), the topic must match it.
+//! 2. If the signal configures an operator allowlist -- an exact-match list
+//!    ([`SignalConfig::allowed_topics`]) and/or a regex list
+//!    ([`SignalConfig::allowed_topics_regex`]) -- the topic must match it. Regex
+//!    patterns are anchored to a whole-topic match, so a prefix/suffix pattern
+//!    cannot be satisfied by a substring of a client-supplied topic.
 //!
 //! A header-supplied topic that fails either check is non-retryable, so the
 //! batch is permanently nacked rather than being rerouted to the static topic.
@@ -140,7 +142,10 @@ impl TopicRouter {
         if exact.iter().any(|t| t == topic) {
             return true;
         }
-        // Match the topic against the operator-provided patterns as-is.
+        // The patterns are pre-compiled anchored (`\A(?:...)\z`, see
+        // `compile_allowed_topic_regexes`), so `is_match` here requires a
+        // whole-topic match rather than a substring match -- a client-controlled
+        // header cannot slip an unintended topic past a prefix/suffix pattern.
         allowed_regex.is_some_and(|patterns| patterns.iter().any(|re| re.is_match(topic)))
     }
 
@@ -591,12 +596,15 @@ mod tests {
 
     // ---- Security: operator allowlist / prefix constraint on dynamic routing ----
 
-    /// Compiles allowlist regex patterns the same way the exporter does (as
-    /// provided by the operator), for use in the router tests.
+    /// Compiles allowlist regex patterns the same way the exporter does at
+    /// runtime -- anchored to a whole-topic match (`\A(?:<pattern>)\z`, see
+    /// `compile_allowed_topic_regexes` in `exporter.rs`) -- so the router tests
+    /// exercise the real whole-topic matching semantics rather than a substring
+    /// search.
     fn compile(patterns: &[&str]) -> Vec<Regex> {
         patterns
             .iter()
-            .map(|p| Regex::new(p).expect("valid regex"))
+            .map(|p| Regex::new(&format!(r"\A(?:{p})\z")).expect("valid regex"))
             .collect()
     }
 
@@ -623,34 +631,42 @@ mod tests {
         );
     }
 
-    /// Scenario: patterns are compiled exactly as the operator provides them,
-    /// Guarantees: `tenant_.*` permits `x-tenant_evil`
+    /// Scenario: allowlist regex patterns are compiled anchored to a whole-topic
+    /// match (as the exporter does at runtime), and a client-supplied header
+    /// topic that merely CONTAINS an allowed pattern is presented.
+    /// Guarantees: `tenant_.*` permits the whole-topic `tenant_a_logs` but
+    /// rejects `x-tenant_evil` (where the pattern only matches a substring) as a
+    /// `DisallowedHeaderTopic` -- so an unanchored operator pattern cannot be
+    /// bypassed by embedding the allowed fragment inside an arbitrary topic.
     #[test]
-    fn test_regex_allowlist_matches_pattern_as_provided() {
+    fn test_regex_allowlist_requires_whole_topic_match() {
         let config = make_signal_config("fallback", Some("x-topic"));
-
         let allowed = compile(&["tenant_.*"]);
+
+        // A topic that only contains the pattern as a substring is rejected.
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "x-tenant_evil")]);
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
+        let result = TopicRouter::resolve(&config, Some(&allowed), &ctx, &mut metrics);
+        assert!(
+            matches!(
+                result,
+                Err(KafkaExporterError::DisallowedHeaderTopic { .. })
+            ),
+            "a substring-only match must be rejected under whole-topic anchoring"
+        );
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
+
+        // A topic that matches the pattern as the whole string is permitted.
+        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "tenant_a_logs")]);
         let mut metrics = KafkaExporterMetrics::register(
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
         let topic = TopicRouter::resolve(&config, Some(&allowed), &ctx, &mut metrics)
-            .expect("unanchored pattern matches substring");
-        assert_eq!(&*topic, "x-tenant_evil");
+            .expect("whole-topic match is permitted");
+        assert_eq!(&*topic, "tenant_a_logs");
         assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
-
-        // regex should block topic
-        let allowed_2 = compile(&["^tenant_.*$"]);
-        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "x-tenant_evil")]);
-        let mut metrics = KafkaExporterMetrics::register(
-            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
-        );
-        let result = TopicRouter::resolve(&config, Some(&allowed_2), &ctx, &mut metrics);
-        assert!(matches!(
-            result,
-            Err(KafkaExporterError::DisallowedHeaderTopic { .. })
-        ));
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 
     /// Scenario: a syntactically valid header-supplied topic that matches

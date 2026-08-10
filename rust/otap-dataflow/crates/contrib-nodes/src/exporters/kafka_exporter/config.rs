@@ -314,11 +314,15 @@ pub struct KafkaExporterConfigBuilder {
     /// Whether the broker may auto-create topics this exporter produces to
     /// (maps to librdkafka `allow.auto.create.topics`).
     ///
-    /// Defaults to `false` (default-deny). Because a client-controlled routing
-    /// header can select the destination topic, leaving auto-creation enabled
-    /// would let a client cause the broker to spawn arbitrary topics. Operators
-    /// must explicitly opt in. This value is always written to the client config
-    /// and takes precedence over any `producer_config` entry for the same key.
+    /// Defaults to `true`, This value is always written to the
+    /// client config and takes precedence over any `producer_config` entry for
+    /// the same key.
+    ///
+    /// Security note: because a client-controlled routing header
+    /// (`topic_from_transport_header`) can select the destination topic, leaving
+    /// auto-creation enabled lets a client cause the broker to spawn arbitrary
+    /// topics. Operators who route by header (or otherwise want default-deny)
+    /// should set this to `false`.
     #[serde(default = "default_allow_auto_create_topics")]
     allow_auto_create_topics: bool,
 
@@ -558,9 +562,9 @@ impl KafkaExporterConfigBuilder {
         // Partitioner strategy
         _ = config.set("partitioner", self.partitioning_strategy.as_kafka_value());
 
-        // Topic auto-creation posture (default-deny). Always written so a
-        // client-controlled routing header cannot rely on the librdkafka default
-        // to spawn arbitrary broker-side topics.
+        // Topic auto-creation posture. Always written (rather than relying on
+        // the librdkafka default) so the emitted value is explicit and takes
+        // precedence over any `producer_config` override.
         _ = config.set(
             "allow.auto.create.topics",
             if self.allow_auto_create_topics {
@@ -613,7 +617,8 @@ pub struct KafkaExporterConfig(KafkaExporterConfigBuilder);
 /// the signal name.
 ///
 /// Each `allowed_topics_regex` pattern is compiled exactly as the exporter
-/// compiles it at runtime, so an invalid pattern fails fast at config time --
+/// compiles it at runtime -- anchored to a whole-topic match as
+/// `\A(?:<pattern>)\z` -- so an invalid pattern fails fast at config time,
 /// including through the factory `validate_config` path, which runs this
 /// validation without constructing an exporter.
 fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
@@ -622,7 +627,9 @@ fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
         validate_kafka_topic(t).map_err(|e| format!("allowed_topics[{i}]: {e}"))?;
     }
     for (i, p) in signal.allowed_topics_regex.iter().enumerate() {
-        Regex::new(p)
+        // Compile the anchored form the exporter uses at runtime so validation
+        // and runtime compilation stay in lock-step.
+        Regex::new(&format!(r"\A(?:{p})\z"))
             .map(drop)
             .map_err(|e| format!("allowed_topics_regex[{i}]: invalid regex '{p}': {e}"))?;
     }
@@ -879,9 +886,9 @@ fn default_partitioning_strategy() -> PartitionerStrategy {
     PartitionerStrategy::ConsistentRandom
 }
 
-/// Default topic auto-creation posture (default-deny).
+/// Default topic auto-creation posture.
 fn default_allow_auto_create_topics() -> bool {
-    false
+    true
 }
 
 /// Compression type for Kafka messages.
@@ -1764,54 +1771,57 @@ mod tests {
         assert!(config.overridden_producer_config_keys().is_empty());
     }
 
-    // ---- Security: allow.auto.create.topics (default-deny) ----
+    // ---- allow.auto.create.topics ----
 
     /// Scenario (configuration and packaging: escape-hatch precedence): build the librdkafka
     /// client config from a default exporter config.
-    /// Guarantees: `allow.auto.create.topics` is explicitly set to `false` by
-    /// default, so a client-controlled routing header cannot rely on the broker
-    /// auto-creating arbitrary topics.
+    /// Guarantees: `allow.auto.create.topics` is explicitly set to `true` by default
     #[test]
-    fn build_client_config_defaults_auto_create_to_false() {
+    fn build_client_config_defaults_auto_create_to_true() {
         let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
             .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
-            .try_into()
-            .unwrap();
-        let client = config.build_client_config();
-        assert_eq!(client.get("allow.auto.create.topics"), Some("false"));
-    }
-
-    /// Scenario (configuration and packaging: escape-hatch precedence): an operator explicitly
-    /// opts in to broker auto-creation.
-    /// Guarantees: `with_allow_auto_create_topics(true)` sets
-    /// `allow.auto.create.topics` to `true` in the built client config.
-    #[test]
-    fn build_client_config_allows_auto_create_when_opted_in() {
-        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
-            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
-            .with_allow_auto_create_topics(true)
             .try_into()
             .unwrap();
         let client = config.build_client_config();
         assert_eq!(client.get("allow.auto.create.topics"), Some("true"));
     }
 
+    /// Scenario (configuration and packaging: escape-hatch precedence): an operator explicitly
+    /// opts out of broker auto-creation (default-deny).
+    /// Guarantees: `with_allow_auto_create_topics(false)` sets
+    /// `allow.auto.create.topics` to `false` in the built client config, so a
+    /// client-controlled routing header cannot rely on the broker auto-creating
+    /// arbitrary topics.
+    #[test]
+    fn build_client_config_disables_auto_create_when_opted_out() {
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_allow_auto_create_topics(false)
+            .try_into()
+            .unwrap();
+        let client = config.build_client_config();
+        assert_eq!(client.get("allow.auto.create.topics"), Some("false"));
+    }
+
     /// Scenario (configuration and packaging: escape-hatch precedence): a `producer_config`
-    /// passthrough tries to set `allow.auto.create.topics`.
+    /// passthrough tries to set `allow.auto.create.topics` while the first-class
+    /// field is set to the opposite value.
     /// Guarantees: the key is a managed key -- the first-class field wins in the
     /// built config, and the conflict is reported by
     /// `overridden_producer_config_keys` so the operator is warned.
     #[test]
     fn auto_create_key_is_managed_and_first_class_field_wins() {
+        // Field explicitly false; passthrough tries to force true.
         let overrides =
             HashMap::from([("allow.auto.create.topics".to_string(), "true".to_string())]);
         let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
             .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_allow_auto_create_topics(false)
             .with_producer_config(overrides)
             .try_into()
             .unwrap();
 
-        // The managed default-deny value wins over the passthrough.
+        // The managed first-class value wins over the passthrough.
         let client = config.build_client_config();
         assert_eq!(client.get("allow.auto.create.topics"), Some("false"));
 

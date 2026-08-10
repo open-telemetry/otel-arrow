@@ -51,13 +51,21 @@ use std::time::Duration;
 /// or returns `None` when the signal configures no patterns (avoiding an
 /// empty-vector allocation for the common case).
 ///
-/// Each pattern is compiled exactly as provided by the operator; entries must
-/// be valid regular expressions.
+/// Each operator pattern is anchored to require a **whole-topic** match: it is
+/// wrapped as `\A(?:<pattern>)\z` before compiling. The dynamic-routing
+/// allowlist is an authorization boundary for a client-controlled destination,
+/// so an unanchored pattern (which the `regex` crate would match as a
+/// substring) must not permit unintended topics -- e.g. `tenant_.*` must permit
+/// `tenant_a` but reject `evil-tenant_a-x`. The non-capturing group contains any
+/// top-level alternation so the anchors cannot be escaped (e.g. `a|b` compiles
+/// to `\A(?:a|b)\z`, matching only exactly `a` or `b`). Entries must be valid
+/// regular expressions.
 ///
 /// # Errors
 ///
 /// Returns [`KafkaExporterError::ConfigInvalidTopicRegex`] if any pattern fails
-/// to compile, naming the `signal` for operator diagnosis.
+/// to compile, naming the `signal` and reporting the operator's original
+/// pattern (not the anchored form) for diagnosis.
 fn compile_allowed_topic_regexes(
     patterns: &[String],
     signal: &str,
@@ -67,11 +75,13 @@ fn compile_allowed_topic_regexes(
     }
     let mut compiled = Vec::with_capacity(patterns.len());
     for pattern in patterns {
-        let re = Regex::new(pattern).map_err(|e| KafkaExporterError::ConfigInvalidTopicRegex {
-            signal: signal.to_string(),
-            pattern: pattern.clone(),
-            message: e.to_string(),
-        })?;
+        let anchored = format!(r"\A(?:{pattern})\z");
+        let re =
+            Regex::new(&anchored).map_err(|e| KafkaExporterError::ConfigInvalidTopicRegex {
+                signal: signal.to_string(),
+                pattern: pattern.clone(),
+                message: e.to_string(),
+            })?;
         compiled.push(re);
     }
     Ok(Some(compiled))
@@ -1110,6 +1120,71 @@ pub mod test_support {
             let config = kafka_test_config("localhost:9092");
             let result = KafkaExporter::new(ctx, config);
             assert!(result.is_ok());
+        }
+
+        /// Scenario (security: dynamic topic routing): operator allowlist regex
+        /// patterns are compiled by `compile_allowed_topic_regexes`, the same
+        /// function the exporter uses at construction/reconfigure.
+        /// Guarantees: patterns are anchored to a whole-topic match -- `tenant_.*`
+        /// permits `tenant_a` but rejects a topic that merely contains it
+        /// (`evil-tenant_a-x`), and a top-level alternation is contained so
+        /// `a|b` matches only exactly `a` or `b` (never `xax` or `ab`) -- closing
+        /// the substring authorization gap on this client-controlled boundary.
+        #[test]
+        fn compile_allowed_topic_regexes_anchors_to_whole_topic() {
+            let compiled = compile_allowed_topic_regexes(&["tenant_.*".to_string()], "logs")
+                .expect("valid pattern compiles")
+                .expect("some patterns");
+            let re = &compiled[0];
+            assert!(
+                re.is_match("tenant_a"),
+                "whole-topic match must be permitted"
+            );
+            assert!(
+                re.is_match("tenant_anything"),
+                "prefix pattern still matches a longer whole topic"
+            );
+            assert!(
+                !re.is_match("evil-tenant_a-x"),
+                "a substring match must NOT be permitted (authorization boundary)"
+            );
+            assert!(
+                !re.is_match("xtenant_a"),
+                "a leading-prefixed topic must NOT be permitted"
+            );
+
+            // Alternation containment: `a|b` must match only exactly `a` or `b`.
+            let alt = compile_allowed_topic_regexes(&["a|b".to_string()], "logs")
+                .expect("valid pattern compiles")
+                .expect("some patterns");
+            let alt_re = &alt[0];
+            assert!(alt_re.is_match("a"), "exact `a` permitted");
+            assert!(alt_re.is_match("b"), "exact `b` permitted");
+            assert!(
+                !alt_re.is_match("xax"),
+                "alternation must be anchored, not matched as a substring"
+            );
+            assert!(
+                !alt_re.is_match("ab"),
+                "`a|b` must not permit the concatenation `ab`"
+            );
+        }
+
+        /// Scenario (security: dynamic topic routing): an invalid operator regex
+        /// pattern is compiled.
+        /// Guarantees: compilation fails with `ConfigInvalidTopicRegex` and the
+        /// error reports the operator's ORIGINAL pattern (not the internally
+        /// anchored `\A(?:...)\z` form), so the diagnostic stays actionable.
+        #[test]
+        fn compile_allowed_topic_regexes_reports_original_pattern_on_error() {
+            let err = compile_allowed_topic_regexes(&["[".to_string()], "logs")
+                .expect_err("invalid regex must fail");
+            match err {
+                KafkaExporterError::ConfigInvalidTopicRegex { pattern, .. } => {
+                    assert_eq!(pattern, "[", "the operator's original pattern is reported");
+                }
+                other => panic!("unexpected error variant: {other:?}"),
+            }
         }
 
         #[test]

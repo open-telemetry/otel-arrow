@@ -49,7 +49,7 @@ config:
 | `auth` | object | *none* | Authentication configuration (see [Authentication](#authentication)). |
 | `tls` | object | *none* | TLS configuration (see [TLS Configuration](#tls-configuration)). |
 | `partitioning_strategy` | string | `"consistent_random"` | Librdkafka partitioner algorithm. See [Partitioning](#partitioning). |
-| `allow_auto_create_topics` | bool | `false` | Whether the broker may auto-create topics this exporter produces to (`allow.auto.create.topics`). Defaults to `false` (default-deny) because header-driven routing could otherwise let a client spawn arbitrary topics. See [Security](#security). |
+| `allow_auto_create_topics` | bool | `true` | Whether the broker may auto-create topics this exporter produces to (`allow.auto.create.topics`). Defaults to `true`. Set to `false` for default-deny (recommended when routing by a client-controlled header). See [Security](#security). |
 | `producer_config` | map | `{}` | Additional librdkafka producer settings as key-value string pairs. |
 | `message_format_header` | string | `"MessageFormat"` | Kafka header key for the message format indicator. Each outgoing message includes a header with this key and value `otlp` or `otap`, allowing consumers to detect the encoding. |
 | `debug` | list | *none* | List of librdkafka debug contexts: `generic`, `broker`, `topic`, `metadata`, `feature`, `queue`, `msg`, `protocol`, `cgrp`, `security`, `fetch`, `interceptor`, `plugin`, `consumer`, `admin`, `eos`, `mock`, `assignor`, `conf`, `telemetry`, `all`. |
@@ -69,7 +69,7 @@ permanently nack it (non-retryable).
 | `topic_from_transport_header` | string | *none* | Transport header name for dynamic topic routing. When set and the header is present with a valid topic, its value overrides `topic`; if the header is absent the static `topic` is used, and if present but invalid the batch is permanently nacked. See [Dynamic Topic Routing](#dynamic-topic-routing). |
 | `partition_by_transport_headers` | bool | `false` | Serialize all transport headers into a Kafka record key. See [Partitioning](#partitioning). |
 | `allowed_topics` | list of strings | *empty* | Operator allowlist of exact topic names permitted for header-supplied (dynamic) routing. Empty means no exact-match constraint. See [Security](#security). |
-| `allowed_topics_regex` | list of strings | *empty* | Operator allowlist of regex patterns permitted for header-supplied (dynamic) routing. The header-supplied topic is matched against each pattern; entries must be valid regular expressions. Empty means no regex constraint. See [Security](#security). |
+| `allowed_topics_regex` | list of strings | *empty* | Operator allowlist of regex patterns permitted for header-supplied (dynamic) routing. Each pattern must match the whole topic (anchored, not a substring); entries must be valid regular expressions. Empty means no regex constraint. See [Security](#security). |
 
 ### Dynamic Topic Routing
 
@@ -112,11 +112,12 @@ Kafka topic-name syntax. In addition, each signal may declare an operator
 allowlist so a client cannot direct data to an arbitrary topic:
 
 - `allowed_topics`: exact topic names permitted for header routing.
-- `allowed_topics_regex`: regex patterns permitted for header routing. The
-  header-supplied topic is matched against each pattern as provided; entries
-  must be valid regular expressions. Patterns are compiled once at exporter
-  construction (and on reconfigure); an invalid pattern is a configuration error
-  caught at startup.
+- `allowed_topics_regex`: regex patterns permitted for header routing. Each
+  pattern must match the **whole** topic (it is anchored as `\A(?:<pattern>)\z`),
+  so a prefix/suffix pattern cannot be satisfied by a substring of a
+  client-supplied topic; entries must be valid regular expressions. Patterns are
+  compiled once at exporter construction (and on reconfigure); an invalid pattern
+  is a configuration error caught at startup.
 
 When either list is non-empty, a header-supplied topic must exactly match the
 `allowed_topics` list or fully match an `allowed_topics_regex` pattern; otherwise
@@ -126,15 +127,20 @@ unrestricted (backwards compatible). The allowlist constrains only the
 header-supplied path -- the static per-signal `topic` is operator-controlled and
 is never subject to it.
 
-#### Topic auto-creation (default-deny)
+#### Topic auto-creation
 
-`allow_auto_create_topics` defaults to `false` and is always written to the
-librdkafka client config (`allow.auto.create.topics`). Combined with
-header-driven routing, leaving auto-creation enabled would let a client cause
-the broker to spawn arbitrary topics, so operators must explicitly opt in. The
-key is managed: setting it through the `producer_config` escape hatch is
-overridden by the first-class field and reported via the
-`kafka.exporter.producer_config.overridden_key` warning.
+`allow_auto_create_topics` defaults to `true` (matching the Go Collector Kafka
+exporter's `allow_auto_topic_creation`) and is always written to the librdkafka
+client config (`allow.auto.create.topics`). The key is managed: setting it
+through the `producer_config` escape hatch is overridden by the first-class
+field and reported via the `kafka.exporter.producer_config.overridden_key`
+warning.
+
+Security: combined with header-driven routing
+(`topic_from_transport_header`), leaving auto-creation enabled lets a
+client-controlled routing header cause the broker to spawn arbitrary topics.
+Operators who route by header (or otherwise want default-deny) should set
+`allow_auto_create_topics: false`.
 
 #### Partition-key fingerprinting
 
@@ -379,16 +385,16 @@ Where librdkafka exposes an equivalent setting, it can still be set through the
 | `compression_params.level` | `producer_config` (`compression.level`) |
 | `max_broker_write_bytes` | `producer_config` |
 | `flush_max_messages` | `producer_config` (`batch.num.messages`, `queue.buffering.max.messages`) |
-| `allow_auto_topic_creation` | `producer_config` (`allow.auto.create.topics`) |
 | `protocol_version` | `producer_config` (`api.version.request`, etc.) |
 | `resolve_canonical_bootstrap_servers_only` | `producer_config` (`client.dns.lookup`) |
 | `conn_idle_timeout` | `producer_config` (`connections.max.idle.ms`) |
 | `metadata.refresh_interval` | `producer_config` (`topic.metadata.refresh.interval.ms`) |
 
 The Go `timeout`, `compression`, `producer.required_acks`,
-`producer.max_message_bytes`, `producer.linger`, and `client_id` settings have
-direct fields here (`timeout_ms`, `compression`, `required_acks`,
-`max_message_bytes`, `linger_ms`, `client_id`); see
+`producer.max_message_bytes`, `producer.linger`, `allow_auto_topic_creation`,
+and `client_id` settings have direct fields here (`timeout_ms`, `compression`,
+`required_acks`, `max_message_bytes`, `linger_ms`, `allow_auto_create_topics`,
+`client_id`); see
 [Producer Tuning](#producer-tuning), [Authentication](#authentication), and
 [TLS Configuration](#tls-configuration).
 
