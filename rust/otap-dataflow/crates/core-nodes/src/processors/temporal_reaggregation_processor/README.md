@@ -128,8 +128,6 @@ A typical pipeline ordering with batch, temporal_reaggregation, and retry
 processors would be:
 `receivers -> temporal_reaggregation -> batch -> retry -> exporters`
 
-
-
 ## Related Docs
 
 - [Configuration model](../../../../../docs/configuration-model.md)
