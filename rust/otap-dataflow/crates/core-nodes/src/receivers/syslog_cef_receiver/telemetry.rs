@@ -1,3 +1,17 @@
+// Copyright 2024, OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #![allow(missing_docs)]
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
@@ -126,9 +140,11 @@ impl SyslogCefReceiverMetrics {
             forward_failed: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
                 outcome: std::borrow::Cow::Borrowed("forward_failed"),
             }),
-            rejected_memory_pressure: telemetry_registry.register_metric_set(SyslogOutcomeAttributes {
-                outcome: std::borrow::Cow::Borrowed("rejected_memory_pressure"),
-            }),
+            rejected_memory_pressure: telemetry_registry.register_metric_set(
+                SyslogOutcomeAttributes {
+                    outcome: std::borrow::Cow::Borrowed("rejected_memory_pressure"),
+                },
+            ),
 
             tcp_active: telemetry_registry.register_metric_set(TcpConnectionAttributes {
                 state: std::borrow::Cow::Borrowed("active"),
@@ -137,7 +153,8 @@ impl SyslogCefReceiverMetrics {
                 state: std::borrow::Cow::Borrowed("rejected_memory_pressure"),
             }),
 
-            global: telemetry_registry.register_metric_set(otap_df_telemetry::testing::EmptyAttributes()),
+            global: telemetry_registry
+                .register_metric_set(otap_df_telemetry::testing::EmptyAttributes()),
         }
     }
 

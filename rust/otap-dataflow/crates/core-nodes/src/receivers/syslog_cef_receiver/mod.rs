@@ -23,8 +23,8 @@ use otap_df_engine::{
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 
-use otap_df_telemetry::{otel_info, otel_warn};
 use self::telemetry::SyslogCefReceiverMetrics;
+use otap_df_telemetry::{otel_info, otel_warn};
 use serde::Deserialize;
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
@@ -261,7 +261,8 @@ fn drop_syslog_batch(
     *arrow_records_builder = ArrowRecordsBuilder::new();
     metrics
         .borrow_mut()
-        .rejected_memory_pressure.items
+        .rejected_memory_pressure
+        .items
         .add(items);
 }
 
@@ -1089,10 +1090,10 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Arc;
     use std::time::Instant;
+    use telemetry::SyslogCefReceiverMetrics;
     use tokio::io::AsyncWriteExt;
     use tokio::net::{TcpStream, UdpSocket};
     use tokio::time::{Duration, timeout};
-    use telemetry::SyslogCefReceiverMetrics;
 
     #[test]
     fn drop_syslog_batch_discards_records_without_downstream_send() {
@@ -1108,13 +1109,7 @@ mod tests {
         drop_syslog_batch(&metrics, &mut arrow_records_builder);
 
         assert_eq!(arrow_records_builder.len(), 0);
-        assert_eq!(
-            metrics
-                .borrow()
-                .rejected_memory_pressure.items
-                .get(),
-            1
-        );
+        assert_eq!(metrics.borrow().rejected_memory_pressure.items.get(), 1);
         assert_eq!(metrics.borrow().forwarded.items.get(), 0);
         assert_eq!(metrics.borrow().forward_failed.items.get(), 0);
     }
@@ -2256,10 +2251,16 @@ mod telemetry_tests {
             // Send 1 valid and 1 invalid message
             let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let _ = sock
-                .send_to(b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg", listening_addr)
+                .send_to(
+                    b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg",
+                    listening_addr,
+                )
                 .await
                 .unwrap();
-            let _ = sock.send_to(b"not a valid syslog message", listening_addr).await.unwrap();
+            let _ = sock
+                .send_to(b"not a valid syslog message", listening_addr)
+                .await
+                .unwrap();
 
             tokio::time::sleep(Duration::from_millis(150)).await;
             let _ = ctrl_tx.send(NodeControlMsg::CollectTelemetry {
@@ -2277,16 +2278,21 @@ mod telemetry_tests {
             while let Ok(snap) = metrics_rx.recv_async().await {
                 snaps.push(snap);
             }
-            
+
             // Helper to find metric value by outcome attribute
             let get_val = |outcome: &str| -> u64 {
-                snaps.iter()
+                snaps
+                    .iter()
                     .find(|s| format!("{:?}", s.key().attributes()).contains(outcome))
                     .map(|s| s.get_metrics()[0].to_u64_lossy())
                     .unwrap_or(0)
             };
 
-            let total = snaps.iter().find(|s| s.key().name() == "receiver.syslog_cef.global").map(|s| s.get_metrics()[0].to_u64_lossy()).unwrap_or(0);
+            let total = snaps
+                .iter()
+                .find(|s| s.key().name() == "receiver.syslog_cef.global")
+                .map(|s| s.get_metrics()[0].to_u64_lossy())
+                .unwrap_or(0);
 
             assert_eq!(total, 2, "total == 2");
             assert_eq!(get_val("forwarded"), 1, "forwarded == 1");
@@ -2387,7 +2393,8 @@ mod telemetry_tests {
                 snaps.push(snap);
             }
             let get_val = |outcome: &str| -> u64 {
-                snaps.iter()
+                snaps
+                    .iter()
                     .find(|s| format!("{:?}", s.key().attributes()).contains(outcome))
                     .map(|s| s.get_metrics()[0].to_u64_lossy())
                     .unwrap_or(0)
@@ -2481,12 +2488,17 @@ mod telemetry_tests {
                 snaps.push(snap);
             }
             let get_val = |outcome: &str| -> u64 {
-                snaps.iter()
+                snaps
+                    .iter()
                     .find(|s| format!("{:?}", s.key().attributes()).contains(outcome))
                     .map(|s| s.get_metrics()[0].to_u64_lossy())
                     .unwrap_or(0)
             };
-            let total = snaps.iter().find(|s| s.key().name() == "receiver.syslog_cef.global").map(|s| s.get_metrics()[0].to_u64_lossy()).unwrap_or(0);
+            let total = snaps
+                .iter()
+                .find(|s| s.key().name() == "receiver.syslog_cef.global")
+                .map(|s| s.get_metrics()[0].to_u64_lossy())
+                .unwrap_or(0);
 
             assert_eq!(total, 1, "total == 1");
             assert_eq!(get_val("forwarded"), 0, "forwarded == 0");

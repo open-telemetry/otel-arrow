@@ -84,13 +84,13 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `processor.temporal_reaggregation.pdata`
+#### `processor.temporal_reaggregation`
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.temporal_reaggregation.pdata.flushes_timer` | `{flush}` | Number of flushes triggered by the regular timer. |
-| `processor.temporal_reaggregation.pdata.flushes_overflow` | `{flush}` | Number of flushes triggered by exceeding the maximum stream count. |
-| `processor.temporal_reaggregation.pdata.batches_rejected` | `{batch}` | Number of incoming batches rejected because they individually exceed some specified limit or fail to be processed into a view. |
+| `processor.temporal_reaggregation.flushes_timer` | `{flush}` | Number of flushes triggered by the regular timer. |
+| `processor.temporal_reaggregation.flushes_overflow` | `{flush}` | Number of flushes triggered by exceeding the maximum stream count. |
+| `processor.temporal_reaggregation.dropped.items` | `{item}` | Incoming items dropped because they exceed some limit or fail to be processed. |
 
 ### Events
 
@@ -128,15 +128,7 @@ A typical pipeline ordering with batch, temporal_reaggregation, and retry
 processors would be:
 `receivers -> temporal_reaggregation -> batch -> retry -> exporters`
 
-## Telemetry
 
-This processor emits the following internal metrics:
-
-| Metric Name | Type | Unit | Description |
-|---|---|---|---|
-| `processor.temporal_reaggregation.flushes_timer` | Counter | `{flush}` | Number of flushes triggered by the regular timer. |
-| `processor.temporal_reaggregation.flushes_overflow` | Counter | `{flush}` | Number of flushes triggered by exceeding the maximum stream count. |
-| `processor.temporal_reaggregation.dropped.items` | Counter | `{item}` | Incoming items dropped because they exceed some limit or fail to be processed. |
 
 ## Related Docs
 

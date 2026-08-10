@@ -623,7 +623,9 @@ impl TemporalReaggregationProcessor {
                 Ok(view) => self.process_view(effect_handler, &view).await,
                 Err(e) => {
                     otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
-                    self.metrics.dropped_items.add(pdata.payload_ref().num_items() as u64);
+                    self.metrics
+                        .dropped_items
+                        .add(pdata.payload_ref().num_items() as u64);
                     let msg = format!("Failed to create view: {:#}", e);
                     effect_handler
                         .notify_nack(NackMsg::new_permanent(msg, pdata))
@@ -736,7 +738,9 @@ impl TemporalReaggregationProcessor {
                 // the current batch, it failed on retry due to being oversized
                 // in some way. We can't handle it, so it gets a nack.
                 ProcessingError::AggregationRetryFailed { source } => {
-                    self.metrics.dropped_items.add(pdata.payload_ref().num_items() as u64);
+                    self.metrics
+                        .dropped_items
+                        .add(pdata.payload_ref().num_items() as u64);
                     let msg = format!("Failed to aggregate batch: {:#}", source);
                     effect_handler
                         .notify_nack(NackMsg::new_permanent(msg, pdata))
