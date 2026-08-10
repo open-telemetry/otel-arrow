@@ -86,3 +86,13 @@ It is recommended to place this processor:
 A typical pipeline ordering with batch, temporal_reaggregation, and retry
 processors would be:
 `receivers -> temporal_reaggregation -> batch -> retry -> exporters`
+
+## Telemetry
+
+This processor emits the following internal metrics:
+
+| Metric Name | Type | Unit | Description |
+|---|---|---|---|
+| `processor.temporal_reaggregation.flushes_timer` | Counter | `{flush}` | Number of flushes triggered by the regular timer. |
+| `processor.temporal_reaggregation.flushes_overflow` | Counter | `{flush}` | Number of flushes triggered by exceeding the maximum stream count. |
+| `processor.temporal_reaggregation.dropped.items` | Counter | `{item}` | Incoming items dropped because they exceed some limit or fail to be processed. |

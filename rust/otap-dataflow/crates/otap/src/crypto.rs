@@ -89,7 +89,7 @@ pub fn ensure_crypto_provider() {
             feature = "crypto-openssl"
         )))]
         {
-            let _ = rustls::crypto::ring::default_provider().install_default();
+            panic!("No crypto provider configured for otap-df-otap. Please enable a crypto feature like crypto-ring, crypto-aws-lc, etc.");
         }
     });
 }
