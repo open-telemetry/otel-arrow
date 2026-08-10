@@ -30,8 +30,9 @@ pub struct RuntimeLogFilterLayer {
 }
 
 /// Creates the startup `EnvFilter` from `RUST_LOG`, falling back to `level`.
+#[cfg(test)]
 #[must_use]
-pub fn create_env_filter(level: &LogLevel) -> EnvFilter {
+pub(crate) fn create_env_filter(level: &LogLevel) -> EnvFilter {
     create_startup_env_filter(level).0
 }
 
