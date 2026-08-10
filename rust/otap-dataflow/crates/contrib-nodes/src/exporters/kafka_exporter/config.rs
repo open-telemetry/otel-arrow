@@ -45,6 +45,7 @@ pub(crate) const MANAGED_PRODUCER_CONFIG_KEYS: &[&str] = &[
 /// and encoding format. When a signal is `None` in [`KafkaExporterConfig`],
 /// that signal type will not be exported.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SignalConfig {
     /// Kafka topic to produce messages to.
     topic: String,
@@ -53,13 +54,17 @@ pub struct SignalConfig {
     #[serde(default)]
     encoding: MessageFormat,
 
-    /// Transport header name (normalized) to look up for dynamic topic routing.
+    /// Transport header name to look up for dynamic topic routing.
     ///
     /// When set and the header is present in the pdata context, its value
     /// becomes the Kafka destination topic instead of the static `topic` field.
     ///
-    /// The lookup matches on the header's normalized logical name (lowercase),
-    /// e.g., `"x_target_topic"`.
+    /// The lookup matches on the header's normalized logical name. Captured
+    /// transport headers are lowercased on ingress, so this value is lowercased
+    /// during config validation ([`KafkaExporterConfig::try_from`]) to match --
+    /// e.g., `"X-Target-Topic"` is stored as `"x-target-topic"`. If a capture
+    /// policy stores the header under a custom `store_as` name, this value must
+    /// equal that stored name.
     #[serde(default)]
     topic_from_transport_header: Option<String>,
 
@@ -135,7 +140,7 @@ impl SignalConfig {
 pub enum RequiredAcks {
     /// No acknowledgment (acks=0). Fastest, but no delivery guarantee.
     None,
-    /// Leader acknowledgment (acks=1). Default — the leader writes and acks
+    /// Leader acknowledgment (acks=1). Default -- the leader writes and acks
     /// without waiting for followers.
     One,
     /// All in-sync replicas must acknowledge (acks=-1). Strongest durability
@@ -162,7 +167,7 @@ impl RequiredAcks {
 /// to configure settings, then convert to a validated [`KafkaExporterConfig`]
 /// via [`TryFrom`] / [`TryInto`].
 ///
-/// This type is also the serde deserialization target — the validated
+/// This type is also the serde deserialization target -- the validated
 /// [`KafkaExporterConfig`] uses `#[serde(try_from)]` to run validation
 /// automatically during deserialization.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -500,7 +505,7 @@ pub struct KafkaExporterConfig(KafkaExporterConfigBuilder);
 impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
     type Error = String;
 
-    fn try_from(builder: KafkaExporterConfigBuilder) -> Result<Self, Self::Error> {
+    fn try_from(mut builder: KafkaExporterConfigBuilder) -> Result<Self, Self::Error> {
         if builder.client_id.is_empty() {
             return Err("client_id can't be empty".to_string());
         }
@@ -517,6 +522,25 @@ impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
             return Err(
                 "at least one signal (traces, metrics, or logs) must be configured".to_string(),
             );
+        }
+
+        // Validate the request timeout. `timeout_ms` is assigned to librdkafka's
+        // `message.timeout.ms`, where a value of `0` means an *infinite* delivery
+        // timeout. Because the exporter awaits each delivery inline, an infinite
+        // (or unreasonably large) timeout would let a broker outage block the
+        // main loop from ever servicing the Shutdown control message. Reject `0`
+        // and anything above `MAX_TIMEOUT_MS` so shutdown always stays bounded.
+        if builder.timeout_ms == 0 {
+            return Err(
+                "timeout_ms must be > 0; a value of 0 sets message.timeout.ms to infinite in \
+                 librdkafka and can prevent the exporter from shutting down"
+                    .to_string(),
+            );
+        }
+        if builder.timeout_ms > MAX_TIMEOUT_MS {
+            return Err(format!(
+                "timeout_ms must be <= {MAX_TIMEOUT_MS} (30s); larger values can delay shutdown"
+            ));
         }
 
         // Validate topic names for each configured signal
@@ -538,6 +562,25 @@ impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
         // Validate TLS configuration when present
         if let Some(ref tls) = builder.tls {
             tls.validate().map_err(|e| format!("tls: {e}"))?;
+        }
+
+        // Normalize each signal's dynamic-routing header key to match how
+        // transport headers store their logical names. Captured headers are
+        // lowercased on ingress (`wire_name.to_ascii_lowercase()`), so a natural
+        // config like `X-Target-Topic` would otherwise never match and silently
+        // fall back to the static topic. Normalizing once here means the router
+        // can do a plain equality check without re-normalizing per message.
+        for signal in [
+            builder.traces.as_mut(),
+            builder.metrics.as_mut(),
+            builder.logs.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(header) = signal.topic_from_transport_header.as_mut() {
+                *header = header.to_ascii_lowercase();
+            }
         }
 
         Ok(Self(builder))
@@ -670,6 +713,13 @@ impl KafkaExporterConfig {
 }
 
 // ---- Default functions for serde ----
+
+/// Maximum accepted `timeout_ms` (30 seconds).
+///
+/// `timeout_ms` maps to librdkafka's `message.timeout.ms`. Values above this
+/// ceiling (and `0`, which librdkafka interprets as infinite) are rejected at
+/// config validation time so the exporter's shutdown path always stays bounded.
+pub(crate) const MAX_TIMEOUT_MS: u64 = 30_000;
 
 /// Default timeout in milliseconds.
 fn default_timeout_ms() -> u64 {
@@ -960,6 +1010,41 @@ mod tests {
     }
 
     #[test]
+    fn test_try_from_zero_timeout_fails() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_timeout_ms(0);
+        let err = KafkaExporterConfig::try_from(builder).unwrap_err();
+        assert!(err.contains("timeout_ms"));
+    }
+
+    #[test]
+    fn test_try_from_excessive_timeout_fails() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_timeout_ms(MAX_TIMEOUT_MS + 1);
+        let err = KafkaExporterConfig::try_from(builder).unwrap_err();
+        assert!(err.contains("timeout_ms"));
+    }
+
+    #[test]
+    fn test_try_from_max_timeout_succeeds() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_timeout_ms(MAX_TIMEOUT_MS);
+        assert!(KafkaExporterConfig::try_from(builder).is_ok());
+    }
+
+    #[test]
+    fn test_try_from_default_timeout_succeeds() {
+        // The serde default (5000) must remain valid.
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto));
+        let config = KafkaExporterConfig::try_from(builder).unwrap();
+        assert_eq!(config.timeout_ms(), 5000);
+    }
+
+    #[test]
     fn test_deserialization_no_signals_fails() {
         let json = r#"{"brokers": "kafka:9092", "client_id": "test"}"#;
         let result = serde_json::from_str::<KafkaExporterConfig>(json);
@@ -1194,6 +1279,27 @@ mod tests {
 
         let result = serde_json::from_str::<KafkaExporterConfig>(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_signal_config_rejects_unknown_fields() {
+        // A typo inside a signal block (e.g. `topic_from_transpot_header`)
+        // must be rejected rather than silently ignored, which would
+        // otherwise disable dynamic topic routing without warning.
+        let json = r#"{
+            "brokers": "kafka:9092",
+            "client_id": "test",
+            "logs": {
+                "topic": "l",
+                "topic_from_transpot_header": "x_target_topic"
+            }
+        }"#;
+
+        let result = serde_json::from_str::<KafkaExporterConfig>(json);
+        assert!(
+            result.is_err(),
+            "expected unknown field in signal config to be rejected"
+        );
     }
 
     // ---- producer_config ----
@@ -1533,6 +1639,38 @@ mod tests {
     }
 
     #[test]
+<<<<<<< HEAD
+=======
+    fn test_topic_from_transport_header_is_lowercased_on_validation() {
+        // A natural mixed-case header name must be normalized (lowercased) so it
+        // matches captured transport header names, which are lowercased on
+        // ingress. Dashes are preserved (capture uses `to_ascii_lowercase`).
+        let json = r#"{
+            "brokers": "kafka:9092",
+            "client_id": "test",
+            "traces": {
+                "topic": "otlp_spans",
+                "topic_from_transport_header": "X-Traces-Topic"
+            },
+            "logs": {
+                "topic": "otlp_logs",
+                "topic_from_transport_header": "X-Target-Topic"
+            }
+        }"#;
+
+        let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
+        assert_eq!(
+            config.traces().unwrap().topic_from_transport_header(),
+            Some("x-traces-topic")
+        );
+        assert_eq!(
+            config.logs().unwrap().topic_from_transport_header(),
+            Some("x-target-topic")
+        );
+    }
+
+    #[test]
+>>>>>>> main
     fn test_config_empty_client_id_fails_validation() {
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "")
             .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto));

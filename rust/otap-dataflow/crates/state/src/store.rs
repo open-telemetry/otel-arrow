@@ -37,14 +37,14 @@ pub struct ObservedStateStore {
     #[serde(skip)]
     health_policies: Arc<Mutex<HashMap<PipelineKey, HealthPolicy>>>,
 
-    /// Bounded channel for log (observational) events — lossy under backpressure.
+    /// Bounded channel for log (observational) events -- lossy under backpressure.
     #[serde(skip)]
     sender: flume::Sender<ObservedEvent>,
 
     #[serde(skip)]
     receiver: flume::Receiver<ObservedEvent>,
 
-    /// Unbounded channel for engine (lifecycle) events — reliable, never drops.
+    /// Unbounded channel for engine (lifecycle) events -- reliable, never drops.
     #[serde(skip)]
     engine_sender: flume::Sender<EngineEvent>,
 
@@ -661,7 +661,7 @@ mod tests {
         .await
         .unwrap();
 
-        // Drain the channel — only 1 event should be present.
+        // Drain the channel -- only 1 event should be present.
         let mut buffered = 0;
         while store.receiver.try_recv().is_ok() {
             buffered += 1;
@@ -680,7 +680,7 @@ mod tests {
     async fn engine_reporter_never_drops_lifecycle_events() {
         let num_cores: usize = 64;
         let config = ObservedStateSettings {
-            // Intentionally tiny log channel — must NOT affect engine events.
+            // Intentionally tiny log channel -- must NOT affect engine events.
             reporting_channel_size: 1,
             engine_events: SendPolicy {
                 blocking_timeout: None,
@@ -694,7 +694,7 @@ mod tests {
 
         let store = ObservedStateStore::new(&config, TelemetryRegistryHandle::new());
         let handle = store.handle();
-        // Use the reliable engine_reporter — this is what production code uses.
+        // Use the reliable engine_reporter -- this is what production code uses.
         let reporter = store.engine_reporter(config.engine_events.clone());
 
         // Start the consumer first.
@@ -765,7 +765,7 @@ mod tests {
                 console_fallback: false,
             },
             logging_events: SendPolicy {
-                blocking_timeout: None, // try_send → instant drop when full
+                blocking_timeout: None, // try_send -> instant drop when full
                 console_fallback: false,
             },
         };

@@ -78,8 +78,8 @@ pub fn to_nonzero_range(start: usize, end: usize) -> Option<(NonZeroUsize, NonZe
 /// one of the pdata view traits. The buffer is parsed lazily as fields are accessed via the
 /// view's methods.
 ///
-/// This type collaborates with an implementation of the `FieldRanges` trait — often specific
-/// to the message being parsed — by recording the offsets of fields as they are encountered,
+/// This type collaborates with an implementation of the `FieldRanges` trait -- often specific
+/// to the message being parsed -- by recording the offsets of fields as they are encountered,
 /// and using these offsets to return byte slices for requested fields.
 ///
 /// # Notes

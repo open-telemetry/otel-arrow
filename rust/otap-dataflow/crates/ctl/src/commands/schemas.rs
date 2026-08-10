@@ -9,8 +9,8 @@
 //! envelopes, errors, streams, command catalogs, diagnosis reports, mutations,
 //! and support bundles.
 
-use crate::BIN_NAME;
 use crate::args::SchemasArgs;
+use crate::branding;
 use crate::commands::output::write_read_command_output;
 use crate::error::CliError;
 use crate::style::HumanStyle;
@@ -158,7 +158,7 @@ fn schema_entries() -> Vec<SchemaEntry> {
 }
 
 fn command_example(args: &str) -> String {
-    format!("{BIN_NAME} {args}")
+    format!("{} {args}", branding::active().bin_name)
 }
 
 fn schema_for(name: &str) -> Value {
@@ -262,7 +262,7 @@ fn command_catalog_schema() -> Value {
     schema["properties"] = json!({
         "schemaVersion": { "const": "dfctl-command-catalog/v1" },
         "generatedAt": { "type": "string", "format": "date-time" },
-        "binary": { "const": BIN_NAME },
+        "binary": { "type": "string", "description": "Active binary name at catalog generation time." },
         "version": { "type": "string" },
         "globalArguments": { "type": "array", "items": { "type": "object" } },
         "commands": { "type": "array", "items": { "type": "object" } }
@@ -374,8 +374,9 @@ fn render_catalog(style: &HumanStyle, catalog: &SchemaCatalog) -> String {
         .collect::<Vec<_>>()
         .join("\n");
 
+    let bin_name = branding::active().bin_name;
     [
-        style.header(format!("{BIN_NAME} schemas")),
+        style.header(format!("{bin_name} schemas")),
         format!("{}: {}", style.label("schema"), catalog.schema_version),
         format!("{}: {}", style.label("count"), catalog.schemas.len()),
         String::new(),
@@ -387,7 +388,7 @@ fn render_catalog(style: &HumanStyle, catalog: &SchemaCatalog) -> String {
         ),
         rows,
         String::new(),
-        format!("Use `{BIN_NAME} schemas <name> --output json` to inspect one schema."),
+        format!("Use `{bin_name} schemas <name> --output json` to inspect one schema."),
     ]
     .join("\n")
 }

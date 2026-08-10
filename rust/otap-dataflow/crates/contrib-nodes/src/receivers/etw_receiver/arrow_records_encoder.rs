@@ -16,18 +16,18 @@ use otap_df_pdata::encode::record::{
 use otap_df_pdata::otap::{Logs, OtapArrowRecords};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-use super::session::{EtwAttributeValue, EtwEventData};
+use super::session::{CanonicalGuid, EtwAttributeValue, EtwEventData};
 
-// ── ETW level → OTel severity number mapping ─────────────────────────────────
+// -- ETW level -> OTel severity number mapping ---------------------------------
 
 /// Map an ETW event level to the closest OpenTelemetry severity number.
 ///
 /// ETW levels:
-/// - 1 = Critical  → OTEL FATAL  (21)
-/// - 2 = Error     → OTEL ERROR  (17)
-/// - 3 = Warning   → OTEL WARN   (13)
-/// - 4 = Info      → OTEL INFO   (9)
-/// - 5 = Verbose   → OTEL DEBUG  (5)
+/// - 1 = Critical  -> OTEL FATAL  (21)
+/// - 2 = Error     -> OTEL ERROR  (17)
+/// - 3 = Warning   -> OTEL WARN   (13)
+/// - 4 = Info      -> OTEL INFO   (9)
+/// - 5 = Verbose   -> OTEL DEBUG  (5)
 ///
 /// Unknown levels map to OTEL UNSPECIFIED (0).
 const fn etw_level_to_otel_severity(level: u8) -> i32 {
@@ -41,19 +41,37 @@ const fn etw_level_to_otel_severity(level: u8) -> i32 {
     }
 }
 
-/// Map an ETW level to the conventional OTel severity text.
+/// Map an ETW level to the `SeverityText`.
+///
+/// Per the OpenTelemetry logs data model, `SeverityText` is the original
+/// string representation of the severity as it is known at the source, so this
+/// returns the ETW level name (e.g. `"CRITICAL"`) rather than the OTel
+/// severity short name (e.g. `"FATAL"`).
+///
+/// Level 0 (`LOG_ALWAYS`) is a filtering directive rather than a severity, but
+/// its source name is still recorded here even though `SeverityNumber` maps to
+/// UNSPECIFIED. Reserved (6-15) and provider-defined (16-255) levels have no
+/// name standardized across providers, so they return `None`. The names match
+/// the ETW mapping table in the OpenTelemetry logs data model appendix.
+///
+/// See the Windows `EVENT_DESCRIPTOR` documentation for the level semantics:
+/// <https://learn.microsoft.com/en-us/windows/win32/api/evntprov/ns-evntprov-event_descriptor>
 const fn etw_level_to_severity_text(level: u8) -> Option<&'static str> {
     match level {
-        1 => Some("FATAL"),
+        0 => Some("LOG_ALWAYS"),
+        1 => Some("CRITICAL"),
         2 => Some("ERROR"),
-        3 => Some("WARN"),
+        3 => Some("WARNING"),
         4 => Some("INFO"),
-        5 => Some("DEBUG"),
+        5 => Some("VERBOSE"),
+        // TODO: Manifest-based events can define their own levels in the
+        // 16-255 range. We will need to handle the mapping for those once
+        // manifest-based event support is implemented.
         _ => None,
     }
 }
 
-// ── Decoded field → attribute value conversion ───────────────────────────────
+// -- Decoded field -> attribute value conversion -------------------------------
 
 /// Typed attribute value for Arrow encoding.
 enum AttrValue<'a> {
@@ -67,17 +85,25 @@ enum AttrValue<'a> {
 /// Lowercase hex digits used when formatting GUID byte arrays.
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
-/// Format a 16-byte GUID/UUID into a fixed 36-byte stack buffer as
+/// Format a 16-byte canonical GUID into a fixed 36-byte stack buffer as
 /// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, avoiding a heap allocation.
+///
+/// The input is a [`CanonicalGuid`], whose bytes are already in big-endian
+/// display order: any little-endian in-memory byte swap was performed once, at
+/// the session boundary, when the value was produced. This function therefore
+/// only renders hex digits and inserts the four dashes; it has no knowledge of
+/// the source byte order and cannot double-swap a value that is already
+/// canonical.
 ///
 /// Returns the buffer; callers turn it into a `&str` (the output is always
 /// valid ASCII/UTF-8) for attribute encoding.
-fn format_guid(guid: &[u8; 16]) -> [u8; 36] {
+fn format_guid(guid: &CanonicalGuid) -> [u8; 36] {
     // Positions of the four '-' separators in the canonical GUID layout.
     const DASH_AT: [usize; 4] = [8, 13, 18, 23];
 
+    let bytes = &guid.0;
     let mut out = [b'-'; 36];
-    let mut byte_idx = 0;
+    let mut src_idx = 0;
     let mut out_idx = 0;
     while out_idx < out.len() {
         if DASH_AT.contains(&out_idx) {
@@ -85,10 +111,10 @@ fn format_guid(guid: &[u8; 16]) -> [u8; 36] {
             out_idx += 1;
             continue;
         }
-        let byte = guid[byte_idx];
+        let byte = bytes[src_idx];
         out[out_idx] = HEX_DIGITS[(byte >> 4) as usize];
         out[out_idx + 1] = HEX_DIGITS[(byte & 0x0f) as usize];
-        byte_idx += 1;
+        src_idx += 1;
         out_idx += 2;
     }
     out
@@ -99,7 +125,7 @@ fn format_guid(guid: &[u8; 16]) -> [u8; 36] {
 ///
 /// All type interpretation already happened in the decoder
 /// (`session::interpret_field_value`), so this is an exhaustive, allocation-free
-/// match — adding a new [`EtwAttributeValue`] variant is a compile error here.
+/// match -- adding a new [`EtwAttributeValue`] variant is a compile error here.
 fn decode_field_value(value: &EtwAttributeValue) -> AttrValue<'_> {
     match value {
         EtwAttributeValue::Str(s) => AttrValue::Str(Cow::Borrowed(s)),
@@ -110,7 +136,7 @@ fn decode_field_value(value: &EtwAttributeValue) -> AttrValue<'_> {
     }
 }
 
-// ── Arrow records builder ────────────────────────────────────────────────────
+// -- Arrow records builder ----------------------------------------------------
 
 /// Builder for creating Arrow record batches from ETW events.
 pub(super) struct EtwArrowRecordsBuilder {
@@ -162,16 +188,15 @@ impl EtwArrowRecordsBuilder {
         // field in the general case).  Decoded fields go into attributes.
         self.logs.body.append_null();
 
-        // Severity from ETW level
+        // Severity from ETW level. The severity number is always emitted;
+        // unmapped levels resolve to UNSPECIFIED (0). The `SeverityText`
+        // carries the original ETW level name as known at the source and is
+        // emitted even when the number is UNSPECIFIED (e.g. level 0 ->
+        // "LOG_ALWAYS"), per the OpenTelemetry logs data model.
         let severity = etw_level_to_otel_severity(event.level);
-        if severity > 0 {
-            self.logs.append_severity_number(Some(severity));
-            self.logs
-                .append_severity_text(etw_level_to_severity_text(event.level).map(str::as_bytes));
-        } else {
-            self.logs.append_severity_number(None);
-            self.logs.append_severity_text(None);
-        }
+        self.logs.append_severity_number(Some(severity));
+        self.logs
+            .append_severity_text(etw_level_to_severity_text(event.level).map(str::as_bytes));
 
         self.logs.append_id(Some(self.curr_log_id));
 
@@ -187,7 +212,12 @@ impl EtwArrowRecordsBuilder {
         }
 
         // Attributes: ETW header metadata
-        self.append_attr("etw.event_id", AttrValue::Int(i64::from(event.event_id)));
+        self.append_attr("etw.event.id", AttrValue::Int(i64::from(event.event_id)));
+        // Preserve the raw ETW level so the severity mapping remains
+        // reversible (levels 0 and 6-255 map to UNSPECIFIED but the original
+        // value is retained here).  See the ETW mapping in the OpenTelemetry
+        // logs data model appendix.
+        self.append_attr("etw.level", AttrValue::Int(i64::from(event.level)));
         self.append_attr("etw.opcode", AttrValue::Int(i64::from(event.opcode)));
         self.append_attr("etw.version", AttrValue::Int(i64::from(event.version)));
         self.append_attr(
@@ -195,10 +225,10 @@ impl EtwArrowRecordsBuilder {
             AttrValue::Int(event.keywords.min(i64::MAX as u64) as i64),
         );
         self.append_attr(
-            "etw.process_id",
+            "etw.process.id",
             AttrValue::Int(i64::from(event.process_id)),
         );
-        self.append_attr("etw.thread_id", AttrValue::Int(i64::from(event.thread_id)));
+        self.append_attr("etw.thread.id", AttrValue::Int(i64::from(event.thread_id)));
 
         // Provider GUID as hex string (e.g. "d2387720-2907-5677-8625-c1bdc4155197").
         // Format into a stack buffer to avoid a per-event heap allocation.
@@ -207,17 +237,17 @@ impl EtwArrowRecordsBuilder {
         let provider_guid =
             std::str::from_utf8(&provider_guid).expect("GUID buffer is valid ASCII");
         self.append_attr(
-            "etw.provider_id",
+            "etw.provider.id",
             AttrValue::Str(Cow::Borrowed(provider_guid)),
         );
 
-        // Activity ID — only emit when non-zero (provider set a correlation ID)
-        if event.activity_id != [0u8; 16] {
+        // Activity ID -- only emit when non-zero (provider set a correlation ID)
+        if !event.activity_id.is_zero() {
             let activity = format_guid(&event.activity_id);
             // safety: `format_guid` only writes ASCII hex digits and '-'.
             let activity =
                 std::str::from_utf8(&activity).expect("activity id buffer is valid ASCII");
-            self.append_attr("etw.activity_id", AttrValue::Str(Cow::Borrowed(activity)));
+            self.append_attr("etw.activity.id", AttrValue::Str(Cow::Borrowed(activity)));
         }
 
         // Attributes: TDH-decoded fields
@@ -310,11 +340,13 @@ impl EtwArrowRecordsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::receivers::etw_receiver::session::{DecodedField, EtwAttributeValue, EtwEventData};
+    use crate::receivers::etw_receiver::session::{
+        CanonicalGuid, DecodedField, EtwAttributeValue, EtwEventData,
+    };
 
     fn test_event() -> EtwEventData {
         EtwEventData {
-            provider_id: [0u8; 16],
+            provider_id: CanonicalGuid([0u8; 16]),
             timestamp: 123456789,
             process_id: 1234,
             thread_id: 5678,
@@ -324,7 +356,7 @@ mod tests {
             level: 4, // Information
             keywords: 0xFF,
             event_name: "TestEvent".to_string(),
-            activity_id: [0u8; 16],
+            activity_id: CanonicalGuid([0u8; 16]),
             decoded_fields: vec![
                 DecodedField {
                     name: "ProcessId".to_string(),
@@ -352,12 +384,12 @@ mod tests {
             .expect("attrs batch present");
 
         assert_eq!(logs_rb.num_rows(), 1);
-        // 7 header attrs (event_id, opcode, version, keywords, process_id,
-        // thread_id, provider_id) + 2 decoded fields = 9 rows.
+        // 8 header attrs (event_id, level, opcode, version, keywords,
+        // process_id, thread_id, provider_id) + 2 decoded fields = 10 rows.
         // (event_name is carried in the OTAP `event_name` log-record column,
         // not duplicated as an attribute; activity_id is all zeros so it's
         // omitted.)
-        assert_eq!(attrs_rb.num_rows(), 9);
+        assert_eq!(attrs_rb.num_rows(), 10);
     }
 
     #[test]
@@ -369,6 +401,112 @@ mod tests {
         assert_eq!(etw_level_to_otel_severity(5), 5); // DEBUG
         assert_eq!(etw_level_to_otel_severity(0), 0); // UNSPECIFIED
         assert_eq!(etw_level_to_otel_severity(255), 0); // Unknown
+    }
+
+    #[test]
+    fn severity_text_matches_data_model_mapping() {
+        // SeverityText carries the original ETW level name per the
+        // OpenTelemetry logs data model appendix ETW mapping table.
+        assert_eq!(etw_level_to_severity_text(0), Some("LOG_ALWAYS"));
+        assert_eq!(etw_level_to_severity_text(1), Some("CRITICAL"));
+        assert_eq!(etw_level_to_severity_text(2), Some("ERROR"));
+        assert_eq!(etw_level_to_severity_text(3), Some("WARNING"));
+        assert_eq!(etw_level_to_severity_text(4), Some("INFO"));
+        assert_eq!(etw_level_to_severity_text(5), Some("VERBOSE"));
+        // Reserved (6-15) and provider-defined (16-255) levels have no
+        // standardized name.
+        assert_eq!(etw_level_to_severity_text(6), None);
+        assert_eq!(etw_level_to_severity_text(200), None);
+    }
+
+    #[test]
+    fn unspecified_severity_preserves_raw_level() {
+        use arrow::array::{Array, DictionaryArray, Int32Array, Int64Array, StringArray};
+        use arrow::datatypes::{UInt8Type, UInt16Type};
+
+        // An ETW level outside the documented 1-5 range (e.g. 200) maps to
+        // OTel UNSPECIFIED, so the severity number is emitted as 0 and no
+        // severity text is emitted.
+        assert_eq!(etw_level_to_otel_severity(200), 0);
+        assert_eq!(etw_level_to_severity_text(200), None);
+
+        let mut event = test_event();
+        event.level = 200;
+
+        let mut builder = EtwArrowRecordsBuilder::new();
+        builder.append(&event);
+        let batch = builder.build().expect("build succeeds");
+
+        // The severity maps to UNSPECIFIED, so the logs batch carries a
+        // severity number of 0.
+        let logs_rb = batch
+            .get(ArrowPayloadType::Logs)
+            .expect("logs batch present");
+        if let Some(severity) = logs_rb.column_by_name("severity_number") {
+            // The column may be dictionary-encoded, so cast to a plain Int32
+            // array before inspecting the value.
+            let severity = arrow::compute::cast(severity, &arrow::datatypes::DataType::Int32)
+                .expect("cast severity_number to i32");
+            let severity = severity
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .expect("severity_number is i32");
+            assert!(
+                !severity.is_null(0),
+                "UNSPECIFIED severity must still emit a severity number"
+            );
+            assert_eq!(
+                severity.value(0),
+                0,
+                "UNSPECIFIED severity number must be 0"
+            );
+        }
+
+        // The raw ETW level is still recoverable from the `etw.level`
+        // attribute, even though the severity mapping discarded it.
+        let attrs_rb = batch
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("attrs batch present");
+
+        let key_dict = attrs_rb
+            .column_by_name("key")
+            .expect("key column present")
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .expect("key is dictionary-encoded");
+        let key_values = key_dict
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("key dictionary values are strings");
+
+        let int_dict = attrs_rb
+            .column_by_name("int")
+            .expect("int column present")
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .expect("int is dictionary-encoded");
+        let int_values = int_dict
+            .values()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("int dictionary values are i64");
+
+        let mut recovered_level = None;
+        for row in 0..attrs_rb.num_rows() {
+            let key = key_values.value(key_dict.key(row).expect("key index"));
+            if key == "etw.level" {
+                let int_idx = int_dict.key(row).expect("etw.level has an int value");
+                recovered_level = Some(int_values.value(int_idx));
+                break;
+            }
+        }
+
+        assert_eq!(
+            recovered_level,
+            Some(200),
+            "raw ETW level should be recoverable from the etw.level attribute"
+        );
     }
 
     #[test]
@@ -399,10 +537,10 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // 7 header attributes (event_id, opcode, version, keywords,
+        // 8 header attributes (event_id, level, opcode, version, keywords,
         // process_id, thread_id, provider_id); event_name is carried in the
-        // OTAP `event_name` log-record column; activity_id is zero → omitted
-        assert_eq!(attrs_rb.num_rows(), 7);
+        // OTAP `event_name` log-record column; activity_id is zero -> omitted
+        assert_eq!(attrs_rb.num_rows(), 8);
     }
 
     #[test]
@@ -419,7 +557,39 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // 7 header attributes; the empty-named field is skipped
-        assert_eq!(attrs_rb.num_rows(), 7);
+        // 8 header attributes; the empty-named field is skipped
+        assert_eq!(attrs_rb.num_rows(), 8);
+    }
+
+    // Scenario: a typed GUID produced at the session boundary via
+    //           `CanonicalGuid::from(one_collect::Guid::from_u128(..))` is
+    //           rendered by `format_guid`.
+    // Guarantees: the typed value flows through to the canonical dashed hex
+    //             string unchanged (dashes at positions 8/13/18/23), pinning
+    //             the typed-value -> canonical-string contract so a future
+    //             canonical-byte producer cannot be silently byte-swapped
+    //             again.
+    #[test]
+    fn format_guid_renders_canonical_from_typed_guid() {
+        use one_collect::Guid;
+
+        // `Guid::from_u128` maps the u128's big-endian bits into the GUID
+        // fields, so `CanonicalGuid::from` yields exactly the u128's
+        // big-endian bytes -- the canonical display order.
+        let guid = CanonicalGuid::from(Guid::from_u128(0x1c95126e_7eea_49a9_a3fe_a378b03ddb4d));
+        let formatted = format_guid(&guid);
+        let s = core::str::from_utf8(&formatted).expect("format_guid emits ASCII");
+
+        assert_eq!(s, "1c95126e-7eea-49a9-a3fe-a378b03ddb4d");
+    }
+
+    // Scenario: format_guid is fed the all-zero canonical GUID.
+    // Guarantees: every hex digit is '0' and the four dashes remain at their
+    //             canonical positions, covering the zero/edge case.
+    #[test]
+    fn format_guid_all_zero() {
+        let formatted = format_guid(&CanonicalGuid([0u8; 16]));
+        let s = core::str::from_utf8(&formatted).expect("format_guid emits ASCII");
+        assert_eq!(s, "00000000-0000-0000-0000-000000000000");
     }
 }

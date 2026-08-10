@@ -357,7 +357,7 @@ async fn test_ctrl_config_then_shutdown() {
 #[tokio::test]
 async fn test_ctrl_delayed_shutdown() {
     // Shutdown is delivered immediately regardless of how far in the
-    // future its deadline is — the deadline is the extension's
+    // future its deadline is -- the deadline is the extension's
     // cooperative cleanup budget, not a wait time before delivery.
     let (_tx, rx) = tokio::sync::mpsc::channel::<ExtensionControlMsg>(8);
     let (shutdown_tx, shutdown_rx) =
@@ -451,7 +451,7 @@ async fn test_ctrl_sender_send() {
 
 #[test]
 fn test_effect_handler() {
-    let h = EffectHandler::new("eh".into(), test_metrics_reporter());
+    let h = EffectHandler::new("eh".into(), test_metrics_reporter(), None);
     assert_eq!(h.extension_id().as_ref(), "eh");
     let c = h.clone();
     assert_eq!(c.extension_id().as_ref(), "eh");
@@ -578,7 +578,7 @@ fn test_extension_set_iter() {
     assert_eq!(set.iter().count(), 2);
 }
 
-// ── Background lifecycle tests ───────────────────────────────────────────────
+// -- Background lifecycle tests -----------------------------------------------
 
 #[test]
 fn test_background_shared() {
@@ -614,7 +614,7 @@ fn test_background_local() {
 
 #[test]
 fn test_background_factory_capabilities_none() {
-    // Background bundles call `register_into(None, …)` → no-op,
+    // Background bundles call `register_into(None, ...)` -> no-op,
     // contributing zero entries to the registry.
     use crate::capability::registry::CapabilityRegistry;
 
@@ -650,7 +650,7 @@ fn test_background_factory_capabilities_none() {
 // let _ = ExtensionWrapper::builder(n, u, &c).background().build();
 // ```
 
-// ── Extension telemetry wiring tests ─────────────────────────────────────────
+// -- Extension telemetry wiring tests -----------------------------------------
 
 #[test]
 fn test_extension_attribute_set_carries_pipeline_scope() {
@@ -881,7 +881,7 @@ struct TelemetryReportingLocalExt {
 }
 
 // `Clone` is required by `ActiveStage::local`. Clones share state via
-// interior mutability — only one live instance ever runs.
+// interior mutability -- only one live instance ever runs.
 impl Clone for TelemetryReportingLocalExt {
     fn clone(&self) -> Self {
         Self {
@@ -1064,7 +1064,7 @@ fn two_active_extensions_report_isolated_internal_metrics() {
         let h_a = tokio::task::spawn_local(async move { w_a.start(test_metrics_reporter()).await });
         let h_b = tokio::task::spawn_local(async move { w_b.start(test_metrics_reporter()).await });
 
-        // ONE shared reporter — both extensions publish through the same
+        // ONE shared reporter -- both extensions publish through the same
         // channel. Isolation must be enforced by per-MetricSet keys, not
         // by separate transports.
         let (snapshot_rx, shared_reporter) = MetricsReporter::create_new_and_receiver(8);
@@ -1196,7 +1196,7 @@ fn extension_entity_isolated_across_cores() {
     let controller = crate::context::ControllerContext::new(registry.clone());
 
     // Same pipeline replicated across two cores. Each per-core runtime
-    // registers its own extension instances — they must not alias.
+    // registers its own extension instances -- they must not alias.
     let pipe_core0 = pipeline_ctx_in_controller(&controller, "grp", "pipeline_a", 0, 0);
     let pipe_core1 = pipeline_ctx_in_controller(&controller, "grp", "pipeline_a", 1, 1);
 
@@ -1659,7 +1659,7 @@ fn panicking_collect_telemetry_handler_does_not_contaminate_neighbour() {
 fn snapshot_consumed_after_extension_drop_retains_identity() {
     // An extension publishes a snapshot, then is fully torn down
     // (entity unregistered via Drop). The in-flight snapshot must
-    // still be consumable with its key/values intact — snapshots are
+    // still be consumable with its key/values intact -- snapshots are
     // value types, not references into the registry.
     use crate::extension::wrapper::ExtensionVariant;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -1707,7 +1707,7 @@ fn snapshot_consumed_after_extension_drop_retains_identity() {
         // the host releasing the extension after shutdown.
         let _ = registry.unregister_entity(entity);
 
-        // Now consume the snapshot — it must still resolve to the same
+        // Now consume the snapshot -- it must still resolve to the same
         // key and carry the recorded value.
         let snap =
             tokio::time::timeout(std::time::Duration::from_secs(2), snapshot_rx.recv_async())
@@ -1736,7 +1736,7 @@ fn snapshot_consumed_after_extension_drop_retains_identity() {
 fn wire_telemetry_dual_returns_distinct_keys_and_releases_all_entities_per_cycle() {
     // `wire_telemetry` on a dual bundle must mint two distinct entity
     // keys (one per variant). Re-running the wire/drop cycle must
-    // return entity count to baseline each time — guards against
+    // return entity count to baseline each time -- guards against
     // partial-cleanup leaks under repeated registration.
     let (ctx, registry) = crate::testing::test_extension_ctx();
     let baseline = registry.entity_count();
@@ -1778,7 +1778,7 @@ fn wire_telemetry_dual_returns_distinct_keys_and_releases_all_entities_per_cycle
     }
 }
 
-/// `Shutdown` must preempt any backlog on the FIFO control channel —
+/// `Shutdown` must preempt any backlog on the FIFO control channel --
 /// it rides a dedicated oneshot the wrapper checks via biased select.
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_preempts_queued_collect_telemetry_on_control_channel() {
@@ -1808,11 +1808,680 @@ async fn shutdown_preempts_queued_collect_telemetry_on_control_channel() {
     let first = control.recv().await.expect("recv returns a message");
     assert!(
         matches!(first, ExtensionControlMsg::Shutdown { .. }),
-        "Shutdown must be delivered before queued CollectTelemetry — \
+        "Shutdown must be delivered before queued CollectTelemetry \u{2014} \
          the dedicated shutdown channel must preempt the FIFO control channel"
     );
     assert!(
         control.recv().await.is_err(),
         "after Shutdown the regular control channel must be closed"
     );
+}
+
+// Readiness probe wiring tests
+
+use super::readiness::{ReadinessProbeError, ReadinessSignaller};
+
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
+#[test]
+fn active_without_with_readiness_probe_has_no_probe_or_signaller() {
+    let (n, u, c) = ext_config("active_no_probe_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let mut w = bundle.take_shared().unwrap();
+    assert!(w.take_readiness_probe().is_none());
+    assert!(!w.has_readiness_signaller());
+
+    let (n, u, c) = ext_config("active_no_probe_local");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+        .build()
+        .unwrap();
+    let mut w = bundle.take_local().unwrap();
+    assert!(w.take_readiness_probe().is_none());
+    assert!(!w.has_readiness_signaller());
+}
+
+#[test]
+fn active_with_readiness_probe_shared_only_plumbs_probe_and_signaller() {
+    let (n, u, c) = ext_config("active_probe_shared_only");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+
+    assert!(bundle.local().is_none());
+    let mut w = bundle.take_shared().unwrap();
+    let probe = w.take_readiness_probe().unwrap();
+    assert_eq!(probe.timeout(), PROBE_TIMEOUT);
+    assert!(w.has_readiness_signaller());
+}
+
+#[test]
+fn active_with_readiness_probe_local_only_plumbs_probe_and_signaller() {
+    let (n, u, c) = ext_config("active_probe_local_only");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
+        .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+        .build()
+        .unwrap();
+
+    assert!(bundle.shared().is_none());
+    let mut w = bundle.take_local().unwrap();
+    let probe = w.take_readiness_probe().unwrap();
+    assert_eq!(probe.timeout(), PROBE_TIMEOUT);
+    assert!(w.has_readiness_signaller());
+}
+
+#[test]
+fn active_with_readiness_probe_shared_then_local_plumbs_two_pairs() {
+    let (n, u, c) = ext_config("active_probe_shared_then_local");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+        .build()
+        .unwrap();
+
+    let mut shared = bundle.take_shared().unwrap();
+    let mut local = bundle.take_local().unwrap();
+
+    assert_eq!(
+        shared.take_readiness_probe().unwrap().timeout(),
+        PROBE_TIMEOUT
+    );
+    assert_eq!(
+        local.take_readiness_probe().unwrap().timeout(),
+        PROBE_TIMEOUT
+    );
+    assert!(shared.has_readiness_signaller());
+    assert!(local.has_readiness_signaller());
+}
+
+#[test]
+fn active_with_readiness_probe_local_then_shared_plumbs_two_pairs() {
+    let (n, u, c) = ext_config("active_probe_local_then_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
+        .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+
+    let mut shared = bundle.take_shared().unwrap();
+    let mut local = bundle.take_local().unwrap();
+
+    assert!(shared.take_readiness_probe().is_some());
+    assert!(local.take_readiness_probe().is_some());
+    assert!(shared.has_readiness_signaller());
+    assert!(local.has_readiness_signaller());
+}
+
+#[test]
+fn active_dual_variant_probes_are_independent() {
+    let (rt, ls) = crate::testing::setup_test_runtime();
+    rt.block_on(ls.run_until(async {
+        let (n, u, c) = ext_config("active_probe_independent");
+        let mut bundle = ExtensionWrapper::builder(n, u, &c)
+            .active()
+            .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
+            .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+            .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+            .build()
+            .unwrap();
+        let mut shared = bundle.take_shared().unwrap();
+        let mut local = bundle.take_local().unwrap();
+
+        let s_probe = shared.take_readiness_probe().unwrap();
+        let l_probe = local.take_readiness_probe().unwrap();
+
+        let s = shared.extension_control_sender().unwrap();
+        let h =
+            tokio::task::spawn_local(async move { shared.start(test_metrics_reporter()).await });
+        s.send(ExtensionControlMsg::Shutdown {
+            deadline: Instant::now(),
+            reason: "drop signaller".into(),
+        })
+        .await
+        .unwrap();
+        let _ = h.await.unwrap().unwrap();
+
+        let s_result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), s_probe.wait_ready())
+                .await
+                .unwrap();
+        assert_eq!(s_result, Err(ReadinessProbeError::SignallerDropped));
+
+        // Local probe must remain pending while only shared dropped.
+        match tokio::time::timeout(std::time::Duration::from_millis(50), l_probe.wait_ready()).await
+        {
+            Err(_) => {}
+            Ok(other) => panic!("expected pending, got {other:?}"),
+        }
+
+        drop(local);
+    }));
+}
+
+#[test]
+fn background_without_with_readiness_probe_has_no_probe_or_signaller() {
+    let (n, u, c) = ext_config("bg_no_probe_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let mut w = bundle.take_shared().unwrap();
+    assert!(w.take_readiness_probe().is_none());
+    assert!(!w.has_readiness_signaller());
+
+    let (n, u, c) = ext_config("bg_no_probe_local");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+        .build()
+        .unwrap();
+    let mut w = bundle.take_local().unwrap();
+    assert!(w.take_readiness_probe().is_none());
+    assert!(!w.has_readiness_signaller());
+}
+
+#[test]
+fn background_with_readiness_probe_shared_plumbs_probe_and_signaller() {
+    let (n, u, c) = ext_config("bg_probe_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let mut w = bundle.take_shared().unwrap();
+    let probe = w.take_readiness_probe().unwrap();
+    assert_eq!(probe.timeout(), PROBE_TIMEOUT);
+    assert!(w.has_readiness_signaller());
+}
+
+#[test]
+fn background_with_readiness_probe_local_plumbs_probe_and_signaller() {
+    let (n, u, c) = ext_config("bg_probe_local");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
+        .local(std::rc::Rc::new(TestLocalExt::new(CtrlMsgCounters::new())))
+        .build()
+        .unwrap();
+    let mut w = bundle.take_local().unwrap();
+    let probe = w.take_readiness_probe().unwrap();
+    assert_eq!(probe.timeout(), PROBE_TIMEOUT);
+    assert!(w.has_readiness_signaller());
+}
+
+#[test]
+fn with_readiness_probe_timeout_propagates_to_probe_unchanged() {
+    let custom = std::time::Duration::from_millis(123_456);
+    let (n, u, c) = ext_config("probe_timeout_propagates");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(custom)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), custom);
+}
+
+#[test]
+fn take_readiness_probe_is_single_use() {
+    let (n, u, c) = ext_config("probe_single_use");
+    let mut w = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap()
+        .take_shared()
+        .unwrap();
+    assert!(w.take_readiness_probe().is_some());
+    assert!(w.take_readiness_probe().is_none());
+}
+
+use super::readiness::DEFAULT_READINESS_TIMEOUT;
+
+#[test]
+fn active_with_readiness_probe_uses_default_timeout() {
+    let (n, u, c) = ext_config("active_default_timeout_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe()
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), DEFAULT_READINESS_TIMEOUT);
+}
+
+#[test]
+fn active_with_readiness_probe_timeout_at_default_is_accepted() {
+    let (n, u, c) = ext_config("active_extended_at_default_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(DEFAULT_READINESS_TIMEOUT)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), DEFAULT_READINESS_TIMEOUT);
+}
+
+#[test]
+fn active_with_readiness_probe_timeout_above_default_carries_override() {
+    let extended = DEFAULT_READINESS_TIMEOUT + std::time::Duration::from_secs(7);
+    let (n, u, c) = ext_config("active_extended_above_default_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(extended)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), extended);
+}
+
+#[test]
+fn active_with_readiness_probe_timeout_below_default_is_accepted() {
+    let short = std::time::Duration::from_millis(200);
+    let (n, u, c) = ext_config("active_extended_below_default_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(short)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), short);
+}
+
+#[test]
+fn active_with_readiness_probe_timeout_zero_errors() {
+    let (n, u, c) = ext_config("active_extended_zero_shared");
+    let result = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(std::time::Duration::ZERO)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build();
+    assert!(matches!(
+        result,
+        Err(Error::ExtensionReadinessZeroTimeout { .. })
+    ));
+}
+
+#[test]
+fn active_with_readiness_probe_timeout_smallest_positive_is_accepted() {
+    let smallest = std::time::Duration::from_nanos(1);
+    let (n, u, c) = ext_config("active_extended_smallest_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .active()
+        .with_readiness_probe_timeout_override(smallest)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), smallest);
+}
+
+#[test]
+fn background_with_readiness_probe_uses_default_timeout() {
+    let (n, u, c) = ext_config("bg_default_timeout_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .with_readiness_probe()
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), DEFAULT_READINESS_TIMEOUT);
+}
+
+#[test]
+fn background_with_readiness_probe_timeout_at_default_is_accepted() {
+    let (n, u, c) = ext_config("bg_extended_at_default_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .with_readiness_probe_timeout_override(DEFAULT_READINESS_TIMEOUT)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), DEFAULT_READINESS_TIMEOUT);
+}
+
+#[test]
+fn background_with_readiness_probe_timeout_above_default_carries_override() {
+    let extended = DEFAULT_READINESS_TIMEOUT + std::time::Duration::from_secs(11);
+    let (n, u, c) = ext_config("bg_extended_above_default_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .with_readiness_probe_timeout_override(extended)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), extended);
+}
+
+#[test]
+fn background_with_readiness_probe_timeout_below_default_is_accepted() {
+    let short = std::time::Duration::from_millis(200);
+    let (n, u, c) = ext_config("bg_extended_below_default_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .with_readiness_probe_timeout_override(short)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), short);
+}
+
+#[test]
+fn background_with_readiness_probe_timeout_zero_errors() {
+    let (n, u, c) = ext_config("bg_extended_zero_shared");
+    let result = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .with_readiness_probe_timeout_override(std::time::Duration::ZERO)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build();
+    assert!(matches!(
+        result,
+        Err(Error::ExtensionReadinessZeroTimeout { .. })
+    ));
+}
+
+#[test]
+fn background_with_readiness_probe_timeout_smallest_positive_is_accepted() {
+    let smallest = std::time::Duration::from_nanos(1);
+    let (n, u, c) = ext_config("bg_extended_smallest_shared");
+    let mut bundle = ExtensionWrapper::builder(n, u, &c)
+        .background()
+        .with_readiness_probe_timeout_override(smallest)
+        .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+        .build()
+        .unwrap();
+    let probe = bundle
+        .take_shared()
+        .unwrap()
+        .take_readiness_probe()
+        .unwrap();
+    assert_eq!(probe.timeout(), smallest);
+}
+
+#[test]
+fn effect_handler_signal_ready_is_noop_when_no_signaller() {
+    let h = EffectHandler::new("noop_eh".into(), test_metrics_reporter(), None);
+    for _ in 0..4 {
+        h.signal_ready();
+    }
+    let c = h.clone();
+    c.signal_ready();
+}
+
+#[tokio::test]
+async fn effect_handler_signal_ready_fires_signaller_when_present() {
+    let (sig, probe) = ReadinessSignaller::pair(PROBE_TIMEOUT);
+    let inspect = sig.clone();
+    let h = EffectHandler::new("fires_eh".into(), test_metrics_reporter(), Some(sig));
+
+    assert!(!inspect.is_ready());
+    h.signal_ready();
+    assert!(inspect.is_ready());
+
+    tokio::time::timeout(std::time::Duration::from_millis(50), probe.wait_ready())
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn effect_handler_signal_ready_idempotent_across_clones_and_calls() {
+    let (sig, probe) = ReadinessSignaller::pair(PROBE_TIMEOUT);
+    let h = EffectHandler::new("idem_eh".into(), test_metrics_reporter(), Some(sig));
+    let c1 = h.clone();
+    let c2 = h.clone();
+
+    h.signal_ready();
+    h.signal_ready();
+    c1.signal_ready();
+    c2.signal_ready();
+    c2.signal_ready();
+
+    tokio::time::timeout(std::time::Duration::from_millis(50), probe.wait_ready())
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn effect_handler_drop_without_signal_ready_yields_signaller_dropped() {
+    let (sig, probe) = ReadinessSignaller::pair(std::time::Duration::from_secs(60));
+    let h = EffectHandler::new("drop_eh".into(), test_metrics_reporter(), Some(sig));
+    let c = h.clone();
+    drop(h);
+    drop(c);
+
+    let res = tokio::time::timeout(std::time::Duration::from_millis(50), probe.wait_ready())
+        .await
+        .unwrap();
+    assert_eq!(res, Err(ReadinessProbeError::SignallerDropped));
+}
+
+#[derive(Clone)]
+struct ReadyOnStartSharedExt;
+
+#[async_trait]
+impl SharedExtension for ReadyOnStartSharedExt {
+    async fn start(
+        self: Box<Self>,
+        mut ctrl: shared_ext::ControlChannel,
+        eh: EffectHandler,
+    ) -> Result<TerminalState, Error> {
+        eh.signal_ready();
+        loop {
+            if let ExtensionControlMsg::Shutdown { .. } = ctrl.recv().await? {
+                break;
+            }
+        }
+        Ok(TerminalState::default())
+    }
+}
+
+#[derive(Clone)]
+struct ReadyOnStartLocalExt;
+
+#[async_trait(?Send)]
+impl crate::local::extension::Extension for ReadyOnStartLocalExt {
+    async fn start(
+        self: std::rc::Rc<Self>,
+        mut ctrl: local_ext::ControlChannel,
+        eh: EffectHandler,
+    ) -> Result<TerminalState, Error> {
+        eh.signal_ready();
+        loop {
+            if let ExtensionControlMsg::Shutdown { .. } = ctrl.recv().await? {
+                break;
+            }
+        }
+        Ok(TerminalState::default())
+    }
+}
+
+#[test]
+fn shared_active_start_fires_engine_probe_via_eh_signal_ready() {
+    let (rt, ls) = crate::testing::setup_test_runtime();
+    rt.block_on(ls.run_until(async {
+        let (n, u, c) = ext_config("shared_start_ready");
+        let mut w = ExtensionWrapper::builder(n, u, &c)
+            .active()
+            .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
+            .shared(ReadyOnStartSharedExt)
+            .build()
+            .unwrap()
+            .take_shared()
+            .unwrap();
+        let probe = w.take_readiness_probe().unwrap();
+        let s = w.extension_control_sender().unwrap();
+
+        let h = tokio::task::spawn_local(async move { w.start(test_metrics_reporter()).await });
+
+        tokio::time::timeout(std::time::Duration::from_millis(200), probe.wait_ready())
+            .await
+            .unwrap()
+            .unwrap();
+
+        s.send(ExtensionControlMsg::Shutdown {
+            deadline: Instant::now(),
+            reason: "d".into(),
+        })
+        .await
+        .unwrap();
+        let _ = h.await.unwrap().unwrap();
+    }));
+}
+
+#[test]
+fn local_active_start_fires_engine_probe_via_eh_signal_ready() {
+    let (rt, ls) = crate::testing::setup_test_runtime();
+    rt.block_on(ls.run_until(async {
+        let (n, u, c) = ext_config("local_start_ready");
+        let mut w = ExtensionWrapper::builder(n, u, &c)
+            .active()
+            .with_readiness_probe_timeout_override(PROBE_TIMEOUT)
+            .local(std::rc::Rc::new(ReadyOnStartLocalExt))
+            .build()
+            .unwrap()
+            .take_local()
+            .unwrap();
+        let probe = w.take_readiness_probe().unwrap();
+        let s = w.extension_control_sender().unwrap();
+
+        let h = tokio::task::spawn_local(async move { w.start(test_metrics_reporter()).await });
+
+        tokio::time::timeout(std::time::Duration::from_millis(200), probe.wait_ready())
+            .await
+            .unwrap()
+            .unwrap();
+
+        s.send(ExtensionControlMsg::Shutdown {
+            deadline: Instant::now(),
+            reason: "d".into(),
+        })
+        .await
+        .unwrap();
+        let _ = h.await.unwrap().unwrap();
+    }));
+}
+
+#[test]
+fn shared_active_start_without_ready_resolves_probe_with_signaller_dropped() {
+    let (rt, ls) = crate::testing::setup_test_runtime();
+    rt.block_on(ls.run_until(async {
+        let (n, u, c) = ext_config("shared_start_no_ready");
+        let mut w = ExtensionWrapper::builder(n, u, &c)
+            .active()
+            .with_readiness_probe_timeout_override(std::time::Duration::from_secs(60))
+            .shared(TestSharedExt::new(CtrlMsgCounters::new()))
+            .build()
+            .unwrap()
+            .take_shared()
+            .unwrap();
+        let probe = w.take_readiness_probe().unwrap();
+        let s = w.extension_control_sender().unwrap();
+        let h = tokio::task::spawn_local(async move { w.start(test_metrics_reporter()).await });
+
+        s.send(ExtensionControlMsg::Shutdown {
+            deadline: Instant::now(),
+            reason: "no ready".into(),
+        })
+        .await
+        .unwrap();
+        let _ = h.await.unwrap().unwrap();
+
+        let res = tokio::time::timeout(std::time::Duration::from_millis(100), probe.wait_ready())
+            .await
+            .unwrap();
+        assert_eq!(res, Err(ReadinessProbeError::SignallerDropped));
+    }));
+}
+
+#[test]
+fn shared_active_start_without_opt_in_eh_signal_ready_is_silent_noop() {
+    let (rt, ls) = crate::testing::setup_test_runtime();
+    rt.block_on(ls.run_until(async {
+        let (n, u, c) = ext_config("shared_start_no_optin");
+        let mut w = ExtensionWrapper::builder(n, u, &c)
+            .active()
+            .shared(ReadyOnStartSharedExt)
+            .build()
+            .unwrap()
+            .take_shared()
+            .unwrap();
+        assert!(w.take_readiness_probe().is_none());
+        let s = w.extension_control_sender().unwrap();
+        let h = tokio::task::spawn_local(async move { w.start(test_metrics_reporter()).await });
+        s.send(ExtensionControlMsg::Shutdown {
+            deadline: Instant::now(),
+            reason: "d".into(),
+        })
+        .await
+        .unwrap();
+        let _ = h.await.unwrap().unwrap();
+    }));
 }

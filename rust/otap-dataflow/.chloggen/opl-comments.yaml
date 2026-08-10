@@ -1,4 +1,0 @@
-change_type: enhancement
-component: query-engine
-note: Adds support for comments in OPL programs
-issues: [3151]

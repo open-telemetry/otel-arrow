@@ -21,7 +21,8 @@ use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::flow_metrics::{
-    FlowDurationMetrics, FlowSignalsIncomingMetrics, FlowSignalsOutgoingMetrics,
+    FlowConsumedItemsMetrics, FlowDroppedItemsMetrics, FlowDurationMetrics,
+    FlowProducedItemsMetrics,
 };
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
@@ -30,11 +31,12 @@ use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
+use crate::terminal_state::TerminalMetricsDeadline;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
-use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_config::{PortName, SignalType};
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -56,11 +58,11 @@ pub trait FlowMetricEffectHandler {
     fn take_elapsed_since_send_marker_ns(&self) -> u64;
     /// Record a complete flow_metric transit total (nanoseconds) into the
     /// stop node's local accumulator.
-    fn record_flow_duration(&self, total: u64);
-    /// Record signal-item count into the start node's local accumulator.
-    fn record_flow_signals_incoming(&self, signals: u64);
-    /// Record signal-item count into the stop node's local accumulator.
-    fn record_flow_signals_outgoing(&self, signals: u64);
+    fn record_flow_duration(&self, signal: SignalType, total: u64);
+    /// Record consumed items into the start node's local accumulator.
+    fn record_flow_consumed_items(&self, signal: SignalType, items: u64);
+    /// Record produced items into the stop node's local accumulator.
+    fn record_flow_produced_items(&self, signal: SignalType, items: u64);
 }
 
 /// Per-`PData` hooks straddling a processor's `process()` call: an
@@ -70,7 +72,7 @@ pub trait FlowMetricEffectHandler {
 /// effect handler forwards a message to the output router.
 ///
 /// The send-side hook covers **both** the plain `send_message[_to]`
-/// family and the `send_message_with_source_node[_to]` family — every
+/// family and the `send_message_with_source_node[_to]` family -- every
 /// send method on every processor handler invokes it exactly once.
 /// Both methods default to no-ops; PData types with bookkeeping needs
 /// (e.g. flow_metric accumulation on `OtapPdata`) override one or both.
@@ -96,7 +98,7 @@ pub trait FlowMetricHook: Sized {
 
     /// Invoked once per `Message::PData` immediately after it is dequeued
     /// by a processor's run loop and before `process()` runs. Lets PData
-    /// types observe the *pre-process* state of the data — e.g. counting
+    /// types observe the *pre-process* state of the data -- e.g. counting
     /// items entering a flow_metric start node before any filter or drop
     /// inside `process()`. Default impl is a no-op.
     fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, _handler: &H) {}
@@ -130,6 +132,10 @@ pub struct ProcessorRuntimeRequirements {
     /// Processor-local wakeup requirements, if the processor uses the local
     /// wakeup API.
     pub local_wakeups: Option<LocalWakeupRequirements>,
+    /// Whether this processor drops signal items and therefore records the
+    /// `dropped.items` flow metric when it lies within a flow that enables
+    /// it. Defaults to `false`.
+    pub makes_drop_decisions: bool,
 }
 
 impl ProcessorRuntimeRequirements {
@@ -139,6 +145,7 @@ impl ProcessorRuntimeRequirements {
     pub const fn none() -> Self {
         Self {
             local_wakeups: None,
+            makes_drop_decisions: false,
         }
     }
 
@@ -147,7 +154,16 @@ impl ProcessorRuntimeRequirements {
     pub const fn with_local_wakeups(live_slots: usize) -> Self {
         Self {
             local_wakeups: Some(LocalWakeupRequirements::new(live_slots)),
+            makes_drop_decisions: false,
         }
+    }
+
+    /// Declare that this processor drops signal items, enabling
+    /// `dropped.items` flow-metric recording.
+    #[must_use]
+    pub const fn with_drop_decisions(mut self) -> Self {
+        self.makes_drop_decisions = true;
+        self
     }
 }
 
@@ -569,7 +585,10 @@ impl<PData> ProcessorWrapper<PData> {
             None,
             None,
             None,
+            None,
             false,
+            false,
+            TerminalMetricsDeadline::default(),
         )
         .await
     }
@@ -583,10 +602,13 @@ impl<PData> ProcessorWrapper<PData> {
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
         flow_is_start: bool,
         flow_is_end: bool,
-        flow_signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>>,
-        flow_duration_metric: Option<MetricSet<FlowDurationMetrics>>,
-        flow_signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>>,
+        flow_consumed_items_metric: Option<MeasurementMetricSet<FlowConsumedItemsMetrics>>,
+        flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>>,
+        flow_produced_items_metric: Option<MeasurementMetricSet<FlowProducedItemsMetrics>>,
+        flow_dropped_items_metric: Option<MeasurementMetricSet<FlowDroppedItemsMetrics>>,
         flow_metrics_active: bool,
+        flow_needs_timing: bool,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode + FlowMetricHook,
@@ -614,10 +636,12 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler.set_flow_roles(
                     flow_is_start,
                     flow_is_end,
-                    flow_signals_incoming_metric.clone(),
-                    flow_duration_metric.clone(),
-                    flow_signals_outgoing_metric.clone(),
+                    flow_consumed_items_metric,
+                    flow_duration_metric,
+                    flow_produced_items_metric,
+                    flow_dropped_items_metric,
                     flow_metrics_active,
+                    flow_needs_timing,
                 );
 
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
@@ -625,7 +649,8 @@ impl<PData> ProcessorWrapper<PData> {
                         match &mut msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
                                 if effect_handler.is_flow_start()
-                                    || effect_handler.is_flow_end() =>
+                                    || effect_handler.is_flow_end()
+                                    || effect_handler.is_flow_decision() =>
                             {
                                 effect_handler.report_flow_metrics();
                             }
@@ -639,15 +664,43 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
-                if effect_handler.is_flow_start() || effect_handler.is_flow_end() {
-                    effect_handler.report_flow_metrics();
+                let terminal_metrics_deadline = terminal_metrics_deadline.get();
+                if effect_handler.is_flow_start()
+                    || effect_handler.is_flow_end()
+                    || effect_handler.is_flow_decision()
+                {
+                    if let Err(error) = effect_handler
+                        .report_flow_metrics_reliably(terminal_metrics_deadline)
+                        .await
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.flow_metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
                 }
-                processor
+                let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
+                let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
+                let process_result = processor
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: terminal_metrics_reporter,
+                        }),
                         &mut effect_handler,
                     )
-                    .await?
+                    .await;
+                while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
+                    if let Err(error) = metrics_reporter
+                        .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
+                        .await
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
+                }
+                process_result?
             }
             ProcessorWrapperRuntime::Shared {
                 mut processor,
@@ -667,10 +720,12 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler.set_flow_roles(
                     flow_is_start,
                     flow_is_end,
-                    flow_signals_incoming_metric.clone(),
-                    flow_duration_metric.clone(),
-                    flow_signals_outgoing_metric.clone(),
+                    flow_consumed_items_metric,
+                    flow_duration_metric,
+                    flow_produced_items_metric,
+                    flow_dropped_items_metric,
                     flow_metrics_active,
+                    flow_needs_timing,
                 );
 
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
@@ -678,7 +733,8 @@ impl<PData> ProcessorWrapper<PData> {
                         match &mut msg {
                             Message::Control(NodeControlMsg::CollectTelemetry { .. })
                                 if effect_handler.is_flow_start()
-                                    || effect_handler.is_flow_end() =>
+                                    || effect_handler.is_flow_end()
+                                    || effect_handler.is_flow_decision() =>
                             {
                                 effect_handler.report_flow_metrics();
                             }
@@ -692,15 +748,43 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
-                if effect_handler.is_flow_start() || effect_handler.is_flow_end() {
-                    effect_handler.report_flow_metrics();
+                let terminal_metrics_deadline = terminal_metrics_deadline.get();
+                if effect_handler.is_flow_start()
+                    || effect_handler.is_flow_end()
+                    || effect_handler.is_flow_decision()
+                {
+                    if let Err(error) = effect_handler
+                        .report_flow_metrics_reliably(terminal_metrics_deadline)
+                        .await
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.flow_metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
                 }
-                processor
+                let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
+                let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
+                let process_result = processor
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: terminal_metrics_reporter,
+                        }),
                         &mut effect_handler,
                     )
-                    .await?
+                    .await;
+                while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
+                    if let Err(error) = metrics_reporter
+                        .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
+                        .await
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
+                }
+                process_result?
             }
         }
         Ok(())
@@ -860,8 +944,8 @@ mod tests {
         pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
     use crate::flow_metrics::{
-        FlowAttributeSet, FlowDurationMetrics, FlowSignalsIncomingMetrics,
-        FlowSignalsOutgoingMetrics,
+        FlowAttributeSet, FlowConsumedItemsMetrics, FlowDroppedItemsMetrics, FlowDurationMetrics,
+        FlowProducedItemsMetrics,
     };
     use crate::local::message::{LocalReceiver, LocalSender};
     use crate::local::processor as local;
@@ -875,7 +959,7 @@ mod tests {
     use crate::testing::processor::{TestContext, ValidateContext};
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
-    use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::{SignalType, node::NodeUserConfig};
     use otap_df_telemetry::metrics::MetricValue;
     use serde_json::Value;
     use std::ops::Add;
@@ -1122,8 +1206,8 @@ mod tests {
                 .saturating_add(handler.take_elapsed_since_send_marker_ns());
 
             if handler.is_flow_end() && self.flow_metric_active && self.flow_compute_ns > 0 {
-                handler.record_flow_duration(self.flow_compute_ns);
-                handler.record_flow_signals_outgoing(1);
+                handler.record_flow_duration(SignalType::Logs, self.flow_compute_ns);
+                handler.record_flow_produced_items(SignalType::Logs, 1);
                 self.flow_compute_ns = 0;
                 self.flow_metric_active = false;
             }
@@ -1134,7 +1218,7 @@ mod tests {
             handler: &H,
         ) {
             if handler.is_flow_start() {
-                handler.record_flow_signals_incoming(1);
+                handler.record_flow_consumed_items(SignalType::Logs, 1);
             }
         }
     }
@@ -1164,15 +1248,17 @@ mod tests {
         }
     }
 
+    /// Scenario: a flow is configured to collect only consumed items at its start node.
+    /// Guarantees: telemetry reports the consumed-items counter and no end-node metrics.
     #[test]
-    fn flow_opt_in_signals_incoming_reports_only_start_metric() {
+    fn flow_opt_in_consumed_items_reports_only_start_metric() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let entity_key = pipeline_ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let incoming_metric = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowSignalsIncomingMetrics>(entity_key);
+        let incoming_metric = FlowConsumedItemsMetrics::register(
+            &pipeline_ctx.metric_set_registrar_for_entity(entity_key),
+        );
         let (metrics_rx, metrics_reporter) =
             otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
         let mut handler = local::EffectHandler::<TestMsg>::new(
@@ -1181,35 +1267,43 @@ mod tests {
             None,
             metrics_reporter,
         );
-        handler.set_flow_roles(true, false, Some(incoming_metric), None, None, true);
+        handler.set_flow_roles(
+            true,
+            false,
+            Some(incoming_metric),
+            None,
+            None,
+            None,
+            true,
+            false,
+        );
 
-        handler.record_flow_signals_incoming(3);
-        handler.record_flow_duration(10);
-        handler.record_flow_signals_outgoing(4);
+        handler.record_flow_consumed_items(SignalType::Logs, 3);
+        handler.record_flow_duration(SignalType::Logs, 10);
+        handler.record_flow_produced_items(SignalType::Logs, 4);
         handler.report_flow_metrics();
 
         let snapshot = metrics_rx
             .try_recv()
             .expect("incoming metric should report");
-        let [MetricValue::Mmsc(incoming)] = snapshot.get_metrics() else {
-            panic!("expected incoming metric only");
+        let [MetricValue::U64(consumed_items)] = snapshot.get_metrics() else {
+            panic!("expected consumed item metric only");
         };
-        assert_eq!(incoming.count, 1);
+        assert_eq!(*consumed_items, 3);
         assert!(metrics_rx.try_recv().is_err());
     }
 
+    /// Scenario: a flow is configured to collect duration and produced items at its end node.
+    /// Guarantees: telemetry reports the duration and produced-items metrics without a start-node metric.
     #[test]
-    fn flow_opt_in_duration_and_outgoing_reports_only_end_metrics() {
+    fn flow_opt_in_duration_and_produced_items_reports_only_end_metrics() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let entity_key = pipeline_ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let duration_metric = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key);
-        let outgoing_metric = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowSignalsOutgoingMetrics>(entity_key);
+        let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
+        let duration_metric = FlowDurationMetrics::register(&registrar);
+        let produced_items_metric = FlowProducedItemsMetrics::register(&registrar);
         let (metrics_rx, metrics_reporter) =
             otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
         let mut handler = local::EffectHandler::<TestMsg>::new(
@@ -1223,29 +1317,81 @@ mod tests {
             true,
             None,
             Some(duration_metric),
-            Some(outgoing_metric),
+            Some(produced_items_metric),
+            None,
+            true,
             true,
         );
 
-        handler.record_flow_signals_incoming(3);
-        handler.record_flow_duration(10);
-        handler.record_flow_signals_outgoing(4);
+        handler.record_flow_consumed_items(SignalType::Logs, 3);
+        handler.record_flow_duration(SignalType::Logs, 10);
+        handler.record_flow_produced_items(SignalType::Logs, 4);
         handler.report_flow_metrics();
 
         let duration_snapshot = metrics_rx
             .try_recv()
             .expect("duration metric should report");
-        let [MetricValue::Mmsc(duration)] = duration_snapshot.get_metrics() else {
+        let [
+            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
+                duration,
+            )),
+        ] = duration_snapshot.get_metrics()
+        else {
             panic!("expected duration metric");
         };
         assert_eq!(duration.count, 1);
-        let outgoing_snapshot = metrics_rx
+        let produced_items_snapshot = metrics_rx
             .try_recv()
-            .expect("outgoing metric should report");
-        let [MetricValue::Mmsc(outgoing)] = outgoing_snapshot.get_metrics() else {
-            panic!("expected outgoing metric");
+            .expect("produced item metric should report");
+        let [MetricValue::U64(produced_items)] = produced_items_snapshot.get_metrics() else {
+            panic!("expected produced item metric");
         };
-        assert_eq!(outgoing.count, 1);
+        assert_eq!(*produced_items, 4);
+        assert!(metrics_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn flow_decision_node_reports_dropped() {
+        let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
+        let entity_key = pipeline_ctx
+            .metrics_registry()
+            .register_entity(FlowAttributeSet::default());
+        let dropped_metric = FlowDroppedItemsMetrics::register(
+            &pipeline_ctx.metric_set_registrar_for_entity(entity_key),
+        );
+        let (metrics_rx, metrics_reporter) =
+            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+        let mut handler = local::EffectHandler::<TestMsg>::new(
+            test_node("proc"),
+            std::collections::HashMap::new(),
+            None,
+            metrics_reporter,
+        );
+        // A decision node that is neither start nor end of the flow range.
+        // Drop-only: needs no per-message timing.
+        handler.set_flow_roles(
+            false,
+            false,
+            None,
+            None,
+            None,
+            Some(dropped_metric),
+            true,
+            false,
+        );
+        assert!(handler.is_flow_decision());
+
+        handler.record_flow_dropped_items(SignalType::Logs, 3);
+        // Recording consumed/produced items here must be a no-op (not a start/end node).
+        handler.record_flow_consumed_items(SignalType::Logs, 99);
+        handler.record_flow_produced_items(SignalType::Logs, 99);
+        handler.report_flow_metrics();
+
+        let dropped_snapshot = metrics_rx.try_recv().expect("dropped metric should report");
+        let [MetricValue::U64(dropped_items)] = dropped_snapshot.get_metrics() else {
+            panic!("expected dropped metric");
+        };
+        assert_eq!(*dropped_items, 3);
         assert!(metrics_rx.try_recv().is_err());
     }
 
@@ -1257,18 +1403,14 @@ mod tests {
             start_node: "auto_measure_processor".into(),
             end_node: "auto_measure_processor".into(),
             purpose: "".into(),
+            decision: "".into(),
             pipeline_attrs: pipeline_ctx.pipeline_attribute_set(),
         };
         let entity_key = pipeline_ctx.metrics_registry().register_entity(attrs);
-        let start_metric_set = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowSignalsIncomingMetrics>(entity_key);
-        let duration_metric_set = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key);
-        let outgoing_metric_set = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowSignalsOutgoingMetrics>(entity_key);
+        let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
+        let start_metric_set = FlowConsumedItemsMetrics::register(&registrar);
+        let duration_metric_set = FlowDurationMetrics::register(&registrar);
+        let outgoing_metric_set = FlowProducedItemsMetrics::register(&registrar);
 
         let config = crate::config::ProcessorConfig::new("auto_measure_processor");
         let node_id = test_node(config.name.clone());
@@ -1322,7 +1464,10 @@ mod tests {
                             Some(start_metric_set),
                             Some(duration_metric_set),
                             Some(outgoing_metric_set),
+                            None,
                             true,
+                            true,
+                            crate::terminal_state::TerminalMetricsDeadline::default(),
                         )
                         .await
                 });
@@ -1349,18 +1494,22 @@ mod tests {
                 processor_task.abort();
                 let _ = processor_task.await;
 
-                let [MetricValue::Mmsc(signals_incoming)] = snapshot.get_metrics() else {
-                    panic!("expected one start flow_metric MMSC metric");
+                let [MetricValue::U64(consumed_items)] = snapshot.get_metrics() else {
+                    panic!("expected one start flow consumed-item metric");
                 };
-                assert_eq!(signals_incoming.count, 1);
-                assert!((signals_incoming.sum - 1.0).abs() < f64::EPSILON);
+                assert_eq!(*consumed_items, 1);
 
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
                         .await
                         .expect("flow_metric stop metric should be reported")
                         .expect("metrics channel should remain open");
-                let [MetricValue::Mmsc(compute_duration)] = snapshot.get_metrics() else {
+                let [
+                    MetricValue::Distribution(
+                        otap_df_telemetry::instrument::DistributionValue::Basic(compute_duration),
+                    ),
+                ] = snapshot.get_metrics()
+                else {
                     panic!("expected flow duration MMSC metric");
                 };
                 assert!(
@@ -1374,13 +1523,12 @@ mod tests {
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
                         .await
-                        .expect("flow outgoing metric should be reported")
+                        .expect("flow produced-item metric should be reported")
                         .expect("metrics channel should remain open");
-                let [MetricValue::Mmsc(signals_outgoing)] = snapshot.get_metrics() else {
-                    panic!("expected flow outgoing MMSC metric");
+                let [MetricValue::U64(produced_items)] = snapshot.get_metrics() else {
+                    panic!("expected flow produced-item metric");
                 };
-                assert_eq!(signals_outgoing.count, 1);
-                assert!((signals_outgoing.sum - 1.0).abs() < f64::EPSILON);
+                assert_eq!(*produced_items, 1);
             })
             .await;
     }

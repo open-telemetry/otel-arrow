@@ -156,6 +156,37 @@ pub struct NodeUserConfig {
     /// configuration error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header_propagation: Option<HeaderPropagationPolicy>,
+
+    /// Node-level policy overrides.
+    ///
+    /// This exposes only the policies honored per node, rather than the full
+    /// pipeline-scope [`crate::policy::Policies`] model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policies: Option<NodePolicies>,
+}
+
+/// Node-level policy overrides supported by the pipeline engine.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodePolicies {
+    /// Node-level telemetry policy override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<NodeTelemetryPolicy>,
+}
+
+/// Node-level telemetry policy override (only the node-honored knobs).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodeTelemetryPolicy {
+    /// Opt this node into per-signal produced/consumed item counts on its
+    /// `node.producer` / `node.consumer` metric sets.
+    ///
+    /// Off by default because counting items requires inspecting each batch,
+    /// which is expensive for OTLP payloads. Only recorded when the resolved
+    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
+    /// enables it for every node without this flag.
+    #[serde(default)]
+    pub item_counts: bool,
 }
 
 /// Node kinds
@@ -205,6 +236,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         }
     }
 
@@ -224,6 +256,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         }
     }
 
@@ -243,6 +276,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         }
     }
 
@@ -259,6 +293,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         }
     }
 
@@ -339,6 +374,85 @@ impl NodeUserConfig {
     pub const fn kind(&self) -> NodeKind {
         self.r#type.kind()
     }
+
+    /// Returns a clone of this node config with credential header values
+    /// redacted, for safe exposure through the admin/config snapshot APIs
+    /// (e.g. `GET /api/v1/config`).
+    ///
+    /// Static request `headers` values are credentials (an `Authorization`
+    /// token, a tenant API key). The typed exporter settings wrap them in
+    /// `secrecy::SecretString`, but the raw [`Self::config`] retains the
+    /// original cleartext. This produces a redacted *copy*: every value under
+    /// any `headers` object in `config` is replaced with
+    /// [`REDACTED_HEADER_VALUE`] while the keys are preserved, so operators can
+    /// still see which headers are set without seeing their values. The stored
+    /// config is left unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> NodeUserConfig {
+        let mut redacted = self.clone();
+        redact_secret_headers(&mut redacted.config);
+        redacted
+    }
+}
+
+/// Placeholder substituted for credential values that have been redacted from a
+/// config snapshot exposed through the admin/config APIs.
+pub const REDACTED_HEADER_VALUE: &str = "[REDACTED]";
+
+/// Recursively redacts credential values held under any `headers` field,
+/// replacing them with [`REDACTED_HEADER_VALUE`].
+///
+/// Two header shapes carry credentials in the OpenTelemetry ecosystem and are
+/// both handled, since node/extension `config` is opaque JSON:
+///
+/// - **Map form** -- `headers: { name: value }` (e.g. `config.headers` for
+///   OTAP/gRPC, `config.http.headers` for OTLP/HTTP exporters). Every value is
+///   masked; the keys are preserved so a snapshot still shows which headers are
+///   configured.
+/// - **List form** -- `headers: [ { key, value, ... }, ... ]` (e.g. the
+///   `headers_setter` schema). The static `value` of each entry is masked;
+///   reference fields such as `from_context` / `from_attribute` are not secrets
+///   and are left intact.
+///
+/// Other subtrees are traversed so a `headers` field is redacted regardless of
+/// nesting depth. Shared with
+/// [`ExtensionUserConfig::redacted_for_snapshot`](crate::extension::ExtensionUserConfig::redacted_for_snapshot).
+pub(crate) fn redact_secret_headers(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "headers" {
+                    match child {
+                        Value::Object(headers) => {
+                            for header_value in headers.values_mut() {
+                                *header_value = Value::String(REDACTED_HEADER_VALUE.to_owned());
+                            }
+                            continue;
+                        }
+                        Value::Array(entries) => {
+                            for entry in entries.iter_mut() {
+                                if let Value::Object(fields) = entry {
+                                    if let Some(static_value) = fields.get_mut("value") {
+                                        *static_value =
+                                            Value::String(REDACTED_HEADER_VALUE.to_owned());
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                redact_secret_headers(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                redact_secret_headers(item);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
 }
 
 /// Entity configuration for a node, aligned with the semantic conventions model.
@@ -398,6 +512,25 @@ mod tests {
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
         assert!(matches!(cfg.kind(), NodeKind::Receiver));
         assert!(cfg.outputs.is_empty());
+    }
+
+    /// Scenario: a node config opts into item counts through its restricted policy block.
+    /// Guarantees: node telemetry configuration stays namespaced under `policies`.
+    #[test]
+    fn node_user_config_parses_item_count_policy() {
+        let yaml = r#"
+type: "processor:batch"
+policies:
+  telemetry:
+    item_counts: true
+"#;
+        let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            cfg.policies
+                .as_ref()
+                .and_then(|policies| policies.telemetry.as_ref())
+                .is_some_and(|telemetry| telemetry.item_counts)
+        );
     }
 
     #[test]
@@ -712,5 +845,135 @@ capabilities:
             msg.contains("duplicate"),
             "error should mention duplicate: {msg}"
         );
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_nested_http_headers() {
+        // OTLP/HTTP exporter shape: `config.http.headers.*`.
+        let json = r#"{
+            "type": "urn:otel:exporter:otlp_http",
+            "config": {
+                "endpoint": "https://backend.example/v1/logs",
+                "http": {
+                    "headers": {
+                        "authorization": "Bearer super-secret-token",
+                        "x-scope-orgid": "tenant-1"
+                    }
+                }
+            }
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        let redacted = cfg.redacted_for_snapshot();
+
+        let headers = &redacted.config["http"]["headers"];
+        assert_eq!(
+            headers["authorization"],
+            Value::String(REDACTED_HEADER_VALUE.to_owned())
+        );
+        assert_eq!(
+            headers["x-scope-orgid"],
+            Value::String(REDACTED_HEADER_VALUE.to_owned())
+        );
+        // Non-credential fields and the header keys themselves are preserved.
+        assert_eq!(
+            redacted.config["endpoint"],
+            "https://backend.example/v1/logs"
+        );
+        assert!(headers.get("authorization").is_some());
+
+        // The original config is left untouched (redaction is a copy).
+        assert_eq!(
+            cfg.config["http"]["headers"]["authorization"],
+            "Bearer super-secret-token"
+        );
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_flattened_grpc_headers() {
+        // OTAP/gRPC exporter shape: `headers` is flattened to `config.headers.*`.
+        let json = r#"{
+            "type": "urn:otel:exporter:otap",
+            "config": {
+                "grpc_endpoint": "https://backend.example:4317",
+                "headers": {
+                    "authorization": "Basic abc123"
+                }
+            }
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        let redacted = cfg.redacted_for_snapshot();
+
+        assert_eq!(
+            redacted.config["headers"]["authorization"],
+            Value::String(REDACTED_HEADER_VALUE.to_owned())
+        );
+        // Non-header sibling settings are untouched.
+        assert_eq!(
+            redacted.config["grpc_endpoint"],
+            "https://backend.example:4317"
+        );
+    }
+
+    #[test]
+    fn redacted_for_snapshot_without_headers_is_noop() {
+        let json = r#"{
+            "type": "urn:otel:processor:batch",
+            "config": { "send_batch_size": 1024, "timeout": "5s" }
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        let redacted = cfg.redacted_for_snapshot();
+        assert_eq!(cfg, redacted, "config without headers must be unchanged");
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_headers_inside_arrays() {
+        // Defense-in-depth: a `headers` map nested under an array element must
+        // still be redacted (the walk descends through arrays).
+        let json = r#"{
+            "type": "urn:otel:exporter:multi",
+            "config": {
+                "backends": [
+                    { "headers": { "authorization": "secret-a" } },
+                    { "headers": { "x-api-key": "secret-b" } }
+                ]
+            }
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        let redacted = cfg.redacted_for_snapshot();
+        assert_eq!(
+            redacted.config["backends"][0]["headers"]["authorization"],
+            REDACTED_HEADER_VALUE
+        );
+        assert_eq!(
+            redacted.config["backends"][1]["headers"]["x-api-key"],
+            REDACTED_HEADER_VALUE
+        );
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_list_form_headers() {
+        // `headers_setter`-style schema: `headers` is a list of entries. The
+        // static `value` is a credential and must be masked; reference fields
+        // (`from_context`) and the `key` are not secrets and are left intact.
+        let json = r#"{
+            "type": "urn:test:processor:headers_setter",
+            "config": {
+                "headers": [
+                    { "action": "upsert", "key": "Authorization", "value": "Bearer super-secret" },
+                    { "key": "X-Scope-OrgID", "from_context": "X-Scope-OrgID" }
+                ]
+            }
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        let redacted = cfg.redacted_for_snapshot();
+
+        let entries = redacted.config["headers"].as_array().unwrap();
+        assert_eq!(entries[0]["value"], REDACTED_HEADER_VALUE);
+        assert_eq!(entries[0]["key"], "Authorization");
+        // The reference-only entry is untouched (no static secret to mask).
+        assert_eq!(entries[1]["from_context"], "X-Scope-OrgID");
+        assert!(entries[1].get("value").is_none());
+        // Original config retains the cleartext (redaction is a copy).
+        assert_eq!(cfg.config["headers"][0]["value"], "Bearer super-secret");
     }
 }

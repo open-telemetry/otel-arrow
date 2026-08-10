@@ -197,7 +197,9 @@ func (b *SummaryDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accumul
 	b.builder.Reserve(len(b.accumulator.summaries))
 
 	for ID, summary := range b.accumulator.summaries {
-		b.ib.Append(uint32(ID))
+		if err = b.ib.Append(uint32(ID)); err != nil {
+			return nil, werror.Wrap(err)
+		}
 		b.pib.Append(b.accumulator.sorter.Encode(summary.ParentID, summary.Orig))
 
 		// Attributes

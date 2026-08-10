@@ -33,13 +33,12 @@ tokio = { workspace = true }
 linkme = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
+secrecy = { workspace = true }
 flume = { workspace = true }
 bitflags = { workspace = true }
 bytemuck = { workspace = true }
 smallvec = { workspace = true }
 socket2 = { workspace = true }
-uuid = { workspace = true }
-data-encoding = { workspace = true }
 prost = { workspace = true }
 cpu-time = { workspace = true }
 memory-stats = { workspace = true }

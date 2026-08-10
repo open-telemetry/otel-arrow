@@ -42,7 +42,6 @@ use rdkafka::{
 };
 use rdkafka::{ClientContext, Statistics, TopicPartitionList};
 use rdkafka::{IntoOpaque, Message, Timestamp};
-use tracing::{trace, warn};
 
 /// A low-level Kafka producer with a separate thread for event handling.
 ///
@@ -85,7 +84,7 @@ where
             thread::Builder::new()
                 .name("producer polling thread".to_string())
                 .spawn(move || {
-                    trace!("Polling thread loop started");
+                    otap_df_telemetry::otel_debug!("kafka.exporter.producer.poll_thread_started");
                     loop {
                         // Running this in a tight loop results in non-negligible cpu utilization
                         // for each thread (1-2% of a core while idle). We increase the duration to 1 second, and sacrifice
@@ -97,7 +96,9 @@ where
                             break;
                         }
                     }
-                    trace!("Polling thread loop terminated");
+                    otap_df_telemetry::otel_debug!(
+                        "kafka.exporter.producer.poll_thread_terminated"
+                    );
                 })
                 .expect("Failed to start polling thread")
         };
@@ -205,17 +206,20 @@ where
     C: ProducerContext<Part> + 'static,
 {
     fn drop(&mut self) {
-        trace!("Destroy ExporterThreadedProducer");
+        otap_df_telemetry::otel_debug!("kafka.exporter.producer.destroying");
         if let Some(handle) = self.handle.take().and_then(Arc::into_inner) {
-            trace!("Stopping polling");
+            otap_df_telemetry::otel_debug!("kafka.exporter.producer.stopping_poll");
             self.should_stop.store(true, Ordering::Relaxed);
-            trace!("Waiting for polling thread termination");
+            otap_df_telemetry::otel_debug!("kafka.exporter.producer.awaiting_poll_thread");
             match handle.join() {
-                Ok(()) => trace!("Polling stopped"),
-                Err(e) => warn!("Failure while terminating thread: {:?}", e),
+                Ok(()) => otap_df_telemetry::otel_debug!("kafka.exporter.producer.poll_stopped"),
+                Err(e) => otap_df_telemetry::otel_warn!(
+                    "kafka.exporter.producer.poll_thread_join_failed",
+                    error = ?e,
+                ),
             };
         }
-        trace!("ExporterThreadedProducer destroyed");
+        otap_df_telemetry::otel_debug!("kafka.exporter.producer.destroyed");
     }
 }
 

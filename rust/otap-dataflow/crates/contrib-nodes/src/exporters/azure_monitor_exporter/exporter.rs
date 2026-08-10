@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use async_trait::async_trait;
-use azure_core::credentials::AccessToken;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
 use otap_df_engine::ConsumerEffectHandlerExtension;
+use otap_df_engine::capability::auth::BearerToken;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::terminal_state::TerminalState;
@@ -17,7 +18,6 @@ use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 
-use super::auth::{Auth, PendingTokenRefresh};
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
 use super::error::Error;
@@ -25,12 +25,14 @@ use super::gzip_batcher::FinalizeResult;
 use super::gzip_batcher::{self, GzipBatcher};
 use super::heartbeat::Heartbeat;
 use super::in_flight_exports::{CompletedExport, InFlightExports};
-use super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc};
+use super::metrics::AzureMonitorExporterMetricsRc;
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
+use futures::StreamExt;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use reqwest::header::HeaderValue;
 
+use otap_df_telemetry::common_attributes::{HttpResponse, Outcome};
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
 use bytes::Bytes;
@@ -41,12 +43,56 @@ use std::rc::Rc;
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 
-/// Minimum interval between token refresh attempts (10 seconds).
-const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
-/// Buffer time before token expiry to trigger a refresh.
-/// Azure Identity SDK caches tokens internally and won't issue a new token
-/// until ~5 minutes before expiry, so we schedule refresh at 295 seconds before expiry.
-const TOKEN_EXPIRY_BUFFER_SECS: u64 = 295;
+/// Safety margin before actual token expiry within which the exporter stops
+/// accepting new pdata. Kept small and aligned with the extension's own
+/// usability margin (`TOKEN_USABLE_MARGIN_SECS`): the bound
+/// `BearerTokenProvider` extension refreshes the token well ahead of expiry, so
+/// under healthy operation this margin is never reached. It only gates data
+/// acceptance in the degraded case where a refresh is failing and the cached
+/// token is genuinely about to expire; until then a still-valid token keeps
+/// being served, matching the provider's "serve valid tokens near expiry"
+/// behavior.
+const TOKEN_USABLE_MARGIN_SECS: u64 = 30;
+
+/// The exporter's view of the current bearer token's remaining lifetime.
+///
+/// Models the three states explicitly instead of encoding them in a single
+/// `Instant` with a sentinel: no token yet, a non-expiring token, or a token
+/// with a known expiry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TokenExpiry {
+    /// No usable token yet (before the first token arrives).
+    None,
+    /// A token with no known expiry; valid until replaced.
+    NeverExpires,
+    /// A token that expires at the given monotonic instant.
+    At(tokio::time::Instant),
+}
+
+impl TokenExpiry {
+    /// Derives the expiry state from a provider token. A token without a known
+    /// `expires_on` is treated as non-expiring ("valid until replaced").
+    #[inline]
+    fn from_token(token: &BearerToken) -> Self {
+        match token.expires_on() {
+            Some(expires_on) => Self::At(tokio::time::Instant::from_std(expires_on)),
+            None => Self::NeverExpires,
+        }
+    }
+
+    /// Returns whether the token is still usable at `now`. An expiring token is
+    /// usable only while more than `margin` remains before expiry, so a request
+    /// started now still completes against a valid token; otherwise the exporter
+    /// stops accepting pdata and back-pressures.
+    #[inline]
+    fn is_usable(self, now: tokio::time::Instant, margin: std::time::Duration) -> bool {
+        match self {
+            Self::None => false,
+            Self::NeverExpires => true,
+            Self::At(expiry) => expiry > now + margin,
+        }
+    }
+}
 
 /// Azure Monitor exporter.
 pub struct AzureMonitorExporter {
@@ -59,20 +105,29 @@ pub struct AzureMonitorExporter {
     in_flight_exports: InFlightExports,
     last_batch_queued_at: tokio::time::Instant,
     heartbeat: Option<Heartbeat>,
+    token_provider: Box<dyn BearerTokenProvider>,
 }
 
 impl AzureMonitorExporter {
     /// Build a new exporter from configuration.
-    pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Result<Self, Error> {
+    ///
+    /// The `token_provider` supplies OAuth bearer tokens used to authenticate
+    /// to the Logs Ingestion API. It is resolved from the `bearer_token_provider`
+    /// capability bound to this node (for example, by the `azure_identity_auth`
+    /// extension).
+    pub fn new(
+        pipeline_ctx: PipelineContext,
+        config: Config,
+        token_provider: Box<dyn BearerTokenProvider>,
+    ) -> Result<Self, Error> {
         // Validate configuration
         config
             .validate()
             .map_err(|e| Error::Config(e.to_string()))?;
 
         // Register metrics with the telemetry system
-        let metric_set = pipeline_ctx.register_metrics::<AzureMonitorExporterMetrics>();
         let metrics: AzureMonitorExporterMetricsRc = Rc::new(RefCell::new(
-            super::metrics::AzureMonitorExporterMetricsTracker::new(metric_set),
+            super::metrics::AzureMonitorExporterMetricsTracker::register(&pipeline_ctx),
         ));
 
         // Create log transformer
@@ -98,17 +153,28 @@ impl AzureMonitorExporter {
             in_flight_exports: InFlightExports::new(MAX_IN_FLIGHT_EXPORTS),
             last_batch_queued_at: tokio::time::Instant::now(),
             heartbeat,
+            token_provider,
         })
     }
 
-    /// Update all gauges (in-flight exports + state map sizes).
+    /// Update all gauges (in-flight exports and state mappings).
     #[inline]
     fn sync_gauges(&self) {
         let mut m = self.metrics.borrow_mut();
         m.set_in_flight_exports(self.in_flight_exports.len() as u64);
-        m.set_batch_to_msg_count(self.state.batch_to_msg.len() as u64);
-        m.set_msg_to_batch_count(self.state.msg_to_batch.len() as u64);
-        m.set_msg_to_data_count(self.state.msg_to_data.len() as u64);
+        m.set_in_flight_log_records(self.in_flight_exports.queued_rows());
+        m.set_state_mapping(
+            super::metrics::StateMapping::BatchToMessage,
+            self.state.batch_to_msg.len() as u64,
+        );
+        m.set_state_mapping(
+            super::metrics::StateMapping::MessageToBatch,
+            self.state.msg_to_batch.len() as u64,
+        );
+        m.set_state_mapping(
+            super::metrics::StateMapping::MessageToData,
+            self.state.msg_to_data.len() as u64,
+        );
     }
 
     async fn finalize_export(
@@ -121,6 +187,7 @@ impl AzureMonitorExporter {
             client,
             result,
             row_count,
+            body_size_bytes,
         } = completed_export;
 
         // Return the client to the pool
@@ -128,11 +195,17 @@ impl AzureMonitorExporter {
 
         match result {
             Ok(duration) => {
-                self.handle_export_success(effect_handler, batch_id, row_count, duration)
-                    .await
+                self.handle_export_success(
+                    effect_handler,
+                    batch_id,
+                    row_count,
+                    body_size_bytes,
+                    duration,
+                )
+                .await
             }
             Err(e) => {
-                self.handle_export_failure(effect_handler, batch_id, row_count, e)
+                self.handle_export_failure(effect_handler, batch_id, row_count, body_size_bytes, e)
                     .await
             }
         }
@@ -143,15 +216,19 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
         row_count: u64,
+        body_size_bytes: u64,
         duration: std::time::Duration,
     ) -> Result<(), EngineError> {
         // Export succeeded - Ack only fully-completed messages
         let completed_messages = self.state.remove_batch_success(batch_id);
         {
             let mut m = self.metrics.borrow_mut();
-            m.add_messages(completed_messages.len() as u64);
-            m.add_rows(row_count);
-            m.add_batch();
+            m.record_export(
+                Outcome::Success,
+                row_count,
+                completed_messages.len() as u64,
+                body_size_bytes,
+            );
         }
 
         otel_debug!(
@@ -174,15 +251,19 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
         row_count: u64,
+        body_size_bytes: u64,
         error: Error,
     ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
         let failed_messages = self.state.remove_batch_failure(batch_id);
         {
             let mut m = self.metrics.borrow_mut();
-            m.add_failed_messages(failed_messages.len() as u64);
-            m.add_failed_rows(row_count);
-            m.add_failed_batch();
+            m.record_export(
+                Outcome::Failure,
+                row_count,
+                failed_messages.len() as u64,
+                body_size_bytes,
+            );
         }
 
         otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
@@ -366,25 +447,6 @@ impl AzureMonitorExporter {
         Ok(())
     }
 
-    #[inline]
-    fn get_next_token_refresh(token: AccessToken) -> tokio::time::Instant {
-        let now = azure_core::time::OffsetDateTime::now_utc();
-        let duration_remaining = if token.expires_on > now {
-            (token.expires_on - now).unsigned_abs()
-        } else {
-            std::time::Duration::ZERO
-        };
-
-        let token_valid_until = tokio::time::Instant::now() + duration_remaining;
-        let next_token_refresh =
-            token_valid_until - tokio::time::Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
-        std::cmp::max(
-            next_token_refresh,
-            tokio::time::Instant::now()
-                + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS),
-        )
-    }
-
     async fn handle_message(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
@@ -464,17 +526,17 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             endpoint = self.config.api.dcr_endpoint.as_str(),
             stream = self.config.api.stream_name.as_str(),
             dcr = self.config.api.dcr.as_str(),
-            auth_method = self.config.auth.auth_method_name(),
             gzip_compression_level = self.config.api.gzip_compression_level
         );
 
         let mut msg_id = 0;
-        let auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
-            let error = Error::AuthHandlerCreation(Box::new(e));
-            EngineError::InternalError {
-                message: error.to_string(),
-            }
-        })?;
+
+        // Subscribe to bearer tokens from the bound provider capability. The
+        // stream yields the current token immediately and then a new value each
+        // time the provider refreshes it. Credential acquisition and refresh
+        // scheduling are owned by the provider extension.
+        let mut token_stream = self.token_provider.token_stream();
+        let mut token_stream_active = true;
 
         self.client_pool
             .initialize(&self.config.api)
@@ -490,93 +552,64 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
         let mut next_heartbeat_send = tokio::time::Instant::now();
 
-        // Token acquisition starts immediately in the event loop.
-        // pdata is not accepted until we have a valid token with sufficient remaining lifetime.
-        let mut next_token_refresh = tokio::time::Instant::now();
-        let mut token_expiry_at = tokio::time::Instant::now();
-        let mut auth = Some(auth);
-        let mut pending_token = PendingTokenRefresh::new();
+        // pdata is not accepted until a usable token arrives. Starts as `None`
+        // so `has_token` is false until the first token is published.
+        let mut token_expiry = TokenExpiry::None;
 
         loop {
-            // We have a valid token when it won't expire within the buffer window
-            let has_token = token_expiry_at
-                > tokio::time::Instant::now()
-                    + tokio::time::Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
+            // We have a valid token as long as it won't expire within the
+            // usability safety margin.
+            let has_token = token_expiry.is_usable(
+                tokio::time::Instant::now(),
+                tokio::time::Duration::from_secs(TOKEN_USABLE_MARGIN_SECS),
+            );
             let at_capacity = self.in_flight_exports.len() >= MAX_IN_FLIGHT_EXPORTS;
             let accepting_pdata = has_token && !at_capacity;
 
             tokio::select! {
                 biased;
 
-                // Start token acquisition when the timer fires and no acquisition is in progress
-                _ = tokio::time::sleep_until(next_token_refresh), if !pending_token.is_pending() => {
-                    pending_token.start(auth.take().expect("auth must be available when no token future is pending"));
-                }
-
-                // Poll the in-flight token acquisition (non-blocking for the rest of the loop)
-                token_result = pending_token.next_completion() => {
-                    auth = Some(token_result.auth);
-                    match token_result.result {
-                        Ok(access_token) => {
-                            match HeaderValue::from_str(&format!("Bearer {}", access_token.token.secret())) {
+                // Receive bearer tokens (initial + refreshes) from the provider.
+                maybe_token = token_stream.next(), if token_stream_active => {
+                    match maybe_token {
+                        Some(token) => {
+                            match HeaderValue::from_str(&format!("Bearer {}", token.expose_token())) {
                                 Ok(header) => {
                                     self.client_pool.update_auth(header.clone());
                                     if let Some(ref mut hb) = self.heartbeat {
                                         hb.update_auth(header.clone());
                                     }
 
-                                    // Compute expiry before consuming access_token
-                                    let now_utc = azure_core::time::OffsetDateTime::now_utc();
-                                    let expires_in = if access_token.expires_on > now_utc {
-                                        (access_token.expires_on - now_utc).unsigned_abs()
-                                    } else {
-                                        std::time::Duration::ZERO
-                                    };
-                                    token_expiry_at = tokio::time::Instant::now() + expires_in;
+                                    token_expiry = TokenExpiry::from_token(&token);
 
-                                    next_token_refresh = Self::get_next_token_refresh(access_token);
-
-                                    let refresh_in = next_token_refresh.saturating_duration_since(tokio::time::Instant::now());
-                                    let total_secs = refresh_in.as_secs();
-                                    let hours = total_secs / 3600;
-                                    let minutes = (total_secs % 3600) / 60;
-                                    let seconds = total_secs % 60;
-
-                                    otel_info!("azure_monitor_exporter.auth.token_acquired", next_refresh_in = format!("{}h {}m {}s", hours, minutes, seconds));
+                                    otel_info!("azure_monitor_exporter.auth.token_acquired");
                                 }
                                 Err(e) => {
                                     otel_error!("azure_monitor_exporter.auth.header_creation_failed", error = ?e);
-                                    let jitter = 1.0 + (rand::random::<f64>() * 0.6 - 0.3);
-                                    next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs_f64(10.0 * jitter);
                                 }
                             }
                         }
-                        Err(e) => {
-                            let error_msg = e.to_string();
-                            let first_line = error_msg.lines().next().unwrap_or(&error_msg);
-
-                            otel_warn!(
-                                "azure_monitor_exporter.auth.token_acquisition_failed",
-                                error = %first_line
-                            );
-                            otel_debug!(
-                                "azure_monitor_exporter.auth.token_acquisition_failed.details",
-                                error = %e
-                            );
-                            self.metrics.borrow_mut().add_auth_failure();
-                            let jitter = 1.0 + (rand::random::<f64>() * 0.6 - 0.3);
-                            next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs_f64(10.0 * jitter);
+                        None => {
+                            // Provider closed the token stream; no further refreshes
+                            // will arrive. Stop polling it.
+                            token_stream_active = false;
+                            otel_warn!("azure_monitor_exporter.auth.token_stream_ended");
                         }
                     }
                 }
 
                 _ = tokio::time::sleep_until(next_heartbeat_send), if has_token && self.heartbeat.is_some() => {
                     next_heartbeat_send = tokio::time::Instant::now() + self.config.heartbeat.frequency;
-                    self.metrics.borrow_mut().add_heartbeat();
                     if let Some(ref mut hb) = self.heartbeat {
                         match hb.send().await {
-                            Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
-                            Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = %e),
+                            Ok(_) => {
+                                self.metrics.borrow_mut().record_heartbeat(Outcome::Success);
+                                otel_debug!("azure_monitor_exporter.heartbeat.sent");
+                            }
+                            Err(e) => {
+                                self.metrics.borrow_mut().record_heartbeat(Outcome::Failure);
+                                otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = %e);
+                            }
                         }
                     }
                 }
@@ -604,23 +637,20 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             self.sync_gauges();
                             if tracing::enabled!(tracing::Level::DEBUG) {
                                 let m = self.metrics.borrow();
-                                let cl = m.client_success_latency();
-                                let al = m.auth_success_latency();
+                                let cl = m.http_for(HttpResponse::Http2xx).latency.get();
                                 let bs = m.batch_size();
                                 otel_debug!(
                                     "azure_monitor_exporter.metrics.collect",
-                                    successful_rows = m.successful_row_count(),
-                                    successful_batches = m.successful_batch_count(),
-                                    successful_messages = m.successful_msg_count(),
-                                    failed_rows = m.failed_row_count(),
-                                    failed_batches = m.failed_batch_count(),
-                                    failed_messages = m.failed_msg_count(),
+                                    successful_items = m.export_for(Outcome::Success).items.get(),
+                                    successful_batches = m.export_for(Outcome::Success).batches.get(),
+                                    successful_messages = m.export_for(Outcome::Success).messages.get(),
+                                    failed_items = m.export_for(Outcome::Failure).items.get(),
+                                    failed_batches = m.export_for(Outcome::Failure).batches.get(),
+                                    failed_messages = m.export_for(Outcome::Failure).messages.get(),
                                     client_success_latency_avg_ms = if cl.count > 0 { cl.sum / cl.count as f64 } else { 0.0 },
                                     client_success_latency_min_ms = if cl.count > 0 { cl.min } else { 0.0 },
                                     client_success_latency_max_ms = if cl.count > 0 { cl.max } else { 0.0 },
                                     client_success_latency_count = cl.count,
-                                    auth_success_latency_avg_ms = if al.count > 0 { al.sum / al.count as f64 } else { 0.0 },
-                                    auth_success_latency_count = al.count,
                                     batch_size_avg_bytes = if bs.count > 0 { bs.sum / bs.count as f64 } else { 0.0 },
                                     batch_size_min_bytes = if bs.count > 0 { bs.min } else { 0.0 },
                                     batch_size_max_bytes = if bs.count > 0 { bs.max } else { 0.0 },
@@ -632,10 +662,10 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                         }
                         Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
                             self.handle_shutdown(&effect_handler).await?;
-                            let snapshot = self.metrics.borrow().metrics().snapshot();
+                            let snapshots = self.metrics.borrow_mut().terminal_snapshots();
                             return Ok(TerminalState::new(
                                 deadline,
-                                [snapshot],
+                                snapshots,
                             ));
                         }
                         other => {
@@ -650,13 +680,16 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
+    use super::super::config::{ApiConfig, HeartbeatConfig, SchemaConfig};
     use super::*;
-    use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
+    use futures::StreamExt;
     use http::StatusCode;
     use otap_df_channel::mpsc;
     use otap_df_engine::Interests;
+    use otap_df_engine::capability::CapabilityError;
+    use otap_df_engine::capability::auth::BearerToken;
+    use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::local::message::LocalReceiver;
@@ -667,6 +700,22 @@ mod tests {
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
+
+    /// Test double for the `BearerTokenProvider` capability. Yields a single
+    /// non-expiring token and then ends the stream.
+    struct MockTokenProvider;
+
+    #[async_trait(?Send)]
+    impl BearerTokenProvider for MockTokenProvider {
+        async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
+            Ok(BearerToken::without_expiry("test-token".to_owned()))
+        }
+
+        fn token_stream(&self) -> TokenStream {
+            futures::stream::once(async { BearerToken::without_expiry("test-token".to_owned()) })
+                .boxed()
+        }
+    }
 
     fn create_test_pipeline_ctx() -> PipelineContext {
         otap_df_otap::crypto::ensure_crypto_provider();
@@ -690,7 +739,6 @@ mod tests {
                 gzip_compression_level: 6,
                 user_agent: None,
             },
-            auth: AuthConfig::default(),
             heartbeat: HeartbeatConfig::default(),
         }
     }
@@ -720,39 +768,18 @@ mod tests {
     fn test_new_validates_config() {
         let config = create_test_config();
         let pipeline_ctx = create_test_pipeline_ctx();
-        let _ = AzureMonitorExporter::new(pipeline_ctx, config).unwrap();
+        let _ =
+            AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
     }
 
-    #[test]
-    fn test_get_next_token_refresh_logic() {
-        let now = OffsetDateTime::now_utc();
-        let expires_on = now + azure_core::time::Duration::seconds(3600);
-
-        let token = AccessToken {
-            token: "secret".into(),
-            expires_on,
-        };
-
-        let refresh_at = AzureMonitorExporter::get_next_token_refresh(token);
-        let duration_until_refresh = refresh_at.duration_since(tokio::time::Instant::now());
-
-        // Should be 3600 - 295 = 3305 seconds before refresh
-        // Allow some delta for execution time
-        let expected = 3305.0;
-        let actual = duration_until_refresh.as_secs_f64();
-        assert!(
-            (actual - expected).abs() < 5.0,
-            "Expected ~{}, got {}",
-            expected,
-            actual
-        );
-    }
-
+    /// Scenario: A completed export succeeds with a known compressed request-body size.
+    /// Guarantees: The successful outcome records the resolved request-body bytes.
     #[tokio::test]
     async fn test_handle_export_success() {
         let config = create_test_config();
         let pipeline_ctx = create_test_pipeline_ctx();
-        let mut exporter = AzureMonitorExporter::new(pipeline_ctx, config).unwrap();
+        let mut exporter =
+            AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
         let node_id = NodeId {
@@ -774,14 +801,16 @@ mod tests {
 
         // This might fail due to missing sender in effect_handler, but state should be updated
         let _ = exporter
-            .handle_export_success(&effect_handler, batch_id, 10, Duration::from_secs(1))
+            .handle_export_success(&effect_handler, batch_id, 10, 1_024, Duration::from_secs(1))
             .await;
 
         // Verify stats
         let m = exporter.metrics.borrow();
-        assert_eq!(m.successful_batch_count(), 1);
-        assert_eq!(m.successful_msg_count(), 1);
-        assert_eq!(m.successful_row_count(), 10);
+        let success = m.export_for(Outcome::Success);
+        assert_eq!(success.batches.get(), 1);
+        assert_eq!(success.messages.get(), 1);
+        assert_eq!(success.items.get(), 10);
+        assert_eq!(success.bytes.get(), 1_024);
         drop(m);
 
         // Verify state cleared
@@ -789,11 +818,14 @@ mod tests {
         assert!(exporter.state.msg_to_data.is_empty());
     }
 
+    /// Scenario: A completed export fails with a known compressed request-body size.
+    /// Guarantees: The failed outcome records the resolved request-body bytes.
     #[tokio::test]
     async fn test_handle_export_failure() {
         let config = create_test_config();
         let pipeline_ctx = create_test_pipeline_ctx();
-        let mut exporter = AzureMonitorExporter::new(pipeline_ctx, config).unwrap();
+        let mut exporter =
+            AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
         let node_id = NodeId {
@@ -820,14 +852,16 @@ mod tests {
         };
 
         let _ = exporter
-            .handle_export_failure(&effect_handler, batch_id, 10, error)
+            .handle_export_failure(&effect_handler, batch_id, 10, 512, error)
             .await;
 
         // Verify stats
         let m = exporter.metrics.borrow();
-        assert_eq!(m.failed_batch_count(), 1);
-        assert_eq!(m.failed_msg_count(), 1);
-        assert_eq!(m.failed_row_count(), 10);
+        let failure = m.export_for(Outcome::Failure);
+        assert_eq!(failure.batches.get(), 1);
+        assert_eq!(failure.messages.get(), 1);
+        assert_eq!(failure.items.get(), 10);
+        assert_eq!(failure.bytes.get(), 512);
         drop(m);
 
         // Verify state cleared
@@ -880,5 +914,79 @@ mod tests {
             msg,
             Message::Control(NodeControlMsg::Shutdown { .. })
         ));
+    }
+
+    // ==================== Token usability logic ====================
+
+    #[test]
+    fn token_usable_when_expiry_beyond_margin() {
+        let now = tokio::time::Instant::now();
+        let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
+        let expiry = TokenExpiry::At(now + Duration::from_secs(TOKEN_USABLE_MARGIN_SECS + 60));
+        assert!(expiry.is_usable(now, margin));
+    }
+
+    #[test]
+    fn token_unusable_within_margin() {
+        // A token that expires inside the margin must stop pdata acceptance so
+        // an in-flight request can't outlive the token.
+        let now = tokio::time::Instant::now();
+        let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
+        let expiry = TokenExpiry::At(now + Duration::from_secs(TOKEN_USABLE_MARGIN_SECS - 5));
+        assert!(!expiry.is_usable(now, margin));
+    }
+
+    #[test]
+    fn token_unusable_at_exact_margin_boundary() {
+        // `expiry == now + margin`: the strictly-greater check treats the exact
+        // boundary as not usable.
+        let now = tokio::time::Instant::now();
+        let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
+        assert!(!TokenExpiry::At(now + margin).is_usable(now, margin));
+    }
+
+    #[test]
+    fn token_unusable_when_already_expired() {
+        let now = tokio::time::Instant::now();
+        let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
+        let expiry = TokenExpiry::At(now - Duration::from_secs(1));
+        assert!(!expiry.is_usable(now, margin));
+    }
+
+    #[test]
+    fn startup_state_gates_pdata() {
+        // The loop initializes `token_expiry = TokenExpiry::None`, which must
+        // read as "no usable token" so pdata is gated until the first token
+        // arrives.
+        let now = tokio::time::Instant::now();
+        let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
+        assert!(!TokenExpiry::None.is_usable(now, margin));
+    }
+
+    /// Scenario: derive a `TokenExpiry` from a token that carries an explicit
+    /// expiry instant.
+    /// Guarantees: the expiry is mapped to `TokenExpiry::At` at the token's
+    /// exact instant.
+    #[test]
+    fn expiry_uses_token_expiry_when_present() {
+        let expires_on = Instant::now() + Duration::from_secs(3600);
+        let token = BearerToken::with_expiry("secret".to_owned(), Some(expires_on));
+        assert_eq!(
+            TokenExpiry::from_token(&token),
+            TokenExpiry::At(tokio::time::Instant::from_std(expires_on))
+        );
+    }
+
+    /// Scenario: derive a `TokenExpiry` from a token with no expiry set.
+    /// Guarantees: it maps to `TokenExpiry::NeverExpires` and always reads as
+    /// usable, so a non-expiring token is never treated as stale.
+    #[test]
+    fn non_expiring_token_never_expires_and_stays_usable() {
+        let now = tokio::time::Instant::now();
+        let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
+        let token = BearerToken::without_expiry("secret".to_owned());
+        let expiry = TokenExpiry::from_token(&token);
+        assert_eq!(expiry, TokenExpiry::NeverExpires);
+        assert!(expiry.is_usable(now, margin));
     }
 }

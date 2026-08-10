@@ -1,4 +1,0 @@
-change_type: enhancement
-component: pipeline
-note: Improve engine configuration and node documentation for users discovering dataflow pipelines.
-issues: [3212]

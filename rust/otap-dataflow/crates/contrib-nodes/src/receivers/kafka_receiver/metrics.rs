@@ -3,14 +3,14 @@
 
 //! Metrics for the Kafka Receiver node.
 
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry_macros::metric_set;
 
 /// Metrics for the Kafka Receiver.
-#[metric_set(name = "kafka.receiver.metrics")]
+#[metric_set(name = "receiver.kafka")]
 #[derive(Debug, Default, Clone)]
 pub struct KafkaReceiverMetrics {
-    // ── Message Counters ────────────────────────────────────
+    // -- Message Counters ------------------------------------
     /// Total messages received from Kafka across all signal types
     #[metric(unit = "{msg}")]
     pub messages_received: Counter<u64>,
@@ -27,7 +27,7 @@ pub struct KafkaReceiverMetrics {
     #[metric(unit = "{msg}")]
     pub trace_msgs_received: Counter<u64>,
 
-    // ── Pipeline Feedback ───────────────────────────────────
+    // -- Pipeline Feedback -----------------------------------
     /// Number of acks received from downstream
     #[metric(unit = "{ack}")]
     pub acks_received: Counter<u64>,
@@ -35,7 +35,7 @@ pub struct KafkaReceiverMetrics {
     #[metric(unit = "{nack}")]
     pub nacks_received: Counter<u64>,
 
-    // ── Error Tracking ──────────────────────────────────────
+    // -- Error Tracking --------------------------------------
     /// Number of messages that failed processing and were skipped
     #[metric(unit = "{msg}")]
     pub processing_errors: Counter<u64>,
@@ -58,14 +58,85 @@ pub struct KafkaReceiverMetrics {
     #[metric(unit = "{error}")]
     pub transport_errors: Counter<u64>,
 
-    // ── Consumer Health ─────────────────────────────────────
-    /// Number of offset commits performed
+    // -- Consumer Health -------------------------------------
+    /// Number of offset commits acknowledged by the broker.
+    ///
+    /// Populated from the consumer commit callback (not at commit-issue time),
+    /// so it counts commits the broker actually accepted -- covering both the
+    /// receiver's asynchronous steady-state commits and the synchronous
+    /// pre-rebalance commit-before-revoke.
     #[metric(unit = "{commit}")]
     pub offset_commits: Counter<u64>,
-    /// Number of offset commit failures
+    /// Number of offset commits the broker rejected.
+    ///
+    /// Populated from the consumer commit callback (see [`offset_commits`]).
     #[metric(unit = "{error}")]
     pub offset_commit_errors: Counter<u64>,
     /// Messages skipped due to idempotency check (duplicate detection)
     #[metric(unit = "{msg}")]
     pub idempotent_skips: Counter<u64>,
+    /// Messages dropped because the topic ID space was exhausted (overflow guard)
+    #[metric(unit = "{msg}")]
+    pub topic_id_exhausted: Counter<u64>,
+
+    // -- Consumer-group Rebalances ---------------------------
+    /// Total number of consumer-group rebalance (assign) events observed by
+    /// this consumer.
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
+    #[metric(unit = "{rebalance}")]
+    pub rebalances_total: Counter<u64>,
+    /// Current number of partitions owned by this consumer.
+    ///
+    /// A point-in-time gauge reflecting the size of the current assignment,
+    /// refreshed after each rebalance. Contrast with [`partition_assignments`]
+    /// (cumulative acquisitions) and [`partition_revocations`] (cumulative
+    /// revocations).
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
+    #[metric(unit = "{partition}")]
+    pub partitions_assigned: Gauge<u64>,
+    /// Cumulative count of partitions newly acquired by this consumer across
+    /// rebalances (retained partitions are not re-counted).
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
+    #[metric(unit = "{partition}")]
+    pub partition_assignments: Counter<u64>,
+    /// Cumulative count of genuinely-owned partitions revoked from this consumer
+    /// across rebalances (a revoke reported for a partition this consumer did
+    /// not own is not counted).
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
+    #[metric(unit = "{partition}")]
+    pub partition_revocations: Counter<u64>,
+    /// Mean consumer-group lag across owned partitions, in records.
+    ///
+    /// Per partition, `max(0, high_watermark - broker_committed_offset)`, using
+    /// the offsets Kafka has acknowledged for this consumer group. It reflects
+    /// how far behind the group's committed position is, not the receiver's local
+    /// progress.
+    ///
+    /// The mean covers every owned partition: a refresh that cannot measure all
+    /// of them (a failed broker read, or an owned partition with no committed
+    /// offset yet) is abandoned and the previous value is retained rather than
+    /// computing the mean from a subset. When ownership drops to zero the gauge
+    /// is reset to `0`.
+    ///
+    /// Manual commit mode only and opt-in via `lag_refresh_interval_ms`;
+    /// otherwise stays `0`.
+    #[metric(unit = "{message}")]
+    pub consumer_lag: Gauge<f64>,
+    /// Offset commit failures during pre-rebalance revoke.
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
+    #[metric(unit = "{error}")]
+    pub rebalance_commit_errors: Counter<u64>,
+    /// Acks/nacks skipped because the partition was no longer assigned
+    #[metric(unit = "{ack}")]
+    pub acks_for_revoked_partition: Counter<u64>,
 }

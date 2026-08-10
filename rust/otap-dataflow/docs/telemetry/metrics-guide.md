@@ -48,7 +48,7 @@ Metrics are for entity behavior, not request identity.
 ## Metric and metric set
 
 *Metrics* in this project use the instrument types supported by our internal
-telemetry SDK (see [crates/telemetry](/crates/telemetry/README.md) for details):
+telemetry SDK (see [crates/telemetry](../../crates/telemetry/README.md) for details):
 
 - Counter: monotonic counts of events or outcomes, recorded as deltas.
 - UpDownCounter: signed deltas that can increase or decrease over time.
@@ -56,9 +56,62 @@ telemetry SDK (see [crates/telemetry](/crates/telemetry/README.md) for details):
 - ObserveUpDownCounter: observed values that may go up or down.
 - Gauge: instantaneous measurements (last-value), used for capacity,
   utilization, queue depth.
+- MMSC: a compact distribution summary retaining exact minimum, maximum, sum,
+  and count.
+- HistogramNormal: an exponential histogram retaining a normal-resolution
+  bucket distribution.
+- HistogramDetailed: an exponential histogram retaining a higher-resolution
+  bucket distribution.
 
-Histogram support status is tracked in
-[Implementation Gaps](implementation-gaps.md).
+### Choosing counters and distribution tiers
+
+To choose between OpenTelemetry metric instrument types, it is useful to
+consider what you want to observe:
+
+| Instrument           | Useful for calculating                    | Size          | Update cost |
+|----------------------|-------------------------------------------|---------------|-------------|
+| Counter              | Rate                                      | 8 bytes       | 0.2 ns      |
+| UpDownCounter        | Total                                     | 8 bytes       | 0.2 ns      |
+| Gauge                | Average                                   | 8 bytes       | 0.2 ns      |
+| MinMaxSumCount       | Total, Rate, Average, Extremes            | 32 bytes      | 0.9 ns      |
+| ExponentialHistogram | Total, Rate, Average, Extremes, Quantiles | 128-256 bytes | 5-7 ns      |
+
+To choose between MinMaxSumCount and ExponentialHistogram, ask whether
+detailed information about quantiles will be used or is useful for
+observability. Histogram resolution is not currently configurable, see
+the implementation gaps.
+
+All distribution instruments accept the same observations, so a field can
+move between them without changing what a shipped binary records. Values must
+be non-negative and finite. A negative, NaN, or infinite value trips a debug
+assertion; in a release build a non-finite one is dropped, so a stray NaN
+cannot poison a sum for the rest of the reporting interval. That check is
+most of what MinMaxSumCount costs above a plain counter; the histogram tiers
+get it for free, since they already decompose the value to find its bucket.
+
+The tiers differ on one point, and only in debug builds. Negative zero
+compares equal to zero, and `Mmsc` counts it as one, while the histogram tiers
+assert on it because the type behind them declares a non-negative domain and
+tests the sign bit. Every tier reports a plain positive zero for it, so the
+difference never reaches an export.
+
+### Recording semantics and export temporality
+
+Instrument types describe how component code records measurements, independently
+of how a downstream consumer prefers to receive them. ITS uses the OpenTelemetry
+`lowmemory` temporality mapping as its canonical representation:
+
+- Counter and histogram/MMSC aggregates are delta.
+- UpDownCounter, ObserveCounter, and ObserveUpDownCounter aggregates are
+  cumulative.
+- Gauge values have no aggregation temporality.
+
+Component authors should therefore choose an instrument from the meaning and
+recording form of the measurement, not from an exporter requirement. The native
+pipeline currently emits the canonical representation unchanged; it cannot yet
+produce a different cumulative or delta preference for each consumer. A
+downstream conversion mechanism is tracked in
+[#3543](https://github.com/open-telemetry/otel-arrow/issues/3543).
 
 ObserveUpDownCounter and Gauge both report values that can rise or fall, but
 they aggregate differently.
@@ -95,8 +148,27 @@ signal-specific attributes MUST be:
 - preferably namespaced under the metric namespace as recommended by OTel naming
   guidance
 
-Support status for bounded signal-specific attributes is tracked in
-[implementation-gaps.md](implementation-gaps.md).
+Bounded enum attributes are supported as registration-time attributes or
+per-measurement attributes. See
+[Item Attributes for Metrics](item-attributes.md) for the
+declaration and recording APIs.
+
+### Minimal metric declarations
+
+The north-star design is a minimal set of metric declarations that describes an
+entity's behavior without creating a separate counter for each signal, outcome,
+or other bounded dimension. Model those dimensions as attributes on one metric
+set when they are needed to interpret the measurement.
+
+For example, prefer one `lost_items` counter with bounded `signal` and `outcome`
+attributes over distinct `dropped_logs`, `dropped_metrics`, `expired_logs`, and
+similar counters. Do not introduce signal-specific or outcome-specific counters
+when a bounded attribute set expresses the same meaning.
+
+This follows the OpenTelemetry Collector's
+[component universal telemetry RFC](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
+
+For more information, see [issue #3300](https://github.com/open-telemetry/otel-arrow/issues/3300).
 
 Metric naming must follow the
 [semantic conventions guide](semantic-conventions-guide.md). Descriptions and

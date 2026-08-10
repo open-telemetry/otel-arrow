@@ -53,6 +53,12 @@ config:
   # Number of streams opened for each signal type (default: 1).
   streams_per_signal: 1
 
+  # Optional static gRPC request headers (metadata) attached once as the
+  # initial metadata of each Arrow stream (e.g. auth or tenant routing).
+  headers:
+    authorization: "Basic dXNlcjpwYXNz"
+    x-scope-orgid: "tenant-1"
+
   # Optional RPC timeout.
   timeout: 30s
 ```
@@ -80,19 +86,15 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `exporter.pdata`
+Input PData message volume is reported by the engine through
+`channel.receiver.recv.count` on the PData input channel and is not duplicated
+by the exporter.
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `exporter.pdata.metrics_consumed` | `{msg}` | Number of pdata metrics consumed by this exporter. |
-| `exporter.pdata.metrics_exported` | `{msg}` | Number of pdata metrics successfully exported. |
-| `exporter.pdata.metrics_failed` | `{msg}` | Number of pdata metrics that failed to be exported. |
-| `exporter.pdata.logs_consumed` | `{msg}` | Number of pdata logs consumed by this exporter. |
-| `exporter.pdata.logs_exported` | `{msg}` | Number of pdata logs successfully exported. |
-| `exporter.pdata.logs_failed` | `{msg}` | Number of pdata logs that failed to be exported. |
-| `exporter.pdata.traces_consumed` | `{msg}` | Number of pdata traces consumed by this exporter. |
-| `exporter.pdata.traces_exported` | `{msg}` | Number of pdata traces successfully exported. |
-| `exporter.pdata.traces_failed` | `{msg}` | Number of pdata traces that failed to be exported. |
+#### `exporter.pdata.exports`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
 
 #### `otap.exporter.grpc.async`
 
@@ -124,6 +126,17 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ## Limits
 
 - `stream_queue_capacity` and `streams_per_signal` must be greater than zero.
+- Static request `headers` are attached once, as the initial metadata of each
+  Arrow stream when it is opened (or re-opened after a reconnect). They are not
+  re-sent per `BatchArrowRecords`, so the per-message hot path stays
+  allocation-free; the one-time cost is a single metadata clone per stream
+  establishment. Header names/values are validated at config load via the shared
+  `GrpcClientSettings` (ASCII-only, no gRPC-reserved metadata).
+  - Because the metadata template is built once at exporter startup, a changed
+    `headers` value (e.g. a rotated `authorization` or tenant header) only takes
+    effect when the exporter is restarted/reconfigured and not on stream
+    reconnects, which reuse the template captured at startup. This differs from
+    the OTLP/gRPC exporter, which rebuilds metadata per unary request.
 - Compression values are limited to the variants supported by the shared OTAP
   transport layer.
 - End-to-end delivery depends on downstream OTAP stream responses.

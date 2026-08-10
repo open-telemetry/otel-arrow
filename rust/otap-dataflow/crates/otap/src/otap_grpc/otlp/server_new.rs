@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
-use crate::otlp_metrics::OtlpReceiverMetrics;
+use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
@@ -33,7 +33,7 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use prost::Message;
 use prost::bytes::Buf;
@@ -187,8 +187,20 @@ fn pipeline_send_status<E: Display>(err: E) -> Status {
     Status::internal(format!("Failed to send to pipeline: {err}"))
 }
 
+/// Converts a pipeline [`NackMsg`] into a [`tonic::Status`] for the gRPC
+/// response.
+///
+/// Permanent NACKs are mapped to `INTERNAL` (non-retryable) and transient
+/// NACKs to `UNAVAILABLE` (retryable), following the OTLP gRPC status code
+/// conventions defined in
+/// <https://opentelemetry.io/docs/specs/otlp/#otlpgrpc-response>.
 fn nack_to_status(nack: NackMsg<OtapPdata>) -> Status {
-    Status::unavailable(format!("Pipeline processing failed: {}", nack.reason))
+    let message = format!("Pipeline processing failed: {}", nack.reason);
+    if nack.permanent {
+        Status::internal(message)
+    } else {
+        Status::unavailable(message)
+    }
 }
 
 fn response_channel_closed_status() -> Status {
@@ -202,20 +214,13 @@ struct OtlpBytesCodec {
     signal: SignalType,
     /// Whether to pre-reserve a context frame (when wait_for_result is on).
     preallocate_frame: bool,
-    /// Metrics sink for request tracking.
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
 }
 
 impl OtlpBytesCodec {
-    const fn new(
-        signal: SignalType,
-        preallocate_frame: bool,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
-    ) -> Self {
+    const fn new(signal: SignalType, preallocate_frame: bool) -> Self {
         Self {
             signal,
             preallocate_frame,
-            metrics,
         }
     }
 }
@@ -232,7 +237,7 @@ impl Codec for OtlpBytesCodec {
     }
 
     fn decoder(&mut self) -> Self::Decoder {
-        OtlpBytesDecoder::new(self.signal, self.preallocate_frame, self.metrics.clone())
+        OtlpBytesDecoder::new(self.signal, self.preallocate_frame)
     }
 }
 
@@ -264,19 +269,13 @@ impl Encoder for OtlpResponseEncoder {
 struct OtlpBytesDecoder {
     signal: SignalType,
     preallocate_frame: bool,
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
 }
 
 impl OtlpBytesDecoder {
-    const fn new(
-        signal: SignalType,
-        preallocate_frame: bool,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
-    ) -> Self {
+    const fn new(signal: SignalType, preallocate_frame: bool) -> Self {
         Self {
             signal,
             preallocate_frame,
-            metrics,
         }
     }
 }
@@ -290,8 +289,6 @@ impl Decoder for OtlpBytesDecoder {
         // Use copy_to_bytes so we copy once while advancing the buffer.
         let len = src.remaining();
         let bytes = src.copy_to_bytes(len);
-        let mut guard = self.metrics.lock();
-        guard.request_bytes.add(len as u64);
         let result = match self.signal {
             SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
             SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),
@@ -311,12 +308,8 @@ impl Decoder for OtlpBytesDecoder {
 /// appropriate signal.  Note! This is an inexpensive call, called for
 /// each request instead of a Clone + Sync + Send trait binding that
 /// would require Arc<Mutex<_>>.
-fn new_grpc(
-    signal: SignalType,
-    settings: OtlpServerSettings,
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
-) -> Grpc<OtlpBytesCodec> {
-    let codec = OtlpBytesCodec::new(signal, settings.wait_for_result, metrics);
+fn new_grpc(signal: SignalType, settings: OtlpServerSettings) -> Grpc<OtlpBytesCodec> {
+    let codec = OtlpBytesCodec::new(signal, settings.wait_for_result);
     let mut grpc = Grpc::new(codec);
     if let Some(limit) = settings.max_decoding_message_size {
         grpc = grpc.max_decoding_message_size(limit);
@@ -333,20 +326,37 @@ fn new_grpc(
 struct OtapBatchService {
     effect_handler: Option<EffectHandler<OtapPdata>>,
     state: Option<AckSlot>,
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    signal: SignalType,
 }
 
 impl OtapBatchService {
     const fn new(
         effect_handler: EffectHandler<OtapPdata>,
         state: Option<AckSlot>,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+        signal: SignalType,
     ) -> Self {
         Self {
             effect_handler: Some(effect_handler),
             state,
             metrics,
+            signal,
         }
+    }
+}
+
+/// Records request completion when the gRPC future returns or is cancelled.
+struct RequestCompletionGuard {
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    signal: SignalType,
+}
+
+impl Drop for RequestCompletionGuard {
+    fn drop(&mut self) {
+        self.metrics
+            .lock()
+            .record_request_completed(self.signal, OtlpProtocol::Grpc);
     }
 }
 
@@ -411,14 +421,19 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             }
         }
 
+        let payload_bytes = otap_batch.payload_ref().num_bytes().unwrap_or(0) as u64;
+
         let state = self.state.clone();
         let metrics = self.metrics.clone();
+        let signal = self.signal;
         Box::pin(async move {
-            metrics.lock().requests_started.inc();
             let cancel_rx = if let Some(state) = state {
                 let (key, rx) = match state.allocate_slot() {
                     None => {
-                        metrics.lock().rejected_requests.inc();
+                        metrics.lock().record_rejection(
+                            OtlpProtocol::Grpc,
+                            ReceiverRejectionErrorType::ConcurrencyLimit,
+                        );
                         return Err(Status::resource_exhausted("Too many concurrent requests"));
                     }
                     Some(pair) => pair,
@@ -433,6 +448,14 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 Some((SlotGuard { key, state }, rx))
             } else {
                 None
+            };
+
+            metrics
+                .lock()
+                .record_request_admitted(signal, OtlpProtocol::Grpc, payload_bytes);
+            let _completion_guard = RequestCompletionGuard {
+                metrics: metrics.clone(),
+                signal,
             };
 
             // Send and wait for Ack/Nack
@@ -452,8 +475,6 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 match rx.await {
                     Ok(Ok(())) => {}
                     Ok(Err(nack)) => {
-                        // TODO: Use more specific status codes based on nack reason/type
-                        // when more detailed error information is available from the pipeline
                         return Err(nack_to_status(nack));
                     }
                     Err(_) => {
@@ -461,8 +482,6 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                     }
                 }
             }
-
-            metrics.lock().requests_completed.inc();
 
             Ok(tonic::Response::new(()))
         })
@@ -490,7 +509,7 @@ pub struct ServerCommon {
     effect_handler: EffectHandler<OtapPdata>,
     state: Option<AckSlot>,
     settings: OtlpServerSettings,
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
 }
 
 impl ServerCommon {
@@ -503,7 +522,7 @@ impl ServerCommon {
     fn new(
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
@@ -528,7 +547,7 @@ impl LogsServiceServer {
     pub fn new(
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
@@ -550,15 +569,12 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
         match req.uri().path() {
             super::LOGS_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
-                let mut grpc = new_grpc(
-                    SignalType::Logs,
-                    common.settings.clone(),
-                    common.metrics.clone(),
-                );
+                let mut grpc = new_grpc(SignalType::Logs, common.settings.clone());
                 let service = OtapBatchService::new(
                     common.effect_handler,
                     common.state,
                     common.metrics.clone(),
+                    SignalType::Logs,
                 );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
@@ -584,7 +600,7 @@ impl MetricsServiceServer {
     pub fn new(
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
@@ -606,15 +622,12 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
         match req.uri().path() {
             super::METRICS_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
-                let mut grpc = new_grpc(
-                    SignalType::Metrics,
-                    common.settings.clone(),
-                    common.metrics.clone(),
-                );
+                let mut grpc = new_grpc(SignalType::Metrics, common.settings.clone());
                 let service = OtapBatchService::new(
                     common.effect_handler,
                     common.state,
                     common.metrics.clone(),
+                    SignalType::Metrics,
                 );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
@@ -640,7 +653,7 @@ impl TraceServiceServer {
     pub fn new(
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
@@ -662,15 +675,12 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
         match req.uri().path() {
             super::TRACE_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
-                let mut grpc = new_grpc(
-                    SignalType::Traces,
-                    common.settings.clone(),
-                    common.metrics.clone(),
-                );
+                let mut grpc = new_grpc(SignalType::Traces, common.settings.clone());
                 let service = OtapBatchService::new(
                     common.effect_handler,
                     common.state,
                     common.metrics.clone(),
+                    SignalType::Traces,
                 );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
@@ -681,4 +691,145 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
 
 impl NamedService for TraceServiceServer {
     const NAME: &'static str = super::TRACE_SERVICE_NAME;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_engine::control::runtime_ctrl_msg_channel;
+    use otap_df_engine::shared::message::SharedSender;
+    use otap_df_engine::testing::test_node;
+    use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::reporter::MetricsReporter;
+    use std::collections::HashMap;
+    use tokio::sync::mpsc as tokio_mpsc;
+    use tonic::Code;
+
+    fn new_test_metrics() -> Arc<Mutex<OtlpReceiverMetrics>> {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = otap_df_engine::context::ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)))
+    }
+
+    fn new_test_service(
+        state: Option<AckSlot>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    ) -> (OtapBatchService, tokio_mpsc::Receiver<OtapPdata>) {
+        let (msg_tx, msg_rx) = tokio_mpsc::channel(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("grpc_admission_metrics"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+        );
+        (
+            OtapBatchService::new(effect_handler, state, metrics, SignalType::Logs),
+            msg_rx,
+        )
+    }
+
+    fn make_nack(permanent: bool) -> NackMsg<OtapPdata> {
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
+        if permanent {
+            NackMsg::new_permanent("permanent failure", pdata)
+        } else {
+            NackMsg::new("transient failure", pdata)
+        }
+    }
+
+    #[test]
+    fn test_nack_to_status_permanent_returns_internal() {
+        let nack = make_nack(true);
+        let status = nack_to_status(nack);
+        assert_eq!(status.code(), Code::Internal);
+        assert!(
+            status.message().contains("Pipeline processing failed"),
+            "message: {}",
+            status.message()
+        );
+        assert!(
+            status.message().contains("permanent failure"),
+            "message: {}",
+            status.message()
+        );
+    }
+
+    #[test]
+    fn test_nack_to_status_transient_returns_unavailable() {
+        let nack = make_nack(false);
+        let status = nack_to_status(nack);
+        assert_eq!(status.code(), Code::Unavailable);
+        assert!(
+            status.message().contains("Pipeline processing failed"),
+            "message: {}",
+            status.message()
+        );
+        assert!(
+            status.message().contains("transient failure"),
+            "message: {}",
+            status.message()
+        );
+    }
+
+    /// Scenario: A non-empty gRPC request does not require an acknowledgement slot.
+    /// Guarantees: Successful admission records its started, completed, and payload-byte values.
+    #[tokio::test]
+    async fn admitted_grpc_request_records_payload_bytes() {
+        let metrics = new_test_metrics();
+        let (mut service, mut msg_rx) = new_test_service(None, metrics.clone());
+        let payload = Bytes::from_static(b"grpc-payload");
+        let payload_bytes = payload.len() as u64;
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(payload).into());
+
+        let result = UnaryService::call(&mut service, tonic::Request::new(pdata)).await;
+
+        assert!(result.is_ok());
+        let _ = msg_rx.recv().await.expect("request forwarded downstream");
+        let metrics = metrics.lock();
+        let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Grpc);
+        assert_eq!(requests.started.get(), 1);
+        assert_eq!(requests.completed.get(), 1);
+        assert_eq!(requests.payload_size.get(), payload_bytes);
+    }
+
+    /// Scenario: A non-empty gRPC request cannot allocate its acknowledgement slot.
+    /// Guarantees: The request is rejected without recording admission, completion, or payload bytes.
+    #[tokio::test]
+    async fn rejected_grpc_request_does_not_record_payload_bytes() {
+        let metrics = new_test_metrics();
+        let (mut service, mut msg_rx) = new_test_service(Some(AckSlot::new(0)), metrics.clone());
+        let payload = Bytes::from_static(b"grpc-rejected-payload");
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(payload).into());
+
+        let result = UnaryService::call(&mut service, tonic::Request::new(pdata)).await;
+
+        assert_eq!(
+            result.expect_err("request rejected").code(),
+            Code::ResourceExhausted
+        );
+        assert!(msg_rx.try_recv().is_err());
+        let metrics = metrics.lock();
+        let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Grpc);
+        assert_eq!(requests.started.get(), 0);
+        assert_eq!(requests.completed.get(), 0);
+        assert_eq!(requests.payload_size.get(), 0);
+        assert_eq!(
+            metrics
+                .rejections_for(
+                    OtlpProtocol::Grpc,
+                    ReceiverRejectionErrorType::ConcurrencyLimit,
+                )
+                .requests
+                .get(),
+            1
+        );
+    }
 }

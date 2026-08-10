@@ -1,4 +1,0 @@
-change_type: bug_fix
-component: pdata
-note: Handle Duration and Timestamp cardinality estimation across all Arrow time units in concatenate (previously panicked).
-issues: [3181]

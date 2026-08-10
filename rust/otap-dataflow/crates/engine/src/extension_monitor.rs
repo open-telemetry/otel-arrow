@@ -9,6 +9,7 @@ use crate::context::ExtensionContext;
 use crate::control::{ExtensionControlMsg, ExtensionControlSender};
 use crate::extension::wrapper::ExtensionVariant;
 use otap_df_config::ExtensionId;
+use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_warn;
@@ -106,7 +107,7 @@ struct ExtensionMonitorEntry {
 impl Drop for ExtensionMonitorEntry {
     // TODO(engine-telemetry-teardown): same drain-then-unregister race exists
     // in EngineMetricsMonitor / PipelineMetricsMonitor / PipelineCtrl /
-    // ControlPlaneMetricsMonitor / EntityContext — needs a cross-cutting fix.
+    // ControlPlaneMetricsMonitor / EntityContext -- needs a cross-cutting fix.
     fn drop(&mut self) {
         let _ = self
             .registry
@@ -343,6 +344,19 @@ impl ExtensionMetricsMonitor {
                 );
             }
         }
+    }
+
+    pub(crate) async fn finish_reporting_until(
+        &mut self,
+        reporter: &MetricsReporter,
+        deadline: Instant,
+    ) -> Result<(), TelemetryError> {
+        for entry in &mut self.entries {
+            let _ = reporter
+                .report_reliably_until(&mut entry.lifecycle_metrics, deadline)
+                .await?;
+        }
+        reporter.flush_until(deadline).await
     }
 
     /// Returns the lifecycle state for `key`, or `None` if absent.
@@ -932,7 +946,7 @@ mod tests {
         let reporter = MetricsReporter::new(rep_tx);
         monitor.maybe_collect_telemetry(Instant::now(), &reporter);
 
-        // No state flip, no counter movement — failure is observability-only.
+        // No state flip, no counter movement -- failure is observability-only.
         assert_eq!(
             monitor.entries[0].state,
             ExtensionRuntimeState::Spawned,
@@ -960,7 +974,7 @@ mod tests {
     }
 
     /// The `state` gauge must remain asserted across many consecutive
-    /// ticks for long-running extensions — no transient zeros between
+    /// ticks for long-running extensions -- no transient zeros between
     /// ticks even though gauges are reset semantics on the framework
     /// side.
     #[tokio::test(flavor = "current_thread")]

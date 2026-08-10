@@ -1,0 +1,164 @@
+# Geneva Exporter with Attribute-Based Table Routing
+#
+# This configuration uses a type router to split signals into two Geneva
+# exporter nodes. Logs are routed to per-record tables via an `event_name`
+# mapping, and spans are routed via a `resource_attribute` mapping. Each block
+# also shows (commented) the other supported routing keys.
+#
+# Usage:
+#   ./df_engine --config otlp-geneva-set-routing-table-name.yaml --num-cores 1
+#
+# Send data to this collector using:
+#   - OTLP/gRPC endpoint: localhost:4317
+
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 128
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          # OTLP gRPC Receiver - shared across all signals
+          otlp-receiver:
+            type: "urn:otel:receiver:otlp"
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+
+          # Type router - splits logs and traces into separate paths
+          signal-router:
+            type: "urn:otel:processor:type_router"
+            outputs:
+              - logs
+              - traces
+            config: {}
+
+          geneva-exporter-logs:
+            type: "urn:microsoft:exporter:geneva"
+            config:
+              endpoint: "https://your-geneva-endpoint.example"
+              environment: "your-environment"
+              account: "your-account"
+              namespace: "your-namespace"
+              region: "your-region"
+              config_major_version: 1
+              tenant: "your-tenant"
+              role_name: "your-role-name"
+              role_instance: "your-role-instance"
+              auth:
+                type: "certificate"
+                path: "/path/to/your/certificate.p12"
+                password: "your-cert-password"
+              max_buffer_size: 1000
+              max_concurrent_uploads: 4
+              logs:
+                # # You can use one of the following routing configurations to map logs to different event names (tables) in Geneva:
+                # # Example routing using event_name.
+                event_name_mapping:
+                  routing_key: event_name
+                  events:
+                    MyTable: MyLogTable
+                    LogTable1:
+
+                # Or use resource_attribute:
+                # event_name_mapping:
+                #  routing_key:
+                #    resource_attribute: cluster
+                #  events:
+                #    MyTable: MyLogTable
+                #    LogTable1:
+
+                # Or use scope_attribute:
+                # event_name_mapping:
+                #  routing_key:
+                #    scope_attribute: scope.name
+                #  events:
+                #    MyTable: MyLogTable
+                #    LogTable1: MyLogTable
+
+                # Or use log_record_attribute:
+                # event_name_mapping:
+                #  routing_key:
+                #    log_record_attribute: custom_event_name  # Note: event_name at this level will not work, it has to be log_record_attribute
+                #  events:
+                #    MyTable: MyLogTable
+                #    LogTable1: MyLogTable
+
+              # Note: spans do NOT support the `event_name` routing key (that
+              # key is logs-only). Spans can only route by resource_attribute,
+              # scope_attribute, or span_attribute -- see the geneva-exporter-traces
+              # node below for a working span mapping. Example (commented out):
+              # spans:
+              #   event_name_mapping:
+              #     routing_key:
+              #       span_attribute: cluster
+              #     events:
+              #       MyTable: MySpanTable
+              #       SpanTable1:
+
+          geneva-exporter-traces:
+            type: "urn:microsoft:exporter:geneva"
+            config:
+              endpoint: "https://your-geneva-endpoint.example"
+              environment: "your-environment"
+              account: "your-account"
+              namespace: "your-namespace"
+              region: "your-region"
+              config_major_version: 1
+              tenant: "your-tenant"
+              role_name: "your-role-name"
+              role_instance: "your-role-instance"
+              auth:
+                type: "certificate"
+                path: "/path/to/your/certificate.p12"
+                password: "your-cert-password"
+              max_buffer_size: 1000
+              max_concurrent_uploads: 4
+              spans:
+                default_event_name: "CustomSpanTable"
+                # Example span routing configurations (similar to logs):
+                event_name_mapping:
+                  routing_key:
+                    resource_attribute: cluster
+                  events:
+                    MyTable: MySpanTable
+                    SpanTable1:
+
+                # Or use scope_attribute:
+                # event_name_mapping:
+                #  routing_key:
+                #    scope_attribute: scope.name
+                #  events:
+                #    MyTable: MySpanTable
+                #    SpanTable1: MySpanTable
+
+                # Or use span_attribute:
+                # event_name_mapping:
+                #  routing_key:
+                #    span_attribute: custom_scope
+                #  events:
+                #    MyTable: MySpanTable
+                #    SpanTable1: MySpanTable
+
+        connections:
+          # Shared receiver -> type router
+          - from: otlp-receiver
+            to: signal-router
+
+          # Logs path: router["logs"] -> exporter
+          - from: signal-router["logs"]
+            to: geneva-exporter-logs
+
+          # Traces path: router["traces"] -> exporter
+          - from: signal-router["traces"]
+            to: geneva-exporter-traces

@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Core Kafka exporter implementation.
+//!
+//! ToDo: Currently only handles one kafka message add a time we should
+//! improve the throughput by handling delivery futures
 
 use super::producer::{ExporterFutureProducer, ExporterFutureRecord};
 
@@ -9,16 +12,14 @@ use super::config::{KafkaExporterConfig, SignalConfig};
 use super::encoder::{self, EncodingError};
 use super::metrics::KafkaExporterMetrics;
 use super::partitioner;
-use super::topic_router::TopicRouter;
-use async_trait::async_trait;
+use super::topic_router::{TopicRouter, TopicRoutingError};
 #[cfg(feature = "aws")]
 use crate::common::kafka::aws::ProducerClientContext;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
 use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
+use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
@@ -34,8 +35,9 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer as PdataProducer;
-use otap_df_telemetry::metrics::MetricSet;
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::FromClientConfigAndContext;
 use rdkafka::message::{Header, OwnedHeaders};
@@ -64,6 +66,11 @@ pub enum KafkaExporterError {
     /// Encoding error.
     #[error("Encoding error: {0}")]
     Encoding(#[from] EncodingError),
+
+    /// Dynamic topic routing error (e.g. invalid topic supplied via a
+    /// transport header).
+    #[error("Topic routing error: {0}")]
+    TopicRouting(#[from] TopicRoutingError),
 }
 
 /// Trait for reporting Ack/Nack events.
@@ -132,8 +139,10 @@ impl<'a> AckNackReporter for EffectHandlerReporter<'a> {
 ///
 /// Exports telemetry data (traces, metrics, logs) to Apache Kafka topics using the rdkafka client.
 ///
-/// Supports dynamic topic routing via transport headers and resource attributes,
-/// with a priority hierarchy: transport header > static topic.
+/// Supports dynamic topic routing via transport headers, with a priority
+/// hierarchy: transport header > static topic. The static topic is used only
+/// when the configured header is absent; a header present with an invalid
+/// topic value causes a permanent nack rather than a fallback.
 ///
 /// Error handling follows a "log and continue" policy:
 /// - Export failures are logged via the effect handler and recorded in metrics.
@@ -145,7 +154,7 @@ pub struct KafkaExporter {
     #[cfg(not(feature = "aws"))]
     producer: ExporterFutureProducer<DefaultClientContext>,
     pdata_producer: PdataProducer,
-    metrics: MetricSet<KafkaExporterMetrics>,
+    metrics: KafkaExporterMetrics,
 }
 
 /// Factory registration for the Kafka exporter.
@@ -185,7 +194,8 @@ impl KafkaExporter {
     ) -> Result<Self, KafkaExporterError> {
         // Warn about producer_config keys that may be overwritten by first-class fields.
         for key in config.overridden_producer_config_keys() {
-            tracing::warn!(
+            otap_df_telemetry::otel_warn!(
+                "kafka.exporter.producer_config.overridden_key",
                 key = %key,
                 "producer_config contains key '{key}' which is also managed by a \
                  first-class config field and may be overwritten",
@@ -214,17 +224,14 @@ impl KafkaExporter {
         let producer =
             ExporterFutureProducer::from_config_and_context(&client_config, DefaultClientContext)
                 .map_err(|e| {
-                    KafkaExporterError::Configuration(format!(
-                        "Failed to create Kafka producer: {}",
-                        e
-                    ))
-                })?;
+                KafkaExporterError::Configuration(format!("Failed to create Kafka producer: {}", e))
+            })?;
 
         Ok(Self {
             config,
             producer,
             pdata_producer: PdataProducer::default(),
-            metrics: pipeline_ctx.register_metrics::<KafkaExporterMetrics>(),
+            metrics: KafkaExporterMetrics::register(&pipeline_ctx),
         })
     }
 
@@ -306,10 +313,13 @@ impl KafkaExporter {
 
     /// Exports a single PData message to Kafka with Ack/Nack support.
     ///
-    /// Uses the [`TopicRouter`] to resolve the destination topic(s):
-    /// 1. Transport header (highest priority)
-    /// 2. Resource attribute (may split the batch)
-    /// 3. Static per-signal topic (fallback)
+    /// Uses the [`TopicRouter`] to resolve the destination topic:
+    /// 1. Transport header (highest priority): used when the configured header
+    ///    key is present in the pdata context. If the key is present but its
+    ///    value is not a valid Kafka topic, the batch is permanently nacked
+    ///    (no fallback to the static topic).
+    /// 2. Static per-signal topic: fallback used only when the configured header
+    ///    key is absent (or no header routing is configured).
     ///
     /// When the exporter's [`EffectHandler`] has a propagation policy and the
     /// pdata context carries transport headers, matching headers are emitted as
@@ -335,6 +345,11 @@ impl KafkaExporter {
         let signal_config = match Self::get_signal_config(&self.config, signal_type) {
             Ok(cfg) => cfg,
             Err(e) => {
+                otap_df_telemetry::otel_warn!(
+                    "kafka.exporter.signal.unconfigured",
+                    signal_type = ?signal_type,
+                    error = %e,
+                );
                 let _ = reporter
                     .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
                     .await;
@@ -343,6 +358,21 @@ impl KafkaExporter {
         };
 
         let encoding = signal_config.encoding();
+
+        // Resolve topic via the dynamic topic router *before* doing any encoding
+        // work. If a transport header supplied an invalid topic,
+        // permanently nack the batch
+        let topic = match TopicRouter::resolve(signal_config, &context, &mut self.metrics) {
+            Ok(t) => t,
+            Err(e) => {
+                self.metrics.inc_failed(signal_type);
+                let _ = reporter
+                    .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
+                    .await;
+                return Err(KafkaExporterError::TopicRouting(e));
+            }
+        };
+
         let partition_key = partitioner::partition_key_for_signal(signal_config, &context);
 
         // Build Kafka headers (format header + propagated transport headers)
@@ -350,23 +380,32 @@ impl KafkaExporter {
         let headers =
             Self::build_kafka_headers(encoding, format_header_key, &context, effect_handler);
 
-        // Resolve topic via the dynamic topic router.
-        // The router always returns a concrete topic and increments the
-        // appropriate topic routing metric internally.
-        let topic = TopicRouter::resolve(signal_config, &context, &mut self.metrics);
-
-        // Clone payload for ack/nack reporting -- send_to_kafka consumes the original.
-        let payload_for_reporting = payload.clone();
-
         // Encode payload to bytes using the per-signal encoding.
         // This block borrows &mut self.pdata_producer so it must complete
         // before we borrow self.config again for the topic reference below.
-        let payload_bytes = match encoding {
-            MessageFormat::OtlpProto => encoder::encode_to_otlp_bytes(payload.clone())?,
+        let encode_result = match encoding {
+            MessageFormat::OtlpProto => encoder::encode_to_otlp_bytes(payload.clone()),
             MessageFormat::OtapProto => encoder::encode_to_batch_arrow_record_bytes(
                 payload.clone(),
                 &mut self.pdata_producer,
-            )?,
+            ),
+        };
+
+        // nack on failed encoding bytes
+        let payload_bytes = match encode_result {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                otap_df_telemetry::otel_error!(
+                    "kafka.exporter.encode.failed",
+                    signal_type = ?signal_type,
+                    error = %e,
+                );
+                self.metrics.inc_failed(signal_type);
+                let _ = reporter
+                    .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
+                    .await;
+                return Err(KafkaExporterError::Encoding(e));
+            }
         };
 
         // Create Kafka record.
@@ -378,19 +417,16 @@ impl KafkaExporter {
             record = record.key(key);
         }
 
-        // Send to Kafka with timeout
+        // Send to Kafka with timeout. `timeout_ms` is validated to be within
+        // (0, 30s] at config time (see `KafkaExporterConfig`), so this await is
+        // always bounded and can never block shutdown indefinitely: a `0` would
+        // otherwise map to librdkafka's infinite `message.timeout.ms`.
         let timeout = Duration::from_millis(self.config.timeout_ms());
         match self.producer.send(record, timeout).await {
             Ok(_delivery) => {
                 self.metrics.inc_exported(signal_type);
                 // Ack reporting is best-effort; Kafka send succeeded so don't fail on ack errors
-                if let Err(e) = reporter
-                    .ack(OtapPdata::new(
-                        context.clone(),
-                        payload_for_reporting.clone(),
-                    ))
-                    .await
-                {
+                if let Err(e) = reporter.ack(OtapPdata::new(context, payload)).await {
                     if let Some(eh) = effect_handler {
                         eh.info(&format!(
                             "Failed to report ack for Kafka export (export succeeded): {}",
@@ -412,10 +448,7 @@ impl KafkaExporter {
                 // Nack reporting is best-effort; don't propagate nack errors since the
                 // primary Kafka error is what matters
                 if let Err(e) = reporter
-                    .nack(
-                        kafka_err.to_string(),
-                        OtapPdata::new(context.clone(), payload_for_reporting.clone()),
-                    )
+                    .nack(kafka_err.to_string(), OtapPdata::new(context, payload))
                     .await
                 {
                     if let Some(eh) = effect_handler {
@@ -428,6 +461,38 @@ impl KafkaExporter {
                 }
                 Err(KafkaExporterError::KafkaError(kafka_err))
             }
+        }
+    }
+
+    /// Drain in-flight deliveries on shutdown, bounded by `deadline`.
+    ///
+    /// Flushes the producer so queued messages get one final chance to be
+    /// delivered, then purges anything still queued so we never block past the
+    /// deadline.
+    async fn drain_and_flush(
+        &mut self,
+        deadline: std::time::Instant,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) {
+        effect_handler.info("Flushing Kafka producer").await;
+
+        // Flush for the time remaining until the shutdown deadline (saturating
+        // at zero if it has already passed), matching the parquet exporter's
+        // deadline-bounded shutdown flush.
+        let flush_timeout = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or(Duration::ZERO);
+
+        if let Err(e) = self.producer.flush(flush_timeout) {
+            otap_df_telemetry::otel_warn!(
+                "kafka.exporter.shutdown.flush_failed",
+                error = %e,
+            );
+            // Flush timed out or failed; purge anything still queued (in-flight
+            // and not-yet-queued) so the producer drop does not block. Purged
+            // messages trigger their delivery callbacks with a purge error.
+            self.producer
+                .purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
         }
     }
 }
@@ -454,7 +519,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
 
         let ack_nack_reporter = EffectHandlerReporter::new(&effect_handler);
 
-        // Main event loop
+        // Main event loop.
         loop {
             match inbox.recv().await? {
                 Message::PData(pdata) => {
@@ -466,7 +531,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     mut metrics_reporter,
                 }) => {
                     // Flush exporter metrics into the telemetry registry.
-                    _ = metrics_reporter.report(&mut self.metrics);
+                    _ = self.metrics.report(&mut metrics_reporter);
                 }
                 Message::Control(NodeControlMsg::Ack(_ack)) => {
                     // Track ack receipt without spamming logs
@@ -479,27 +544,27 @@ impl Exporter<OtapPdata> for KafkaExporter {
                         .info(&format!("Kafka exporter: received Nack - {}", nack.reason))
                         .await;
                 }
-                Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     effect_handler.info("Shutting down Kafka exporter").await;
                     _ = timer_cancel_handle.cancel().await;
-                    break;
+
+                    // Graceful shutdown: ingress is already closed by the
+                    // engine's receiver-first drain, so just drain our in-flight
+                    // deliveries by flushing (bounded by `deadline`), then purge
+                    // anything still queued so we never block past the deadline.
+                    self.drain_and_flush(deadline, &effect_handler).await;
+
+                    effect_handler.info("Kafka exporter stopped").await;
+                    return Ok(TerminalState::new(
+                        deadline,
+                        self.metrics.terminal_snapshots(),
+                    ));
                 }
                 Message::Control(_) => {
                     // Ignore other control messages
                 }
             }
         }
-
-        // Flush any pending messages
-        effect_handler.info("Flushing Kafka producer").await;
-        self.producer
-            .flush(Duration::from_secs(5))
-            .map_err(|e| EngineError::InternalError {
-                message: format!("Failed to flush Kafka producer: {}", e),
-            })?;
-
-        effect_handler.info("Kafka exporter stopped").await;
-        Ok(TerminalState::default())
     }
 }
 
@@ -510,8 +575,8 @@ pub mod test_support {
     use super::*;
     use crate::exporters::kafka_exporter::config::KafkaExporterConfigBuilder;
     use bytes::Bytes;
-    use otap_df_otap::pdata::Context;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_otap::pdata::Context;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::sync::{Arc, Mutex};
 
@@ -569,6 +634,37 @@ pub mod test_support {
             SignalType::Logs => otap_df_pdata::OtlpProtoBytes::ExportLogsRequest(bytes),
         };
         OtapPdata::new(Context::default(), proto.into())
+    }
+
+    /// Produces a small OTLP payload carrying a single transport header.
+    #[must_use]
+    pub fn sample_pdata_with_header(
+        signal_type: SignalType,
+        header_wire_name: &str,
+        header_value: &str,
+    ) -> OtapPdata {
+        use otap_df_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+
+        let bytes = Bytes::from_static(b"payload");
+        let proto = match signal_type {
+            SignalType::Traces => otap_df_pdata::OtlpProtoBytes::ExportTracesRequest(bytes.clone()),
+            SignalType::Metrics => {
+                otap_df_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes.clone())
+            }
+            SignalType::Logs => otap_df_pdata::OtlpProtoBytes::ExportLogsRequest(bytes),
+        };
+
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader {
+            name: header_wire_name.to_ascii_lowercase(),
+            wire_name: header_wire_name.to_string(),
+            value_kind: ValueKind::Text,
+            value: header_value.as_bytes().to_vec(),
+        });
+        let mut context = Context::default();
+        context.set_transport_headers(headers);
+
+        OtapPdata::new(context, proto.into())
     }
 
     /// Recorder that tracks Ack and Nack notifications.
@@ -676,9 +772,17 @@ pub mod test_support {
     }
 
     #[cfg(test)]
-    mod unit_tests {
+    mod tests {
         use super::*;
+        use crate::exporters::kafka_exporter::config::PartitionerStrategy;
         use crate::exporters::kafka_exporter::config::TlsConfig;
+        use crate::exporters::kafka_exporter::partitioner::partition_key_from_transport_headers;
+        use bytes::Bytes;
+        use otap_df_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+        use otap_df_otap::pdata::Context;
+        use otap_df_pdata::OtlpProtoBytes;
+        use prost::Message as _;
+        use std::time::Duration;
 
         /// Tests that payload is properly cloned for both OTLP and OTAP serialization formats.
         /// This ensures no borrow-after-move errors occur when the encoder consumes the payload.
@@ -931,6 +1035,425 @@ pub mod test_support {
                 "permanent nack reason should mention the signal type, got: {}",
                 permanent_reasons[0]
             );
+        }
+
+        #[tokio::test]
+        async fn test_export_invalid_dynamic_topic_is_permanently_nacked() {
+            let pipeline_ctx = pipeline_context();
+            // Logs configured to resolve their topic from a transport header.
+            let config: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new("localhost:9092", "test-client")
+                    .with_logs(
+                        SignalConfig::new("test-logs".into(), MessageFormat::OtlpProto)
+                            .with_topic_from_transport_header("x-target-topic"),
+                    )
+                    .try_into()
+                    .expect("test config should be valid");
+            let mut exporter =
+                KafkaExporter::new(pipeline_ctx, config).expect("config should be valid");
+
+            let reporter = RecordingReporter::new();
+            // Header supplies an invalid topic ("bad topic/name" contains a space and slash).
+            let pdata =
+                sample_pdata_with_header(SignalType::Logs, "X-Target-Topic", "bad topic/name");
+
+            let result = export_once(&mut exporter, pdata, &reporter).await;
+            assert!(result.is_err());
+            assert!(
+                matches!(result.unwrap_err(), KafkaExporterError::TopicRouting(_)),
+                "invalid dynamic topic should surface a TopicRouting error"
+            );
+
+            // Verify a permanent nack was reported (not a transient nack) and the
+            // batch was not silently routed to the static topic.
+            assert_eq!(reporter.ack_count(), 0);
+            assert_eq!(
+                reporter.nack_reasons().len(),
+                0,
+                "should not use transient nack for an invalid dynamic topic"
+            );
+            let permanent_reasons = reporter.permanent_nack_reasons();
+            assert_eq!(permanent_reasons.len(), 1);
+            assert!(
+                permanent_reasons[0].contains("bad topic/name"),
+                "permanent nack reason should mention the offending topic, got: {}",
+                permanent_reasons[0]
+            );
+        }
+
+        // ---- Integration tests (in-process mock Kafka broker) ----
+        //
+        // These use the shared Kafka test suite (`crate::common::kafka::test`),
+        // which wraps `rdkafka::mocking::MockCluster` in an in-process librdkafka
+        // mock broker, so the tests run with no Docker/external broker and run by
+        // default in CI. Each test drives a fully-wired `KafkaExporter` through
+        // the `KafkaExporterHarness` wrapper (which owns the engine wiring,
+        // `LocalSet` spawn, and lifecycle), then consumes the produced records
+        // back from the mock broker via a test-suite consumer to assert on the
+        // topic, payload bytes, message-format header, and partition key.
+
+        use crate::common::kafka::node_harness::KafkaExporterHarness;
+        use crate::common::kafka::test::cluster::KafkaTestCluster;
+        use crate::common::kafka::test::with_cluster;
+
+        /// Builds an [`ExportLogsServiceRequest`] with a single log record so
+        /// tests exercise a real OTLP payload (required for OTAP encoding).
+        fn logs_request_bytes() -> Vec<u8> {
+            use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+            use otap_df_pdata::proto::opentelemetry::logs::v1::{
+                LogRecord, ResourceLogs, ScopeLogs,
+            };
+
+            let req = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: vec![LogRecord {
+                            time_unix_nano: 1,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            req.encode_to_vec()
+        }
+
+        /// Wraps OTLP logs bytes into an [`OtapPdata`], optionally carrying a
+        /// single transport header.
+        fn logs_pdata(bytes: Vec<u8>, header: Option<(&str, &str)>) -> OtapPdata {
+            let proto = OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes));
+            let mut context = Context::default();
+            if let Some((wire_name, value)) = header {
+                let mut headers = TransportHeaders::new();
+                headers.push(TransportHeader {
+                    name: wire_name.to_ascii_lowercase(),
+                    wire_name: wire_name.to_string(),
+                    value_kind: ValueKind::Text,
+                    value: value.as_bytes().to_vec(),
+                });
+                context.set_transport_headers(headers);
+            }
+            OtapPdata::new(context, proto.into())
+        }
+
+        /// Builds an [`ExportTraceServiceRequest`] with a single span, returned
+        /// as OTLP proto bytes wrapped in an [`OtapPdata`].
+        fn traces_pdata() -> (OtapPdata, Vec<u8>) {
+            use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+            use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+
+            let req = ExportTraceServiceRequest {
+                resource_spans: vec![ResourceSpans {
+                    scope_spans: vec![ScopeSpans {
+                        spans: vec![Span {
+                            trace_id: vec![1u8; 16],
+                            span_id: vec![1u8; 8],
+                            name: "span-1".to_string(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            let bytes = req.encode_to_vec();
+            let proto = OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes.clone()));
+            (OtapPdata::new(Context::default(), proto.into()), bytes)
+        }
+
+        /// Builds an [`ExportMetricsServiceRequest`] with a single scope,
+        /// returned as OTLP proto bytes wrapped in an [`OtapPdata`].
+        fn metrics_pdata() -> (OtapPdata, Vec<u8>) {
+            use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+            use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+
+            let req = ExportMetricsServiceRequest {
+                resource_metrics: vec![ResourceMetrics {
+                    scope_metrics: vec![ScopeMetrics::default()],
+                    ..Default::default()
+                }],
+            };
+            let bytes = req.encode_to_vec();
+            let proto = OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes.clone()));
+            (OtapPdata::new(Context::default(), proto.into()), bytes)
+        }
+
+        /// Builds a validated single-signal-logs config bound to `brokers`.
+        fn logs_config(brokers: &str, signal: SignalConfig) -> KafkaExporterConfig {
+            KafkaExporterConfigBuilder::new(brokers, "it-client")
+                .with_logs(signal)
+                .try_into()
+                .expect("config should be valid")
+        }
+
+        /// Scenario: export an OTLP logs batch and read the produced record back
+        /// from the mock broker.
+        /// Guarantees: the record lands on the configured topic with the exact
+        /// payload bytes and an OTLP message-format header.
+        #[tokio::test]
+        async fn exports_logs_otlp_to_mock_broker() {
+            let topic = "it-logs-otlp";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    exporter
+                        .send_pdata(logs_pdata(payload.clone(), None))
+                        .await
+                        .expect("send pdata");
+
+                    let _ = consumer
+                        .recv()
+                        .await
+                        .assert_topic(topic)
+                        .assert_payload(&payload)
+                        .assert_format_otlp();
+
+                    exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: export an OTLP traces batch to the mock broker.
+        /// Guarantees: the traces record lands on the configured topic with the
+        /// exact payload bytes and an OTLP message-format header.
+        #[tokio::test]
+        async fn exports_traces_otlp_to_mock_broker() {
+            let topic = "it-traces-otlp";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_traces(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                            .try_into()
+                            .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let (pdata, payload) = traces_pdata();
+                    exporter.send_pdata(pdata).await.expect("send pdata");
+
+                    let _ = consumer
+                        .recv()
+                        .await
+                        .assert_topic(topic)
+                        .assert_payload(&payload)
+                        .assert_format_otlp();
+
+                    exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: export an OTLP metrics batch to the mock broker.
+        /// Guarantees: the metrics record lands on the configured topic with the
+        /// exact payload bytes and an OTLP message-format header.
+        #[tokio::test]
+        async fn exports_metrics_otlp_to_mock_broker() {
+            let topic = "it-metrics-otlp";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_metrics(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                            .try_into()
+                            .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let (pdata, payload) = metrics_pdata();
+                    exporter.send_pdata(pdata).await.expect("send pdata");
+
+                    let _ = consumer
+                        .recv()
+                        .await
+                        .assert_topic(topic)
+                        .assert_payload(&payload)
+                        .assert_format_otlp();
+
+                    exporter.shutdown(Duration::from_millis(500)).await;
+
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: export a logs batch configured for OTAP encoding.
+        /// Guarantees: the record carries the OTAP message-format header and its
+        /// payload decodes as a `BatchArrowRecords` protobuf message.
+        #[tokio::test]
+        async fn exports_logs_otap_sets_otap_format_header() {
+            use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+
+            let topic = "it-logs-otap";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtapProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    exporter
+                        .send_pdata(logs_pdata(payload, None))
+                        .await
+                        .expect("send pdata");
+
+                    let msg = consumer.recv().await;
+                    let _ = msg.assert_topic(topic).assert_format_otap();
+                    let decoded =
+                        BatchArrowRecords::decode(msg.payload.as_deref().expect("payload"));
+                    assert!(
+                        decoded.is_ok(),
+                        "OTAP payload should decode as BatchArrowRecords"
+                    );
+
+                    exporter.shutdown(Duration::from_millis(500)).await;
+
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: route a record to a topic named by a transport header while
+        /// a different static topic is configured.
+        /// Guarantees: the record is produced to the header-specified dynamic
+        /// topic (the consumer only subscribes to that topic).
+        #[tokio::test]
+        async fn routes_to_topic_from_transport_header() {
+            let static_topic = "it-static-topic";
+            let dynamic_topic = "it-dynamic-topic";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(static_topic)
+                    .topic(dynamic_topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[dynamic_topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
+                            .with_topic_from_transport_header("x-target-topic"),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    exporter
+                        .send_pdata(logs_pdata(payload, Some(("X-Target-Topic", dynamic_topic))))
+                        .await
+                        .expect("send pdata");
+
+                    // The consumer only subscribes to the dynamic topic, so
+                    // receiving a record proves header-based routing worked.
+                    let _ = consumer.recv().await.assert_topic(dynamic_topic);
+
+                    exporter.shutdown(Duration::from_millis(500)).await;
+
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: derive the record partition key from transport headers with
+        /// a Murmur2Random partitioner.
+        /// Guarantees: the produced record's key matches the key computed by
+        /// `partition_key_from_transport_headers` for the same headers.
+        #[tokio::test]
+        async fn sets_partition_key_from_transport_headers() {
+            let topic = "it-partition-key";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg =
+                        KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
+                            .with_logs(
+                                SignalConfig::new(topic.into(), MessageFormat::OtlpProto)
+                                    .with_partition_by_transport_headers(true),
+                            )
+                            .with_partitioning_strategy(PartitionerStrategy::Murmur2Random)
+                            .try_into()
+                            .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    let pdata = logs_pdata(payload, Some(("X-Tenant-Id", "tenant-123")));
+                    let expected_key = {
+                        let (context, _payload) = pdata.clone().into_parts();
+                        let headers = context
+                            .transport_headers()
+                            .expect("pdata should carry transport headers");
+                        partition_key_from_transport_headers(headers)
+                            .expect("headers should produce a partition key")
+                    };
+
+                    exporter.send_pdata(pdata).await.expect("send pdata");
+
+                    let _ = consumer.recv().await.assert_key(expected_key.as_bytes());
+
+                    exporter.shutdown(Duration::from_millis(500)).await;
+
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario: enqueue several records then request a graceful shutdown
+        /// with a generous deadline.
+        /// Guarantees: all buffered records are flushed and remain consumable
+        /// after shutdown (no data loss on graceful stop).
+        #[tokio::test]
+        async fn shutdown_flushes_buffered_records() {
+            let topic = "it-shutdown-flush";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    for _ in 0..3 {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata");
+                    }
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+
+                    exporter.await_stopped().await;
+
+                    let msgs = consumer.recv_n(3).await;
+                    for msg in &msgs {
+                        let _ = msg.assert_topic(topic).assert_payload(&payload);
+                    }
+                },
+            )
+            .await;
         }
     }
 }

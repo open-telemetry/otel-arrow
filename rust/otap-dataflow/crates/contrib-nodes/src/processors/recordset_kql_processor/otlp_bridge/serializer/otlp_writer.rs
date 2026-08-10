@@ -210,10 +210,7 @@ fn write_value(writer: &mut ProtobufWriter, value: &AnyValue) -> Result<(), Seri
         AnyValue::Null => {}
         AnyValue::Native(a) => write_native_value(writer, a)?,
         AnyValue::Extended(_) => {
-            let value = value.to_value();
-            value.convert_to_string(&mut |s| {
-                writer.write_string_field(1, s);
-            });
+            writer.write_string_field(1, value.to_value().convert_to_string().as_ref())
         }
     }
 
@@ -318,6 +315,7 @@ mod tests {
             OtlpKeyValue {
                 key: "".into(),
                 value: None,
+                ..Default::default()
             },
         );
 
@@ -326,6 +324,7 @@ mod tests {
             OtlpKeyValue {
                 key: "key1".into(),
                 value: None,
+                ..Default::default()
             },
         );
 
@@ -341,6 +340,7 @@ mod tests {
                 value: Some(OtlpAnyValue {
                     value: Some(OtlpValue::StringValue("value1".into())),
                 }),
+                ..Default::default()
             },
         );
     }
@@ -509,16 +509,19 @@ mod tests {
                         OtlpKeyValue {
                             key: "".into(),
                             value: None,
+                            ..Default::default()
                         },
                         OtlpKeyValue {
                             key: "key1".into(),
                             value: None,
+                            ..Default::default()
                         },
                         OtlpKeyValue {
                             key: "key2".into(),
                             value: Some(OtlpAnyValue {
                                 value: Some(OtlpValue::IntValue(18)),
                             }),
+                            ..Default::default()
                         },
                     ],
                 })),
@@ -612,12 +615,14 @@ mod tests {
                     OtlpKeyValue {
                         key: "key1".into(),
                         value: None,
+                        ..Default::default()
                     },
                     OtlpKeyValue {
                         key: "key2".into(),
                         value: Some(OtlpAnyValue {
                             value: Some(OtlpValue::IntValue(18)),
                         }),
+                        ..Default::default()
                     },
                 ],
                 dropped_attributes_count: 0,
@@ -708,12 +713,14 @@ mod tests {
                     OtlpKeyValue {
                         key: "key1".into(),
                         value: None,
+                        ..Default::default()
                     },
                     OtlpKeyValue {
                         key: "key2".into(),
                         value: Some(OtlpAnyValue {
                             value: Some(OtlpValue::IntValue(18)),
                         }),
+                        ..Default::default()
                     },
                 ],
                 dropped_attributes_count: 0,
@@ -826,12 +833,14 @@ mod tests {
                     OtlpKeyValue {
                         key: "key1".into(),
                         value: None,
+                        ..Default::default()
                     },
                     OtlpKeyValue {
                         key: "key2".into(),
                         value: Some(OtlpAnyValue {
                             value: Some(OtlpValue::IntValue(18)),
                         }),
+                        ..Default::default()
                     },
                 ],
                 dropped_attributes_count: 0,

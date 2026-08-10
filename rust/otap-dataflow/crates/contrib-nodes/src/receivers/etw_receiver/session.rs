@@ -56,8 +56,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc as std_mpsc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use one_collect::Guid;
 use one_collect::etw::tdh::TdhDecoder;
@@ -68,7 +71,7 @@ use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, TraceLevel};
 
-// ── QPC → Unix epoch conversion ──────────────────────────────────────────────
+// -- QPC -> Unix epoch conversion ----------------------------------------------
 
 /// Reference point captured once at session start to convert QPC ticks to
 /// Unix epoch nanoseconds.  All three values are sampled on the session
@@ -138,15 +141,15 @@ impl QpcReference {
 /// next event continues to the following core (no retry on another core).
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
-// ── Event data transferred across the channel ────────────────────────────────
+// -- Event data transferred across the channel --------------------------------
 
 /// Typed value of a single TDH-decoded ETW field.
 ///
 /// The decoder interprets each field's raw bytes **once** (on the
 /// `ProcessTrace` thread) into one of these variants, instead of deferring
 /// interpretation to the encoder via a `(type_name, len)` string match.  This
-/// gives compile-time exhaustiveness at every consumer match site — adding a
-/// variant is a compile error rather than a silent fall-through — and avoids
+/// gives compile-time exhaustiveness at every consumer match site (adding a
+/// variant is a compile error rather than a silent fall-through) and avoids
 /// the redundant `type_name: String` allocation plus consumer-side byte
 /// re-parsing.  Modeled on the Linux `user_events_receiver`'s
 /// `DecodedAttrValue`.
@@ -158,10 +161,11 @@ pub enum EtwAttributeValue {
     Int(i64),
     /// Floating-point value widened to `f64`.
     Double(f64),
-    /// Boolean value.  Note: the current `one_collect` decoder maps
-    /// `TDH_INTYPE_BOOLEAN` to a `u8`, so real BOOLEAN fields arrive as
-    /// [`Int`](Self::Int); this variant is reserved for a future decoder that
-    /// emits a distinct boolean type name.
+    /// Boolean value.  Note: the `one_collect` TDH decoder maps a Win32
+    /// `BOOL` (`TDH_INTYPE_BOOLEAN`, TraceLogging `Bool32`) to a 4-byte
+    /// `"u32"` and a 1-byte boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`)
+    /// to `"u8"`.  Both currently surface as [`Int`](Self::Int); this variant
+    /// is reserved for a future path that emits a distinct boolean type name.
     Bool(bool),
     /// Genuinely unsupported / opaque field bytes.  The encoder renders these
     /// as a hex string.  Empty for zero-length or undecodable fields.
@@ -173,12 +177,58 @@ pub enum EtwAttributeValue {
 /// During the `ProcessTrace` callback the raw `EVENT_RECORD` is still valid,
 /// so we interpret each field's bytes into an owned [`EtwAttributeValue`]
 /// before sending the event across the channel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DecodedField {
     /// Field name (e.g. `"ProcessId"`, or `"Parent.ChildField"` for nested structs).
     pub name: String,
     /// Typed field value, interpreted from the raw payload bytes by the decoder.
     pub value: EtwAttributeValue,
+}
+
+/// A GUID in canonical (big-endian display) byte order.
+///
+/// The 16 bytes are stored in the exact order they appear in the standard
+/// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` string form: the first three groups
+/// (`Data1`/`Data2`/`Data3`) are big-endian and the trailing eight bytes
+/// (`Data4`) are kept as-is.
+///
+/// Windows stores `Data1`/`Data2`/`Data3` little-endian in memory, so the byte
+/// swap into display order is applied **once**, here at the session boundary
+/// (see [`CanonicalGuid::from_guid_parts`] and [`From<Guid>`]). Downstream
+/// encoders therefore only perform hex/dash formatting and never need to know
+/// the source byte order, so a value that is already canonical cannot be
+/// silently byte-swapped a second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CanonicalGuid(pub [u8; 16]);
+
+impl CanonicalGuid {
+    /// Assemble canonical bytes from the standard GUID struct fields
+    /// (`Data1: u32`, `Data2: u16`, `Data3: u16`, `Data4: [u8; 8]`),
+    /// byte-swapping the three numeric fields into big-endian display order.
+    ///
+    /// Both [`one_collect::Guid`] and the Windows `EVENT_RECORD` activity GUID
+    /// share this field layout, so this is the single conversion point for the
+    /// provider and activity IDs alike.
+    fn from_guid_parts(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> Self {
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&data1.to_be_bytes());
+        bytes[4..6].copy_from_slice(&data2.to_be_bytes());
+        bytes[6..8].copy_from_slice(&data3.to_be_bytes());
+        bytes[8..16].copy_from_slice(&data4);
+        Self(bytes)
+    }
+
+    /// Whether this is the all-zero GUID (e.g. no activity ID was set).
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
+        self.0 == [0u8; 16]
+    }
+}
+
+impl From<Guid> for CanonicalGuid {
+    fn from(g: Guid) -> Self {
+        Self::from_guid_parts(g.data1, g.data2, g.data3, g.data4)
+    }
 }
 
 /// Lightweight snapshot of an ETW event captured in the `ProcessTrace` callback.
@@ -188,8 +238,8 @@ pub struct DecodedField {
 /// it across the channel to the async world.
 #[derive(Debug, Clone)]
 pub struct EtwEventData {
-    /// Provider GUID that produced the event (16 raw bytes).
-    pub provider_id: [u8; 16],
+    /// Provider GUID that produced the event, in canonical byte order.
+    pub provider_id: CanonicalGuid,
     /// ETW event timestamp converted to Unix epoch nanoseconds.
     ///
     /// Derived from `EVENT_HEADER.TimeStamp` (QPC ticks) using a reference
@@ -214,10 +264,11 @@ pub struct EtwEventData {
     ///
     /// Empty for manifest-based events or when TDH decoding fails.
     pub event_name: String,
-    /// Activity ID from the event header for correlating related events.
+    /// Activity ID from the event header for correlating related events, in
+    /// canonical byte order.
     ///
     /// All zeros when the provider does not set an activity ID.
-    pub activity_id: [u8; 16],
+    pub activity_id: CanonicalGuid,
     /// TDH-decoded event payload fields.
     ///
     /// Populated for TraceLogging / TraceLoggingDynamic events whose schema
@@ -226,7 +277,7 @@ pub struct EtwEventData {
     pub decoded_fields: Vec<DecodedField>,
 }
 
-// ── GUID parsing ─────────────────────────────────────────────────────────────
+// -- GUID parsing -------------------------------------------------------------
 
 /// Parse a GUID string in the standard `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 /// format into a [`one_collect::Guid`].
@@ -301,7 +352,7 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     }
 
     if let Some(name) = &cfg.name {
-        // TODO: Implement provider name → GUID resolution via
+        // TODO: Implement provider name -> GUID resolution via
         // TdhEnumerateProviders or registry lookup.
         return Err(Error::ConfigError(Box::new(
             otap_df_config::error::Error::InvalidUserConfig {
@@ -317,7 +368,7 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     unreachable!("validated upstream: provider must specify either 'name' or 'guid'")
 }
 
-// ── TDH field extraction ─────────────────────────────────────────────────────
+// -- TDH field extraction -----------------------------------------------------
 
 /// Number of 100-nanosecond ticks between the Windows `FILETIME` epoch
 /// (1601-01-01 UTC) and the Unix epoch (1970-01-01 UTC).
@@ -327,14 +378,16 @@ const FILETIME_TICKS_TO_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
 ///
 /// The `type_name` strings come from `one_collect`'s TDH decoder
 /// (`intype_to_field_info`) and follow the same naming conventions as the
-/// user_events tracefs decoder.  Doing this interpretation here — next to the
-/// decoder — keeps TDH type knowledge in one place and lets the encoder
+/// user_events tracefs decoder.  Doing this interpretation here, next to the
+/// decoder, keeps TDH type knowledge in one place and lets the encoder
 /// collapse to an exhaustive match over [`EtwAttributeValue`] with no silent
 /// `(type_name, len)` fall-throughs.
 ///
 /// Type-name reference (from `one_collect::etw::tdh::intype_to_field_info`):
 /// `s8`/`s16`/`s32`/`s64` (signed, with `HEXINT*` folded into `s32`/`s64`),
-/// `u8`/`u16`/`u32`/`u64` (unsigned, with `BOOLEAN` folded into `u8`),
+/// `u8`/`u16`/`u32`/`u64` (unsigned, with a Win32 `BOOL` / TraceLogging
+/// `Bool32` (`TDH_INTYPE_BOOLEAN`) mapped to a 4-byte `u32`, and a 1-byte
+/// boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`) mapped to `u8`),
 /// `float`/`double`, `string`/`wstring`/`counted_string`/`counted_wstring`
 /// (text), `pointer` (4 or 8 bytes), `filetime` (8 bytes), `guid` (16),
 /// `systemtime` (16), `binary` (SID / opaque), and `unsupported`.
@@ -357,8 +410,11 @@ fn interpret_field_value(type_name: &str, data: &[u8]) -> EtwAttributeValue {
             EtwAttributeValue::Int(i64::from_ne_bytes(data.try_into().expect("matched len==8")))
         }
 
-        // Unsigned integers.  Note: one_collect maps TDH_INTYPE_BOOLEAN to
-        // "u8", so boolean fields arrive here as a 0/1 integer.
+        // Unsigned integers.  Note: one_collect maps a 1-byte boolean
+        // (TDH_INTYPE_UINT8 + OutType::Boolean) to "u8", so 1-byte boolean
+        // fields arrive here as a 0/1 integer.  A Win32 BOOL / TraceLogging
+        // Bool32 (TDH_INTYPE_BOOLEAN) is a 4-byte value and arrives as "u32"
+        // (see the "u32" arm below).
         ("u8", 1) => EtwAttributeValue::Int(i64::from(data[0])),
         ("u16" | "unsigned short", 2) => EtwAttributeValue::Int(i64::from(u16::from_ne_bytes(
             data.try_into().expect("matched len==2"),
@@ -374,7 +430,9 @@ fn interpret_field_value(type_name: &str, data: &[u8]) -> EtwAttributeValue {
 
         // Explicit boolean spellings, kept for forward-compatibility in case a
         // future decoder emits a distinct "bool"/"boolean" type name.  With the
-        // current one_collect decoder these are unreachable (BOOLEAN → "u8").
+        // current one_collect decoder these are unreachable: a 1-byte boolean
+        // surfaces as "u8" and a Win32 BOOL / TraceLogging Bool32 surfaces as
+        // "u32".
         ("bool" | "boolean", 1) => EtwAttributeValue::Bool(data[0] != 0),
         ("bool" | "boolean", 4) => EtwAttributeValue::Bool(
             u32::from_ne_bytes(data.try_into().expect("matched len==4")) != 0,
@@ -491,54 +549,90 @@ fn decode_utf16le(data: &[u8]) -> String {
     out
 }
 
-/// Extract decoded fields from a TDH-decoded event.
+/// Decode an event's fields into owned [`DecodedField`]s.
 ///
-/// For each field in the event format, this function uses the format's
-/// `try_get_field_data_closure` to correctly resolve dynamic offsets
-/// (e.g. for null-terminated strings that shift subsequent field positions),
-/// then interprets the field bytes into a typed [`EtwAttributeValue`] via
-/// [`interpret_field_value`].
+/// Uses [`one_collect::event::EventFormat::fields_with_data`], which walks the
+/// payload exactly once (carrying a running offset) and yields each field
+/// paired with its bytes. Variable-length fields (strings / counted arrays)
+/// are therefore scanned a single time, making extraction an O(n) pass rather
+/// than the O(n^2) cost of resolving each field independently. The single pass
+/// also needs no per-schema reader cache: there are no boxed closures to build
+/// or reuse.
+///
+/// Each field's bytes are interpreted into a typed [`EtwAttributeValue`]
+/// straight from the borrowed slice, with no intermediate copy. Numeric fields
+/// allocate nothing; string and bytes fields allocate only their owned value.
 ///
 /// # Safety
 ///
-/// This function is called during the `ProcessTrace` callback while
-/// the `EVENT_RECORD` (and its `UserData`) is still valid.
+/// Called during the `ProcessTrace` callback while the `EVENT_RECORD` (and its
+/// `UserData`) is still valid. `fields_with_data` reads only within the payload
+/// slice and yields an empty slice for any field (and all following) whose
+/// length can't be resolved. It cannot panic here because TDH emits only
+/// fixed / string / counted-array layouts, never the `__rel_loc`/`__data_loc`
+/// types that hit `todo!()` in `get_data_with_offset_direct`. So no
+/// `catch_unwind` is needed in this `extern "system"` callback.
 fn extract_decoded_fields(
     format: &one_collect::event::EventFormat,
     event_data: &[u8],
 ) -> Vec<DecodedField> {
-    let mut fields = Vec::with_capacity(format.fields().len());
-
-    for field in format.fields() {
-        // The data closure is allocated only for the `LocationType` variants
-        // that TDH produces — `Static`, `StaticString`, `StaticUTF16String`,
-        // and `StaticLenPrefixArray` — all of which are handled without
-        // panicking.  The `todo!()` paths in `get_data_with_offset_direct`
-        // are reached only for `DynRelative`/`DynAbsolute`, which are a Linux
-        // tracefs (`__rel_loc`) concept that `intype_to_field_info` never
-        // emits for ETW.  So no panic can occur here, and no `catch_unwind`
-        // is needed in this `extern "system"` (non-unwinding) callback.
-        let data = if let Some(mut data_fn) = format.try_get_field_data_closure(&field.name) {
-            data_fn(event_data).to_vec()
-        } else {
-            Vec::new()
-        };
-
-        // Interpret the raw bytes into a typed value once, here on the
-        // decode thread, so the encoder never re-parses bytes or string-
-        // matches on a `type_name`.
-        let value = interpret_field_value(&field.type_name, &data);
-
-        fields.push(DecodedField {
+    format
+        .fields_with_data(event_data)
+        .map(|(field, bytes)| DecodedField {
             name: field.name.clone(),
-            value,
-        });
-    }
-
-    fields
+            value: interpret_field_value(&field.type_name, bytes),
+        })
+        .collect()
 }
 
-// ── Per-session state ────────────────────────────────────────────────────────
+// -- Per-session telemetry bridge ---------------------------------------------
+
+/// Counters written by the `!Send` `ProcessTrace` callback and read by the
+/// async per-core receivers.
+///
+/// One instance exists per `session_name`, shared by `Arc`. The producer (the
+/// blocking `ProcessTrace` OS thread) cannot touch the async `MetricSet`, so it
+/// only ever `fetch_add`s into these atomics. The async receiver side
+/// `swap(0)`s the running totals on each `CollectTelemetry` tick (and before
+/// any terminal snapshot) and folds the delta into the `MetricSet`.
+///
+/// `Relaxed` ordering is sufficient: each field is an independent running
+/// total with no happens-before relationship to other state.
+#[derive(Debug, Default)]
+pub(super) struct SessionWideMetrics {
+    /// Every event the `ProcessTrace` callback observed from the trace
+    /// session, counted *before* any per-core channel send is attempted.
+    /// Published as `received_events_total` in the metric set.
+    ///
+    /// This is the producer-side ingress denominator. The slow-worker drop
+    /// rate is computable as `dropped_slow_worker / total`. See the
+    /// counter-algebra note on `EtwReceiverMetrics` for the exact relationships.
+    pub total: AtomicU64,
+    /// Events dropped because a per-core channel was full (internal backpressure).
+    /// Published as `received_events_dropped_slow_worker` in the metric set.
+    pub dropped_slow_worker: AtomicU64,
+    /// Events whose TDH decode failed (`received_events_invalid`).
+    pub decode_failed: AtomicU64,
+    /// Kernel-side ETW events lost (buffer overrun) before `one_collect` ever
+    /// saw them, from `TraceStats::events_lost`. A background poller converts
+    /// the cumulative session counter into per-interval deltas and
+    /// `fetch_add`s them here. Published as `received_events_lost_kernel`.
+    /// Distinct from `dropped_slow_worker`, which is our own downstream loss.
+    pub kernel_events_lost: AtomicU64,
+    /// Real-time delivery buffers lost (consumer too slow to drain the ETW
+    /// real-time buffers), from `TraceStats::real_time_buffers_lost`.
+    /// Published as `kernel_real_time_buffers_lost`.
+    pub kernel_real_time_buffers_lost: AtomicU64,
+    /// Log buffers that could not be flushed, from
+    /// `TraceStats::log_buffers_lost`. Published as `kernel_log_buffers_lost`.
+    pub kernel_log_buffers_lost: AtomicU64,
+    /// Total ETW buffers written by the session, from
+    /// `TraceStats::buffers_written`. A throughput/health denominator rather
+    /// than a loss signal. Published as `kernel_buffers_written`.
+    pub kernel_buffers_written: AtomicU64,
+}
+
+// -- Per-session state --------------------------------------------------------
 
 /// State for a single ETW session keyed by `session_name`.
 struct SessionEntry {
@@ -550,6 +644,136 @@ struct SessionEntry {
     /// Pre-allocated consumer channels, one per core.  Popped one at a time
     /// as each per-core receiver factory call arrives.
     pool: Vec<mpsc::Receiver<EtwEventData>>,
+    /// Shared atomic counters bridging the `!Send` `ProcessTrace` callback to
+    /// the async receivers. Cloned to every per-core subscriber.
+    telemetry: Arc<SessionWideMetrics>,
+}
+
+/// Snapshot of ETW cumulative trace counters returned by `query_stats`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TraceStatsSnapshot {
+    events_lost: u64,
+    real_time_buffers_lost: u64,
+    log_buffers_lost: u64,
+    buffers_written: u64,
+}
+
+/// Per-poller baseline state used to compute monotonic deltas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct PollerBaselines {
+    last: TraceStatsSnapshot,
+    query_failed_logged: bool,
+}
+
+impl PollerBaselines {
+    /// Mark a query failure and report whether the caller should emit a warn.
+    fn on_query_failed(&mut self) -> bool {
+        if self.query_failed_logged {
+            return false;
+        }
+        self.query_failed_logged = true;
+        true
+    }
+
+    /// Mark a successful query and report whether the caller should emit
+    /// a single recovery info log.
+    fn on_query_recovered(&mut self) -> bool {
+        if !self.query_failed_logged {
+            return false;
+        }
+        self.query_failed_logged = false;
+        true
+    }
+}
+
+/// Convert cumulative ETW stats into per-interval deltas and publish to the
+/// shared session atomics.
+fn publish_trace_stats_delta(
+    telemetry: &SessionWideMetrics,
+    baselines: &mut PollerBaselines,
+    stats: TraceStatsSnapshot,
+) {
+    /// Compute the delta against the stored baseline, advance the baseline to
+    /// the new cumulative value, and add the delta to the shared atomic.
+    fn accumulate(atomic: &AtomicU64, baseline: &mut u64, current: u64) {
+        let delta = current.saturating_sub(*baseline);
+        *baseline = current;
+        if delta > 0 {
+            let _ = atomic.fetch_add(delta, Ordering::Relaxed);
+        }
+    }
+
+    accumulate(
+        &telemetry.kernel_events_lost,
+        &mut baselines.last.events_lost,
+        stats.events_lost,
+    );
+    accumulate(
+        &telemetry.kernel_real_time_buffers_lost,
+        &mut baselines.last.real_time_buffers_lost,
+        stats.real_time_buffers_lost,
+    );
+    accumulate(
+        &telemetry.kernel_log_buffers_lost,
+        &mut baselines.last.log_buffers_lost,
+        stats.log_buffers_lost,
+    );
+    accumulate(
+        &telemetry.kernel_buffers_written,
+        &mut baselines.last.buffers_written,
+        stats.buffers_written,
+    );
+}
+
+fn run_trace_stats_poller_loop<F>(
+    handle_slot: Arc<AtomicU64>,
+    telemetry: Arc<SessionWideMetrics>,
+    poll_stop: Arc<AtomicBool>,
+    poll_interval: Duration,
+    poll_session_name: &str,
+    mut query_stats: F,
+) where
+    F: FnMut(u64) -> Result<TraceStatsSnapshot, String>,
+{
+    let mut baselines = PollerBaselines::default();
+
+    while !poll_stop.load(Ordering::Relaxed) {
+        std::thread::sleep(poll_interval);
+        if poll_stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let handle = handle_slot.load(Ordering::SeqCst);
+        if handle == 0 {
+            continue; // session not started yet
+        }
+
+        match query_stats(handle) {
+            Ok(stats) => {
+                if baselines.on_query_recovered() {
+                    otel_info!(
+                        "etw.query_stats.recovered",
+                        session_name = poll_session_name,
+                        handle = handle,
+                        message = "ETW trace-stats polling recovered",
+                    );
+                }
+
+                publish_trace_stats_delta(&telemetry, &mut baselines, stats);
+            }
+            Err(e) => {
+                if baselines.on_query_failed() {
+                    otel_warn!(
+                        "etw.query_stats.failed",
+                        session_name = poll_session_name,
+                        handle = handle,
+                        error = %e,
+                        message = "Failed to query ETW trace stats; kernel loss metrics will stall until polling recovers",
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Process-global session registry.  Keyed by `session_name` so that:
@@ -560,7 +784,7 @@ struct SessionEntry {
 ///   `InvalidUserConfig` error instead of silently sharing or failing with
 ///   a misleading "pool exhausted" message.
 ///
-/// We use `Mutex<HashMap<…>>` rather than `OnceLock` / `LazyLock` because:
+/// We use `Mutex<HashMap<...>>` rather than `OnceLock` / `LazyLock` because:
 /// - Initialization is fallible (GUID parsing, thread spawn).
 /// - We need post-init mutation (`Vec::pop`).
 static SESSIONS: Mutex<Option<HashMap<String, SessionEntry>>> = Mutex::new(None);
@@ -577,7 +801,11 @@ static SESSIONS: Mutex<Option<HashMap<String, SessionEntry>>> = Mutex::new(None)
 ///    TraceLogging events.
 /// 5. Calls `parse_until` which blocks until the process exits.
 #[allow(unsafe_code)]
-fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> Result<(), Error> {
+fn spawn_etw_session(
+    config: &Config,
+    txs: Vec<mpsc::Sender<EtwEventData>>,
+    telemetry: Arc<SessionWideMetrics>,
+) -> Result<(), Error> {
     // Resolve all provider GUIDs up-front so configuration errors are
     // reported synchronously (before the session thread is spawned).
     let resolved_providers: Vec<(Guid, u8, Option<u64>)> = config
@@ -591,6 +819,7 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
         .collect::<Result<Vec<_>, Error>>()?;
 
     let session_name = config.session_name.clone();
+    let (ready_tx, ready_rx) = std_mpsc::sync_channel(1);
 
     // Detach the session thread; it runs for the lifetime of the process.
     let _ = std::thread::Builder::new()
@@ -612,13 +841,14 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
             // timestamp, provider GUID, etc.) before dispatching each event.
             let ancillary = session.ancillary_data();
 
-            // Shared round-robin counter, drop counter, and sender list.
-            // All provider callbacks run on the single `ProcessTrace` thread,
-            // so `Cell` is safe — no atomics or locking needed.  Sharing the
-            // counter ensures uniform core distribution even at startup when
-            // multiple providers would otherwise all start at index 0.
+            // Shared round-robin counter and sender list.  All provider
+            // callbacks run on the single `ProcessTrace` thread, so `Cell` is
+            // safe - no atomics or locking needed.  Sharing the counter ensures
+            // uniform core distribution even at startup when multiple providers
+            // would otherwise all start at index 0.  Drop accounting lives in
+            // the shared `SessionWideMetrics` atomics so the async side can
+            // surface it as a metric.
             let next: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-            let dropped: Rc<Cell<u64>> = Rc::new(Cell::new(0));
             let closed_logged: Rc<Vec<Cell<bool>>> =
                 Rc::new((0..txs.len()).map(|_| Cell::new(false)).collect());
             let txs: Rc<Vec<mpsc::Sender<EtwEventData>>> = Rc::new(txs);
@@ -650,10 +880,10 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
 
                 let ancillary = ancillary.clone();
                 let next = Rc::clone(&next);
-                let dropped = Rc::clone(&dropped);
                 let closed_logged = Rc::clone(&closed_logged);
                 let txs = Rc::clone(&txs);
                 let decoder = Rc::clone(&decoder);
+                let telemetry = Arc::clone(&telemetry);
 
                 wide_event.add_callback(move |_event_data| {
                     // Read header metadata from AncillaryData (populated
@@ -675,7 +905,7 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     // default value declared here.
                     let mut level = 0u8;
                     let mut keywords = 0u64;
-                    let mut activity_id = [0u8; 16];
+                    let mut activity_id = CanonicalGuid::default();
                     let mut event_name = String::new();
                     let mut decoded_fields = Vec::new();
 
@@ -683,27 +913,36 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                         level = record.EventHeader.EventDescriptor.Level;
                         keywords = record.EventHeader.EventDescriptor.Keyword;
 
-                        // Extract Activity ID from the EVENT_RECORD header.
-                        // The GUID is {data1: u32, data2: u16, data3: u16,
-                        // data4: [u8;8]} which we flatten to 16 bytes in
-                        // standard GUID byte order.
+                        // Extract the Activity ID from the EVENT_RECORD header
+                        // and convert it into canonical (big-endian display)
+                        // byte order once, here at the session boundary. The
+                        // GUID fields {data1: u32, data2: u16, data3: u16,
+                        // data4: [u8;8]} are stored little-endian in memory;
+                        // `from_guid_parts` byte-swaps the first three so the
+                        // encoder only needs to render hex/dashes.
                         let g = &record.EventHeader.ActivityId;
-                        activity_id[0..4].copy_from_slice(&g.data1.to_ne_bytes());
-                        activity_id[4..6].copy_from_slice(&g.data2.to_ne_bytes());
-                        activity_id[6..8].copy_from_slice(&g.data3.to_ne_bytes());
-                        activity_id[8..16].copy_from_slice(&g.data4);
+                        activity_id =
+                            CanonicalGuid::from_guid_parts(g.data1, g.data2, g.data3, g.data4);
 
                         // TDH decode: attempt to decode TraceLogging event
-                        // schema.  Any failure (NotFound for manifest-based
+                        // schema.  A failure (NotFound for manifest-based
                         // events, or other decode errors) leaves the empty
-                        // defaults in place — future work will add manifest
-                        // decoding with a (Provider, Id, Version) cache key.
-                        if let Ok(result) = decoder.borrow_mut().decode(record) {
-                            event_name = result.event_name.unwrap_or("").to_owned();
-                            decoded_fields = extract_decoded_fields(
-                                result.event_data.format(),
-                                result.event_data.event_data(),
-                            );
+                        // defaults in place and is counted via
+                        // `received_events_invalid` - the event is still
+                        // forwarded with empty `decoded_fields`.  Future work
+                        // will add manifest decoding with a
+                        // (Provider, Id, Version) cache key.
+                        match decoder.borrow_mut().decode(record) {
+                            Ok(result) => {
+                                event_name = result.event_name.unwrap_or("").to_owned();
+                                decoded_fields = extract_decoded_fields(
+                                    result.event_data.format(),
+                                    result.event_data.event_data(),
+                                );
+                            }
+                            Err(_) => {
+                                let _ = telemetry.decode_failed.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
 
@@ -712,7 +951,7 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     let qpc_ticks = anc.time();
                     let unix_ns = qpc_ref.qpc_to_unix_ns(qpc_ticks);
                     let data = EtwEventData {
-                        provider_id: anc.provider().to_bytes(),
+                        provider_id: CanonicalGuid::from(anc.provider()),
                         timestamp: unix_ns as u64,
                         process_id: anc.pid(),
                         thread_id: anc.tid(),
@@ -732,29 +971,25 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                     let i = next.get();
                     next.set(i.wrapping_add(1));
 
+                    // Count every event the session produced, *before* the
+                    // send is attempted. This is the producer-side ingress
+                    // denominator (`received_events_total` in the metric set).
+                    // The slow-worker drop rate is therefore
+                    // `dropped_slow_worker / total`.
+                    let _ = telemetry.total.fetch_add(1, Ordering::Relaxed);
+
                     // Best-effort send; if this core's channel is full the
                     // event is dropped from the pipeline entirely (each event
                     // is assigned to exactly one core via round-robin).
                     match txs[i % txs.len()].try_send(data) {
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(_)) => {
-                            let count = dropped.get() + 1;
-                            dropped.set(count);
-                            // TODO: Report dropped events as a metric counter
-                            // instead of a log line.  MetricSet is not directly
-                            // usable here because this callback runs on the
-                            // blocking ProcessTrace OS thread (!Send context).
-                            // Consider an AtomicU64 that the async receiver
-                            // side periodically reads and reports via MetricSet.
-                            //
-                            // Rate-limited log: first drop, then every 10,000th.
-                            if count == 1 || count.is_multiple_of(10_000) {
-                                otel_warn!(
-                                    "etw.event.dropped",
-                                    total_dropped = count,
-                                    core = i % txs.len(),
-                                );
-                            }
+                            // Bump the shared atomic so the async receiver can
+                            // surface it as `received_events_dropped_slow_worker`
+                            // on the next `CollectTelemetry`.
+                            let _ = telemetry
+                                .dropped_slow_worker
+                                .fetch_add(1, Ordering::Relaxed);
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             // The receiver for this core has been dropped
@@ -775,11 +1010,91 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
                 session.add_event(wide_event, None);
             }
 
-            // `parse_until` blocks on `ProcessTrace`.  We never signal stop,
+            // Capture the live ETW session handle so a background poller can
+            // query kernel-side loss counters while `parse_until` blocks. The
+            // handle is only valid for the running session; 0 means the
+            // session has not started yet.
+            //
+            // The started_callback fires when the ETW session is ACTUALLY
+            // started (inside parse_until), not when the thread is initialized.
+            // This is where we signal readiness to the caller: the session is
+            // now live, the handle is valid, and event delivery is beginning.
+            let handle_slot = Arc::new(AtomicU64::new(0));
+            {
+                let handle_slot = handle_slot.clone();
+                let ready_tx_for_started = ready_tx.clone();
+                session.add_started_callback(move |ctx| {
+                    handle_slot.store(ctx.handle(), Ordering::SeqCst);
+
+                    // Signal to the caller that the ETW session is actually
+                    // ready: the handle is now populated, the poller can
+                    // query stats, and event callbacks are active.
+                    let _ = ready_tx_for_started.send(Ok(()));
+                });
+            }
+
+            // Background poller: `query_stats` returns cumulative, monotonic
+            // counters for the running session. We convert each into a
+            // per-interval delta and `fetch_add` into the shared atomics, which
+            // the async side then claims via the existing `swap(0)` model. The
+            // poller lives for the duration of `parse_until` and is stopped and
+            // joined immediately after it returns.
+            let poll_stop = Arc::new(AtomicBool::new(false));
+            let poller = {
+                let handle_slot = handle_slot.clone();
+                let telemetry = Arc::clone(&telemetry);
+                let poll_stop = poll_stop.clone();
+                let poll_session_name = session_name.clone();
+                match std::thread::Builder::new()
+                    .name("etw-drop-poller".into())
+                    .spawn(move || {
+                        run_trace_stats_poller_loop(
+                            handle_slot,
+                            telemetry,
+                            poll_stop,
+                            Duration::from_secs(1),
+                            poll_session_name.as_str(),
+                            |handle| {
+                                // `one_collect` exposes the native ETW counters
+                                // as `u32`; widen to `u64` here at the consumer
+                                // boundary so the shared atomics can accumulate
+                                // deltas without overflow.
+                                etw::query_stats(handle)
+                                    .map(|stats| TraceStatsSnapshot {
+                                        events_lost: u64::from(stats.events_lost),
+                                        real_time_buffers_lost: u64::from(
+                                            stats.real_time_buffers_lost,
+                                        ),
+                                        log_buffers_lost: u64::from(stats.log_buffers_lost),
+                                        buffers_written: u64::from(stats.buffers_written),
+                                    })
+                                    .map_err(|e| e.to_string())
+                            },
+                        );
+                    }) {
+                    Ok(handle) => Some(handle),
+                    Err(e) => {
+                        let _ = ready_tx
+                            .send(Err(format!("failed to spawn ETW trace-stats poller: {e}")));
+                        return;
+                    }
+                }
+            };
+
+            // `parse_until` blocks on `ProcessTrace`, which also triggers the
+            // started_callback where we signal readiness. We never signal stop,
             // so the session runs until the process exits.
             // TODO: Surface startup failures via a oneshot readiness channel
             // once the one-collect API stabilizes (TDH decoding work).
             let result = session.parse_until(&session_name, || false);
+
+            // Session ended: stop the poller and join it so the thread is torn
+            // down within one poll interval.
+            poll_stop.store(true, Ordering::Relaxed);
+            if let Some(poller) = poller {
+                let _ = poller.join();
+            }
+
             if let Err(ref e) = result {
                 otel_error!(
                     "etw.parse_until.failed",
@@ -796,10 +1111,17 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
             message: format!("failed to spawn ETW session thread: {e}"),
         })?;
 
+    ready_rx
+        .recv()
+        .map_err(|e| Error::InternalError {
+            message: format!("ETW session startup signal failed: {e}"),
+        })?
+        .map_err(|message| Error::InternalError { message })?;
+
     Ok(())
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+// -- Public API ---------------------------------------------------------------
 
 /// Acquire one consumer channel from the ETW session for the given
 /// `session_name`.
@@ -827,7 +1149,7 @@ fn spawn_etw_session(config: &Config, txs: Vec<mpsc::Sender<EtwEventData>>) -> R
 pub(super) fn subscribe(
     config: &Config,
     num_cores: usize,
-) -> Result<mpsc::Receiver<EtwEventData>, Error> {
+) -> Result<(mpsc::Receiver<EtwEventData>, Arc<SessionWideMetrics>), Error> {
     let mut guard = SESSIONS.lock().map_err(|e| Error::InternalError {
         message: format!("ETW sessions lock poisoned: {e}"),
     })?;
@@ -836,16 +1158,21 @@ pub(super) fn subscribe(
 
     let entry = match sessions.entry(config.session_name.clone()) {
         Entry::Vacant(v) => {
-            // First call for this session_name — initialize the session.
+            // First call for this session_name: initialize the session.
             let (txs, rxs): (Vec<_>, Vec<_>) = (0..num_cores)
                 .map(|_| mpsc::channel(EVENT_CHANNEL_CAPACITY))
                 .unzip();
 
-            spawn_etw_session(config, txs)?;
+            // Shared telemetry bridge for this session_name, cloned into the
+            // ProcessTrace callback and into every per-core subscriber.
+            let telemetry = Arc::new(SessionWideMetrics::default());
+
+            spawn_etw_session(config, txs, Arc::clone(&telemetry))?;
 
             v.insert(SessionEntry {
                 config: config.clone(),
                 pool: rxs,
+                telemetry,
             })
         }
         Entry::Occupied(o) => {
@@ -870,7 +1197,8 @@ pub(super) fn subscribe(
         }
     };
 
-    entry.pool.pop().ok_or_else(|| {
+    let telemetry = Arc::clone(&entry.telemetry);
+    let rx = entry.pool.pop().ok_or_else(|| {
         Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
             error: format!(
                 "ETW session_name '{}' is already in use; \
@@ -878,7 +1206,9 @@ pub(super) fn subscribe(
                 config.session_name,
             ),
         }))
-    })
+    })?;
+
+    Ok((rx, telemetry))
 }
 
 #[cfg(test)]
@@ -904,7 +1234,14 @@ mod tests {
         ) -> Self {
             let mut guard = SESSIONS.lock().expect("lock not poisoned");
             let sessions = guard.get_or_insert_with(HashMap::new);
-            let _ = sessions.insert(name.to_string(), SessionEntry { config, pool });
+            let _ = sessions.insert(
+                name.to_string(),
+                SessionEntry {
+                    config,
+                    pool,
+                    telemetry: Arc::new(SessionWideMetrics::default()),
+                },
+            );
             Self {
                 name: name.to_string(),
             }
@@ -934,7 +1271,7 @@ mod tests {
         }
     }
 
-    // ── Session registry ─────────────────────────────
+    // -- Session registry -----------------------------
 
     #[test]
     fn subscribe_rejects_exhausted_session_name() {
@@ -972,7 +1309,7 @@ mod tests {
         let result2 = subscribe(&config, 2);
         assert!(result2.is_ok(), "second subscribe should succeed");
 
-        // Third pop — pool exhausted — should return InvalidUserConfig.
+        // Third pop, pool exhausted, should return InvalidUserConfig.
         let err = subscribe(&config, 2).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1022,7 +1359,7 @@ mod tests {
         let _guard = TestSession::insert_with_config("test-mismatch", vec![rx], original_config);
 
         // Attempt to subscribe with a different provider config but the
-        // same session_name — this should be rejected.
+        // same session_name; this should be rejected.
         let different_config = Config {
             session_name: "test-mismatch".to_string(),
             providers: vec![ProviderConfig {
@@ -1046,7 +1383,7 @@ mod tests {
         );
     }
 
-    // ── GUID parsing ─────────────────────────────────
+    // -- GUID parsing ---------------------------------
 
     #[test]
     fn parse_guid_standard_format() {
@@ -1078,7 +1415,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Field value interpretation ───────────────────
+    // -- Field value interpretation -------------------
 
     #[test]
     fn interpret_signed_integers() {
@@ -1193,7 +1530,7 @@ mod tests {
             interpret_field_value("filetime", &FILETIME_TICKS_TO_UNIX_EPOCH.to_ne_bytes()),
             EtwAttributeValue::Int(0)
         );
-        // One second (10,000,000 ticks) past the Unix epoch → 1e9 ns.
+        // One second (10,000,000 ticks) past the Unix epoch -> 1e9 ns.
         let one_sec_after = FILETIME_TICKS_TO_UNIX_EPOCH + 10_000_000;
         assert_eq!(
             interpret_field_value("filetime", &one_sec_after.to_ne_bytes()),
@@ -1235,7 +1572,7 @@ mod tests {
         );
     }
 
-    // ── Trace level mapping ──────────────────────────
+    // -- Trace level mapping --------------------------
 
     #[test]
     fn trace_level_mapping() {
@@ -1250,5 +1587,176 @@ mod tests {
             etw::LEVEL_INFORMATION
         );
         assert_eq!(trace_level_to_etw(&TraceLevel::Verbose), etw::LEVEL_VERBOSE);
+    }
+
+    // -- Single-pass field extraction -----------------
+
+    /// Builds an all-fixed-size `u32` schema with the given field names.
+    fn u32_schema(names: &[&str]) -> one_collect::event::EventFormat {
+        use one_collect::event::{EventField, EventFormat, LocationType};
+        let mut format = EventFormat::new();
+        for (i, name) in names.iter().enumerate() {
+            format.add_field(EventField::new(
+                (*name).to_string(),
+                "u32".to_string(),
+                LocationType::Static,
+                i * 4,
+                4,
+            ));
+        }
+        format
+    }
+
+    #[test]
+    fn extract_decodes_all_fixed_fields_in_order() {
+        // A single forward pass yields every field, in schema order, with its
+        // interpreted value.
+        let format = u32_schema(&["a", "b"]);
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_ne_bytes());
+        data.extend_from_slice(&2u32.to_ne_bytes());
+
+        let fields = extract_decoded_fields(&format, &data);
+
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "a");
+        assert_eq!(fields[0].value, EtwAttributeValue::Int(1));
+        assert_eq!(fields[1].name, "b");
+        assert_eq!(fields[1].value, EtwAttributeValue::Int(2));
+    }
+
+    #[test]
+    fn extract_is_deterministic_across_calls() {
+        // The extraction owns no per-schema state, so repeated calls on the
+        // same schema and payload produce identical output.
+        let format = u32_schema(&["x"]);
+        let data = 9u32.to_ne_bytes();
+
+        let first = extract_decoded_fields(&format, &data);
+        let second = extract_decoded_fields(&format, &data);
+
+        assert_eq!(first, second);
+        assert_eq!(first[0].value, EtwAttributeValue::Int(9));
+    }
+
+    #[test]
+    fn extract_handles_variable_length_prefix() {
+        // A leading NUL-terminated string shifts the fixed field that follows;
+        // the single pass carries the running offset so the trailing u64 is
+        // read from the correct position.
+        use one_collect::event::{EventField, EventFormat, LocationType};
+
+        let mut format = EventFormat::new();
+        format.add_field(EventField::new(
+            "s".to_string(),
+            "string".to_string(),
+            LocationType::StaticString,
+            0,
+            0,
+        ));
+        format.add_field(EventField::new(
+            "n".to_string(),
+            "u64".to_string(),
+            LocationType::Static,
+            0,
+            8,
+        ));
+
+        let mut data = Vec::new();
+        data.extend_from_slice(b"hello\0");
+        data.extend_from_slice(&123u64.to_ne_bytes());
+
+        let fields = extract_decoded_fields(&format, &data);
+
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "s");
+        assert_eq!(fields[0].value, EtwAttributeValue::Str("hello".to_string()));
+        assert_eq!(fields[1].name, "n");
+        assert_eq!(fields[1].value, EtwAttributeValue::Int(123));
+    }
+
+    // -- Trace-stats poller edge cases --------------
+
+    #[test]
+    fn trace_stats_first_poll_after_start_publishes_full_sample() {
+        let telemetry = SessionWideMetrics::default();
+        let mut baselines = PollerBaselines::default();
+
+        publish_trace_stats_delta(
+            &telemetry,
+            &mut baselines,
+            TraceStatsSnapshot {
+                events_lost: 7,
+                real_time_buffers_lost: 3,
+                log_buffers_lost: 2,
+                buffers_written: 11,
+            },
+        );
+
+        assert_eq!(telemetry.kernel_events_lost.load(Ordering::Relaxed), 7);
+        assert_eq!(
+            telemetry
+                .kernel_real_time_buffers_lost
+                .load(Ordering::Relaxed),
+            3
+        );
+        assert_eq!(telemetry.kernel_log_buffers_lost.load(Ordering::Relaxed), 2);
+        assert_eq!(telemetry.kernel_buffers_written.load(Ordering::Relaxed), 11);
+    }
+
+    #[test]
+    fn trace_stats_query_failure_then_recovery_is_one_shot() {
+        let mut baselines = PollerBaselines::default();
+
+        // First failure should log.
+        assert!(baselines.on_query_failed());
+        // Repeated failures should be suppressed.
+        assert!(!baselines.on_query_failed());
+        // First success after failure should log recovery.
+        assert!(baselines.on_query_recovered());
+        // Repeated successes should be suppressed.
+        assert!(!baselines.on_query_recovered());
+    }
+
+    #[test]
+    fn trace_stats_poller_loop_stops_and_joins() {
+        let handle_slot = Arc::new(AtomicU64::new(77));
+        let telemetry = Arc::new(SessionWideMetrics::default());
+        let poll_stop = Arc::new(AtomicBool::new(false));
+        let query_calls = Arc::new(AtomicU64::new(0));
+
+        let query_calls_clone = Arc::clone(&query_calls);
+        let poller = std::thread::spawn({
+            let handle_slot = Arc::clone(&handle_slot);
+            let telemetry = Arc::clone(&telemetry);
+            let poll_stop = Arc::clone(&poll_stop);
+            move || {
+                run_trace_stats_poller_loop(
+                    handle_slot,
+                    telemetry,
+                    poll_stop,
+                    Duration::from_millis(5),
+                    "test-session",
+                    |handle| {
+                        let _ = query_calls_clone.fetch_add(1, Ordering::Relaxed);
+                        Ok(TraceStatsSnapshot {
+                            events_lost: handle,
+                            real_time_buffers_lost: 0,
+                            log_buffers_lost: 0,
+                            buffers_written: 0,
+                        })
+                    },
+                )
+            }
+        });
+
+        std::thread::sleep(Duration::from_millis(25));
+        poll_stop.store(true, Ordering::Relaxed);
+
+        poller.join().expect("poller thread should join cleanly");
+        assert!(
+            query_calls.load(Ordering::Relaxed) > 0,
+            "poller should have executed at least one query before stop",
+        );
     }
 }

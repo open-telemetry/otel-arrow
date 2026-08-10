@@ -230,7 +230,7 @@ impl ViewMarshaler for NormalViewMarshaler {
 
                 for span in scope_span.spans.iter() {
                     // write line " {name} {trace_id} {span_id} {attributes}"
-                    _ = write!(&mut report, "      Name: {name}, ", name = &span.name,);
+                    _ = write!(&mut report, "      Name: {name}, ", name = span.name,);
                     if let Ok(trace_id) = String::from_utf8(span.trace_id.clone()) {
                         _ = write!(&mut report, "Trace ID: {trace_id}, ");
                     }
@@ -255,7 +255,7 @@ impl ViewMarshaler for NormalViewMarshaler {
         _ = write!(
             &mut report,
             "Span #{index} -> Name: {name}, ",
-            name = &span.name,
+            name = span.name,
         );
         if let Ok(trace_id) = String::from_utf8(span.trace_id.clone()) {
             _ = write!(&mut report, "Trace ID: {trace_id}, ");

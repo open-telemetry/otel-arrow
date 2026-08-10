@@ -1,4 +1,0 @@
-change_type: enhancement
-component: query-engine
-note: "Adds `drop` operator to OPL for unconditionally discarding telemetry data"
-issues: [3253]
