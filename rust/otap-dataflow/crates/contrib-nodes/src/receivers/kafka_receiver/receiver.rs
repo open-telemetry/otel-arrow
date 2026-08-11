@@ -518,7 +518,7 @@ impl KafkaReceiver {
         // ack/commit activity, not only on rebalances.
         self.metrics
             .records_in_flight
-            .set(self.offset_tracker.total_pending() as u64);
+            .observe(self.offset_tracker.total_pending() as u64);
 
         let delta = self.rebalance_state.drain_metrics();
         if !delta.is_empty() {
@@ -529,11 +529,14 @@ impl KafkaReceiver {
             self.metrics
                 .partition_revocations
                 .add(delta.partition_revocations);
-            // `partitions_assigned` is a gauge: set it to the current owned count
-            // snapshot rather than accumulating. Folded only when a rebalance
-            // actually occurred (guarded by `is_empty`, which ignores this
-            // gauge-only field) to avoid redundant writes on idle ticks.
-            self.metrics.partitions_assigned.set(delta.partitions_owned);
+            // `partitions_assigned` is an observed up/down counter: observe the
+            // current owned count snapshot rather than accumulating. Folded only
+            // when a rebalance actually occurred (guarded by `is_empty`, which
+            // ignores this observe-only field) to avoid redundant writes on idle
+            // ticks.
+            self.metrics
+                .partitions_assigned
+                .observe(delta.partitions_owned);
             self.metrics
                 .rebalance_commit_errors
                 .add(delta.rebalance_commit_errors);
@@ -784,8 +787,15 @@ impl KafkaReceiver {
                                 self.reconcile_rebalance_state();
                             }
                             // Drain any in-flight consumer-lag worker so we do not
-                            // abandon a running `spawn_blocking` task. send a cancellation
-                            // signal
+                            // abandon a running `spawn_blocking` task. Signal
+                            // cooperative cancellation, then wait for it bounded by
+                            // the tighter of the worker's own deadline and the
+                            // shutdown deadline. This is best-effort: the worker
+                            // only observes cancellation between its librdkafka
+                            // calls, so if it is parked mid-FFI when the bound
+                            // expires the wait returns while the worker (and its
+                            // `Arc` clone of the consumer) is still alive. See the
+                            // `Arc`-count note on the close below.
                             if let Some((handle, lag_deadline, lag_cancel)) =
                                 lag_refresh_in_flight.take()
                             {
@@ -798,16 +808,29 @@ impl KafkaReceiver {
                             // the shutdown deadline. Both `unsubscribe()` and the
                             // consumer's `Drop` (leave-group/close) are synchronous
                             // librdkafka FFI calls that can block indefinitely when
-                            // the broker is unreachable; running them inline (or
-                            // dropping the last `Arc` on this thread) would stall
-                            // this single-threaded runtime and hang the pipeline
-                            // past its deadline. We take the snapshot first, then
-                            // move the loop's `consumer` handle into a blocking task
-                            // so the final `Arc` drop (and thus the blocking close)
-                            // happens on the blocking pool, and wait only until the
-                            // deadline. If the close outruns the deadline the task
-                            // is left to finish on its own thread while the receiver
-                            // returns its terminal state.
+                            // the broker is unreachable; running them inline on this
+                            // single-threaded runtime would stall it and hang the
+                            // pipeline past its deadline. We take the snapshot
+                            // first, then move the loop's `consumer` handle into a
+                            // blocking task and wait only until the deadline.
+                            //
+                            // The drop below is NOT guaranteed to be the last
+                            // `Arc`: the lag-worker drain above is bounded and
+                            // best-effort, so a worker still mid-FFI can outlive it
+                            // and keep its own clone. When that happens this drop
+                            // just decrements the count, and the actual
+                            // leave-group/close runs later, on the lag worker's own
+                            // blocking thread, when it finally releases its clone.
+                            // Either way the close never runs on the loop thread, so
+                            // the runtime is never blocked, and if it outruns the
+                            // deadline the task is left to finish on its own thread
+                            // while the receiver returns its terminal state. This
+                            // refcount behavior is covered by the unit tests
+                            // `shutdown_bounded_drain_lets_cooperative_lag_worker_release_clone_before_close`
+                            // and
+                            // `shutdown_bounded_drain_can_leave_lag_worker_clone_alive_refcount_two`,
+                            // and the bounded-termination guarantee by
+                            // `shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline`.
                             let snapshot = self.metrics.snapshot();
                             _ = telemetry_cancel_handle.cancel().await;
                             let close_handle = tokio::task::spawn_blocking(move || {
@@ -1870,6 +1893,30 @@ mod tests {
             })
             .with_auto_offset_reset(AutoOffsetReset::Earliest)
             .with_isolation_level(IsolationLevel::ReadUncommitted);
+        KafkaReceiverConfig::try_from(builder).expect("test config valid")
+    }
+
+    /// Like [`manual_traces_config_no_timer`] but arms the opt-in consumer-lag
+    /// refresh timer at `lag_refresh_interval_ms`, so a lag-refresh worker is
+    /// periodically spawned and can be in flight when a shutdown arrives.
+    fn manual_traces_config_with_lag_refresh(
+        brokers: &str,
+        group_id: &str,
+        traces_topic: &str,
+        lag_refresh_interval_ms: u64,
+    ) -> KafkaReceiverConfig {
+        let builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
+            .with_traces(
+                SignalConfig::new(vec![traces_topic.to_string()])
+                    .with_encoding(MessageFormat::OtlpProto),
+            )
+            .with_commit(CommitConfig {
+                mode: ConfigCommitMode::Manual,
+                interval_ms: None,
+            })
+            .with_auto_offset_reset(AutoOffsetReset::Earliest)
+            .with_isolation_level(IsolationLevel::ReadUncommitted)
+            .with_lag_refresh_interval_ms(Some(lag_refresh_interval_ms));
         KafkaReceiverConfig::try_from(builder).expect("test config valid")
     }
 
@@ -3386,8 +3433,8 @@ mod tests {
     /// Scenario (consumer-group rebalancing): a rebalance assigns partitions and the receive loop reconciles.
     /// Guarantees: `reconcile_rebalance_state` folds the rebalance deltas into
     /// the metric set - counting the rebalance event and cumulative
-    /// acquisitions, and setting the `partitions_assigned` gauge to the current
-    /// owned count rather than accumulating it.
+    /// acquisitions, and observing the `partitions_assigned` up/down counter as
+    /// the current owned count rather than accumulating it.
     #[test]
     fn reconcile_folds_consumer_group_metrics() {
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
@@ -3403,14 +3450,14 @@ mod tests {
 
         receiver.reconcile_rebalance_state();
 
-        // Gauge reflects current ownership; cumulative counter reflects the
-        // acquisitions.
+        // Observed up/down counter reflects current ownership; cumulative
+        // counter reflects the acquisitions.
         assert_eq!(receiver.metrics.partitions_assigned.get(), 2);
         assert_eq!(receiver.metrics.partition_assignments.get(), 2);
 
         // A second reconcile with no further rebalance activity must not change
-        // the gauge (it is folded only when a rebalance occurred) or double
-        // count the counter.
+        // the observed value (it is folded only when a rebalance occurred) or
+        // double count the counter.
         receiver.reconcile_rebalance_state();
         assert_eq!(receiver.metrics.partitions_assigned.get(), 2);
         assert_eq!(receiver.metrics.partition_assignments.get(), 2);
@@ -3419,11 +3466,11 @@ mod tests {
     /// Scenario (operational visibility): a manual-commit receiver tracks several
     /// in-flight offsets, then acknowledges some, then has its partition revoked
     /// and purged, reconciling after each step.
-    /// Guarantees: the `records_in_flight` gauge reflects the current count of
-    /// tracked-but-uncommitted offsets at each reconcile -- it rises as offsets
-    /// are tracked, falls as they are acked and the watermark advances, and drops
-    /// to zero when the partition is purged -- giving operators a point-in-time
-    /// view of the receiver's outstanding depth.
+    /// Guarantees: the `records_in_flight` up/down counter reflects the current
+    /// count of tracked-but-uncommitted offsets at each reconcile -- it rises as
+    /// offsets are tracked, falls as they are acked and the watermark advances,
+    /// and drops to zero when the partition is purged -- giving operators a
+    /// current view of the receiver's outstanding depth.
     #[test]
     fn records_in_flight_gauge_reflects_outstanding_offsets() {
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
@@ -3445,7 +3492,7 @@ mod tests {
         assert_eq!(
             receiver.metrics.records_in_flight.get(),
             3,
-            "the gauge must report all three tracked in-flight offsets",
+            "the counter must report all three tracked in-flight offsets",
         );
 
         // Acknowledge the two lowest offsets; only offset 2 remains pending.
@@ -3455,7 +3502,7 @@ mod tests {
         assert_eq!(
             receiver.metrics.records_in_flight.get(),
             1,
-            "the gauge must drop as offsets are acked and the watermark advances",
+            "the counter must drop as offsets are acked and the watermark advances",
         );
 
         // Revoke and purge the partition; nothing remains in flight.
@@ -3466,7 +3513,7 @@ mod tests {
         assert_eq!(
             receiver.metrics.records_in_flight.get(),
             0,
-            "the gauge must drop to zero once the partition's state is purged",
+            "the counter must drop to zero once the partition's state is purged",
         );
     }
 
@@ -4849,57 +4896,130 @@ mod tests {
         .await;
     }
 
-    // Scenario: a consumer-lag worker is still in flight when a Shutdown arrives
-    // whose deadline is *earlier* than the worker's own lag deadline. The
-    // shutdown handler signals cooperative cancellation and then drains the
-    // worker bounded by `min(lag_deadline, shutdown_deadline)`.
-    // Guarantees: the drain never waits past the (earlier) shutdown deadline --
-    // a recently-started refresh cannot delay shutdown -- and because the worker
-    // observes the cancellation token it actually finishes rather than being
-    // abandoned, so it cannot outlive the receiver.
+    /// Scenario (lifecycle: drain and shutdown): a consumer-lag worker holding an
+    /// `Arc` clone of the consumer is still in flight at Shutdown, but it honors
+    /// cooperative cancellation and returns within the bounded drain.
+    /// Guarantees: after the shutdown handler's bounded drain
+    /// (`timeout_at(min(lag_deadline, shutdown_deadline), handle)`) resolves, the
+    /// worker has returned and released its clone, so only the loop's clone
+    /// remains (`strong_count == 1`). The subsequent consumer drop is therefore
+    /// the last `Arc` and is what triggers the leave-group/close -- the happy
+    /// path the shutdown ordering relies on.
     #[tokio::test(start_paused = true)]
-    async fn shutdown_lag_drain_is_bounded_by_shutdown_deadline_and_cancels_worker() {
+    async fn shutdown_bounded_drain_lets_cooperative_lag_worker_release_clone_before_close() {
         let start = tokio::time::Instant::now();
-        // Worker deadline is far out (15s); shutdown deadline is near (1s).
+        // Worker deadline far out (15s); shutdown deadline near (1s). The worker
+        // must finish via cancellation, not by hitting either deadline.
         let lag_deadline = start + LAG_REFRESH_TOTAL_DEADLINE;
         let shutdown_deadline = start + Duration::from_secs(1);
 
-        // A cooperatively-cancellable worker: it runs until the token is
-        // cancelled, then returns (mirrors `compute_consumer_lag` abandoning the
-        // refresh on cancellation). It must NOT complete on its own before the
-        // shutdown deadline, so the drain's boundedness is what we observe.
+        // Shared reference stands in for the consumer `Arc`: one clone held by
+        // the loop, one by the lag worker.
+        let consumer = Arc::new(());
+        let worker_clone = Arc::clone(&consumer);
+
+        // A cooperatively-cancellable worker (mirrors `compute_consumer_lag`
+        // abandoning the refresh on cancellation). It holds its clone until it
+        // observes cancellation and returns.
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let handle = tokio::task::spawn(async move {
             worker_cancel.cancelled().await;
+            drop(worker_clone);
             None::<f64>
         });
 
-        // Model the shutdown handler: cancel first, then drain bounded by the
-        // tighter of the two deadlines.
+        // Model the shutdown handler's bounded drain: cancel, then wait bounded by
+        // the tighter of the two deadlines.
         cancel.cancel();
         let bound = lag_deadline.min(shutdown_deadline);
         let drain = tokio::time::timeout_at(bound, handle).await;
 
-        // The worker observed the cancellation and completed within the bound,
-        // so the drain resolved with the worker's result (not a timeout).
-        let join_result = drain.expect("drain must not exceed the min-bounded deadline");
+        // The worker observed cancellation and completed within the bound, so the
+        // drain resolved with the worker's result (not a timeout).
+        let join_result = drain.expect("drain must not exceed the bounded deadline");
         assert_eq!(
             join_result.expect("worker must not panic"),
             None,
             "a cancelled lag worker abandons the refresh and returns None",
         );
 
-        // The drain finished no later than the shutdown deadline, well before
-        // the worker's own 15s lag deadline: shutdown is not delayed.
-        let elapsed = tokio::time::Instant::now();
-        assert!(
-            elapsed <= shutdown_deadline,
-            "drain must complete by the shutdown deadline, not the lag deadline",
+        // The worker released its clone before the drain returned, so the loop's
+        // clone is the only one left: the consumer drop here would be the last
+        // `Arc`.
+        assert_eq!(
+            Arc::strong_count(&consumer),
+            1,
+            "cooperative lag worker must release its clone before the close, \
+             leaving the loop clone as the last Arc",
         );
     }
 
-    // Scenario: a consumer-lag worker is in flight at Shutdown, but this time the
+    /// Scenario (lifecycle: drain and shutdown): a consumer-lag worker holding an
+    /// `Arc` clone of the consumer is parked mid-librdkafka-call at Shutdown and
+    /// does NOT observe cancellation before the bounded drain expires.
+    /// Guarantees: the bounded drain
+    /// (`timeout_at(min(lag_deadline, shutdown_deadline), handle)`) times out with
+    /// the worker still alive and still holding its clone, so at the close the
+    /// consumer `Arc` still has `strong_count == 2`. This documents that the
+    /// consumer drop in the shutdown handler is NOT guaranteed to be the last
+    /// `Arc` -- the leave-group/close then runs when the abandoned worker later
+    /// releases its clone, not necessarily at that drop.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_bounded_drain_can_leave_lag_worker_clone_alive_refcount_two() {
+        let start = tokio::time::Instant::now();
+        // Shutdown deadline near (1s); worker deadline far (15s). The bound is the
+        // shutdown deadline.
+        let lag_deadline = start + LAG_REFRESH_TOTAL_DEADLINE;
+        let shutdown_deadline = start + Duration::from_secs(1);
+
+        let consumer = Arc::new(());
+        let worker_clone = Arc::clone(&consumer);
+
+        // A worker that ignores cancellation and never finishes on its own, so it
+        // is still holding its clone when the bounded drain expires. It stands in
+        // for a worker parked inside a librdkafka FFI call that has not yet
+        // returned to observe the cancellation token.
+        let cancel = CancellationToken::new();
+        let handle = tokio::task::spawn(async move {
+            // Keep the clone alive for the whole task.
+            let _held = worker_clone;
+            std::future::pending::<()>().await;
+            None::<f64>
+        });
+
+        // Model the shutdown handler's bounded drain: cancel, then wait bounded by
+        // the tighter of the two deadlines. The worker never honors it.
+        cancel.cancel();
+        let bound = lag_deadline.min(shutdown_deadline);
+        assert_eq!(
+            bound, shutdown_deadline,
+            "min must pick the shutdown deadline"
+        );
+        let drain = tokio::time::timeout_at(bound, handle).await;
+
+        // The drain timed out: the worker is still running.
+        assert!(
+            drain.is_err(),
+            "a non-cooperative worker is bounded by the deadline, not awaited to completion",
+        );
+        // The still-running worker keeps its clone, so the consumer drop that
+        // follows in the shutdown handler is NOT the last `Arc`.
+        assert_eq!(
+            Arc::strong_count(&consumer),
+            2,
+            "a lag worker that outlives the bounded drain still holds its clone, \
+             so the close-time drop is not the last Arc (refcount is 2)",
+        );
+        // Termination is still bounded: the drain returned by the shutdown
+        // deadline rather than waiting for the worker.
+        assert!(
+            tokio::time::Instant::now() <= shutdown_deadline,
+            "drain must complete by the shutdown deadline, not the worker's",
+        );
+    }
+
+    // Scenario: a consumer-lag worker is in flight at Shutdown, and this time the
     // worker's lag deadline is *earlier* than the shutdown deadline.
     // Guarantees: the drain bound is the tighter (lag) deadline, so `min` selects
     // the lag deadline and the drain still cannot run to the later shutdown
@@ -5283,6 +5403,79 @@ mod tests {
                 cluster
                     .faults()
                     .round_trip_time(1, Duration::from_millis(1));
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (lifecycle: drain and shutdown): a manual-commit receiver with
+    /// the opt-in consumer-lag refresh timer armed (so a lag-refresh worker is
+    /// periodically spawned and holds its own `Arc` clone of the consumer) is
+    /// shut down after the timer has had time to spawn a refresh.
+    /// Guarantees: the shutdown handler's bounded lag-drain-then-close path runs
+    /// with a real in-flight lag worker present and the receiver still reaches
+    /// its terminal state within the shutdown deadline -- the lag worker cannot
+    /// stall termination. This exercises the real receiver path; the internal
+    /// `Arc`-count-can-be-2 behavior it can produce is asserted deterministically
+    /// by the unit test
+    /// `shutdown_bounded_drain_can_leave_lag_worker_clone_alive_refcount_two`
+    /// (the harness exposes no access to the receiver's private consumer `Arc`).
+    #[tokio::test]
+    async fn shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline() {
+        const TOPIC: &str = "shutdown-lag-inflight-traces";
+        const RECORDS: usize = 3;
+        let group = "shutdown-lag-inflight-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+                for i in 0..RECORDS {
+                    let key = format!("rec-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send record");
+                }
+
+                // Arm the lag refresh timer at a short interval so a lag-refresh
+                // worker is repeatedly spawned.
+                let cfg = manual_traces_config_with_lag_refresh(
+                    cluster.bootstrap_servers(),
+                    group,
+                    TOPIC,
+                    50,
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+                for _ in 0..RECORDS {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
+                }
+
+                // Give the lag timer several ticks so a refresh worker is spawned
+                // and can be in flight when the shutdown arrives.
+                tokio::time::sleep(Duration::from_millis(150)).await;
+
+                // Shutdown with a short (1s) deadline. Even with a lag worker in
+                // flight, the bounded drain plus off-loop-thread close must let
+                // the receiver return within the deadline.
+                let shutdown_at = tokio::time::Instant::now();
+                receiver.shutdown(Duration::from_secs(1));
+                let terminated =
+                    tokio::time::timeout(Duration::from_secs(5), receiver.await_terminal_state())
+                        .await;
+                assert!(
+                    terminated.is_ok(),
+                    "receiver must terminate within the bounded deadline even with a \
+                     lag refresh in flight at shutdown",
+                );
+                assert!(
+                    shutdown_at.elapsed() < Duration::from_secs(5),
+                    "termination must be bounded by the shutdown deadline; took {:?}",
+                    shutdown_at.elapsed(),
+                );
             },
         )
         .await;

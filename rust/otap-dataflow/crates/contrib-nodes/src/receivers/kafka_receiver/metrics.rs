@@ -3,7 +3,7 @@
 
 //! Metrics for the Kafka Receiver node.
 
-use otap_df_telemetry::instrument::{Counter, Gauge};
+use otap_df_telemetry::instrument::{Counter, Gauge, ObserveUpDownCounter};
 use otap_df_telemetry_macros::metric_set;
 
 /// Metrics for the Kafka Receiver.
@@ -36,9 +36,11 @@ pub struct KafkaReceiverMetrics {
     pub nacks_received: Counter<u64>,
     /// Current number of in-flight records: offsets that have been delivered
     /// downstream and tracked but whose commit has not yet advanced past them
-    /// (awaiting an Ack/Nack). A point-in-time gauge refreshed each receive-loop
-    /// iteration; reflects the receiver's local outstanding depth (distinct from
-    /// [`consumer_lag`], which measures the broker-committed group lag).
+    /// (awaiting an Ack/Nack). A non-monotonic sum (up/down counter) observed
+    /// absolutely each receive-loop iteration; it can rise and fall and is
+    /// additive across partitions and receiver instances, reflecting the
+    /// receiver's local outstanding depth (distinct from [`consumer_lag`], which
+    /// measures the broker-committed group lag).
     ///
     /// Scoped to the latest ownership generation per partition: when a partition
     /// is revoked and reassigned, in-flight offsets from the old generation are
@@ -48,7 +50,7 @@ pub struct KafkaReceiverMetrics {
     /// Manual commit mode only (`commit.mode: manual`); stays `0` under
     /// auto-commit.
     #[metric(unit = "{message}")]
-    pub records_in_flight: Gauge<u64>,
+    pub records_in_flight: ObserveUpDownCounter<u64>,
 
     // -- Error Tracking --------------------------------------
     /// Number of messages that failed processing and were skipped
@@ -104,15 +106,15 @@ pub struct KafkaReceiverMetrics {
     pub rebalances_total: Counter<u64>,
     /// Current number of partitions owned by this consumer.
     ///
-    /// A point-in-time gauge reflecting the size of the current assignment,
-    /// refreshed after each rebalance. Contrast with [`partition_assignments`]
-    /// (cumulative acquisitions) and [`partition_revocations`] (cumulative
-    /// revocations).
+    /// A non-monotonic sum (up/down counter) observed absolutely: it reflects
+    /// the size of the current assignment, refreshed after each rebalance, and
+    /// can rise and fall. Contrast with [`partition_assignments`] (cumulative
+    /// acquisitions) and [`partition_revocations`] (cumulative revocations).
     ///
     /// Manual commit mode only (`commit.mode: manual`); stays `0` under
     /// auto-commit.
     #[metric(unit = "{partition}")]
-    pub partitions_assigned: Gauge<u64>,
+    pub partitions_assigned: ObserveUpDownCounter<u64>,
     /// Cumulative count of partitions newly acquired by this consumer across
     /// rebalances (retained partitions are not re-counted).
     ///

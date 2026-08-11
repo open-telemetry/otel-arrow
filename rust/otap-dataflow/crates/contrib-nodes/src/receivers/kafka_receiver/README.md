@@ -889,7 +889,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.kafka.trace_msgs_received` | `{msg}` | Number of trace messages received from the Kafka broker. |
 | `receiver.kafka.acks_received` | `{ack}` | Number of acks received from downstream. |
 | `receiver.kafka.nacks_received` | `{nack}` | Number of nacks received from downstream. |
-| `receiver.kafka.records_in_flight` | `{message}` | Current in-flight records: offsets delivered downstream and tracked but not yet committed (awaiting an ack/nack). Point-in-time gauge, scoped to the latest ownership generation per partition -- old-generation in-flight offsets are dropped on revoke/reassign and not counted. Manual commit mode only; stays `0` under auto-commit. |
+| `receiver.kafka.records_in_flight` | `{message}` | Current in-flight records: offsets delivered downstream and tracked but not yet committed (awaiting an ack/nack). Non-monotonic up/down counter (rises and falls), scoped to the latest ownership generation per partition -- old-generation in-flight offsets are dropped on revoke/reassign and not counted. Manual commit mode only; stays `0` under auto-commit. |
 | `receiver.kafka.processing_errors` | `{msg}` | Number of messages that failed processing and were skipped. |
 | `receiver.kafka.unmarshal_failed_traces` | `{msg}` | Trace messages that failed to unmarshal. |
 | `receiver.kafka.unmarshal_failed_metrics` | `{msg}` | Metric messages that failed to unmarshal. |
@@ -902,7 +902,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.kafka.idempotent_skips` | `{msg}` | Messages skipped due to idempotency check (duplicate detection). |
 | `receiver.kafka.topic_id_exhausted` | `{msg}` | Messages dropped because the topic ID space was exhausted (overflow guard). |
 | `receiver.kafka.rebalances_total` | `{rebalance}` | Total consumer-group rebalance (assign) events observed by this consumer. Manual commit mode only. |
-| `receiver.kafka.partitions_assigned` | `{partition}` | Current number of partitions owned by this consumer (point-in-time gauge). Manual commit mode only. |
+| `receiver.kafka.partitions_assigned` | `{partition}` | Current number of partitions owned by this consumer (non-monotonic up/down counter). Manual commit mode only. |
 | `receiver.kafka.partition_assignments` | `{partition}` | Cumulative partitions newly acquired across rebalances (retained partitions not re-counted). Manual commit mode only. |
 | `receiver.kafka.partition_revocations` | `{partition}` | Cumulative genuinely-owned partitions revoked across rebalances. Manual commit mode only. |
 | `receiver.kafka.consumer_lag` | `{message}` | Mean consumer-group lag across all owned partitions: `max(0, high_watermark - broker_committed_offset)`, using offsets Kafka has acknowledged for this group. Manual commit mode only and opt-in via `lag_refresh_interval_ms`. A refresh that cannot measure every owned partition (a failed broker read, an owned partition with no committed offset yet) is abandoned and the previous value is retained; the gauge is reset to `0` when ownership drops to zero. |

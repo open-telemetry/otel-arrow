@@ -209,8 +209,8 @@ pub(crate) struct RebalanceMetricsDelta {
     pub(crate) partition_revocations: u64,
     /// Current number of partitions owned by this consumer at drain time.
     ///
-    /// Unlike the other fields (which are counter deltas), this is a
-    /// point-in-time snapshot used to drive the `partitions_assigned` gauge.
+    /// Unlike the other fields (which are counter deltas), this is an absolute
+    /// snapshot used to drive the `partitions_assigned` up/down counter.
     pub(crate) partitions_owned: u64,
     /// Commit failures during revoke since the last drain.
     pub(crate) rebalance_commit_errors: u64,
@@ -1523,9 +1523,10 @@ mod tests {
 
     /// Scenario (operational visibility): a full assignment is applied via `handle_assign`'s
     /// `set_assignment` and then drained.
-    /// Guarantees: `partitions_owned` reports the current assignment size (a
-    /// gauge snapshot) even though it is delivered alongside counter deltas, so
-    /// the receiver's `partitions_assigned` gauge tracks live ownership.
+    /// Guarantees: `partitions_owned` reports the current assignment size (an
+    /// absolute snapshot) even though it is delivered alongside counter deltas,
+    /// so the receiver's `partitions_assigned` up/down counter tracks live
+    /// ownership.
     #[test]
     fn drain_metrics_reports_current_owned_count() {
         let state = RebalanceState::new(false);

@@ -402,7 +402,7 @@ impl OffsetTracker {
     ///
     /// This is the receiver's in-flight depth: records that have been delivered
     /// downstream and are awaiting an Ack/Nack whose commit has not yet advanced
-    /// past them. Exposed for the `records_in_flight` gauge.
+    /// past them. Exposed for the `records_in_flight` up/down counter.
     #[must_use]
     pub fn total_pending(&self) -> usize {
         self.partitions
