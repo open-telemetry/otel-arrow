@@ -36,8 +36,9 @@ pub struct BytesBatches {
     /// represents. The weights sum to the input byte total.
     pub batches: Vec<OwnedBatch>,
     /// Number of resource entries emitted whole (best-effort) instead of split
-    /// because their projected fragment count or duplicated wrapper bytes
-    /// exceeded the per-entry `fragment_budget` / `overhead_budget`.
+    /// because their projected fragment count exceeded `fragment_budget`, their
+    /// measured duplicated-wrapper bytes exceeded `overhead_budget`, or the
+    /// per-flush output ceiling (`flush_fragment_budget`) was already reached.
     pub budget_fallbacks: u64,
 }
 
@@ -200,6 +201,7 @@ fn push_resource_entry(
     max_size: usize,
     fragment_budget: usize,
     overhead_budget: usize,
+    flush_fragment_budget: usize,
     cur: &mut Vec<u8>,
     batches: &mut Vec<OwnedBatch>,
     budget_fallbacks: &mut u64,
@@ -216,15 +218,23 @@ fn push_resource_entry(
     // A single resource entry exceeds max_size: split within it.
     flush(signal, cur, batches);
     let start = batches.len();
-    split_resource_entry(
-        signal,
-        payload,
-        max_size,
-        fragment_budget,
-        overhead_budget,
-        batches,
-        budget_fallbacks,
-    );
+    if batches.len() >= flush_fragment_budget {
+        // Per-flush output ceiling already reached: emit this entry whole rather
+        // than fan it out into more in-memory fragments. Bounds the flush's
+        // total output allocation regardless of downstream slot accounting.
+        emit_top(signal, payload, batches);
+        *budget_fallbacks += 1;
+    } else {
+        split_resource_entry(
+            signal,
+            payload,
+            max_size,
+            fragment_budget,
+            overhead_budget,
+            batches,
+            budget_fallbacks,
+        );
+    }
     // Every fragment produced by this split re-encodes the resource/scope
     // headers, so their encoded lengths sum to more than the input entry.
     // Reattribute the entry's input bytes across the fragments (or the single
@@ -522,7 +532,7 @@ pub fn make_bytes_batches(
     inputs: Vec<OtlpProtoBytes>,
 ) -> Result<Vec<OtlpProtoBytes>> {
     Ok(
-        make_bytes_batches_owned(signal, max_bytes, None, None, inputs)?
+        make_bytes_batches_owned(signal, max_bytes, None, None, None, inputs)?
             .batches
             .into_iter()
             .map(|(batch, _weight)| batch)
@@ -540,18 +550,31 @@ pub fn make_bytes_batches(
 /// makes the fragments' encoded lengths sum to more than the input.
 ///
 /// `fragment_budget` caps how many fragments a single oversize resource entry
-/// may split into. `overhead_budget` caps the projected duplicated wrapper
-/// bytes (resource/scope headers re-encoded across fragments), guarding against
-/// output-byte amplification from large headers even when the fragment count
-/// stays low. Both projections are checked up front; an entry that would exceed
-/// either budget is emitted whole (best-effort) and counted in
+/// may split into -- a cheap worst-case ceiling projected up front (one fragment
+/// per record) before any fragment is built. `overhead_budget` caps the
+/// duplicated wrapper bytes (resource/scope headers re-encoded across
+/// fragments), guarding against output-byte amplification from large headers
+/// even when the fragment count stays low; unlike the fragment ceiling it is
+/// *measured from the actual greedy packing* (emitted fragment bytes minus one
+/// whole encoding) as the entry is split, aborting early once exceeded. An entry
+/// that would exceed either budget is emitted whole (best-effort) and counted in
 /// `budget_fallbacks`, so no records are ever partially emitted before falling
-/// back. `None` means unbounded.
+/// back.
+///
+/// `flush_fragment_budget` bounds the *cumulative* number of output batches this
+/// whole call may build before splitting stops: once that many batches have been
+/// produced, any further oversize resource entry is emitted whole instead of
+/// split. This caps the in-memory output allocation for a flush containing many
+/// large entries, independently of any downstream Ack/Nack slot accounting. It
+/// is a greedy running check -- no reservation or look-ahead over later entries.
+///
+/// `None` means unbounded for any of the three budgets.
 pub fn make_bytes_batches_owned(
     signal: SignalType,
     max_bytes: Option<NonZeroU64>,
     fragment_budget: Option<NonZeroU64>,
     overhead_budget: Option<NonZeroU64>,
+    flush_fragment_budget: Option<NonZeroU64>,
     inputs: Vec<OtlpProtoBytes>,
 ) -> Result<BytesBatches> {
     if inputs.is_empty() {
@@ -603,6 +626,9 @@ pub fn make_bytes_batches_owned(
     let overhead_budget = overhead_budget
         .map(|n| n.get() as usize)
         .unwrap_or(usize::MAX);
+    let flush_fragment_budget = flush_fragment_budget
+        .map(|n| n.get() as usize)
+        .unwrap_or(usize::MAX);
 
     let mut batches: Vec<OwnedBatch> = Vec::new();
     // Reserve for the common top-level packing path; a batch never exceeds
@@ -626,6 +652,7 @@ pub fn make_bytes_batches_owned(
                             max_size,
                             fragment_budget,
                             overhead_budget,
+                            flush_fragment_budget,
                             &mut cur,
                             &mut batches,
                             &mut budget_fallbacks,

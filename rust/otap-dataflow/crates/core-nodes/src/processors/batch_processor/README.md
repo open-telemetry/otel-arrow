@@ -51,6 +51,7 @@ config:
     sizer: bytes
     max_split_fragments: 100000  # Cap on fragments per oversize entry (OTLP only).
     max_split_overhead_bytes: 8388608  # Cap on duplicated wrapper bytes per oversize entry (OTLP only).
+    max_split_fragments_per_flush: 100000  # Greedy per-flush split threshold (OTLP only).
 
   # Maximum time before flushing pending data (default: 200ms).
   max_batch_duration: 500ms
@@ -86,7 +87,22 @@ Each format object contains:
   header are not falsely collapsed. When it exceeds this budget the entry is
   emitted whole (best-effort, possibly exceeding `max_size`) and counted by the
   same `split.budget.fallbacks` metric; emission also aborts early once the
-  running amplification passes the budget, bounding transient memory.
+  running amplification passes the budget, bounding transient memory. This is
+  *measured* from the actual packing as the entry is split -- unlike
+  `max_split_fragments`, it is not projected up front.
+- `max_split_fragments_per_flush` (OTLP bytes only): non-zero greedy threshold on
+  the number of output batches a single flush may build from splitting, or `null`
+  for unbounded (default 100000). The two budgets above bound each entry
+  individually, but a flush containing many large entries builds its entire
+  output vector in memory before anything is sent, so their combined split
+  fan-out could still amplify into a very large allocation. Once a flush has
+  produced this many output batches, any further oversize entry is emitted whole
+  (best-effort, counted by `split.budget.fallbacks`) instead of split. This is a
+  simple greedy running threshold, not a strict total-output cap: the entry that
+  crosses the threshold may still add its full per-entry fan-out, so the
+  worst-case output is roughly this threshold plus one entry's `max_split_fragments`.
+  It does not look ahead over later entries and is independent of Ack/Nack
+  outbound-slot accounting (which governs *sending*, not up-front allocation).
 
 ## Examples
 
@@ -127,7 +143,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `otap.processor.batch.batching_errors` | `{error}` | Number of batches for which errors encountered. |
 | `otap.processor.batch.nacked_inbound_slots` | `{msg}` | Number of requests nacked due to inbound slot exhaustion. |
 | `otap.processor.batch.nacked_outbound_slots` | `{msg}` | Number of requests nacked due to outbound slot exhaustion. |
-| `otap.processor.batch.split_budget_fallbacks` | `{entry}` | Number of oversize resource entries emitted whole because splitting would have exceeded `max_split_fragments` or `max_split_overhead_bytes`. |
+| `otap.processor.batch.split_budget_fallbacks` | `{entry}` | Number of oversize resource entries emitted whole because splitting would have exceeded `max_split_fragments`, `max_split_overhead_bytes`, or the per-flush `max_split_fragments_per_flush` threshold. |
 
 ### Events
 

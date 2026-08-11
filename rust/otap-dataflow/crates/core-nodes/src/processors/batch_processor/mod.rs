@@ -172,12 +172,24 @@ pub struct FormatConfig {
     /// entry may amplify into when byte-splitting (OTLP bytes only). Each
     /// fragment re-encodes the resource/scope headers, so a large header split
     /// across many records can amplify output far beyond the input even when
-    /// the fragment count stays under `max_split_fragments`. If the projected
-    /// duplicated wrapper bytes would exceed this budget, the entry is emitted
-    /// whole (best-effort, possibly exceeding `max_size`) and counted in the
+    /// the fragment count stays under `max_split_fragments`. This is measured
+    /// from the actual greedy packing as the entry is split (not projected up
+    /// front); if it exceeds this budget the entry is emitted whole
+    /// (best-effort, possibly exceeding `max_size`) and counted in the
     /// `split_budget_fallbacks` metric. `None` means unbounded.
     #[serde(default = "default_max_split_overhead_bytes")]
     pub max_split_overhead_bytes: Option<NonZeroUsize>,
+
+    /// Maximum number of output batches a single flush may build from byte
+    /// splitting (OTLP bytes only) before further oversize resource entries are
+    /// emitted whole instead of split. All output batches are held in memory
+    /// before any are sent, so a flush containing many large entries -- each
+    /// within its own per-entry budgets -- could otherwise amplify into an
+    /// unbounded output allocation. This caps that allocation independently of
+    /// any downstream Ack/Nack slot accounting; over-limit entries are counted
+    /// in the `split_budget_fallbacks` metric. `None` means unbounded.
+    #[serde(default = "default_max_split_fragments_per_flush")]
+    pub max_split_fragments_per_flush: Option<NonZeroUsize>,
 }
 
 /// Batching format option.
@@ -305,9 +317,18 @@ const fn default_max_split_fragments() -> Option<NonZeroUsize> {
 /// Default cap on the duplicated wrapper bytes a single oversize resource entry
 /// may amplify into when splitting. Bounds worst-case output-byte amplification
 /// from re-encoding large resource/scope headers across many fragments; entries
-/// projected to exceed this are emitted whole. Default: 8 MiB.
+/// whose amplification (measured during greedy packing) exceeds this are emitted
+/// whole. Default: 8 MiB.
 const fn default_max_split_overhead_bytes() -> Option<NonZeroUsize> {
     NonZeroUsize::new(8 * 1024 * 1024)
+}
+
+/// Default cap on the number of output batches a single flush may build from
+/// byte splitting before further oversize entries are emitted whole. Bounds the
+/// in-memory output allocation for a flush with many large entries, independent
+/// of Ack/Nack slot accounting; over-limit entries are emitted whole.
+const fn default_max_split_fragments_per_flush() -> Option<NonZeroUsize> {
+    NonZeroUsize::new(100_000)
 }
 
 const fn default_otap() -> FormatConfig {
@@ -317,6 +338,7 @@ const fn default_otap() -> FormatConfig {
         sizer: default_otap_sizer_items(),
         max_split_fragments: None,
         max_split_overhead_bytes: None,
+        max_split_fragments_per_flush: None,
     }
 }
 
@@ -327,6 +349,7 @@ const fn default_otlp() -> FormatConfig {
         sizer: default_otlp_sizer_bytes(),
         max_split_fragments: default_max_split_fragments(),
         max_split_overhead_bytes: default_max_split_overhead_bytes(),
+        max_split_fragments_per_flush: default_max_split_fragments_per_flush(),
     }
 }
 
@@ -377,6 +400,7 @@ impl FormatConfig {
             sizer: Sizer::Items,
             max_split_fragments: None,
             max_split_overhead_bytes: None,
+            max_split_fragments_per_flush: None,
         }
     }
 
@@ -388,6 +412,7 @@ impl FormatConfig {
             sizer: Sizer::Bytes,
             max_split_fragments: default_max_split_fragments(),
             max_split_overhead_bytes: default_max_split_overhead_bytes(),
+            max_split_fragments_per_flush: default_max_split_fragments_per_flush(),
         }
     }
 
@@ -876,6 +901,7 @@ impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
             nzu_to_nz64(fmtcfg.max_size),
             nzu_to_nz64(fmtcfg.max_split_fragments),
             nzu_to_nz64(fmtcfg.max_split_overhead_bytes),
+            nzu_to_nz64(fmtcfg.max_split_fragments_per_flush),
             pending,
         )?;
         Ok(BatchingOutput {
@@ -3784,12 +3810,12 @@ mod tests {
             });
     }
 
-    /// Scenario: an OTLP config omits `max_split_fragments` and
-    /// `max_split_overhead_bytes`.
+    /// Scenario: an OTLP config omits `max_split_fragments`,
+    /// `max_split_overhead_bytes`, and `max_split_fragments_per_flush`.
     ///
     /// Guarantees: serde applies the documented defaults (100k fragments, 8 MiB
-    /// overhead) rather than leaving the fields `None` (unbounded), so an
-    /// omitted config is bounded, not unlimited.
+    /// overhead, 100k fragments per flush) rather than leaving the fields `None`
+    /// (unbounded), so an omitted config is bounded, not unlimited.
     #[test]
     fn test_split_budget_defaults_applied_when_omitted() {
         let config: Config = serde_json::from_value(json!({
@@ -3812,6 +3838,11 @@ mod tests {
             config.otlp.max_split_overhead_bytes,
             NonZeroUsize::new(8 * 1024 * 1024),
             "omitted max_split_overhead_bytes must default to 8 MiB, not None (unbounded)"
+        );
+        assert_eq!(
+            config.otlp.max_split_fragments_per_flush,
+            NonZeroUsize::new(100_000),
+            "omitted max_split_fragments_per_flush must default to 100k, not None (unbounded)"
         );
     }
 

@@ -19,7 +19,7 @@ issues: [3661]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Byte splitting duplicates resource/scope headers, so output bytes exceed input.
+  Byte splitting duplicates resource/scope headers, so output exceeds input.
   Ack/Nack subscribers are apportioned by each output's input-byte ownership weight,
-  so every fragment is tracked. Per-entry split fan-out and byte amplification are
-  bounded, with over-limit entries emitted whole.
+  so every fragment is tracked. Per-entry fan-out/bytes and a per-flush output cap
+  bound the split; over-limit entries are emitted whole.

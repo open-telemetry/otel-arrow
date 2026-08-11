@@ -5,6 +5,7 @@
 
 use crate::otlp::OtlpProtoBytes;
 use crate::otlp::batching::make_bytes_batches;
+use crate::otlp::batching::make_bytes_batches_owned;
 use crate::proto::OtlpProtoMessage;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope};
@@ -352,6 +353,119 @@ fn test_split_single_resource_many_records() {
         "records dropped, duplicated or reordered",
     );
     assert_equivalent(&[logs.into()], &out_msgs);
+}
+
+/// Builds an OTLP logs request with `num_resources` `ResourceLogs`, each a single
+/// scope carrying `records_per` distinct records, so every resource entry is an
+/// independently splittable top-level unit. Lets a single flush amplify into many
+/// output fragments across entries even when each entry stays within its own
+/// per-entry budgets.
+fn multi_resource_logs(num_resources: usize, records_per: usize) -> LogsData {
+    let resource_logs: Vec<ResourceLogs> = (0..num_resources)
+        .map(|r| {
+            let records: Vec<LogRecord> = (0..records_per)
+                .map(|i| {
+                    LogRecord::build()
+                        .time_unix_nano(1000u64 + i as u64)
+                        .body(AnyValue::new_string(format!(
+                            "res {r} log record body number {i} with some padding"
+                        )))
+                        .finish()
+                })
+                .collect();
+            ResourceLogs::new(
+                Resource::build().finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name(format!("scope-{r}"))
+                        .finish(),
+                    records,
+                )],
+            )
+        })
+        .collect();
+    LogsData::new(resource_logs)
+}
+
+/// Scenario: one flush carries many oversize resource entries that each split
+/// into multiple fragments. Every entry stays within its own per-entry budgets,
+/// but their combined split fan-out is capped by a small per-flush budget
+/// (`flush_fragment_budget`) that is independent of any Ack/Nack slot accounting.
+///
+/// Guarantees: once the per-flush output ceiling is reached, later oversize
+/// entries are emitted whole instead of split -- so the bounded run produces
+/// strictly fewer output batches than the unbounded run and records a nonzero
+/// `budget_fallbacks`. No records are ever dropped, duplicated or reordered in
+/// either run (whole-emitted entries still carry all their records).
+#[test]
+fn test_split_per_flush_budget_bounds_output_fanout() {
+    const N: usize = 12;
+    const RECORDS: usize = 4;
+    let logs = multi_resource_logs(N, RECORDS);
+
+    // Size one resource entry so we can pick a max_size that forces every entry
+    // to split (into more than one fragment) rather than pack or fall back.
+    let one_entry = multi_resource_logs(1, RECORDS);
+    let entry_bytes = otlp_message_to_bytes(&one_entry.into()).num_bytes();
+    let max_size = (entry_bytes * 3 / 5).max(1);
+
+    let expected_bodies: Vec<String> = (0..N)
+        .flat_map(|r| {
+            (0..RECORDS)
+                .map(move |i| format!("res {r} log record body number {i} with some padding"))
+        })
+        .collect();
+
+    // Unbounded per-flush budget: every entry splits fully.
+    let unbounded = make_bytes_batches_owned(
+        SignalType::Logs,
+        NonZeroU64::new(max_size as u64),
+        None,
+        None,
+        None,
+        vec![otlp_message_to_bytes(&logs.clone().into())],
+    )
+    .expect("ok");
+    assert_eq!(
+        unbounded.budget_fallbacks, 0,
+        "unbounded run must never fall back",
+    );
+
+    // Small per-flush budget: once reached, later entries are emitted whole.
+    let bounded = make_bytes_batches_owned(
+        SignalType::Logs,
+        NonZeroU64::new(max_size as u64),
+        None,
+        None,
+        NonZeroU64::new(4),
+        vec![otlp_message_to_bytes(&logs.clone().into())],
+    )
+    .expect("ok");
+
+    assert!(
+        bounded.batches.len() < unbounded.batches.len(),
+        "per-flush budget must cap output fan-out: bounded {} vs unbounded {}",
+        bounded.batches.len(),
+        unbounded.batches.len(),
+    );
+    assert!(
+        bounded.budget_fallbacks > 0,
+        "reaching the per-flush ceiling must record whole-emit fallbacks",
+    );
+
+    // Records preserved in order in both runs.
+    for out in [&unbounded, &bounded] {
+        let msgs: Vec<OtlpProtoMessage> = out
+            .batches
+            .iter()
+            .map(|(b, _w)| otlp_bytes_to_message(b.clone()))
+            .collect();
+        assert_eq!(
+            log_bodies(&msgs),
+            expected_bodies,
+            "records dropped, duplicated or reordered",
+        );
+    }
 }
 
 /// Scenario: A single ResourceLogs contains two scopes, each with several
