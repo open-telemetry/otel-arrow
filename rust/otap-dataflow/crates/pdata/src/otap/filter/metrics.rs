@@ -61,9 +61,9 @@ impl MetricFilter {
         metrics_payload: OtapArrowRecords,
         pool: &mut IdBitmapPool,
     ) -> Result<(OtapArrowRecords, u64, u64)> {
-        // Empty OTLP -> OTAP encodes to no root UnivariateMetrics batch.
-        // Treat as a 0-row passthrough rather than an error so default/no-op
-        // filters and configured filters both work on empty payloads.
+        // We use the root record batch instead of num items here because
+        // the datapoints table can have orphaned rows and isn't a reliable
+        // indicator of whether the metrics batch is "empty".
         let Some(metrics) = metrics_payload.root_record_batch() else {
             return Ok((metrics_payload, 0, 0));
         };
@@ -110,12 +110,9 @@ impl MetricMatchProperties {
         metrics_payload: &OtapArrowRecords,
         invert: bool,
     ) -> Result<BooleanArray> {
-        let metrics =
-            metrics_payload
-                .root_record_batch()
-                .ok_or_else(|| Error::RecordBatchNotFound {
-                    payload_type: metrics_payload.root_payload_type(),
-                })?;
+        let Some(metrics) = metrics_payload.root_record_batch() else {
+            return Ok(BooleanArray::new_from_u8(&[]));
+        };
         let num_rows = metrics.num_rows();
 
         if self.metric_names.is_empty() {

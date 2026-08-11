@@ -33,6 +33,14 @@
 //!
 //! ## Quick start
 //!
+//! A provider may be identified either by its GUID or by its name. Names are
+//! resolved to a GUID at startup: by default (when `kind` is omitted)
+//! manifest-based and classic (MOF) providers are looked up in the system
+//! provider database, and TraceLogging / `EventSource` providers fall back to
+//! the standard name-hash convention. Set `kind: manifest` to require a
+//! registered provider, or `kind: tracelogging` to derive the GUID from the
+//! name without any OS lookup.
+//!
 //! ```yaml
 //! etw:
 //!   type: receiver:etw
@@ -40,6 +48,11 @@
 //!     providers:
 //!       - guid: "d2387720-2907-5677-8625-c1bdc4155197"
 //!         level: verbose
+//!       - name: "Microsoft-Windows-Kernel-Process"
+//!         kind: manifest
+//!         level: information
+//!       - name: "My-Custom-EventSource"
+//!         kind: tracelogging
 //!     batching:
 //!       max_size: 100
 //!       max_duration: "100ms"
@@ -87,7 +100,7 @@ use std::time::Duration;
 /// URN for the ETW receiver.
 pub const ETW_RECEIVER_URN: &str = "urn:otel:receiver:etw";
 
-// ── Defaults ─────────────────────────────────────────────────────────────────
+// -- Defaults -----------------------------------------------------------------
 
 // 512 is non-zero, so `unwrap()` never panics (evaluated at compile time).
 const DEFAULT_BATCH_MAX_SIZE: NonZeroU16 = NonZeroU16::new(512).unwrap();
@@ -100,7 +113,7 @@ const DEFAULT_BATCH_MAX_DURATION: Duration = Duration::from_millis(100);
 /// stall shutdown while a busy provider keeps producing events.
 const MAX_DRAIN_BUDGET: Duration = Duration::from_secs(1);
 
-// ── Configuration ────────────────────────────────────────────────────────────
+// -- Configuration ------------------------------------------------------------
 
 /// Trace level filter for ETW providers, matching the standard five ETW levels.
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
@@ -119,6 +132,26 @@ enum TraceLevel {
     Verbose,
 }
 
+/// How a provider's `name` is resolved to a GUID.
+///
+/// This selects an *explicit* resolution strategy. Omit `kind` for automatic
+/// resolution: the OS-registered provider database is tried first
+/// (manifest-based or classic MOF), then the receiver falls back to the
+/// EventSource/TraceLogging name hash.
+///
+/// Ignored when a `guid` is supplied directly. See
+/// [`resolve_provider_guid`](session) for the resolution rules.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ProviderKind {
+    /// Resolve strictly via the OS-registered provider database (manifest-based
+    /// or classic MOF). Fails if the name is not registered; never hashes.
+    Manifest,
+    /// Derive the GUID directly from the name using the EventSource/
+    /// TraceLogging hash convention, with no OS lookup.
+    Tracelogging,
+}
+
 /// Configuration for a single ETW provider to trace.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -132,6 +165,13 @@ struct ProviderConfig {
     /// Mutually exclusive with `name`.
     #[serde(default)]
     pub guid: Option<String>,
+
+    /// How a `name` is resolved to a GUID. Ignored when `guid` is set
+    /// (supplying `kind` together with `guid` is rejected at validation time).
+    /// Omit for automatic resolution (registered database first, then name
+    /// hash); set `manifest` or `tracelogging` to force a single strategy.
+    #[serde(default)]
+    pub kind: Option<ProviderKind>,
 
     /// Trace level filter. Defaults to `information`.
     #[serde(default)]
@@ -193,6 +233,7 @@ impl Config {
     ///
     /// * At least one provider must be specified.
     /// * Each provider must specify exactly one of `name` or `guid` (not both, not neither).
+    /// * A specified `name` or `guid` must not be empty or whitespace-only.
     ///
     /// # Errors
     ///
@@ -219,6 +260,41 @@ impl Config {
                     });
                 }
                 _ => {} // Valid: exactly one of name or guid is specified.
+            }
+
+            // A blank (empty or whitespace-only) identifier satisfies
+            // `is_some()` but carries no usable provider name/GUID. Reject it
+            // here rather than letting it fail later (a blank GUID errors at
+            // parse time; a blank name would hash to a bogus GUID on the
+            // automatic path).
+            if let Some(name) = &provider.name {
+                if name.trim().is_empty() {
+                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'name' must not be empty or whitespace-only"
+                        ),
+                    });
+                }
+            }
+            if let Some(guid) = &provider.guid {
+                if guid.trim().is_empty() {
+                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'guid' must not be empty or whitespace-only"
+                        ),
+                    });
+                }
+            }
+
+            // `kind` selects a name-resolution strategy and is meaningless for a
+            // GUID (which is used verbatim). Reject the combination rather than
+            // silently ignoring `kind`.
+            if provider.guid.is_some() && provider.kind.is_some() {
+                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "provider[{i}]: 'kind' applies to name-based providers only - remove 'kind' when specifying a 'guid'"
+                    ),
+                });
             }
         }
 
@@ -247,7 +323,7 @@ const fn default_batch_max_duration() -> Duration {
     DEFAULT_BATCH_MAX_DURATION
 }
 
-// ── Receiver struct ──────────────────────────────────────────────────────────
+// -- Receiver struct ----------------------------------------------------------
 
 /// ETW receiver that subscribes to Windows ETW trace sessions and converts
 /// events into OTAP Arrow log records.
@@ -311,7 +387,7 @@ impl EtwReceiver {
     }
 }
 
-// ── Batch flush helpers ──────────────────────────────────────────────────────
+// -- Batch flush helpers ------------------------------------------------------
 
 /// Build the pending Arrow batch from `builder`, recording the failure metric
 /// on error.
@@ -440,7 +516,7 @@ fn try_flush_batch(
     Ok(())
 }
 
-// ── Producer-side atomic folding ─────────────────────────────────────────────
+// -- Producer-side atomic folding ---------------------------------------------
 
 /// The per-session producer-side deltas claimed by a single `swap(0)` pass over
 /// the shared [`session::SessionWideMetrics`] atomics.
@@ -456,6 +532,10 @@ struct EventCountsDelta {
     total: u64,
     dropped_slow_worker: u64,
     invalid: u64,
+    kernel_events_lost: u64,
+    kernel_real_time_buffers_lost: u64,
+    kernel_log_buffers_lost: u64,
+    kernel_buffers_written: u64,
 }
 
 impl EventCountsDelta {
@@ -465,7 +545,13 @@ impl EventCountsDelta {
     /// applies unconditionally, skipping zero deltas inside [`Self::apply`]).
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        self.total == 0 && self.dropped_slow_worker == 0 && self.invalid == 0
+        self.total == 0
+            && self.dropped_slow_worker == 0
+            && self.invalid == 0
+            && self.kernel_events_lost == 0
+            && self.kernel_real_time_buffers_lost == 0
+            && self.kernel_log_buffers_lost == 0
+            && self.kernel_buffers_written == 0
     }
 
     /// Fold the claimed deltas into `metrics`. Each non-zero delta becomes a
@@ -482,6 +568,26 @@ impl EventCountsDelta {
         }
         if self.invalid > 0 {
             metrics.received_events_invalid.add(self.invalid);
+        }
+        if self.kernel_events_lost > 0 {
+            metrics
+                .received_events_lost_kernel
+                .add(self.kernel_events_lost);
+        }
+        if self.kernel_real_time_buffers_lost > 0 {
+            metrics
+                .kernel_real_time_buffers_lost
+                .add(self.kernel_real_time_buffers_lost);
+        }
+        if self.kernel_log_buffers_lost > 0 {
+            metrics
+                .kernel_log_buffers_lost
+                .add(self.kernel_log_buffers_lost);
+        }
+        if self.kernel_buffers_written > 0 {
+            metrics
+                .kernel_buffers_written
+                .add(self.kernel_buffers_written);
         }
     }
 }
@@ -507,10 +613,14 @@ fn take_event_counts(telemetry: &session::SessionWideMetrics) -> EventCountsDelt
         total: telemetry.total.swap(0, Ordering::Relaxed),
         dropped_slow_worker: claim_if_nonzero(&telemetry.dropped_slow_worker),
         invalid: claim_if_nonzero(&telemetry.decode_failed),
+        kernel_events_lost: claim_if_nonzero(&telemetry.kernel_events_lost),
+        kernel_real_time_buffers_lost: claim_if_nonzero(&telemetry.kernel_real_time_buffers_lost),
+        kernel_log_buffers_lost: claim_if_nonzero(&telemetry.kernel_log_buffers_lost),
+        kernel_buffers_written: claim_if_nonzero(&telemetry.kernel_buffers_written),
     }
 }
 
-// ── Event processing loop ────────────────────────────────────────────────────
+// -- Event processing loop ----------------------------------------------------
 
 impl EtwReceiver {
     /// Fold the per-session atomic counters - written by the `!Send`
@@ -709,10 +819,11 @@ impl EtwReceiver {
     }
 }
 
-// ── Factory registration ─────────────────────────────────────────────────────
+// -- Factory registration -----------------------------------------------------
 
 /// Register the ETW receiver in the pipeline factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: ETW_RECEIVER_URN,
@@ -732,7 +843,7 @@ pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
-// ── Receiver trait implementation ────────────────────────────────────────────
+// -- Receiver trait implementation --------------------------------------------
 
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for EtwReceiver {
@@ -759,7 +870,7 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
     }
 }
 
-// ── Telemetry ────────────────────────────────────────────────────────────────
+// -- Telemetry ----------------------------------------------------------------
 
 /// Receiver-level metrics for the ETW receiver.
 ///
@@ -830,6 +941,30 @@ pub struct EtwReceiverMetrics {
     /// downstream backpressure.
     #[metric(unit = "{event}")]
     pub received_events_dropped_slow_worker: Counter<u64>,
+
+    /// Events lost inside the kernel ETW buffers before `one_collect` ever saw
+    /// them (buffer overrun), from `TraceStats::events_lost`. Distinct from
+    /// `received_events_dropped_slow_worker`, which is our own downstream
+    /// backpressure after the event was already received.
+    #[metric(unit = "{event}")]
+    pub received_events_lost_kernel: Counter<u64>,
+
+    /// Real-time delivery buffers lost because the consumer could not drain
+    /// the ETW real-time buffers fast enough, from
+    /// `TraceStats::real_time_buffers_lost`.
+    #[metric(unit = "{buffer}")]
+    pub kernel_real_time_buffers_lost: Counter<u64>,
+
+    /// Log buffers that could not be flushed, from
+    /// `TraceStats::log_buffers_lost`.
+    #[metric(unit = "{buffer}")]
+    pub kernel_log_buffers_lost: Counter<u64>,
+
+    /// Total ETW buffers written by the session, from
+    /// `TraceStats::buffers_written`. A throughput/health denominator rather
+    /// than a loss signal.
+    #[metric(unit = "{buffer}")]
+    pub kernel_buffers_written: Counter<u64>,
 }
 
 #[cfg(test)]
@@ -848,6 +983,7 @@ mod tests {
         ProviderConfig {
             name: None,
             guid: Some(guid.to_string()),
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }
@@ -857,6 +993,7 @@ mod tests {
         ProviderConfig {
             name: Some(name.to_string()),
             guid: None,
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }
@@ -896,11 +1033,86 @@ mod tests {
         );
     }
 
+    /// Scenario: A provider config supplies both a `guid` and a `kind`.
+    /// Guarantees: `Config::validate` rejects the config, so `kind` (a
+    /// name-resolution strategy) is never silently ignored when a GUID is used
+    /// verbatim.
+    #[test]
+    fn validate_rejects_kind_with_guid() {
+        // `kind` selects a name-resolution strategy; combining it with a GUID
+        // (used verbatim) is a config error rather than a silently ignored field.
+        let cfg = make_config(vec![ProviderConfig {
+            name: None,
+            guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: Some(ProviderKind::Manifest),
+            level: TraceLevel::default(),
+            keywords: None,
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'kind' applies to name-based providers only"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Scenario: A name-based provider supplies an explicit `kind` and no
+    /// `guid`.
+    /// Guarantees: `Config::validate` accepts the config, so specifying a
+    /// resolution strategy for a named provider is a supported configuration.
+    #[test]
+    fn validate_accepts_name_with_explicit_kind() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("My-Custom-EventSource".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Tracelogging),
+            level: TraceLevel::default(),
+            keywords: None,
+        }]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    /// Scenario: A provider specifies a `name` that is empty or contains only
+    /// whitespace.
+    /// Guarantees: `Config::validate` rejects the config, so a blank name never
+    /// reaches resolution where it would hash to a bogus GUID on the automatic
+    /// path.
+    #[test]
+    fn validate_rejects_blank_name() {
+        for blank in ["", "   ", "\t\n"] {
+            let cfg = make_config(vec![provider_with_name(blank)]);
+            let err = cfg.validate().unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("'name' must not be empty or whitespace-only"),
+                "unexpected error for {blank:?}: {msg}"
+            );
+        }
+    }
+
+    /// Scenario: A provider specifies a `guid` that is empty or contains only
+    /// whitespace.
+    /// Guarantees: `Config::validate` rejects the config, so a blank GUID is
+    /// surfaced at validation time instead of failing later at GUID-parse time.
+    #[test]
+    fn validate_rejects_blank_guid() {
+        for blank in ["", "   ", "\t\n"] {
+            let cfg = make_config(vec![provider_with_guid(blank)]);
+            let err = cfg.validate().unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("'guid' must not be empty or whitespace-only"),
+                "unexpected error for {blank:?}: {msg}"
+            );
+        }
+    }
+
     #[test]
     fn validate_rejects_both_name_and_guid() {
         let cfg = make_config(vec![ProviderConfig {
             name: Some("SomeProvider".to_string()),
             guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }]);
@@ -917,6 +1129,7 @@ mod tests {
         let cfg = make_config(vec![ProviderConfig {
             name: None,
             guid: None,
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }]);
@@ -935,6 +1148,7 @@ mod tests {
             ProviderConfig {
                 name: None,
                 guid: None,
+                kind: None,
                 level: TraceLevel::default(),
                 keywords: None,
             },
@@ -972,7 +1186,7 @@ mod tests {
         assert_eq!(cfg.max_duration, DEFAULT_BATCH_MAX_DURATION);
     }
 
-    // ── Producer-side atomic folding boundary cases ──────────────────
+    // -- Producer-side atomic folding boundary cases ------------------
     //
     // These exercise the "first core drains the whole delta" design of
     // `take_event_counts` / `EventCountsDelta::apply` without needing a
@@ -1014,6 +1228,7 @@ mod tests {
                 total: 10,
                 dropped_slow_worker: 3,
                 invalid: 2,
+                ..Default::default()
             }
         );
 
@@ -1031,6 +1246,54 @@ mod tests {
         assert_eq!(metrics.received_events_invalid.get(), 2);
         // Consumer-side counter is removed from metric set; only producer-side
         // `received_events_total` exists now.
+    }
+
+    #[test]
+    fn take_event_counts_claims_kernel_trace_stats_and_resets() {
+        let telemetry = SessionWideMetrics::default();
+        let _ = telemetry.total.fetch_add(4, Ordering::Relaxed);
+        let _ = telemetry.kernel_events_lost.fetch_add(2, Ordering::Relaxed);
+        let _ = telemetry
+            .kernel_real_time_buffers_lost
+            .fetch_add(3, Ordering::Relaxed);
+        let _ = telemetry
+            .kernel_log_buffers_lost
+            .fetch_add(1, Ordering::Relaxed);
+        let _ = telemetry
+            .kernel_buffers_written
+            .fetch_add(9, Ordering::Relaxed);
+
+        let deltas = take_event_counts(&telemetry);
+        assert_eq!(
+            deltas,
+            EventCountsDelta {
+                total: 4,
+                kernel_events_lost: 2,
+                kernel_real_time_buffers_lost: 3,
+                kernel_log_buffers_lost: 1,
+                kernel_buffers_written: 9,
+                ..Default::default()
+            }
+        );
+
+        assert_eq!(telemetry.total.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.kernel_events_lost.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            telemetry
+                .kernel_real_time_buffers_lost
+                .load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(telemetry.kernel_log_buffers_lost.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.kernel_buffers_written.load(Ordering::Relaxed), 0);
+
+        let mut metrics = EtwReceiverMetrics::default();
+        deltas.apply(&mut metrics);
+        assert_eq!(metrics.received_events_total.get(), 4);
+        assert_eq!(metrics.received_events_lost_kernel.get(), 2);
+        assert_eq!(metrics.kernel_real_time_buffers_lost.get(), 3);
+        assert_eq!(metrics.kernel_log_buffers_lost.get(), 1);
+        assert_eq!(metrics.kernel_buffers_written.get(), 9);
     }
 
     #[test]
@@ -1100,6 +1363,10 @@ mod tests {
         assert_eq!(metrics.received_events_total.get(), 0);
         assert_eq!(metrics.received_events_dropped_slow_worker.get(), 0);
         assert_eq!(metrics.received_events_invalid.get(), 0);
+        assert_eq!(metrics.received_events_lost_kernel.get(), 0);
+        assert_eq!(metrics.kernel_real_time_buffers_lost.get(), 0);
+        assert_eq!(metrics.kernel_log_buffers_lost.get(), 0);
+        assert_eq!(metrics.kernel_buffers_written.get(), 0);
     }
 }
 

@@ -278,6 +278,7 @@ async fn connect_websocket(
 
         match connect_result {
             Ok((stream, _response)) => {
+                otel_info!("opamp.controller_extension.ws_connect.success");
                 return Some(stream);
             }
 
@@ -849,15 +850,16 @@ fn handle_server_to_agent_message(
                         if !config_file.body.is_empty() {
                             match serde_json::from_slice::<OtelDataflowSpec>(&config_file.body) {
                                 Ok(engine_config) => {
+                                    otel_debug!(
+                                        "opamp.controller_extension.remote_config.accepted"
+                                    );
                                     updates.engine_config = Some(EngineConfigUpdate {
                                         engine_config,
                                         config_hash: remote_config.config_hash,
                                     })
                                 }
                                 Err(e) => {
-                                    let message =
-                                        "Could not deserialize JSON encoded engine config"
-                                            .to_string();
+                                    let message = "Remote configuration was rejected; the current engine configuration remains active".to_string();
                                     otel_error!(
                                         "opamp.controller_extension.message.invalid_config_json",
                                         message = message,
@@ -869,6 +871,11 @@ fn handle_server_to_agent_message(
                                     })
                                 }
                             }
+                        } else {
+                            otel_debug!(
+                                "opamp.controller_extension.remote_config.empty",
+                                message = "Ignoring empty remote configuration body"
+                            );
                         }
                     } else {
                         let message = "Invalid content type. expected application/json".to_string();
@@ -910,6 +917,8 @@ fn handle_server_to_agent_message(
                     )
                 }
             }
+        } else {
+            otel_debug!("opamp.controller_extension.remote_config.missing");
         }
     }
 
@@ -985,6 +994,10 @@ where
 
             // update engine config & report results to server
             if let Some(engine_config) = updates.engine_config {
+                otel_info!(
+                    "opamp.controller_extension.remote_config.reconcile_start",
+                    delete_missing = config.reconcile.delete_missing
+                );
                 // Send message to let the server we're applying the config
                 session_state.sequence_num += 1;
                 let message = applying_message(
@@ -1011,6 +1024,33 @@ where
                             delete_timeout_secs: config.reconcile.delete_timeout_secs,
                             delete_missing: config.reconcile.delete_missing,
                         });
+
+                match &reconcile_result {
+                    Ok(status) if status.state == EngineConfigReconcileState::Succeeded => {
+                        otel_info!(
+                            "opamp.controller_extension.remote_config.reconcile_succeeded",
+                            changes = status.changes.len()
+                        );
+                    }
+                    Ok(status) => {
+                        let failure_reason = status.failure_reason.as_deref().unwrap_or(
+                            "Controller returned a non-success status without a failure reason",
+                        );
+                        otel_error!(
+                            "opamp.controller_extension.remote_config.reconcile_failed",
+                            message = failure_reason,
+                            state =? status.state,
+                            changes = status.changes.len()
+                        );
+                    }
+                    Err(error) => {
+                        otel_error!(
+                            "opamp.controller_extension.remote_config.reconcile_failed",
+                            message = "Remote configuration was not committed",
+                            error =? error
+                        );
+                    }
+                }
 
                 session_state.sequence_num += 1;
                 let reconcile_result_message = applied_result_message(
@@ -1594,7 +1634,7 @@ mod test {
         expected_exchanges: usize,
         mut config: Config,
     ) -> Vec<AgentToServer> {
-        let port = portpicker::pick_unused_port().expect("free port");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         config.endpoint = format!("ws://127.0.0.1:{port}/v1/opamp");
 
         let cancellation_token = CancellationToken::new();
@@ -1833,6 +1873,8 @@ mod test {
         assert!(status.error_message.contains("error happen"));
     }
 
+    /// Scenario: the OpAMP server sends a remote configuration containing malformed JSON.
+    /// Guarantees: the agent reports the configuration as failed without reconciling it.
     #[tokio::test]
     async fn test_unparsable_config() {
         let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
@@ -1868,9 +1910,14 @@ mod test {
         let applied = &requests[1];
         let status = applied.remote_config_status.as_ref().unwrap();
         assert_eq!(status.status, RemoteConfigStatuses::Failed as i32);
-        assert!(status.error_message.contains("Could not deserialize JSON"));
+        assert_eq!(
+            status.error_message,
+            "Remote configuration was rejected; the current engine configuration remains active"
+        );
     }
 
+    /// Scenario: the agent has successfully applied a remote configuration.
+    /// Guarantees: a later heartbeat reports health and pipeline status with a new sequence number.
     #[tokio::test]
     async fn test_heartbeat_sent_after_applied_config() {
         let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));

@@ -60,7 +60,15 @@ use std::time::Instant as StdInstant;
 mod arrow_records_encoder;
 mod checkpoint;
 mod config;
+#[cfg(any(target_os = "linux", test, feature = "bench"))]
+mod decode;
 mod journal;
+
+/// Re-exported only for the out-of-crate `journald_decode` benchmark. Not part
+/// of the public API; may change or disappear without notice.
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub use decode::bench_reference_decode;
 
 use config::RuntimeConfig;
 pub use config::{
@@ -128,6 +136,7 @@ pub struct JournaldReceiver {
 }
 
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the journald receiver as a local receiver factory.
 pub static JOURNALD_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
@@ -256,6 +265,7 @@ struct WorkerBatch {
 
 #[cfg(target_os = "linux")]
 enum WorkerEvent {
+    HeadRecovery,
     Batch(WorkerBatch),
     CommitResult {
         batch_id: u64,
@@ -508,6 +518,11 @@ fn worker_loop_inner(
 ) -> Result<(), WorkerError> {
     let mut committed_cursor = checkpoint::read_cursor(&checkpoint_path)?;
     let mut reader = journal::SdJournalReader::open(&config, committed_cursor.as_deref())?;
+    if reader.took_end_head_recovery() {
+        event_tx
+            .blocking_send(WorkerEvent::HeadRecovery)
+            .map_err(|_| WorkerError::EventChannelClosed)?;
+    }
     let mut next_batch_id = 1u64;
     let mut builder = arrow_records_encoder::JournaldArrowRecordsBuilder::new();
     let mut first_cursor = String::new();
@@ -622,9 +637,9 @@ fn worker_loop_inner(
                         first_cursor = entry.cursor.clone();
                         first_record_at = StdInstant::now();
                     }
-                    last_cursor = entry.cursor.clone();
                     dropped_fields = dropped_fields.saturating_add(entry.dropped_fields);
                     builder.append(&entry);
+                    last_cursor = entry.cursor;
                 }
             }
         }
@@ -859,6 +874,13 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
 
                 event = event_rx.recv() => {
                     match event {
+                        Some(WorkerEvent::HeadRecovery) => {
+                            otel_warn!(
+                                "journald_receiver.start_at_end_head_recovery",
+                                source_id = config.source_id.as_str(),
+                                journal_root_path = config.journal.root_path.display().to_string()
+                            );
+                        }
                         Some(WorkerEvent::Batch(batch)) => {
                             if pending.len() >= max_in_flight {
                                 let _ =

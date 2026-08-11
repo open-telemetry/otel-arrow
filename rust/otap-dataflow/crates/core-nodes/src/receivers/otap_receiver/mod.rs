@@ -153,6 +153,7 @@ pub struct OTAPReceiver {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_RECEIVER_URN,
@@ -1040,7 +1041,7 @@ mod tests {
 
         // addr and port for the server to run at
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let response_stream_channel_size = 100;
@@ -1236,7 +1237,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -1275,7 +1276,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -1317,7 +1318,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 

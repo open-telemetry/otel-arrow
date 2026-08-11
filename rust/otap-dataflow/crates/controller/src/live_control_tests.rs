@@ -2,24 +2,42 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use async_trait::async_trait;
 use otap_df_config::engine::ResolvedPipelineRole;
 use otap_df_config::observed_state::ObservedStateSettings;
 use otap_df_config::settings::telemetry::logs::LogLevel;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
+use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
 use otap_df_engine::control::{
-    RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
+    NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
 };
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::local::{exporter, receiver};
+use otap_df_engine::message::{ExporterInbox, Message};
+use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::receiver::ReceiverWrapper;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::wiring_contract::WiringContract;
+use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
 use otap_df_state::pipeline_status::PipelineStatus;
-use otap_df_telemetry::TracingSetup;
 use otap_df_telemetry::event::EngineEvent;
+use otap_df_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
+use otap_df_telemetry::metrics::MetricSetSnapshot;
 use otap_df_telemetry::tracing_init::ProviderSetup;
+use otap_df_telemetry::{TracingSetup, otel_info};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
+use tracing::{Event, Subscriber};
+use tracing_subscriber::Registry;
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+struct CountingLayer(Arc<AtomicUsize>);
+
+impl<S: Subscriber> Layer<S> for CountingLayer {
+    fn on_event(&self, _event: &Event<'_>, _context: Context<'_, S>) {
+        _ = self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 fn available_core_ids() -> Vec<CoreId> {
     vec![
@@ -58,6 +76,89 @@ fn test_exporter_create(
     panic!("test exporter factory should not be constructed")
 }
 
+fn test_processor_create(
+    _pipeline_ctx: PipelineContext,
+    _node: otap_df_engine::node::NodeId,
+    _node_config: Arc<NodeUserConfig>,
+    _processor_config: &ProcessorConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+    panic!("test processor factory should not be constructed")
+}
+
+struct RecoveryTestReceiver;
+
+#[async_trait(?Send)]
+impl receiver::Receiver<()> for RecoveryTestReceiver {
+    async fn start(
+        self: Box<Self>,
+        mut ctrl_chan: receiver::ControlChannel<()>,
+        effect_handler: receiver::EffectHandler<()>,
+    ) -> Result<TerminalState, EngineError> {
+        loop {
+            match ctrl_chan.recv().await? {
+                NodeControlMsg::DrainIngress { deadline, .. } => {
+                    effect_handler.notify_receiver_drained().await?;
+                    return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                }
+                NodeControlMsg::Shutdown { deadline, .. } => {
+                    return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+struct RecoveryTestExporter;
+
+#[async_trait(?Send)]
+impl exporter::Exporter<()> for RecoveryTestExporter {
+    async fn start(
+        self: Box<Self>,
+        mut inbox: ExporterInbox<()>,
+        _effect_handler: exporter::EffectHandler<()>,
+    ) -> Result<TerminalState, EngineError> {
+        loop {
+            if let Message::Control(NodeControlMsg::Shutdown { deadline, .. }) =
+                inbox.recv().await?
+            {
+                return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+            }
+        }
+    }
+}
+
+fn recovery_test_receiver_create(
+    _pipeline_ctx: PipelineContext,
+    node: otap_df_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+    Ok(ReceiverWrapper::local(
+        RecoveryTestReceiver,
+        node,
+        node_config,
+        receiver_config,
+    ))
+}
+
+fn recovery_test_exporter_create(
+    _pipeline_ctx: PipelineContext,
+    node: otap_df_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    exporter_config: &ExporterConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+    Ok(ExporterWrapper::local(
+        RecoveryTestExporter,
+        node,
+        node_config,
+        exporter_config,
+    ))
+}
+
 static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
@@ -71,7 +172,20 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
 ];
+
+static TEST_PROCESSOR_FACTORIES: &[ProcessorFactory<()>] = &[ProcessorFactory {
+    name: "urn:otel:processor:type_router",
+    create: test_processor_create,
+    wiring_contract: WiringContract::UNRESTRICTED,
+    validate_config: test_validate_config,
+}];
 
 static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
@@ -86,12 +200,89 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
+    ExporterFactory {
+        name: "urn:otel:exporter:console",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:noop",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
 ];
 
-static TEST_PIPELINE_FACTORY: PipelineFactory<()> =
-    PipelineFactory::new(TEST_RECEIVER_FACTORIES, &[], TEST_EXPORTER_FACTORIES, &[]);
+static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    TEST_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    TEST_EXPORTER_FACTORIES,
+    &[],
+);
+
+static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+    ReceiverFactory {
+        name: "urn:test:receiver:example",
+        create: recovery_test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: recovery_test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static RECOVERY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
+    ExporterFactory {
+        name: "urn:test:exporter:example",
+        create: recovery_test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:console",
+        create: recovery_test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:noop",
+        create: recovery_test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static RECOVERY_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    RECOVERY_TEST_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    RECOVERY_TEST_EXPORTER_FACTORIES,
+    &[],
+);
 
 fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
+    test_runtime_with_factory(config, &TEST_PIPELINE_FACTORY)
+}
+
+fn test_runtime_with_factory(
+    config: &OtelDataflowSpec,
+    pipeline_factory: &'static PipelineFactory<()>,
+) -> Arc<ControllerRuntime<()>> {
+    test_runtime_with_log_filter(config, pipeline_factory).0
+}
+
+fn test_runtime_with_log_filter(
+    config: &OtelDataflowSpec,
+    pipeline_factory: &'static PipelineFactory<()>,
+) -> (
+    Arc<ControllerRuntime<()>>,
+    RuntimeLogFilterHandle,
+    RuntimeLogFilter,
+) {
     let registry = TelemetryRegistryHandle::new();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -102,21 +293,29 @@ fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
         Controller::<()>::declare_topics(config).expect("declared topics should be valid");
     let (memory_pressure_tx, _memory_pressure_rx) =
         tokio::sync::watch::channel(MemoryPressureChanged::initial());
+    let (log_filter, log_filter_handle) =
+        RuntimeLogFilter::new(&config.engine.telemetry.logs.level);
 
-    Arc::new(ControllerRuntime::new(
-        &TEST_PIPELINE_FACTORY,
-        ControllerContext::new(registry),
-        observed_state_store,
-        observed_state_handle,
-        engine_event_reporter,
-        metrics_reporter,
-        declared_topics,
-        available_core_ids(),
-        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
-        Duration::from_secs(1),
-        memory_pressure_tx,
-        config.clone(),
-    ))
+    (
+        Arc::new(ControllerRuntime::new(
+            pipeline_factory,
+            ControllerContext::new(registry),
+            observed_state_store,
+            observed_state_handle,
+            engine_event_reporter,
+            metrics_reporter,
+            declared_topics,
+            available_core_ids(),
+            TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context)
+                .with_log_filter(log_filter.clone()),
+            log_filter_handle.clone(),
+            Duration::from_secs(1),
+            memory_pressure_tx,
+            config.clone(),
+        )),
+        log_filter_handle,
+        log_filter,
+    )
 }
 
 struct ObservedStateRunner {
@@ -215,6 +414,35 @@ where
             pipeline_key.pipeline_id()
         );
         thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_recovery_candidate_generation(
+    runtime: &ControllerRuntime<()>,
+    pipeline_key: &PipelineKey,
+    core_id: usize,
+) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let candidate_generation = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime_recoveries
+            .get(&(pipeline_key.clone(), core_id))
+            .filter(|recovery| recovery.worker_id.is_some())
+            .and_then(|recovery| recovery.candidate_generation);
+        if let Some(candidate_generation) = candidate_generation {
+            return candidate_generation;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for recovery candidate on {}:{} core {}",
+            pipeline_key.pipeline_group_id(),
+            pipeline_key.pipeline_id(),
+            core_id
+        );
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -374,6 +602,56 @@ fn recording_admin_sender(
         failure: failure.map(ToOwned::to_owned),
     });
     (sender, calls)
+}
+
+struct NotifyingPipelineAdminSender {
+    notification: std::sync::mpsc::Sender<String>,
+}
+
+impl PipelineAdminSender for NotifyingPipelineAdminSender {
+    fn try_send_shutdown(&self, _deadline: Instant, reason: String) -> Result<(), EngineError> {
+        self.notification
+            .send(reason)
+            .map_err(|error| EngineError::RuntimeMsgError {
+                error: error.to_string(),
+            })
+    }
+}
+
+fn notifying_admin_sender() -> (
+    Arc<dyn PipelineAdminSender>,
+    std::sync::mpsc::Receiver<String>,
+) {
+    let (notification, receiver) = std::sync::mpsc::channel();
+    (
+        Arc::new(NotifyingPipelineAdminSender { notification }),
+        receiver,
+    )
+}
+
+struct DeadlineNotifyingPipelineAdminSender {
+    notification: std::sync::mpsc::Sender<(String, Instant)>,
+}
+
+impl PipelineAdminSender for DeadlineNotifyingPipelineAdminSender {
+    fn try_send_shutdown(&self, deadline: Instant, reason: String) -> Result<(), EngineError> {
+        self.notification
+            .send((reason, deadline))
+            .map_err(|error| EngineError::RuntimeMsgError {
+                error: error.to_string(),
+            })
+    }
+}
+
+fn deadline_notifying_admin_sender() -> (
+    Arc<dyn PipelineAdminSender>,
+    std::sync::mpsc::Receiver<(String, Instant)>,
+) {
+    let (notification, receiver) = std::sync::mpsc::channel();
+    (
+        Arc::new(DeadlineNotifyingPipelineAdminSender { notification }),
+        receiver,
+    )
 }
 
 fn launched_runtime_instance(
@@ -721,6 +999,101 @@ connections:
     assert!(plan.rollout.cores.is_empty());
     assert!(plan.resize_start_cores.is_empty());
     assert!(plan.resize_stop_cores.is_empty());
+}
+
+/// Scenario: an unchanged effective limiter map moves from engine scope to the
+/// pipeline being reconfigured.
+/// Guarantees: declaration scope alone is a V1 planning no-op, so the controller
+/// does not replace the pipeline and reset otherwise identical receiver buckets.
+#[test]
+fn prepare_rollout_plan_returns_noop_for_rate_limiter_scope_only_change() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: auto
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket: { allow: 1024, interval: 1s, burst: 1024 }
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine-scoped limiter config should parse");
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _receiver =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket: { allow: 1024, interval: 1s, burst: 1024 }
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("pipeline-scoped limiter config should parse");
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("scope-only limiter change should be planned");
+
+    assert_eq!(plan.action, RolloutAction::NoOp);
+    assert_eq!(plan.target_generation, 0);
+    assert!(plan.rollout.cores.is_empty());
 }
 
 /// Scenario: the controller executes a rollout plan that has already been
@@ -1615,6 +1988,129 @@ connections:
     ));
 }
 
+/// Scenario: a replace rollout starts with one recovered core on generation 1
+/// and one sibling on committed generation 0, then fails before switching cores.
+/// Guarantees: rollback retains the recovered core's serving override so status
+/// and compaction continue to select both pre-rollout runtime instances.
+#[test]
+fn rollback_replace_rollout_restores_recovered_serving_generation() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let _recovered =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 1, RuntimeInstanceLifecycle::Active);
+    let _sibling =
+        register_runtime_instance(&runtime, "g1", "p1", 1, 0, RuntimeInstanceLifecycle::Active);
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 1));
+    report_ready(&runtime, deployed_key("g1", "p1", 1, 0));
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = state.generation_counters.insert(pipeline_key.clone(), 2);
+        let _ = state.runtime_recoveries.insert(
+            (pipeline_key.clone(), 0),
+            RuntimeRecoveryState {
+                serving_generation: 1,
+                restart_count: 1,
+                ready_since: Some(Instant::now()),
+                worker_id: None,
+                candidate_generation: None,
+                cancel_requested: false,
+            },
+        );
+    }
+    runtime
+        .observed_state_store
+        .set_pipeline_serving_generation(pipeline_key.clone(), 0, 1);
+    let _ = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.total_cores() == 2 && status.running_cores() == 2
+    });
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 2
+nodes:
+  input:
+    type: "urn:test:receiver:example"
+    config: null
+  output:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: input
+    to: output
+"#,
+    )
+    .expect("replacement should parse");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 2,
+                drain_timeout_secs: 2,
+            },
+        )
+        .expect("mixed-generation replace rollout should be planned");
+    assert_eq!(plan.current_serving_generations.get(&0), Some(&1));
+    assert_eq!(plan.current_serving_generations.get(&1), Some(&0));
+
+    let result = runtime.rollback_replace_rollout(&plan, &[], &[], &[], "boom".to_owned());
+
+    assert!(matches!(
+        result,
+        Err(RolloutExecutionError::Failed(reason)) if reason == "boom"
+    ));
+    let status = runtime
+        .observed_state_handle
+        .pipeline_status(&pipeline_key)
+        .expect("pipeline status should remain available");
+    assert_eq!(status.serving_generations().get(&0), Some(&1));
+    assert_eq!(status.total_cores(), 2);
+    assert_eq!(status.running_cores(), 2);
+    assert!(status.readiness());
+
+    runtime
+        .observed_state_store
+        .compact_pipeline_instances(&pipeline_key);
+    let compacted = runtime
+        .observed_state_handle
+        .pipeline_status(&pipeline_key)
+        .expect("compacted pipeline status should remain available");
+    assert!(compacted.instance_status(0, 1).is_some());
+    assert!(compacted.instance_status(1, 0).is_some());
+}
+
 /// Scenario: a shutdown request targets a group id that does not exist in
 /// the controller's committed config.
 /// Guarantees: per-pipeline shutdown fails fast with `GroupNotFound`
@@ -1971,6 +2467,48 @@ fn reconcile_engine_config_reports_noop_for_matching_live_config() {
     );
 }
 
+/// Scenario: successful full-config reconciliation changes the configured log level.
+/// Guarantees: the shared runtime filter follows warn -> info -> warn without restart.
+#[test]
+fn reconcile_engine_config_applies_runtime_log_level() {
+    let mut config = empty_engine_config();
+    config.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse");
+    let (runtime, log_filter_handle, log_filter) =
+        test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
+    let event_count = Arc::new(AtomicUsize::new(0));
+    let dispatch = tracing::Dispatch::new(
+        Registry::default()
+            .with(log_filter.layer())
+            .with(CountingLayer(Arc::clone(&event_count))),
+    );
+    let emit_info = || otel_info!("test.controller.runtime_filter");
+
+    tracing::dispatcher::with_default(&dispatch, emit_info);
+    assert_eq!(event_count.swap(0, Ordering::SeqCst), 0);
+
+    let mut desired = config.clone();
+    desired.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("info")).expect("info level should parse");
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect("info level should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(log_filter_handle.configured_level().as_str(), "info");
+    tracing::dispatcher::with_default(&dispatch, emit_info);
+    assert_eq!(event_count.swap(0, Ordering::SeqCst), 1);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(config, true))
+        .expect("warn level should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
+    tracing::dispatcher::with_default(&dispatch, emit_info);
+    assert_eq!(event_count.load(Ordering::SeqCst), 0);
+}
+
 /// Scenario: a full-config reconciliation request omits live stopped
 /// resources with `delete_missing` enabled.
 /// Guarantees: reconciliation deletes the omitted pipeline and then the
@@ -2039,12 +2577,15 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
 
 /// Scenario: full-config reconciliation is rejected after validation because a
 /// target pipeline already has an active rollout.
-/// Guarantees: desired engine-level scaffold fields are not committed when the
-/// reconcile request fails before applying all requested changes.
+/// Guarantees: desired engine-level fields and the active log filter remain
+/// unchanged when the request fails before applying all requested changes.
 #[test]
 fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
-    let config = engine_config_with_pipeline(simple_pipeline_yaml());
-    let runtime = test_runtime(&config);
+    let mut config = engine_config_with_pipeline(simple_pipeline_yaml());
+    config.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse");
+    let (runtime, log_filter_handle, _log_filter) =
+        test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
     let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
     {
         let mut state = runtime
@@ -2057,6 +2598,8 @@ fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
     }
 
     let mut desired = config.clone();
+    desired.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("info")).expect("info level should parse");
     _ = desired
         .engine
         .custom
@@ -2068,6 +2611,7 @@ fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
 
     assert_eq!(err, ControlPlaneError::RolloutConflict);
     assert!(runtime.engine_config_snapshot().engine.custom.is_empty());
+    assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
 }
 
 /// Scenario: full-config reconciliation would change an existing topic
@@ -2144,6 +2688,81 @@ groups:
     match err {
         ControlPlaneError::InvalidRequest { message } => {
             assert!(message.contains("runtime topic broker mutation"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: full-config reconciliation changes the process-wide memory limiter policy.
+/// Guarantees: live reconciliation rejects startup-owned sampler changes before mutating committed config.
+#[test]
+fn reconcile_engine_config_rejects_runtime_memory_limiter_mutation() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: rss
+      check_interval: 1s
+      soft_limit: "64 MiB"
+      hard_limit: "96 MiB"
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("config should parse");
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: rss
+      check_interval: 1s
+      soft_limit: "128 MiB"
+      hard_limit: "192 MiB"
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("memory limiter runtime changes should be rejected");
+
+    match err {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("runtime memory_limiter mutation"));
         }
         other => panic!("unexpected error: {other:?}"),
     }
@@ -2584,6 +3203,158 @@ fn request_shutdown_all_attempts_all_active_instances_before_returning_error() {
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         vec!["global shutdown".to_owned()]
     );
+}
+
+/// Scenario: global shutdown includes regular producer instances and the
+/// engine's system observability instance.
+/// Guarantees: all regular instances receive shutdown first, and the system
+/// observability sender is not called until every regular instance reports its
+/// terminal exit, preserving their final internal telemetry.
+#[test]
+fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let regular_key0 = deployed_key("g1", "p1", 0, 0);
+    let regular_key1 = deployed_key("g1", "p1", 1, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        2,
+        0,
+    );
+    let (regular_sender0, regular_notifications0) = notifying_admin_sender();
+    let (regular_sender1, regular_notifications1) = notifying_admin_sender();
+    let (observability_sender, observability_notifications) = deadline_notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key0.clone(),
+        regular_sender0,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key1.clone(),
+        regular_sender1,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    let shutdown_runtime = Arc::clone(&runtime);
+    let (shutdown_result_tx, shutdown_result_rx) = std::sync::mpsc::channel();
+    let shutdown_thread = thread::spawn(move || {
+        shutdown_result_tx
+            .send(shutdown_runtime.request_shutdown_all(5))
+            .expect("shutdown result receiver should remain open");
+    });
+
+    assert_eq!(
+        regular_notifications0
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first regular instance should receive shutdown"),
+        "global shutdown"
+    );
+    assert_eq!(
+        regular_notifications1
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second regular instance should receive shutdown"),
+        "global shutdown"
+    );
+    shutdown_result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("shutdown dispatch should return before regular instances exit")
+        .expect("initial shutdown dispatch should succeed");
+    shutdown_thread
+        .join()
+        .expect("global shutdown dispatch thread should join");
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "observability must remain active while regular instances drain"
+    );
+
+    runtime.note_instance_exit(regular_key0, RuntimeInstanceExit::Success);
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "one remaining regular instance must keep observability active"
+    );
+    runtime.note_instance_exit(regular_key1, RuntimeInstanceExit::Success);
+
+    let (reason, deadline) = observability_notifications
+        .recv_timeout(Duration::from_secs(1))
+        .expect("observability should receive shutdown after producers exit");
+    assert_eq!(reason, "global shutdown");
+    assert!(
+        deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(4),
+        "observability should receive the caller's five-second shutdown budget"
+    );
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(
+        runtime.wait_for_global_shutdown_completion(),
+        "the phased shutdown coordinator should complete after observability exits"
+    );
+    assert!(runtime.all_instances_exited());
+
+    runtime
+        .request_shutdown_all(5)
+        .expect("repeated global shutdown should remain idempotent");
+    assert!(regular_notifications0.try_recv().is_err());
+    assert!(regular_notifications1.try_recv().is_err());
+    assert!(observability_notifications.try_recv().is_err());
+}
+
+/// Scenario: a producer misses its shutdown deadline while observability is still running.
+/// Guarantees: observability remains available for bounded terminal reporting before it stops.
+#[test]
+fn request_shutdown_all_keeps_observability_active_when_producer_times_out() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let regular_key = deployed_key("g1", "p1", 0, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        1,
+        0,
+    );
+    let (regular_sender, regular_notifications) = notifying_admin_sender();
+    let (observability_sender, observability_notifications) = notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key.clone(),
+        regular_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    runtime
+        .request_shutdown_all(1)
+        .expect("initial shutdown dispatch should succeed");
+    let _ = regular_notifications
+        .recv_timeout(Duration::from_secs(1))
+        .expect("regular producer should receive shutdown");
+    assert!(
+        observability_notifications
+            .recv_timeout(Duration::from_millis(1_200))
+            .is_err(),
+        "observability must remain active when a producer misses its deadline"
+    );
+
+    runtime.note_instance_exit(regular_key, RuntimeInstanceExit::Success);
+    runtime
+        .request_shutdown_all(1)
+        .expect("a later request should retry the restored observability sender");
+    let _ = observability_notifications
+        .recv_timeout(Duration::from_secs(1))
+        .expect("observability should stop once the producer has exited");
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(runtime.all_instances_exited());
 }
 
 /// Scenario: all targeted runtime instances exit cleanly after a pipeline
@@ -3140,8 +3911,8 @@ fn note_instance_exit_does_not_compact_observed_state_while_shutdown_is_active()
     assert!(status.instance_status(0, 1).is_some());
 }
 
-/// Scenario: a watched runtime thread panics after the runtime instance has
-/// already been admitted and marked ready in observed state.
+/// Scenario: a watched runtime thread panics during an explicit operation after
+/// the runtime instance has already been admitted and marked ready.
 /// Guarantees: the public runtime error message stays short while the recent
 /// event stores richer panic diagnostics in `ErrorSummary::source`.
 #[test]
@@ -3165,6 +3936,15 @@ fn runtime_thread_panic_populates_error_source_in_observed_status() {
             Some(PipelinePhase::Running)
         )
     });
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        _ = state
+            .active_rollouts
+            .insert(pipeline_key.clone(), "diagnostic-test".to_owned());
+    }
 
     runtime.note_instance_exit(
         deployed_key,
@@ -3201,4 +3981,757 @@ fn runtime_thread_panic_populates_error_source_in_observed_status() {
     assert!(source.contains("thread_id=11"));
     assert!(source.contains("core_id=0"));
     assert!(source.contains("backtrace:"));
+}
+
+/// Scenario: one core in a two-core regular pipeline exits with a runtime error
+/// while its sibling remains healthy, then a later rollout is planned.
+/// Guarantees: the controller promotes a ready replacement generation only for
+/// the failed core, preserves both cores in the serving readiness view, and
+/// records each core's actual serving generation for the later rollout.
+#[test]
+fn runtime_error_recovers_failed_core_on_new_generation() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 5
+            initial_backoff: 5ms
+            max_backoff: 20ms
+            startup_timeout: 2s
+            reset_after: 50ms
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime_with_factory(&config, &RECOVERY_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let _core0_rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let _core1_rx =
+        register_runtime_instance(&runtime, "g1", "p1", 1, 0, RuntimeInstanceLifecycle::Active);
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+    report_ready(&runtime, deployed_key("g1", "p1", 1, 0));
+
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
+    );
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status
+            .instance_status(0, 1)
+            .is_some_and(|instance| matches!(instance.phase(), PipelinePhase::Running))
+            && status.total_cores() == 2
+            && status.running_cores() == 2
+    });
+    assert!(status.instance_status(1, 0).is_some());
+    assert!(status.readiness());
+
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let recovery = state
+            .runtime_recoveries
+            .get(&(pipeline_key.clone(), 0))
+            .expect("recovery state should remain available");
+        assert_eq!(recovery.serving_generation, 1);
+        assert_eq!(recovery.restart_count, 1);
+        assert!(recovery.ready_since.is_some());
+        assert!(recovery.worker_id.is_none());
+        assert_eq!(state.active_instances, 2);
+        assert!(state.first_error.is_none());
+    }
+
+    let replacement = config
+        .groups
+        .get(&PipelineGroupId::from("g1"))
+        .and_then(|group| group.pipelines.get(&PipelineId::from("p1")))
+        .cloned()
+        .expect("replacement pipeline should exist");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 2,
+                drain_timeout_secs: 2,
+            },
+        )
+        .expect("a later rollout should accept mixed serving generations");
+    assert_eq!(plan.action, RolloutAction::Replace);
+    assert_eq!(plan.current_serving_generations.get(&0), Some(&1));
+    assert_eq!(plan.current_serving_generations.get(&1), Some(&0));
+    assert!(
+        plan.rollout
+            .cores
+            .iter()
+            .any(|core| core.core_id == 0 && core.previous_generation == Some(1))
+    );
+    assert!(
+        plan.rollout
+            .cores
+            .iter()
+            .any(|core| core.core_id == 1 && core.previous_generation == Some(0))
+    );
+
+    runtime
+        .request_instance_shutdown(
+            &deployed_key("g1", "p1", 0, 1),
+            2,
+            "runtime recovery test cleanup",
+        )
+        .expect("recovered runtime should accept shutdown");
+    runtime.note_instance_exit(deployed_key("g1", "p1", 1, 0), RuntimeInstanceExit::Success);
+}
+
+/// Scenario: one serving core fails during rollout reservation and another
+/// fails after active rollout insertion, with backoff shorter than both gaps.
+/// Guarantees: both recoveries remain deferred through explicit ownership and
+/// start only after the rollout releases the pipeline.
+#[test]
+fn runtime_error_during_rollout_handoff_is_deferred_until_finish() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 5
+            initial_backoff: 1ms
+            max_backoff: 2ms
+            startup_timeout: 2s
+            reset_after: 1m
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime_with_factory(&config, &RECOVERY_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let _core0_rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let _core1_rx =
+        register_runtime_instance(&runtime, "g1", "p1", 1, 0, RuntimeInstanceLifecycle::Active);
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+    report_ready(&runtime, deployed_key("g1", "p1", 1, 0));
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    let reservation = runtime
+        .begin_pipeline_operation_reservation(pipeline_key.clone(), PipelineOperationKind::Rollout)
+        .expect("rollout ownership should be reserved");
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
+    );
+    thread::sleep(Duration::from_millis(25));
+
+    {
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            state
+                .deferred_runtime_recoveries
+                .contains_key(&deployed_key("g1", "p1", 0, 0))
+        );
+        assert!(
+            !state
+                .runtime_recoveries
+                .contains_key(&(pipeline_key.clone(), 0))
+        );
+        assert_eq!(state.generation_counters.get(&pipeline_key), Some(&1));
+        let _ = state
+            .active_rollouts
+            .insert(pipeline_key.clone(), "rollout-handoff".to_owned());
+    }
+    drop(reservation);
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 1, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom sibling".to_owned())),
+    );
+    thread::sleep(Duration::from_millis(25));
+
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            state
+                .deferred_runtime_recoveries
+                .contains_key(&deployed_key("g1", "p1", 0, 0))
+        );
+        assert!(
+            state
+                .deferred_runtime_recoveries
+                .contains_key(&deployed_key("g1", "p1", 1, 0))
+        );
+        assert!(
+            !state
+                .runtime_recoveries
+                .contains_key(&(pipeline_key.clone(), 0))
+        );
+        assert!(
+            !state
+                .runtime_recoveries
+                .contains_key(&(pipeline_key.clone(), 1))
+        );
+        assert_eq!(state.generation_counters.get(&pipeline_key), Some(&1));
+    }
+
+    runtime.finish_rollout(&pipeline_key, "rollout-handoff");
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.total_cores() == 2 && status.running_cores() == 2
+    });
+    assert_eq!(status.total_cores(), 2);
+    assert_eq!(status.running_cores(), 2);
+    assert!(status.readiness());
+    let (core0_generation, core1_generation) = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(state.deferred_runtime_recoveries.is_empty());
+        let core0_generation = state
+            .runtime_recoveries
+            .get(&(pipeline_key.clone(), 0))
+            .expect("core 0 recovery should remain tracked")
+            .serving_generation;
+        let core1_generation = state
+            .runtime_recoveries
+            .get(&(pipeline_key.clone(), 1))
+            .expect("core 1 recovery should remain tracked")
+            .serving_generation;
+        (core0_generation, core1_generation)
+    };
+    let mut generations = [core0_generation, core1_generation];
+    generations.sort_unstable();
+    assert_eq!(generations, [1, 2]);
+
+    runtime
+        .request_instance_shutdown(
+            &deployed_key("g1", "p1", 0, core0_generation),
+            2,
+            "runtime recovery handoff test cleanup",
+        )
+        .expect("recovered runtime should accept shutdown");
+    runtime
+        .request_instance_shutdown(
+            &deployed_key("g1", "p1", 1, core1_generation),
+            2,
+            "runtime recovery handoff test cleanup",
+        )
+        .expect("recovered sibling runtime should accept shutdown");
+}
+
+/// Scenario: a failed core already has a recovery worker in long backoff when
+/// rollout planning reserves the pipeline and cancels that worker.
+/// Guarantees: cancellation preserves the failed serving generation and starts
+/// a fresh recovery worker if planning releases ownership without a rollout.
+#[test]
+fn rollout_reservation_preserves_cancelled_recovery_work() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 5
+            initial_backoff: 5s
+            max_backoff: 5s
+            startup_timeout: 1s
+            reset_after: 1m
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime_with_factory(&config, &RECOVERY_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
+    );
+
+    let reservation = runtime
+        .begin_pipeline_operation_reservation(pipeline_key.clone(), PipelineOperationKind::Rollout)
+        .expect("rollout ownership should be reserved");
+    runtime.cancel_runtime_recoveries_for_pipeline(&pipeline_key);
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            state
+                .deferred_runtime_recoveries
+                .contains_key(&deployed_key("g1", "p1", 0, 0))
+        );
+        assert!(
+            state
+                .runtime_recoveries
+                .get(&(pipeline_key.clone(), 0))
+                .is_some_and(|recovery| recovery.worker_id.is_none())
+        );
+    }
+
+    drop(reservation);
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(state.deferred_runtime_recoveries.is_empty());
+        assert!(
+            state
+                .runtime_recoveries
+                .get(&(pipeline_key.clone(), 0))
+                .is_some_and(|recovery| recovery.worker_id.is_some())
+        );
+    }
+    runtime
+        .request_shutdown_all(1)
+        .expect("global shutdown should cancel the replacement worker");
+}
+
+/// Scenario: two rollout reservations cancel the same failed core while each
+/// recovery worker is waiting in backoff with a two-launch restart budget.
+/// Guarantees: cancelled waits consume no restart budget, and the first actual
+/// replacement launch is still attempted and charged exactly once.
+#[test]
+fn cancelled_recovery_backoffs_do_not_consume_restart_budget() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 2
+            initial_backoff: 250ms
+            max_backoff: 250ms
+            startup_timeout: 2s
+            reset_after: 1m
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime_with_factory(&config, &RECOVERY_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
+    );
+
+    let mut cancelled_generations = Vec::new();
+    for cancellation in 1..=2 {
+        cancelled_generations.push(wait_for_recovery_candidate_generation(
+            &runtime,
+            &pipeline_key,
+            0,
+        ));
+        let reservation = runtime
+            .begin_pipeline_operation_reservation(
+                pipeline_key.clone(),
+                PipelineOperationKind::Rollout,
+            )
+            .expect("rollout ownership should be reserved");
+        runtime.cancel_runtime_recoveries_for_pipeline(&pipeline_key);
+        {
+            let state = runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let recovery = state
+                .runtime_recoveries
+                .get(&(pipeline_key.clone(), 0))
+                .expect("cancelled recovery should remain tracked");
+            assert_eq!(
+                recovery.restart_count, 0,
+                "cancellation {cancellation} consumed restart budget"
+            );
+            assert!(recovery.worker_id.is_none());
+            assert!(recovery.candidate_generation.is_none());
+            assert!(
+                state
+                    .deferred_runtime_recoveries
+                    .contains_key(&deployed_key("g1", "p1", 0, 0))
+            );
+        }
+        drop(reservation);
+    }
+
+    let last_cancelled_generation = *cancelled_generations
+        .last()
+        .expect("two recovery candidates should have been cancelled");
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.running_cores() == 1
+            && status
+                .serving_generations()
+                .get(&0)
+                .is_some_and(|generation| *generation > last_cancelled_generation)
+    });
+    assert!(status.readiness());
+    let serving_generation = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let recovery = state
+            .runtime_recoveries
+            .get(&(pipeline_key.clone(), 0))
+            .expect("successful recovery should remain tracked");
+        assert_eq!(recovery.restart_count, 1);
+        recovery.serving_generation
+    };
+
+    runtime
+        .request_instance_shutdown(
+            &deployed_key("g1", "p1", 0, serving_generation),
+            2,
+            "restart budget test cleanup",
+        )
+        .expect("recovered runtime should accept shutdown");
+}
+
+/// Scenario: a serving core fails while an engine-wide operation owns the
+/// controller but does not replace or delete that pipeline.
+/// Guarantees: the engine operation defers the failure and dropping its guard
+/// resumes recovery for the still-serving generation.
+#[test]
+fn runtime_error_during_engine_operation_recovers_after_guard_release() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 5
+            initial_backoff: 1ms
+            max_backoff: 2ms
+            startup_timeout: 2s
+            reset_after: 1m
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime_with_factory(&config, &RECOVERY_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+
+    let guard = runtime
+        .begin_named_engine_operation("test-engine-operation".to_owned())
+        .expect("engine operation should acquire ownership");
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
+    );
+    {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            state
+                .deferred_runtime_recoveries
+                .contains_key(&deployed_key("g1", "p1", 0, 0))
+        );
+        assert!(
+            !state
+                .runtime_recoveries
+                .contains_key(&(PipelineKey::new("g1".into(), "p1".into()), 0))
+        );
+    }
+
+    drop(guard);
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status
+            .instance_status(0, 1)
+            .is_some_and(|instance| matches!(instance.phase(), PipelinePhase::Running))
+            && status.total_cores() == 1
+            && status.running_cores() == 1
+    });
+    assert!(status.readiness());
+    assert!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .deferred_runtime_recoveries
+            .is_empty()
+    );
+
+    runtime
+        .request_instance_shutdown(
+            &deployed_key("g1", "p1", 0, 1),
+            2,
+            "engine operation recovery test cleanup",
+        )
+        .expect("recovered runtime should accept shutdown");
+}
+
+/// Scenario: every replacement runtime fails before it becomes ready and the
+/// configured restart budget is two attempts.
+/// Guarantees: early exit races consume exactly two generations before the
+/// controller records a fatal error and requests coordinated engine shutdown.
+#[test]
+fn runtime_recovery_exhaustion_fails_process_after_bounded_attempts() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 2
+            initial_backoff: 1ms
+            max_backoff: 2ms
+            startup_timeout: 200ms
+            reset_after: 1s
+          resources:
+            core_allocation:
+              type: core_count
+              count: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(
+            "initial runtime failure".to_owned(),
+        )),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let failed = {
+            let state = runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.global_shutdown_requested && state.first_error.is_some()
+        };
+        if failed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "runtime recovery did not exhaust within the test deadline"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let recovery = state
+        .runtime_recoveries
+        .get(&(PipelineKey::new("g1".into(), "p1".into()), 0))
+        .expect("recovery streak should remain available");
+    assert_eq!(recovery.restart_count, 2);
+    assert!(recovery.worker_id.is_none());
+    assert_eq!(
+        state
+            .generation_counters
+            .get(&PipelineKey::new("g1".into(), "p1".into())),
+        Some(&3)
+    );
+    assert!(
+        state
+            .first_error
+            .as_deref()
+            .is_some_and(|error| error.contains("after 2 restart attempt(s)"))
+    );
+}
+
+/// Scenario: a regular pipeline disables in-process runtime recovery and its
+/// serving core exits unexpectedly.
+/// Guarantees: no replacement generation is allocated and the controller
+/// immediately requests fatal coordinated shutdown.
+#[test]
+fn disabled_runtime_recovery_fails_without_launching_replacement() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            enabled: false
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
+    );
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(state.global_shutdown_requested);
+    assert_eq!(
+        state
+            .generation_counters
+            .get(&PipelineKey::new("g1".into(), "p1".into())),
+        Some(&1)
+    );
+    assert!(
+        state
+            .first_error
+            .as_deref()
+            .is_some_and(|error| error.contains("runtime recovery is disabled"))
+    );
+}
+
+/// Scenario: an explicit rollout is planned while a failed core is waiting in
+/// a long recovery backoff.
+/// Guarantees: rollout planning cancels and joins the recovery worker before
+/// snapshotting runtime state, preventing a late replacement launch.
+#[test]
+fn rollout_planning_cancels_scheduled_runtime_recovery() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 5
+            initial_backoff: 5s
+            max_backoff: 5s
+            startup_timeout: 1s
+            reset_after: 1m
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime_with_factory(&config, &RECOVERY_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
+    );
+
+    let replacement = config
+        .groups
+        .get(&PipelineGroupId::from("g1"))
+        .and_then(|group| group.pipelines.get(&PipelineId::from("p1")))
+        .cloned()
+        .expect("replacement pipeline should exist");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 2,
+                drain_timeout_secs: 2,
+            },
+        )
+        .expect("rollout planning should cancel recovery");
+
+    assert_eq!(plan.action, RolloutAction::Replace);
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_recoveries
+            .get(&(PipelineKey::new("g1".into(), "p1".into()), 0))
+            .is_some_and(|recovery| recovery.worker_id.is_none())
+    );
+    assert_eq!(state.active_instances, 0);
+    assert!(state.first_error.is_none());
 }

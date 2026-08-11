@@ -93,6 +93,7 @@ fn elapsed_nanos(start: StdInstant) -> f64 {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: TRAFFIC_GENERATOR_RECEIVER_URN,
@@ -1253,7 +1254,7 @@ mod tests {
 
     /// Regression test: verifies that a non-terminal control message
     /// (CollectTelemetry) arriving during the rate-limit sleep does NOT
-    /// break the sleep early – the receiver should still respect the
+    /// break the sleep early - the receiver should still respect the
     /// original wait_till deadline.
     #[test]
     fn test_non_terminal_ctrl_msg_does_not_break_rate_limit_sleep() {

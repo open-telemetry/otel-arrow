@@ -207,11 +207,13 @@ mod test {
         assert_eq!("Invalid date 2026-02-30", err.to_string())
     }
 
+    /// Scenario: A timestamp literal contains hour 24, which is outside the valid time range.
+    /// Guarantees: The parser reports the invalid time using zero-padded milliseconds.
     #[test]
     fn test_parse_from_invalid_time_literal() {
         // 24:00 o'clock, an invalid time
         let err = run_test_failure("timestamp\"2026-02-04T24:00:00\"");
-        assert_eq!("Invalid time 24:00:00.0+00:00", err.to_string())
+        assert_eq!("Invalid time 24:00:00.000+00:00", err.to_string())
     }
 
     #[test]

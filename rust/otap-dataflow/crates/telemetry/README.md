@@ -1,9 +1,9 @@
-# Telemetry SDK (schema-first, multivariate, NUMA-aware)
+# Internal Telemetry System (schema-first, multivariate, NUMA-aware)
 
 Status: draft under active development.
 
-A low-overhead, NUMA-aware telemetry SDK that turns a declarative schema into a
-type-safe Rust API for emitting richly structured, multivariate metrics. It is
+A low-overhead, NUMA-aware telemetry system that turns a declarative schema into
+a type-safe Rust API for emitting richly structured, multivariate metrics. It is
 designed for engines that run a thread-per-core and require predictable latency
 while still exporting high-fidelity operational data.
 
@@ -81,14 +81,40 @@ otel_info!(
 
 ## Internal telemetry collection
 
-The dataflow engine supports multiple ways to configure internal
-logging, with a number of provider modes that determine how logging is
-configured in different parts of the code.
+The dataflow engine supports multiple ways to configure internal logs and
+metrics. Log provider modes determine how logging is configured in different
+parts of the code.
 
-All modes configure the [Rust-standard `env_logger`
-crate](https://docs.rs/env_logger/latest/env_logger/), making the
-`RUST_LOG` environment variable available for controlling internal
-logging.
+All modes use a [`tracing_subscriber::EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html).
+The `engine.telemetry.logs.level` field accepts either a severity such as
+`warn` or a complete target directive string. Successful full-engine
+reconciliation applies changes to this field to existing tracing subscribers,
+so an OpAMP or admin control plane can temporarily increase verbosity without
+restarting the engine. Failed reconciliation preserves the active filter.
+
+At startup, a valid `RUST_LOG` environment variable takes precedence over
+`logs.level`. After startup, a successful full-engine reconciliation makes the
+reconciled `logs.level` authoritative and replaces the environment-derived
+filter. This lets an OpAMP or admin control plane reliably change verbosity
+even when the process was launched with `RUST_LOG`.
+
+### Limitation: active span state is not reconstructed
+
+`EnvFilter` supports span-scoped directives such as
+`warn,[pipeline_thread]=debug`, which raise verbosity only while a matching
+span is entered. Those directives work when supplied at startup through
+`logs.level` or `RUST_LOG`, but reconciliation cannot apply them to spans that
+are already entered.
+
+Reconciliation installs a newly built `EnvFilter` into each live dispatcher.
+`EnvFilter` tracks span scopes through `on_new_span` and `on_enter`, so a
+replacement filter has no record of spans entered before it was installed and
+never pushes them onto its scope stack. A reconciled span directive applies to
+matching spans created after the update, including spans created by replacement
+pipeline threads. Events inside a long-lived `pipeline_thread` span that was
+already entered fall back to the new filter's non-span directives until that
+pipeline thread and its span are recreated.
+The non-span part of the reconciled `logs.level` takes effect immediately.
 
 There are four aspects that can be configured:
 
@@ -98,29 +124,46 @@ There are four aspects that can be configured:
   (e.g., libraries, startup code)
 - `admin`: logging for administrative threads (metrics aggregation,
   observed state store, controller tasks)
-- `internal`: logging for the internal telemetry pipeline itself;
+- `internal`: logging for the engine observability pipeline itself;
   restricted to `console_direct` or `noop` to avoid feedback loops
 
-These modes are configured through the `service::telemetry::logs::providers`
+These modes are configured through the `engine.telemetry.logs.providers`
 field, with the following choices:
 
-- `its`: configure the Internal Telemetry System using nodes defined
-  in the pipeline's `internal` nodes section. These nodes are
-  configured in a dedicated thread.
+- `its`: send logs to the Internal Telemetry System for consumption by the
+  internal telemetry receiver in `engine.observability.pipeline`.
 - `console_async`: configure asynchronous console logging. In this
   mode log records are printed to the console by the
   observed-state-store thread, avoiding blocking the caller.
 - `console_direct`: configure synchronous logging. This mode blocks
   the calling thread to print each log statement immediately.
-- `opentelemetry`: configure the OpenTelemetry Rust SDK. This provider
-  supports more extensive diagnostics, including support for
-  distributed tracing events.
 - `noop`: disables logging.
+
+Periodic internal metrics always flow through the engine observability
+pipeline. When configuration omits that pipeline, the engine installs a
+built-in pipeline that consumes metrics with a noop exporter. Global and engine
+logs continue to use `console_async` by default; the built-in pipeline's console
+route is used only when a log provider explicitly selects `its`. A custom
+internal telemetry receiver can override the default registry drain and export
+interval and apply metric views through its `metrics` block. Its `signals` field
+defaults to `[logs, metrics]`; either signal can be omitted. When metric
+emission is disabled, the receiver commits the ITS export accumulator without
+OTLP conversion or downstream delivery, while leaving the admin metric view
+intact.
+
+ITS metric export and admin endpoint reads use independent registry views, so
+an admin reset does not consume metrics waiting for pipeline export.
+The bridge projects multivariate metric sets into standard univariate OTLP
+metrics that normal OTLP or OTAP exporters can consume. This is a transitional
+representation pending native multivariate metric-set support in OTAP.
+
+Prometheus scraping is provided by the admin server at the fixed
+`/api/v1/metrics` path. Receiver views do not apply to that endpoint.
 
 For more on this design, see the [self-tracing architecture
 document](../../docs/self_tracing_architecture.md). See a sample
 configuration in
-[configs/internal-telemetry.yaml](../../configs/internal-telemetry.yaml).
+[configs/internal-telemetry-metrics.yaml](../../configs/internal-telemetry-metrics.yaml).
 
 ## Roadmap
 

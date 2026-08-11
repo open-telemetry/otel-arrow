@@ -11,7 +11,6 @@ use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeUrn, PortName, TopicName};
 use otap_df_telemetry::event::ErrorSummary;
-use std::borrow::Cow;
 use std::fmt;
 
 use otap_df_config::ExtensionId;
@@ -390,13 +389,6 @@ pub enum Error {
         port_name: PortName,
     },
 
-    /// Unsupported node kind.
-    #[error("Unsupported node kind `{kind}`")]
-    UnsupportedNodeKind {
-        /// The kind of the node that is not supported.
-        kind: Cow<'static, str>,
-    },
-
     /// Node wiring violates the node type contract.
     #[error(
         "Invalid wiring for node `{node}` output `{output}`: allowed at most {max_destinations} destination(s), found {actual_destinations:?}"
@@ -479,7 +471,7 @@ pub enum Error {
 
     /// All nodes were removed from the pipeline (none are connected).
     #[error(
-        "Pipeline has no connected nodes after removing unconnected entries — check pipeline configuration"
+        "Pipeline has no connected nodes after removing unconnected entries \u{2014} check pipeline configuration"
     )]
     EmptyPipeline,
 
@@ -637,7 +629,6 @@ impl Error {
             Error::UnknownOutputPort { .. } => "UnknownOutputPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",
             Error::UnknownReceiver { .. } => "UnknownReceiver",
-            Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
             Error::InvalidNodeWiring { .. } => "InvalidNodeWiring",
             Error::TopicAlreadyExists { .. } => "TopicAlreadyExists",
             Error::UnknownTopic { .. } => "UnknownTopic",

@@ -166,7 +166,7 @@ pub struct GrpcClientSettings {
     ///
     /// Values are wrapped in [`SecretString`] so a metadata credential is not
     /// accidentally leaked through `Debug`/telemetry; the cleartext is reached
-    /// only through an explicit [`ExposeSecret::expose_secret`] call — during
+    /// only through an explicit [`ExposeSecret::expose_secret`] call -- during
     /// [`GrpcClientSettings::validate`] and at the metadata-construction site.
     ///
     /// `GrpcClientSettings` is shared by the OTLP/gRPC exporter and the OTAP
@@ -1315,7 +1315,7 @@ mod tests {
     #[tokio::test]
     async fn build_endpoint_with_tls_fails_with_empty_ca_pem() {
         crate::crypto::ensure_crypto_provider();
-        // Test 1: Empty ca_pem with system CAs disabled → "no trust anchors" error
+        // Test 1: Empty ca_pem with system CAs disabled -> "no trust anchors" error
         let settings1 = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
@@ -1333,7 +1333,7 @@ mod tests {
             err1
         );
 
-        // Test 2: Whitespace-only ca_pem with system CAs enabled → "ca_pem is empty" error
+        // Test 2: Whitespace-only ca_pem with system CAs enabled -> "ca_pem is empty" error
         let settings2 = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
@@ -1669,7 +1669,7 @@ mod tests {
     #[tokio::test]
     async fn startup_check_connect_succeeds() {
         crate::crypto::ensure_crypto_provider();
-        let port = portpicker::pick_unused_port().expect("no free port");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         // Bind a TCP listener so the eager connect attempt has something to connect to.
         let _listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
             .await
@@ -1686,7 +1686,7 @@ mod tests {
     #[tokio::test]
     async fn startup_check_connect_fails_connection_refused() {
         crate::crypto::ensure_crypto_provider();
-        let port = portpicker::pick_unused_port().expect("no free port");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let settings = GrpcClientSettings {
             grpc_endpoint: format!("http://127.0.0.1:{port}"),
             startup_check: StartupCheck::Connect,

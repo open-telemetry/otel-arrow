@@ -527,7 +527,7 @@ impl AssignPipelineStage {
             }
         }
 
-        // Coerce static scalar integers to the destination field type (e.g. AnyInt literal → UInt32).
+        // Coerce static scalar integers to the destination field type (e.g. AnyInt literal -> UInt32).
         // Mirrors the same cast done in assign_to_root.
         if let Some(dest_logical_type) = nested_struct_field_type(dest_field_name) {
             if let Some(dest_arrow_type) = dest_logical_type.datatype() {
@@ -2311,7 +2311,7 @@ fn coerce_to_any_value_struct_column(values: ArrayRef) -> Result<ArrayRef> {
                     Ok(values)
                 }
             } else {
-                // Dict not allowed for this value type — downcast to plain
+                // Dict not allowed for this value type -- downcast to plain
                 Ok(cast(&values, value_type.as_ref())?)
             }
         }
@@ -8079,18 +8079,18 @@ mod test {
     /// (no key present, not even an explicit null) are not dropped.
     async fn test_update_attr_coalesce_missing_attributes<P: Parser>() {
         let logs_data = to_logs_data(vec![
-            // log 0: has attr1 — coalesce picks attr1
+            // log 0: has attr1 -- coalesce picks attr1
             LogRecord::build()
                 .attributes(vec![
                     KeyValue::new("attr1", AnyValue::new_string("X")),
                     KeyValue::new("attr2", AnyValue::new_string("Y")),
                 ])
                 .finish(),
-            // log 1: attr1 absent entirely (no key), only attr2 — coalesce must pick attr2
+            // log 1: attr1 absent entirely (no key), only attr2 -- coalesce must pick attr2
             LogRecord::build()
                 .attributes(vec![KeyValue::new("attr2", AnyValue::new_string("Z"))])
                 .finish(),
-            // log 2: both absent — coalesce falls through to the literal "foo"
+            // log 2: both absent -- coalesce falls through to the literal "foo"
             LogRecord::build().attributes(vec![]).finish(),
         ]);
 
@@ -8254,5 +8254,89 @@ mod test {
     #[tokio::test]
     async fn test_update_attr_using_rtrim_kql_parser() {
         test_update_attr_using_rtrim::<KqlParser>().await
+    }
+
+    /// When a logs batch spans multiple scopes and only *some* records carry root
+    /// attributes, `extend attributes[...]` fills the null root-id column with `max+1`
+    /// ids. That can place a larger id on an earlier-visited scope than a later one,
+    /// breaking the monotonic-id invariant the OTLP decoder's attribute-join cursor
+    /// relies on -- silently dropping *all* attributes from an unrelated record.
+    ///
+    /// Each record here lives under its own scope; the `error` attribute follows the
+    /// pattern `[present, absent, present]`. Every record must keep its original
+    /// attributes AND gain the newly-assigned `eventName`.
+    async fn test_extend_attrs_sparse_multi_scope<P: Parser>() {
+        // err_pattern controls whether each record has a pre-existing `error` attribute.
+        let err_pattern = [true, false, true];
+
+        let scope_logs: Vec<ScopeLogs> = err_pattern
+            .iter()
+            .enumerate()
+            .map(|(i, has_err)| {
+                let event_name = format!("evt{i}");
+                let mut builder = LogRecord::build().event_name(event_name.clone());
+                if *has_err {
+                    builder =
+                        builder.attributes(vec![KeyValue::new("error", AnyValue::new_string("E"))]);
+                }
+                ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name(format!("scope{i}"))
+                        .finish(),
+                    vec![builder.finish()],
+                )
+            })
+            .collect();
+
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::build().finish(),
+            scope_logs,
+        )]);
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | extend attributes[\"eventName\"] = event_name",
+            logs_data,
+        )
+        .await;
+
+        // Collect (event_name -> attribute keys) across every scope/record.
+        let mut by_event: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for rl in &result.resource_logs {
+            for sl in &rl.scope_logs {
+                for lr in &sl.log_records {
+                    let keys: Vec<String> = lr.attributes.iter().map(|kv| kv.key.clone()).collect();
+                    let _ = by_event.insert(lr.event_name.clone(), keys);
+                }
+            }
+        }
+
+        assert_eq!(by_event.len(), 3, "expected 3 records, got {by_event:?}");
+
+        for (i, has_err) in err_pattern.iter().enumerate() {
+            let event_name = format!("evt{i}");
+            let keys = by_event
+                .get(&event_name)
+                .unwrap_or_else(|| panic!("missing record {event_name}"));
+            assert!(
+                keys.contains(&"eventName".to_string()),
+                "record {event_name} lost the newly-assigned eventName attribute: {keys:?}"
+            );
+            if *has_err {
+                assert!(
+                    keys.contains(&"error".to_string()),
+                    "record {event_name} lost its original error attribute: {keys:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_extend_attrs_sparse_multi_scope_opl_parser() {
+        test_extend_attrs_sparse_multi_scope::<OplParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_extend_attrs_sparse_multi_scope_kql_parser() {
+        test_extend_attrs_sparse_multi_scope::<KqlParser>().await
     }
 }

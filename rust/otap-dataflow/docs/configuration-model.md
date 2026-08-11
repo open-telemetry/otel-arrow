@@ -116,11 +116,13 @@ Policies are scoped runtime controls. Top-level policies provide defaults,
 group policies override those defaults for a group, and pipeline policies
 override them for a single pipeline.
 
-Precedence applies by policy family instead of deep-merging nested fragments.
-This avoids ambiguous partial inheritance and keeps the resolved runtime shape
-deterministic. Some policies are intentionally constrained to specific scopes;
-for example, the memory limiter is process-wide and only supported at top-level
-`policies.resources`.
+Precedence normally applies by policy family instead of deep-merging nested
+fragments. The `resources` family is the deliberate exception: its
+`core_allocation`, `memory_limiter`, and `rate_limiters` members resolve
+independently, while the named `rate_limiters` map resolves as one member rather
+than being merged entry by entry. Some policies are intentionally constrained
+to specific scopes; for example, the memory limiter is process-wide and only
+supported at top-level `policies.resources`.
 
 ### Topics
 
@@ -136,7 +138,8 @@ cross-pipeline loops through topics are rejected early.
 
 The internal observability pipeline is configured under
 `engine.observability.pipeline`. It uses the same node and connection model as a
-regular pipeline, but it has constrained policy support.
+regular pipeline, but it has constrained policy support. The engine installs a
+default pipeline when the field is omitted, and the pipeline cannot be disabled.
 
 This makes internal telemetry routing explicit without treating observability as
 ordinary user dataflow. Resource policies are rejected there because the
@@ -318,6 +321,8 @@ At node level:
 - `header_capture` (optional): receiver-only transport header capture override
 - `header_propagation` (optional): exporter-only transport header propagation
   override
+- `rate_limiters` (optional): select one named admission limiter with `[name]`;
+  omit the field or use `[]` to leave the node unbound
 
 At connection level:
 
@@ -357,26 +362,69 @@ Engine-wide topic runtime defaults are declared at `engine.topics`.
 
 Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 
+### Engine Telemetry
+
+Internal telemetry settings are declared at `engine.telemetry`. The
+`reporting_interval` controls the metric-set snapshot cadence and supplies the
+internal telemetry receiver's default registry drain and export interval.
+
+The internal telemetry receiver's `signals` field defaults to `[logs,
+metrics]`. A custom receiver may select either `[logs]` or `[metrics]`; logs
+must remain enabled whenever the global, engine, or admin log provider uses
+`its`. When metrics are selected, the optional `metrics.interval` overrides the
+receiver's cold-path interval, and `metrics.views` defines supported name and
+description transformations.
+When metrics are not selected, the receiver still drains their private ITS
+export accumulator without converting or emitting OTLP data. This preserves
+registry cleanup and does not consume the admin endpoint's metric view.
+
+The Prometheus replacement is the admin endpoint at `/api/v1/metrics`; its bind
+address comes from `engine.http_admin`. The path is fixed, receiver views are
+not applied, and reading it does not reset or consume snapshots waiting for ITS
+export.
+
+The ITS bridge projects each multivariate metric set into standard univariate
+OTLP metrics, which normal OTLP and OTAP exporters can consume. This projection
+is transitional pending native multivariate metric-set support in OTAP.
+
 ### Observability Pipeline
 
-Internal telemetry pipeline wiring is declared at:
-`engine.observability.pipeline`.
+Engine observability pipeline wiring is declared at
+`engine.observability.pipeline`. The field cannot be null. When it is omitted,
+the engine installs the following topology: metrics are continuously consumed
+by the noop exporter, while logs explicitly configured to use ITS are rendered
+by the console exporter. The default `console_async` log path bypasses this
+pipeline.
 
 ```yaml
 engine:
   observability:
     pipeline:
       nodes:
-        itr:
+        internal:
           type: "urn:otel:receiver:internal_telemetry"
           config: {}
-        sink:
+        router:
+          type: "urn:otel:processor:type_router"
+          outputs: [logs, metrics]
+          config: {}
+        logs_console:
           type: "urn:otel:exporter:console"
           config: {}
+        metrics_noop:
+          type: "urn:otel:exporter:noop"
+          config: {}
       connections:
-        - from: itr
-          to: sink
+        - from: internal
+          to: router
+        - from: router["logs"]
+          to: logs_console
+        - from: router["metrics"]
+          to: metrics_noop
 ```
+
+A custom pipeline replaces this default and must retain exactly one connected
+`receiver:internal_telemetry`.
 
 Optional observability policies are supported at:
 `engine.observability.pipeline.policies` for:
@@ -445,7 +493,7 @@ engine:
 ## Policy Hierarchy
 
 Policies include channel capacity, health, runtime telemetry, resources
-controls, and transport headers:
+controls, runtime recovery, and transport headers:
 
 ```yaml
 policies:
@@ -469,6 +517,23 @@ policies:
       source: auto
       soft_limit: 7 GiB
       hard_limit: 8 GiB
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket:
+          allow: 10485760
+          interval: 1s
+          burst: 10485760
+  runtime_recovery:
+    enabled: true
+    max_restarts: 5
+    initial_backoff: 250ms
+    max_backoff: 30s
+    startup_timeout: 30s
+    reset_after: 60s
   transport_headers:
     header_capture:
       headers:
@@ -501,7 +566,28 @@ Defaults at top-level:
 - `telemetry.tokio_metrics = true`
 - `telemetry.runtime_metrics = basic`
 - `resources.core_allocation = all_cores`
+- `runtime_recovery.enabled = true`
+- `runtime_recovery.max_restarts = 5`
+- `runtime_recovery.initial_backoff = 250ms`
+- `runtime_recovery.max_backoff = 30s`
+- `runtime_recovery.startup_timeout = 30s`
+- `runtime_recovery.reset_after = 60s`
 - `transport_headers = not set` (opt-in; no headers captured or propagated)
+
+Runtime recovery notes:
+
+- `runtime_recovery` applies to regular pipelines and inherits through the
+  pipeline, group, and top-level policy scopes. It is not supported by the
+  system observability pipeline.
+- A panic or ordinary runtime error on a serving core starts a per-core
+  recovery streak. Clean runtime exits are not restarted.
+- Replacements use newer deployment generations and exponential backoff capped
+  by `max_backoff`. A replacement must become admitted and ready within
+  `startup_timeout` before it can serve.
+- A healthy replacement keeps the streak count until it has remained ready for
+  `reset_after`. A later failure after that window starts a fresh streak.
+- Exhausting `max_restarts`, or setting `enabled: false`, converts the runtime
+  failure into a fatal engine error and requests coordinated process shutdown.
 
 Memory limiter configuration:
 
@@ -512,6 +598,26 @@ Memory limiter configuration:
 - In Phase 1, `Soft` remains informational; `Hard` is the ingress-shedding
   threshold.
 - Detailed runtime behavior and rollout guidance are documented in
+  [memory-limiter-phase1.md](memory-limiter-phase1.md).
+
+Rate limiter configuration:
+
+- Named limiters are declared under `policies.resources.rate_limiters`.
+- Any non-empty rate-limiter declaration requires a top-level
+  `policies.resources.memory_limiter`, which supplies the process pressure
+  signal that activates enforcement.
+- A declaration may appear at top-level, group, or pipeline policy scope. The
+  nearest declared map replaces the broader map; entries are not deep-merged.
+- `rate_limiters: {}` at a narrower policy scope disables an inherited map.
+- A node selects one effective limiter with `rate_limiters: [name]` and opts out
+  with `rate_limiters: []`.
+- Omitting the node field leaves the node unbound, regardless of how many
+  limiters are effective.
+- An unknown or dimension-incompatible selection fails startup.
+- V1 creates one bucket per bound receiver instance. Reusing a declaration does
+  not aggregate rate state across receivers or pipelines.
+- OTLP supports `request_bytes`; Syslog / CEF supports `messages`.
+- Detailed runtime behavior and limits are documented in
   [memory-limiter-phase1.md](memory-limiter-phase1.md).
 
 Control channel keys:
@@ -532,13 +638,18 @@ Telemetry policy notes:
 - `normal` adds message and phase counters
 - `detailed` adds latency/duration summaries and completion unwind-depth
   distribution
+- See [Node and Flow Metrics](node-and-flow-metrics.md) to configure and
+  interpret node item metrics and processor flow metrics.
 
 Resolution semantics:
 
 - precedence is applied at policy-family level (`channel_capacity`, `health`,
-  `telemetry`, `resources`)
+  `telemetry`, and others)
 - selected lower scope replaces upper scope for that family
 - no cross-scope deep merge of nested fields
+- `resources` is the exception: `core_allocation`, `memory_limiter`, and
+  `rate_limiters` resolve independently across scopes; the selected
+  `rate_limiters` map still replaces the broader map as a whole
 - policy objects are default-filled: if a lower-scope `policies` block exists,
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)

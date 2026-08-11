@@ -75,7 +75,7 @@ pub static EMPTY_U32_ATTRS_RECORD_BATCH: LazyLock<RecordBatch> = LazyLock::new(|
 /// for the inserts.
 ///
 /// When multiple `AttributeUpsert`s are passed to [`upsert_attributes`], their keys **must be
-/// distinct**. This invariant is not checked inside `upsert_attributes` — callers are responsible
+/// distinct**. This invariant is not checked inside `upsert_attributes` -- callers are responsible
 /// for enforcing it (typically at the planner level). Passing duplicate keys results in undefined
 /// behavior and may result in duplicate attributes.
 pub struct AttributeUpsert<'a, T: ArrowPrimitiveType> {
@@ -412,7 +412,7 @@ fn build_combined_mask<T: ArrowPrimitiveType>(
 /// upsert in order.
 ///
 /// Uses `MutableArrayData` to copy the existing column and each upsert's insert portion
-/// directly into a single output buffer — no intermediate slices or concat allocations.
+/// directly into a single output buffer -- no intermediate slices or concat allocations.
 fn merge_parent_id_column<T: ArrowPrimitiveType>(
     field: &Field,
     mut existing_col: ArrayRef,
@@ -863,7 +863,7 @@ fn merge_key_column_dict(
     };
 
     // Phase 1: For each insert key, find its existing dict index or assign a new one.
-    // We don't rebuild the dict values array in the loop — just track novel keys.
+    // We don't rebuild the dict values array in the loop -- just track novel keys.
     let existing_cardinality = dict_values.len();
     let mut novel_keys: SmallVec<[&str; SMALLVEC_SIZE]> = SmallVec::new();
     let mut key_indices: SmallVec<[u16; SMALLVEC_SIZE]> =
@@ -939,7 +939,7 @@ fn merge_key_column_dict(
             Ok((new_field, result))
         }
         DataType::UInt8 => {
-            // Overflow u8 → u16. Widen existing u8 keys to u16, then append new u16 indices.
+            // Overflow u8 -> u16. Widen existing u8 keys to u16, then append new u16 indices.
             let dict = existing_col
                 .as_any()
                 .downcast_ref::<DictionaryArray<UInt8Type>>()
@@ -1280,7 +1280,7 @@ struct ActiveSource {
 struct UnifiedDictMulti {
     /// The deduplicated unified dictionary values array.
     values: ArrayRef,
-    /// Per-row key mapping for existing column rows → unified dict keys.
+    /// Per-row key mapping for existing column rows -> unified dict keys.
     /// `None` when there is no existing column (creating a new column).
     existing_keys: Option<Vec<u16>>,
 
@@ -1305,7 +1305,7 @@ struct UnifiedDictMulti {
 /// Returns `Ok(None)` if the combined cardinality exceeds u16 max (65535), indicating the
 /// caller should fall back to the primitive merge path.
 ///
-/// Scalars are handled efficiently — only one value is added to the dict, producing an
+/// Scalars are handled efficiently -- only one value is added to the dict, producing an
 /// `ActiveKeys::Scalar(key)` that the merge phase can broadcast without expansion.
 fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
     existing_col: Option<&ArrayRef>,
@@ -1386,7 +1386,7 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
         None => None,
     };
 
-    // Build a bitset of "live" dict value indices — values still referenced by at least one
+    // Build a bitset of "live" dict value indices -- values still referenced by at least one
     // passthrough (non-updated) row. This prevents dead values from being included in the
     // unified dictionary, which is important for data redaction scenarios.
     //
@@ -1475,7 +1475,7 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
                 // then remap existing keys through the filtered mapping.
                 let n = existing_values_arr.len();
 
-                // Build old_to_new remap: maps old value index → new value index.
+                // Build old_to_new remap: maps old value index -> new value index.
                 // Dead values get placeholder 0 (updated rows will be overwritten/nulled anyway).
                 let mut old_to_new: Vec<u16> = vec![0; n];
                 for i in 0..n {
@@ -1508,7 +1508,7 @@ fn try_build_unified_dict_multi<T: ArrowPrimitiveType>(
                 for row in 0..n {
                     let is_live = (live_values[row / 64] >> (row % 64)) & 1 == 1;
                     if !is_live {
-                        continue; // Updated row — skip, leave remap as 0
+                        continue; // Updated row -- skip, leave remap as 0
                     }
                     let key = array_value_as_bytes(existing_values_arr, row)?;
                     if let Some(&idx) = value_to_idx.get(&key) {
@@ -1710,7 +1710,7 @@ fn merge_values_with_unified_dict<T: ArrowPrimitiveType>(
 ) -> Result<(Field, ArrayRef)> {
     let mut output_keys: Vec<u16> = Vec::with_capacity(total_output_rows);
 
-    // Lazily initialized null bitmap — only allocated when the first inactive row is encountered.
+    // Lazily initialized null bitmap -- only allocated when the first inactive row is encountered.
     let mut nulls: Option<BooleanBufferBuilder> = None;
 
     /// Helper to mark a range of output positions as null.
@@ -2125,7 +2125,7 @@ mod tests {
     #[test]
     fn test_merge_dict_utf8_with_scalar() {
         // Existing: Dict(u16, Utf8) ["a", "b", "a"] (3 rows, dict values ["a", "b"])
-        // Mask: [false, true, false] — row 1 is an update
+        // Mask: [false, true, false] -- row 1 is an update
         // Scalar: "hello"
         // Inserts: 1
         // Expected output: ["a", "hello", "a", "hello"] as Dict(u16)
@@ -2167,7 +2167,7 @@ mod tests {
     fn test_merge_dict_utf8_with_dict_utf8_overlapping() {
         // Existing: Dict(u16, Utf8) ["x", "y", "x"] (dict values ["x", "y"])
         // New array: Dict(u16, Utf8) ["y", "z"] (1 update + 1 insert, dict values ["y", "z"])
-        // Mask: [false, true, false] — row 1 updated
+        // Mask: [false, true, false] -- row 1 updated
         // Expected output: ["x", "y", "x", "z"] as Dict
         let existing = dict_utf8_u16(&["x", "y", "x"]);
         let new_arr = dict_utf8_u16(&["y", "z"]);
@@ -2206,7 +2206,7 @@ mod tests {
     fn test_merge_plain_utf8_with_plain_utf8() {
         // Existing: plain Utf8 ["a", "b", "c", "c"]
         // New: plain Utf8 ["d", "e"] (1 update + 1 insert)
-        // Mask: [true, false, false, false] — row 0 updated
+        // Mask: [true, false, false, false] -- row 0 updated
         // Expected output: ["d", "b", "c", "c", "e"] (dict-encoded since Utf8 is dict-eligible)
         let existing = Arc::new(StringArray::from_iter_values(["a", "b", "c", "c"])) as ArrayRef;
         let new_arr = Arc::new(StringArray::from_iter_values(["d", "e"])) as ArrayRef;
@@ -2246,7 +2246,7 @@ mod tests {
     #[test]
     fn test_merge_dict_int64_with_scalar() {
         // Existing: Dict(u16, Int64) [10, 20, 10] (dict values [10, 20])
-        // Mask: [false, true, false] — row 1 updated
+        // Mask: [false, true, false] -- row 1 updated
         // Scalar: 42i64
         // Inserts: 1
         // Expected output: [10, 42, 10, 42] as Dict(u16)
@@ -2311,7 +2311,7 @@ mod tests {
     #[test]
     fn test_merge_key_column_dict_existing_key() {
         // Existing: Dict(u16, Utf8) ["x", "y", "x"] (dict values ["x", "y"])
-        // Insert key "x" (already in dict) — 2 inserts
+        // Insert key "x" (already in dict) -- 2 inserts
         // Expected: 5 rows ["x", "y", "x", "x", "x"], dict values unchanged ["x", "y"]
         let existing = dict_utf8_u16(&["x", "y", "x"]);
         let field = Field::new("key", existing.data_type().clone(), true);
@@ -2342,7 +2342,7 @@ mod tests {
     #[test]
     fn test_merge_key_column_dict_novel_key() {
         // Existing: Dict(u16, Utf8) ["x", "y", "x"] (dict values ["x", "y"])
-        // Insert key "z" (novel) — 1 insert
+        // Insert key "z" (novel) -- 1 insert
         // Expected: 4 rows ["x", "y", "x", "z"], dict values ["x", "y", "z"]
         let existing = dict_utf8_u16(&["x", "y", "x"]);
         let field = Field::new("key", existing.data_type().clone(), true);
@@ -2371,7 +2371,7 @@ mod tests {
     #[test]
     fn test_merge_key_column_no_inserts() {
         // Existing: Dict(u16, Utf8) ["x", "y", "x"]
-        // No inserts — column should be returned unchanged.
+        // No inserts -- column should be returned unchanged.
         let existing = dict_utf8_u16(&["x", "y", "x"]);
         let field = Field::new("key", existing.data_type().clone(), true);
         let mask = BooleanArray::from(vec![false, false, false]);
@@ -2387,7 +2387,7 @@ mod tests {
     #[test]
     fn test_merge_key_column_plain_utf8() {
         // Existing: plain Utf8 ["x", "y", "x"]
-        // Insert key "z" — 2 inserts
+        // Insert key "z" -- 2 inserts
         // Expected: 5 rows ["x", "y", "x", "z", "z"]
         let existing = Arc::new(StringArray::from_iter_values(["x", "y", "x"])) as ArrayRef;
         let field = Field::new("key", DataType::Utf8, true);
@@ -2414,7 +2414,7 @@ mod tests {
     #[test]
     fn test_merge_key_column_dict_u8_stays_u8() {
         // Existing: Dict(u8, Utf8) ["x", "y", "x"] (dict values ["x", "y"], cardinality=2)
-        // Insert key "z" (novel) — 1 insert
+        // Insert key "z" (novel) -- 1 insert
         // Final cardinality = 3, which fits in u8
         // Expected: Dict(u8, Utf8) with 4 rows ["x", "y", "x", "z"]
         let existing = dict_utf8_u8(&["x", "y", "x"]);
@@ -2453,7 +2453,7 @@ mod tests {
     #[test]
     fn test_merge_key_column_dict_u8_overflows_to_u16() {
         // Existing: Dict(u8, Utf8) with 255 distinct keys (max for u8)
-        // Insert a novel key → cardinality becomes 256, which exceeds u8
+        // Insert a novel key -> cardinality becomes 256, which exceeds u8
         // Expected: Output widens to Dict(u16, Utf8)
 
         // Build 255 distinct keys: "k000", "k001", ..., "k254"
@@ -2501,7 +2501,7 @@ mod tests {
     #[test]
     fn test_merge_key_column_dict_u16_overflows_to_plain_utf8() {
         // Existing: Dict(u16, Utf8) with 65535 distinct keys (max for u16)
-        // Insert a novel key → cardinality becomes 65536, which exceeds u16
+        // Insert a novel key -> cardinality becomes 65536, which exceeds u16
         // Expected: Output falls back to plain Utf8
 
         // Build 65535 distinct keys: "k00000", "k00001", ..., "k65534"
@@ -2550,10 +2550,10 @@ mod tests {
     #[test]
     fn test_merge_type_column_updates_and_inserts() {
         // Existing type column: [Str=1, Int=2, Str=1]
-        // Mask: [false, true, false] — row 1 is an update
+        // Mask: [false, true, false] -- row 1 is an update
         // New type: Str (1)
         // Inserts: 1
-        // Expected: [1, 1, 1, 1] — row 1 updated from Int to Str, insert gets Str
+        // Expected: [1, 1, 1, 1] -- row 1 updated from Int to Str, insert gets Str
         let existing = Arc::new(UInt8Array::from(vec![1u8, 2, 1])) as ArrayRef;
         let field = Field::new("type", DataType::UInt8, false);
         let mask = BooleanArray::from(vec![false, true, false]);
@@ -2596,10 +2596,10 @@ mod tests {
     #[test]
     fn test_merge_type_column_inserts_only() {
         // Existing type column: [Str=1, Str=1]
-        // Mask: [false, false] — no updates
+        // Mask: [false, false] -- no updates
         // New type: Int (2)
         // Inserts: 2
-        // Expected: [1, 1, 2, 2] — existing unchanged, inserts get Int
+        // Expected: [1, 1, 2, 2] -- existing unchanged, inserts get Int
         let existing = Arc::new(UInt8Array::from(vec![1u8, 1])) as ArrayRef;
         let field = Field::new("type", DataType::UInt8, false);
         let mask = BooleanArray::from(vec![false, false]);
@@ -2642,10 +2642,10 @@ mod tests {
     #[test]
     fn test_merge_type_column_all_updates() {
         // Existing type column: [Str=1, Int=2, Double=3]
-        // Mask: [true, true, true] — all rows updated
+        // Mask: [true, true, true] -- all rows updated
         // New type: Bool (4)
         // Inserts: 0
-        // Expected: [4, 4, 4] — all replaced
+        // Expected: [4, 4, 4] -- all replaced
         let existing = Arc::new(UInt8Array::from(vec![1u8, 2, 3])) as ArrayRef;
         let field = Field::new("type", DataType::UInt8, false);
         let mask = BooleanArray::from(vec![true, true, true]);
@@ -2689,9 +2689,9 @@ mod tests {
     #[test]
     fn test_merge_passthrough_column_updates_and_inserts() {
         // Existing: Dict(u16, Int64) [10, 20, 30]
-        // Mask: [false, true, false] — row 1 is an update
+        // Mask: [false, true, false] -- row 1 is an update
         // Inserts: 1
-        // Expected: 4 rows [10, null, 30, null] — update and insert rows nulled out
+        // Expected: 4 rows [10, null, 30, null] -- update and insert rows nulled out
         let existing = dict_int64_u16(&[10, 20, 30]);
         let field = Field::new("int", existing.data_type().clone(), true);
         let mask = BooleanArray::from(vec![false, true, false]);
@@ -2711,16 +2711,16 @@ mod tests {
             .unwrap();
         assert!(!arr.is_null(0));
         assert_eq!(arr.value(0), 10); // passthrough
-        assert!(arr.is_null(1)); // update — nulled
+        assert!(arr.is_null(1)); // update -- nulled
         assert!(!arr.is_null(2));
         assert_eq!(arr.value(2), 30); // passthrough
-        assert!(arr.is_null(3)); // insert — nulled
+        assert!(arr.is_null(3)); // insert -- nulled
     }
 
     #[test]
     fn test_merge_passthrough_column_no_changes() {
         // Existing: Dict(u16, Utf8) ["a", "b", "c"]
-        // Mask: [false, false, false] — no updates
+        // Mask: [false, false, false] -- no updates
         // Inserts: 0
         // Expected: column returned unchanged (early-out path)
         let existing = dict_utf8_u16(&["a", "b", "c"]);
@@ -2750,9 +2750,9 @@ mod tests {
     #[test]
     fn test_merge_passthrough_column_all_updates() {
         // Existing: Dict(u16, Utf8) ["a", "b", "c"]
-        // Mask: [true, true, true] — all rows updated
+        // Mask: [true, true, true] -- all rows updated
         // Inserts: 0
-        // Expected: 3 rows [null, null, null] — all nulled out
+        // Expected: 3 rows [null, null, null] -- all nulled out
         let existing = dict_utf8_u16(&["a", "b", "c"]);
         let field = Field::new("str", existing.data_type().clone(), true);
         let mask = BooleanArray::from(vec![true, true, true]);
@@ -2820,8 +2820,8 @@ mod tests {
         //   Row 2: parent_id=1, key="x", type=Str(1), str="c"
         //
         // Upsert: attributes["y"] = "hello"
-        //   Parent 0 has key "y" (row 1) → update
-        //   Parent 1 does not have key "y" → insert
+        //   Parent 0 has key "y" (row 1) -> update
+        //   Parent 1 does not have key "y" -> insert
         //
         // Expected output (4 rows):
         //   Row 0: parent_id=0, key="x", type=1, str="a"   (passthrough)
@@ -2896,9 +2896,9 @@ mod tests {
         //   Row 1: parent_id=1, key="x", type=Str(1), str="public"
         //
         // Upsert: attributes["x"] = "REDACTED" for parent 0 only
-        //   Row 0 matches → update (replaces "secret" with "REDACTED")
-        //   Row 1 does not match → passthrough (keeps "public")
-        //   Parent 2 doesn't have key "x" → insert ("REDACTED")
+        //   Row 0 matches -> update (replaces "secret" with "REDACTED")
+        //   Row 1 does not match -> passthrough (keeps "public")
+        //   Parent 2 doesn't have key "x" -> insert ("REDACTED")
         //
         // Expected: the output str column's dictionary values should contain "public" and
         // "REDACTED" but NOT "secret".
@@ -2951,14 +2951,14 @@ mod tests {
     #[test]
     fn test_upsert_attributes_target_column_does_not_exist() {
         // Existing attrs batch has only a "str" value column.
-        // Upsert assigns an Int64 value → "int" column doesn't exist yet and must be created.
+        // Upsert assigns an Int64 value -> "int" column doesn't exist yet and must be created.
         //
         // Existing:
         //   Row 0: parent_id=0, key="x", type=Str(1), str="a"
         //   Row 1: parent_id=1, key="x", type=Str(1), str="b"
         //
         // Upsert: attributes["z"] = 42i64
-        //   Neither parent has key "z" → both are inserts.
+        //   Neither parent has key "z" -> both are inserts.
         //
         // Expected output (4 rows):
         //   Row 0: parent_id=0, key="x", type=1, str="a",  int=null  (passthrough)
@@ -3040,7 +3040,7 @@ mod tests {
 
     #[test]
     fn test_upsert_attributes_null_scalar() {
-        // Upsert with a null scalar — the attribute type becomes Empty(0) and no target
+        // Upsert with a null scalar -- the attribute type becomes Empty(0) and no target
         // value column is written. All value columns become passthrough (nulled for updates).
         //
         // Existing:
@@ -3048,11 +3048,11 @@ mod tests {
         //   Row 1: parent_id=1, key="x", type=Str(1), str="b"
         //
         // Upsert: attributes["y"] = null
-        //   Row 0 matches key "y" → update
+        //   Row 0 matches key "y" -> update
         //   No inserts (parent 1 already doesn't have "y", and we only upsert parent 0)
         //
         // Expected output (2 rows):
-        //   Row 0: parent_id=0, key="y", type=0(Empty), str=null  (update — type cleared)
+        //   Row 0: parent_id=0, key="y", type=0(Empty), str=null  (update -- type cleared)
         //   Row 1: parent_id=1, key="x", type=1(Str),   str="b"  (passthrough)
         let existing = build_attrs_batch(&[(0, "y", 1, "a"), (1, "x", 1, "b")]);
         let mask = BooleanArray::from(vec![true, false]);
@@ -3091,14 +3091,14 @@ mod tests {
 
     #[test]
     fn test_upsert_attributes_inserts_only() {
-        // All upserts are inserts — no existing rows match the target key.
+        // All upserts are inserts -- no existing rows match the target key.
         //
         // Existing:
         //   Row 0: parent_id=0, key="x", type=Str(1), str="a"
         //   Row 1: parent_id=1, key="x", type=Str(1), str="b"
         //
         // Upsert: attributes["z"] = "new"
-        //   Neither row matches key "z" → both parent 2 and 3 are inserts.
+        //   Neither row matches key "z" -> both parent 2 and 3 are inserts.
         //
         // Expected output (4 rows):
         //   Row 0: parent_id=0, key="x", type=1, str="a"   (passthrough)
@@ -3164,7 +3164,7 @@ mod tests {
 
     #[test]
     fn test_upsert_attributes_new_double_column_not_dict_encoded() {
-        // Per OTAP spec section 5.4.2, Float64 (`double`) has no optimized encoding —
+        // Per OTAP spec section 5.4.2, Float64 (`double`) has no optimized encoding --
         // it must remain plain Float64, never dict-encoded.
         //
         // Existing:
@@ -3172,7 +3172,7 @@ mod tests {
         //   Row 1: parent_id=1, key="x", type=Str(1), str="b"
         //
         // Upsert: attributes["temp"] = 3.00f64
-        //   Neither parent has key "temp" → both are inserts.
+        //   Neither parent has key "temp" -> both are inserts.
         //
         // Expected output (4 rows):
         //   Row 0: parent_id=0, key="x", type=1(Str),    str="a",  double=null  (passthrough)
@@ -3197,7 +3197,7 @@ mod tests {
 
         assert_eq!(result.num_rows(), 4);
 
-        // The "double" column must be plain Float64 — NOT dict-encoded.
+        // The "double" column must be plain Float64 -- NOT dict-encoded.
         let double_col = result.column_by_name(consts::ATTRIBUTE_DOUBLE).unwrap();
         assert_eq!(
             double_col.data_type(),
@@ -3230,7 +3230,7 @@ mod tests {
 
     #[test]
     fn test_upsert_attributes_new_bool_column_not_dict_encoded() {
-        // Per OTAP spec section 5.4.2, Boolean (`bool`) has no optimized encoding —
+        // Per OTAP spec section 5.4.2, Boolean (`bool`) has no optimized encoding --
         // it must remain plain Boolean, never dict-encoded.
         //
         // Existing:
@@ -3238,7 +3238,7 @@ mod tests {
         //   Row 1: parent_id=1, key="x", type=Str(1), str="b"
         //
         // Upsert: attributes["flag"] = true
-        //   Neither parent has key "flag" → both are inserts.
+        //   Neither parent has key "flag" -> both are inserts.
         //
         // Expected output (4 rows):
         //   Row 0: parent_id=0, key="x",    type=1(Str),  str="a", bool=null  (passthrough)
@@ -3263,7 +3263,7 @@ mod tests {
 
         assert_eq!(result.num_rows(), 4);
 
-        // The "bool" column must be plain Boolean — NOT dict-encoded.
+        // The "bool" column must be plain Boolean -- NOT dict-encoded.
         let bool_col = result.column_by_name(consts::ATTRIBUTE_BOOL).unwrap();
         assert_eq!(
             bool_col.data_type(),
@@ -3302,8 +3302,8 @@ mod tests {
         //   Row 1: parent_id=1, key="x", type=Str(1), str="b"
         //
         // Upserts:
-        //   attributes["y"] = "hello"  (neither parent has "y" → 2 inserts)
-        //   attributes["z"] = "world"  (neither parent has "z" → 2 inserts)
+        //   attributes["y"] = "hello"  (neither parent has "y" -> 2 inserts)
+        //   attributes["z"] = "world"  (neither parent has "z" -> 2 inserts)
         //
         // Expected output (6 rows):
         //   Row 0: parent_id=0, key="x", type=1, str="a"      (passthrough)
@@ -3483,8 +3483,8 @@ mod tests {
         //   Row 3: parent_id=1, key="y", type=Str(1), str="d"
         //
         // Upserts:
-        //   attributes["x"] = "updated" (both parents have "x" → 2 updates, 0 inserts)
-        //   attributes["z"] = "new"     (neither parent has "z" → 0 updates, 2 inserts)
+        //   attributes["x"] = "updated" (both parents have "x" -> 2 updates, 0 inserts)
+        //   attributes["z"] = "new"     (neither parent has "z" -> 0 updates, 2 inserts)
         //
         // Expected output (6 rows):
         //   Row 0: parent_id=0, key="x", str="updated"  (update from upsert 0)
@@ -3505,9 +3505,9 @@ mod tests {
         // Mask for "z": no rows match.
         let mask_z = BooleanArray::from(vec![false, false, false, false]);
 
-        // For "x": both parents have it → 2 updates, 0 inserts.
+        // For "x": both parents have it -> 2 updates, 0 inserts.
         let parent_ids_x = UInt16Array::from(vec![0u16, 1]);
-        // For "z": neither parent has it → 0 updates, 2 inserts.
+        // For "z": neither parent has it -> 0 updates, 2 inserts.
         let parent_ids_z = UInt16Array::from(vec![0u16, 1]);
 
         let result = upsert_attributes(
@@ -3608,7 +3608,7 @@ mod tests {
 
     #[test]
     fn test_merge_parent_id_dict_no_inserts() {
-        // No inserts — column should be returned unchanged (early-out path).
+        // No inserts -- column should be returned unchanged (early-out path).
         let existing = dict_u32_u8(&[0, 1, 0]);
         let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
         let parent_ids = UInt32Array::from(Vec::<u32>::new());
@@ -3624,7 +3624,7 @@ mod tests {
     #[test]
     fn test_merge_parent_id_dict_u8_inserts_existing_values() {
         // Existing: Dict(u8, u32) [0, 1, 0] (dict values [0, 1])
-        // Insert parent IDs: [0, 1] — all values already in dict
+        // Insert parent IDs: [0, 1] -- all values already in dict
         // Expected: 5 rows [0, 1, 0, 0, 1], output stays Dict(u8, _)
         let existing = dict_u32_u8(&[0, 1, 0]);
         let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
@@ -3648,7 +3648,7 @@ mod tests {
     #[test]
     fn test_merge_parent_id_dict_u8_inserts_novel_values() {
         // Existing: Dict(u8, u32) [0, 1, 0] (dict values [0, 1])
-        // Insert parent IDs: [2, 3] — novel values
+        // Insert parent IDs: [2, 3] -- novel values
         // Expected: 5 rows [0, 1, 0, 2, 3], dict values extended, output stays Dict(u8, _)
         let existing = dict_u32_u8(&[0, 1, 0]);
         let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
@@ -3671,7 +3671,7 @@ mod tests {
     #[test]
     fn test_merge_parent_id_dict_u16_inserts() {
         // Existing: Dict(u16, u32) [10, 20, 10] (dict values [10, 20])
-        // Insert parent IDs: [30, 10] — one novel, one existing
+        // Insert parent IDs: [30, 10] -- one novel, one existing
         // Expected: 5 rows [10, 20, 10, 30, 10]
         let existing = dict_u32_u16(&[10, 20, 10]);
         let field = Field::new(consts::PARENT_ID, existing.data_type().clone(), false);
@@ -3695,7 +3695,7 @@ mod tests {
     #[test]
     fn test_merge_parent_id_dict_u8_overflows_to_u16() {
         // Existing: Dict(u8, u32) with 256 distinct values (maxed out u8)
-        // Insert a novel value → cardinality becomes 257, exceeds u8
+        // Insert a novel value -> cardinality becomes 257, exceeds u8
         // Expected: output widens to Dict(u16, _)
         let distinct_values: Vec<u32> = (0..256u32).collect();
         let existing = dict_u32_u8(&distinct_values);
@@ -3763,7 +3763,7 @@ mod tests {
     #[test]
     fn test_merge_parent_id_dict_overflow_falls_back_to_plain() {
         // Existing: Dict(u16, u32) with 65535 distinct values (one less than max u16 cardinality).
-        // Insert two novel values → total cardinality becomes 65537, which exceeds the 65535
+        // Insert two novel values -> total cardinality becomes 65537, which exceeds the 65535
         // limit in merge_parent_id_column_dict, causing it to return None and fall back to plain.
         let distinct_values: Vec<u32> = (0..65535u32).collect();
         let existing = dict_u32_u16(&distinct_values);

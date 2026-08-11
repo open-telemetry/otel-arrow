@@ -8,7 +8,7 @@
 #      cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --port 9999
 #
 #   2. Run the pipeline:
-#      cargo run --release --features azure-monitor-exporter -- --config crates/contrib-nodes/src/exporters/azure_monitor_exporter/trafficgen-ame-local.yaml --num-cores 1
+#      cargo run --release --features azure-monitor-exporter,azure-identity-auth-extension -- --config crates/contrib-nodes/src/exporters/azure_monitor_exporter/trafficgen-ame-local.yaml --num-cores 1
 #
 # Error simulation examples:
 #   cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1                  # 10% -> 500
@@ -34,6 +34,16 @@ groups:
   default:
     pipelines:
       main:
+        extensions:
+          # Supplies OAuth bearer tokens to the exporter via the
+          # bearer_token_provider capability. Uses local developer credentials
+          # (Azure CLI / azd); the mock server does not validate the token.
+          azure_identity:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              method: development
+              scope: "https://monitor.azure.com/.default"
+
         nodes:
           traffic-generator:
             type: "urn:otel:receiver:traffic_generator"
@@ -49,6 +59,9 @@ groups:
 
           azure-monitor-exporter:
             type: "urn:microsoft:exporter:azure_monitor"
+            # Bind the bearer token provider to the extension declared above.
+            capabilities:
+              bearer_token_provider: azure_identity
             config:
               api:
                 # Point to local mock server instead of real Azure endpoint
@@ -69,9 +82,6 @@ groups:
                     "attributes":
                       "thread.id": "ThreadId"
                       "thread.name": "ThreadName"
-
-              auth:
-                method: "dev"
 
         connections:
           - from: traffic-generator

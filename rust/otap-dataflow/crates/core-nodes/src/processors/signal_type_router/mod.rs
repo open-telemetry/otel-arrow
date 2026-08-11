@@ -676,6 +676,7 @@ pub fn create_signal_type_router(
 
 /// Register SignalTypeRouter as an OTAP processor factory
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: SIGNAL_TYPE_ROUTER_URN,
@@ -1253,9 +1254,9 @@ mod tests {
             let telemetry = InternalTelemetrySystem::default();
             let telemetry_registry = telemetry.registry();
             let reporter = telemetry.reporter();
+            let collection = telemetry.collector().run_collection_loop();
             let collector_task = tokio::task::spawn_local(async move {
-                let collector = telemetry.collector();
-                let _ = collector.run_collection_loop().await;
+                let _ = collection.await;
             });
             (telemetry_registry, reporter, collector_task)
         }

@@ -86,7 +86,13 @@ queries:
     sql: |
       CREATE TABLE send_receive_with_rate AS WITH
         metrics_filtered AS (
-            SELECT *,
+            SELECT
+              * REPLACE (
+              CASE
+                WHEN metric_name = 'consumed_items' THEN 'spans'
+                ELSE metric_name
+              END AS metric_name
+            ),
             "metric_attributes.component_name" AS component_name,
             COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
             FROM metrics
@@ -96,7 +102,15 @@ queries:
               'bytes_sent',
               'sent',
               'late_batches',
-              'spans'
+              'consumed_items'
+            ) AND (
+              metric_name <> 'consumed_items'
+              OR (
+                "metric_attributes.otel_scope_name" = 'node.consumer'
+                AND "metric_attributes.otel_scope_node_id" = 'perf'
+                AND "metric_attributes.signal" = 'traces'
+                AND "metric_attributes.outcome" = 'success'
+              )
             ) AND timestamp > (
                 SELECT CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
                 FROM metadata_row

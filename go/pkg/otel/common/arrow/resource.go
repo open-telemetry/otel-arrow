@@ -76,7 +76,9 @@ func (b *ResourceBuilder) Append(resID int64, resource pcommon.Resource, schemaU
 	}
 
 	return b.builder.Append(resource, func() error {
-		b.aib.Append(uint16(resID))
+		if err := b.aib.Append(uint16(resID)); err != nil {
+			return werror.Wrap(err)
+		}
 		b.schb.AppendNonEmpty(schemaUrl)
 		b.dacb.AppendNonZero(resource.DroppedAttributesCount())
 		return nil

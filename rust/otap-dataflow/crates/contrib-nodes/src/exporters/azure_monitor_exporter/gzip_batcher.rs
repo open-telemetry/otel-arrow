@@ -723,7 +723,7 @@ mod tests {
     /// using identical (maximally compressible) JSON entries.
     #[test]
     fn test_uncompressed_limit_enforced_with_identical_entries() {
-        // Identical entries compress extremely well — without the uncompressed
+        // Identical entries compress extremely well -- without the uncompressed
         // limit the batcher would pack hundreds of MiBs into a tiny gzip payload.
         let entries: &[&[u8]] = &[br#"{"a":1}"#, br#"{"b":2}"#, br#"{"c":3}"#];
         let mut idx = 0usize;

@@ -6,6 +6,7 @@
 use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing_subscriber::EnvFilter;
 
 /// Internal logs configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -20,7 +21,12 @@ pub struct LogsConfig {
     /// specified, the default is `"info,h2=off,hyper=off"` which silences known
     /// noisy HTTP dependencies.
     ///
-    /// The `RUST_LOG` environment variable, if set, takes precedence over this field.
+    /// At startup, a valid `RUST_LOG` environment variable takes precedence over this field.
+    /// A subsequent successful full-engine reconciliation makes this field authoritative.
+    ///
+    /// Successful full-engine reconciliation applies changes to this field to running
+    /// subscribers without restarting the engine. Reconciled span-scoped directives apply
+    /// to spans created after the update, but not to spans that are already active.
     ///
     /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
     #[serde(default)]
@@ -61,9 +67,17 @@ pub struct InternalLogTapConfig {
 ///
 /// Defaults to `"info,h2=off,hyper=off"`.
 ///
+/// At startup, a valid `RUST_LOG` environment variable takes precedence over this value.
+/// A subsequent successful full-engine reconciliation makes this value authoritative.
+///
+/// Successful full-engine reconciliation applies changes to this value to running
+/// subscribers without restarting the engine. Reconciled span-scoped directives apply
+/// to spans created after the update, but not to spans that are already active.
+///
 /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
 pub struct LogLevel(String);
 
 impl Default for LogLevel {
@@ -80,17 +94,34 @@ impl LogLevel {
     }
 }
 
+impl TryFrom<String> for LogLevel {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        _ = EnvFilter::try_new(&value).map_err(|error| Error::InvalidUserConfig {
+            error: format!("invalid logs.level directive: {error}"),
+        })?;
+        Ok(Self(value))
+    }
+}
+
+impl From<LogLevel> for String {
+    fn from(value: LogLevel) -> Self {
+        value.0
+    }
+}
+
 /// Logging providers for different execution contexts.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct LoggingProviders {
     /// Provider mode for non-engine threads. This defines the global Tokio
-    /// `tracing` subscriber. Default is ConsoleAsync.
+    /// `tracing` subscriber. Defaults to ConsoleAsync.
     #[serde(default = "default_global_provider")]
     pub global: ProviderMode,
 
-    /// Provider mod for engine/pipeline threads. This defines how the
+    /// Provider mode for engine/pipeline threads. This defines how the
     /// engine thread / core sets the Tokio `tracing`
-    /// subscriber. Default is ConsoleAsync. Internal logs will be flushed
+    /// subscriber. Defaults to ConsoleAsync. Internal logs will be flushed
     /// by either the Internal Telemetry Receiver or the main pipeline
     /// controller.
     #[serde(default = "default_engine_provider")]
@@ -108,9 +139,13 @@ pub struct LoggingProviders {
 }
 
 impl LoggingProviders {
-    /// Returns true if any provider uses ITS mode.
+    /// Returns `true` if an upstream log producer routes logs through ITS.
+    ///
+    /// The `internal` provider is intentionally excluded: it is used by nodes
+    /// downstream of the internal telemetry receiver, where routing back into
+    /// ITS would create a feedback loop and is rejected by validation.
     #[must_use]
-    pub const fn uses_its_provider(&self) -> bool {
+    pub const fn routes_logs_through_its(&self) -> bool {
         self.global.uses_its_provider()
             || self.engine.uses_its_provider()
             || self.admin.uses_its_provider()
@@ -257,7 +292,7 @@ impl LogsConfig {
         }
         if self.tap.enabled
             && !self.providers.uses_console_async_provider()
-            && !self.providers.uses_its_provider()
+            && !self.providers.routes_logs_through_its()
         {
             return Err(Error::InvalidUserConfig {
                 error: "logs.tap.enabled requires at least one async log provider ('console_async' or 'its')".into(),
@@ -386,6 +421,16 @@ mod tests {
         assert!(LogsConfig::default().validate().is_ok());
     }
 
+    /// Scenario: logs.level contains a malformed EnvFilter directive.
+    /// Guarantees: deserialization rejects the directive before typed config is constructed.
+    #[test]
+    fn test_deserialize_rejects_invalid_log_level_directive() {
+        let error = serde_yaml::from_str::<LogsConfig>("level: 'info,['")
+            .expect_err("invalid log level should fail deserialization");
+
+        assert!(error.to_string().contains("invalid logs.level directive"));
+    }
+
     #[test]
     fn test_validate_internal_cannot_use_reporter() {
         use ProviderMode::*;
@@ -463,13 +508,15 @@ mod tests {
     }
 
     #[test]
-    fn test_uses_its_provider() {
+    fn test_routes_logs_through_its() {
         use ProviderMode::*;
-        assert!(!providers(Noop, Noop, Noop, Noop).uses_its_provider());
-        assert!(!providers(ConsoleAsync, ConsoleAsync, Noop, ConsoleDirect).uses_its_provider());
-        assert!(providers(ITS, Noop, Noop, Noop).uses_its_provider());
-        assert!(providers(Noop, ITS, Noop, Noop).uses_its_provider());
-        assert!(providers(Noop, Noop, Noop, ITS).uses_its_provider());
-        assert!(!providers(Noop, Noop, ITS, Noop).uses_its_provider());
+        assert!(!providers(Noop, Noop, Noop, Noop).routes_logs_through_its());
+        assert!(
+            !providers(ConsoleAsync, ConsoleAsync, Noop, ConsoleDirect).routes_logs_through_its()
+        );
+        assert!(providers(ITS, Noop, Noop, Noop).routes_logs_through_its());
+        assert!(providers(Noop, ITS, Noop, Noop).routes_logs_through_its());
+        assert!(providers(Noop, Noop, Noop, ITS).routes_logs_through_its());
+        assert!(!providers(Noop, Noop, ITS, Noop).routes_logs_through_its());
     }
 }
