@@ -4,6 +4,8 @@
 //! Unit tests for the Kubernetes SAT authorizer extension.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use k8s_openapi::api::authentication::v1::{TokenReviewStatus, UserInfo};
@@ -17,7 +19,7 @@ use otap_df_engine::local::capability::auth::bearer_token_authorizer::BearerToke
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
 
 use super::authorizer::{LocalK8sSatTokenAuthorizer, SharedK8sSatTokenAuthorizer};
-use super::cache::{DecisionCache, DecisionStore};
+use super::cache::{DecisionCache, DecisionSlot, DecisionStore, digest};
 use super::config::{AudienceConfig, Config, ResourceAttributesConfig, normalize_service_account};
 use super::core::Core;
 use super::error::Error;
@@ -439,7 +441,9 @@ fn admit_without_allow_list_allows_any_authenticated() {
 /// which `TokenReview` also authenticates.
 /// Guarantees: the identity is denied as an invalid credential rather than
 /// admitted, so a non-service-account caller is never accepted by an
-/// audience-only entry nor emitted under the `k8s_sat` scheme.
+/// audience-only entry nor emitted under the `k8s_sat` scheme, including
+/// usernames that merely wear the `system:serviceaccount:` prefix but carry a
+/// name no real service account could have.
 #[test]
 fn admit_denies_non_service_account_identity() {
     let core = make_core(None);
@@ -448,6 +452,11 @@ fn admit_denies_non_service_account_identity() {
         "system:node:worker-1",
         "system:serviceaccount:default:",
         "system:serviceaccount::my-sa",
+        // A real SA name cannot contain a colon; these come from an
+        // authenticator that does not police the `system:` prefix, and must not
+        // yield an attacker-chosen `k8s.namespace` claim.
+        "system:serviceaccount:tenant-a:sa:extra",
+        "system:serviceaccount:tenant-a:sa:",
     ] {
         assert_eq!(
             core.admit_for_test(Some(username.to_string()), "my-service"),
@@ -817,8 +826,20 @@ async fn authorize_empty_credential_is_missing_local() {
 
 // -- Decision cache tests ---------------------------------------------------
 
-/// Scenario: insert a decision and read it back before and after its TTL
-/// elapses.
+/// Stores `decision` in the slot `cache` hands out for `token`, mirroring what
+/// `Core::authorize` does after reaching a decision.
+fn set_slot(cache: &mut DecisionCache, token: &str, decision: AuthzDecision, now: Instant) {
+    let slot = cache.slot(digest(token), now);
+    slot.set(decision).expect("slot must be empty");
+}
+
+/// Reads the decision currently cached for `token`, if any.
+fn slot_value(cache: &mut DecisionCache, token: &str, now: Instant) -> Option<AuthzDecision> {
+    cache.slot(digest(token), now).get().cloned()
+}
+
+/// Scenario: store a decision in a token's slot and read it back before and
+/// after its TTL elapses.
 /// Guarantees: a fresh entry is returned; once expired it is treated as absent
 /// (forcing a fresh TokenReview).
 #[test]
@@ -826,57 +847,201 @@ fn cache_returns_fresh_and_drops_expired() {
     let mut cache = DecisionCache::new(Duration::from_secs(300), 1024);
     let now = Instant::now();
     let decision = AuthzDecision::allow_anonymous();
-    cache.insert("tok", decision.clone(), now);
+    set_slot(&mut cache, "tok", decision.clone(), now);
 
-    assert_eq!(cache.get("tok", now), Some(decision));
+    assert_eq!(slot_value(&mut cache, "tok", now), Some(decision));
     // Just past the 300s TTL the entry is gone.
     let later = now + Duration::from_secs(301);
-    assert_eq!(cache.get("tok", later), None);
+    assert_eq!(slot_value(&mut cache, "tok", later), None);
 }
 
-/// Scenario: insert more distinct tokens than the cache capacity allows, all
-/// unexpired.
-/// Guarantees: the cache never exceeds `max_entries`, bounding memory.
+/// Scenario: two requests for the same token ask the cache for its slot while
+/// the first decision is still in flight (the cell not yet initialized).
+/// Guarantees: both receive the *same* cell, which is what lets concurrent
+/// requests bearing one token collapse onto a single `TokenReview` instead of
+/// stampeding the API server.
+#[test]
+fn cache_hands_concurrent_requests_the_same_slot() {
+    let mut cache = DecisionCache::new(Duration::from_secs(300), 1024);
+    let now = Instant::now();
+
+    let first = cache.slot(digest("tok"), now);
+    let second = cache.slot(digest("tok"), now);
+
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "concurrent requests for one token must share a single decision slot"
+    );
+    assert_eq!(
+        cache.len(),
+        1,
+        "sharing a slot must not duplicate the entry"
+    );
+}
+
+/// Scenario: a token's entry expires and a later request asks for its slot.
+/// Guarantees: a fresh, empty cell is handed out rather than the stale one, so
+/// an expired decision is never resurrected, and the entry is replaced in place
+/// rather than duplicated.
+#[test]
+fn cache_replaces_an_expired_slot() {
+    let mut cache = DecisionCache::new(Duration::from_secs(300), 1024);
+    let now = Instant::now();
+    let stale = cache.slot(digest("tok"), now);
+    stale
+        .set(AuthzDecision::allow_anonymous())
+        .expect("cell is empty");
+
+    let later = now + Duration::from_secs(301);
+    let fresh = cache.slot(digest("tok"), later);
+
+    assert!(
+        !Arc::ptr_eq(&stale, &fresh),
+        "an expired entry must not hand back its stale cell"
+    );
+    assert!(fresh.get().is_none(), "the replacement cell must be empty");
+    assert_eq!(cache.len(), 1, "replacing must not add a second entry");
+}
+
+/// Scenario: many concurrent tasks race to initialize one shared decision slot,
+/// each attempting the (simulated) `TokenReview`.
+/// Guarantees: the initializer runs exactly once and every task observes the
+/// same decision -- one token costs one round-trip to the API server no matter
+/// how many requests arrive together.
+#[tokio::test]
+async fn slot_initialization_collapses_into_a_single_review() {
+    let slot: DecisionSlot = Arc::new(tokio::sync::OnceCell::new());
+    let reviews = Arc::new(AtomicUsize::new(0));
+
+    let mut tasks = Vec::new();
+    for _ in 0..32 {
+        let slot = Arc::clone(&slot);
+        let reviews = Arc::clone(&reviews);
+        tasks.push(tokio::spawn(async move {
+            slot.get_or_try_init(|| async {
+                let _ = reviews.fetch_add(1, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                Ok::<_, &'static str>(AuthzDecision::allow_anonymous())
+            })
+            .await
+            .expect("init must succeed")
+            .clone()
+        }));
+    }
+
+    for task in tasks {
+        let decision = task.await.expect("task must not panic");
+        assert_eq!(decision, AuthzDecision::allow_anonymous());
+    }
+    assert_eq!(
+        reviews.load(Ordering::SeqCst),
+        1,
+        "concurrent requests for one token must trigger exactly one TokenReview"
+    );
+}
+
+/// Scenario: a slot initializer fails (the API server was unreachable, so no
+/// decision could be reached), then a later request retries.
+/// Guarantees: the failure is not cached -- the cell stays empty so the next
+/// request re-attempts the review, preserving fail-closed semantics without
+/// pinning an undetermined outcome for the whole TTL.
+#[tokio::test]
+async fn failed_slot_initialization_is_not_cached() {
+    let slot: DecisionSlot = Arc::new(tokio::sync::OnceCell::new());
+
+    let failed = slot
+        .get_or_try_init(|| async { Err::<AuthzDecision, &'static str>("api server unreachable") })
+        .await;
+    assert!(failed.is_err(), "the initializer must surface the error");
+    assert!(
+        slot.get().is_none(),
+        "a failed review must leave the slot empty so the next request retries"
+    );
+
+    let retried = slot
+        .get_or_try_init(|| async { Ok::<_, &'static str>(AuthzDecision::allow_anonymous()) })
+        .await
+        .expect("the retry must succeed");
+    assert_eq!(retried, &AuthzDecision::allow_anonymous());
+}
+
+/// Scenario: claim more distinct token slots than the cache capacity allows,
+/// all unexpired.
+/// Guarantees: the cache never exceeds `max_entries`, bounding memory, and the
+/// most recent token is still cached -- a full cache evicts rather than
+/// silently refusing to cache the new decision.
 #[test]
 fn cache_respects_max_entries() {
     let mut cache = DecisionCache::new(Duration::from_secs(300), 2);
     let now = Instant::now();
     for i in 0..10 {
-        cache.insert(&format!("tok-{i}"), AuthzDecision::allow_anonymous(), now);
+        set_slot(
+            &mut cache,
+            &format!("tok-{i}"),
+            AuthzDecision::allow_anonymous(),
+            now,
+        );
     }
     assert!(
         cache.len() <= 2,
         "cache must not exceed its max_entries bound"
     );
+    assert!(
+        slot_value(&mut cache, "tok-9", now).is_some(),
+        "the most recent entry must be cached even when the cache was full"
+    );
 }
 
-/// Scenario: re-insert a decision for a token already present in the cache.
-/// Guarantees: the existing slot is refreshed in place rather than duplicated,
-/// so a re-authorized token both picks up the new decision and keeps the cache
-/// bounded.
+/// Scenario: an unauthenticated caller floods the cache with distinct junk
+/// tokens (each a unique key) until it is full of live deny entries, then a
+/// legitimate token is authorized.
+/// Guarantees: the legitimate decision is still cached, so attacker-chosen
+/// cache keys cannot pin the cache and force a `TokenReview` round-trip on
+/// every subsequent legitimate request.
 #[test]
-fn cache_insert_refreshes_an_existing_entry() {
-    let mut cache = DecisionCache::new(Duration::from_secs(300), 1024);
+fn cache_flood_does_not_starve_a_legitimate_entry() {
+    let mut cache = DecisionCache::new(Duration::from_secs(300), 8);
     let now = Instant::now();
-    cache.insert("tok", AuthzDecision::allow_anonymous(), now);
-    assert_eq!(cache.len(), 1);
+    for i in 0..64 {
+        set_slot(
+            &mut cache,
+            &format!("junk-{i}"),
+            AuthzDecision::deny(DenyReason::InvalidCredential),
+            now,
+        );
+    }
+    assert_eq!(cache.len(), 8, "the flood must not exceed the bound");
 
-    let deny = AuthzDecision::deny(DenyReason::NotPermitted);
-    cache.insert("tok", deny.clone(), now);
-
-    assert_eq!(cache.len(), 1, "re-insert must not add a second entry");
+    let allow = AuthzDecision::allow_anonymous();
+    set_slot(&mut cache, "legit", allow.clone(), now);
     assert_eq!(
-        cache.get("tok", now),
-        Some(deny),
-        "the refreshed decision must replace the previous one"
+        slot_value(&mut cache, "legit", now),
+        Some(allow),
+        "a legitimate decision must still be cacheable after a flood"
     );
+}
+
+/// Scenario: a cache configured with a zero entry cap hands out a slot.
+/// Guarantees: the slot still works (the caller reaches a decision) but nothing
+/// is retained, and the eviction loop terminates rather than spinning toward an
+/// unreachable capacity.
+#[test]
+fn cache_with_zero_capacity_caches_nothing() {
+    let mut cache = DecisionCache::new(Duration::from_secs(300), 0);
+    let now = Instant::now();
+    let slot = cache.slot(digest("tok"), now);
+    slot.set(AuthzDecision::allow_anonymous())
+        .expect("the slot must still be usable");
+
+    assert_eq!(cache.len(), 0, "a zero-capacity cache must stay empty");
+    assert_eq!(slot_value(&mut cache, "tok", now), None);
 }
 
 /// Scenario: drive the `DecisionStore` trait through both interior-mutability
 /// wrappers used by the two capability variants (`Mutex` for shared, `RefCell`
 /// for local).
-/// Guarantees: both wrappers round-trip a decision and honor the TTL
-/// identically, so the shared and local variants cache alike.
+/// Guarantees: both wrappers share a slot for a live entry and hand out a fresh
+/// one once it expires, so the shared and local variants cache alike.
 #[test]
 fn decision_store_round_trips_through_both_wrappers() {
     let now = Instant::now();
@@ -884,19 +1049,34 @@ fn decision_store_round_trips_through_both_wrappers() {
     let decision = AuthzDecision::allow_anonymous();
 
     let shared = std::sync::Mutex::new(DecisionCache::new(Duration::from_secs(300), 1024));
-    assert_eq!(DecisionStore::get(&shared, "tok", now), None);
-    DecisionStore::insert(&shared, "tok", decision.clone(), now);
+    let slot = DecisionStore::slot(&shared, digest("tok"), now);
+    slot.set(decision.clone()).expect("cell is empty");
     assert_eq!(
-        DecisionStore::get(&shared, "tok", now),
-        Some(decision.clone())
+        DecisionStore::slot(&shared, digest("tok"), now).get(),
+        Some(&decision),
+        "a live entry must be shared through the Mutex wrapper"
     );
-    assert_eq!(DecisionStore::get(&shared, "tok", expired), None);
+    assert!(
+        DecisionStore::slot(&shared, digest("tok"), expired)
+            .get()
+            .is_none(),
+        "an expired entry must yield a fresh slot"
+    );
 
     let local = std::cell::RefCell::new(DecisionCache::new(Duration::from_secs(300), 1024));
-    assert_eq!(DecisionStore::get(&local, "tok", now), None);
-    DecisionStore::insert(&local, "tok", decision.clone(), now);
-    assert_eq!(DecisionStore::get(&local, "tok", now), Some(decision));
-    assert_eq!(DecisionStore::get(&local, "tok", expired), None);
+    let slot = DecisionStore::slot(&local, digest("tok"), now);
+    slot.set(decision.clone()).expect("cell is empty");
+    assert_eq!(
+        DecisionStore::slot(&local, digest("tok"), now).get(),
+        Some(&decision),
+        "a live entry must be shared through the RefCell wrapper"
+    );
+    assert!(
+        DecisionStore::slot(&local, digest("tok"), expired)
+            .get()
+            .is_none(),
+        "an expired entry must yield a fresh slot"
+    );
 }
 
 // -- TokenReview / SubjectAccessReview mapping tests -------------------------
@@ -918,7 +1098,9 @@ async fn authorize_serves_a_cached_decision_without_contacting_kubernetes() {
     );
     let store = std::sync::Mutex::new(DecisionCache::new(Duration::from_secs(300), 1024));
     let cached = AuthzDecision::deny(DenyReason::NotPermitted);
-    DecisionStore::insert(&store, "cached-token", cached.clone(), Instant::now());
+    DecisionStore::slot(&store, digest("cached-token"), Instant::now())
+        .set(cached.clone())
+        .expect("slot must be empty");
 
     let decision = core
         .authorize(

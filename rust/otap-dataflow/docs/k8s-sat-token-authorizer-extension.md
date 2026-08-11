@@ -235,12 +235,38 @@ retained in the cache -- a memory or core dump exposes only 32-byte digests --
 and lookups compare unpredictable digests rather than secret bytes. SHA-256 is
 collision-resistant, so distinct tokens never share an entry.
 
+Each entry holds a shared, lazily-initialized decision slot rather than a
+finished decision, which collapses a **cache stampede**: when several requests
+bearing the same token arrive together and miss, the first performs the
+`TokenReview` while the rest await that same slot, so one token costs one
+round-trip no matter how many requests race. This matters most at TTL expiry,
+where a single entry's expiry instant would otherwise release a synchronized
+burst of identical reviews at the API server every `cache_ttl` -- enough, under
+load, to trip API Priority and Fairness and have legitimate traffic denied by
+the extension's own fail-closed path. A failed review leaves the slot empty, so
+the next request retries rather than caching an undetermined outcome.
+
+The token's SHA-256 is computed before the lock is taken, and the decision is
+cloned after it is released, so the critical section is just the map probe.
+
 On insert at capacity, expired entries are reclaimed first; if the map is still
-full of live entries the new decision is returned but not cached, so the cache
-never exceeds its bound. `Allow` decisions are cached for up to `cache_ttl`, so a
+full of live entries, an entry closest to expiry is evicted to make room, so the
+cache never exceeds its bound while always admitting the newest decision.
+Evicting rather than skipping is deliberate: cache keys derive from
+caller-supplied token bytes, so an unauthenticated caller can mint unlimited
+distinct keys, and refusing to cache while full would let such traffic pin the
+map and force a `TokenReview` round-trip on every legitimate request. The victim
+is chosen from a small sample rather than by scanning the whole map, keeping
+eviction O(1) under the lock.
+
+`Allow` decisions are cached for up to `cache_ttl`, so a
 token revoked at the API server may continue to be admitted until its cached
 decision expires -- decision freshness is deliberately the implementation's
 concern (the capability's `Allow` carries no validity window).
+
+Note that `cache_max_entries` bounds a *single* cache instance. The local
+(thread-per-core) variant holds one cache per core, so total memory scales with
+core count and the same token is reviewed once per core.
 
 ### Configuration
 

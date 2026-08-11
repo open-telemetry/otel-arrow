@@ -21,7 +21,7 @@ use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
 use otap_df_telemetry::otel_debug;
 use tokio::sync::OnceCell;
 
-use super::cache::DecisionStore;
+use super::cache::{DecisionStore, digest};
 use super::config::{AudienceConfig, ResourceAttributesConfig};
 use super::reviewer::{AccessOutcome, AuthenticatedUser, KubeReviews, ReviewOutcome, Reviewer};
 
@@ -120,17 +120,26 @@ impl Core {
             return Ok(Self::missing());
         }
 
-        // Fast path: a still-valid cached decision avoids a TokenReview.
-        let now = Instant::now();
-        if let Some(decision) = store.get(token, now) {
-            return Ok(decision);
+        // Hash once, outside the lock: a SAT is ~1 KB, so the SHA-256 dwarfs the
+        // map probe it keys.
+        let key = digest(token);
+
+        // Take the shared slot for this token and release the lock immediately;
+        // the decision itself is never awaited while holding it.
+        let slot = store.slot(key, Instant::now());
+
+        // Fast path: a decision has already been reached for this token.
+        if let Some(decision) = slot.get() {
+            return Ok(decision.clone());
         }
 
-        // Slow path: reach a decision (no lock/borrow held across the await) and
-        // cache it.
-        let decision = self.decide(token).await?;
-        store.insert(token, decision.clone(), Instant::now());
-        Ok(decision)
+        // Slow path: the first requester for this token performs the
+        // `TokenReview` while every concurrent requester awaits the same cell,
+        // so a burst bearing one token costs one round-trip rather than one
+        // each. A failed init leaves the cell empty, so the next request
+        // retries rather than caching an undetermined outcome.
+        let decision = slot.get_or_try_init(|| self.decide(token)).await?;
+        Ok(decision.clone())
     }
 
     /// Reaches a decision for a non-empty `token` on a cache miss: builds the
@@ -400,7 +409,11 @@ fn parse_service_account(username: &str) -> Option<(&str, &str)> {
     const PREFIX: &str = "system:serviceaccount:";
     let rest = username.strip_prefix(PREFIX)?;
     let (namespace, name) = rest.split_once(':')?;
-    if namespace.is_empty() || name.is_empty() {
+    // A real service-account name never contains a colon, so an extra separator
+    // means the username came from some other authenticator wearing the
+    // `system:serviceaccount:` prefix. Reject it rather than emit claims parsed
+    // from an attacker-shaped username.
+    if namespace.is_empty() || name.is_empty() || name.contains(':') {
         return None;
     }
     Some((namespace, name))
