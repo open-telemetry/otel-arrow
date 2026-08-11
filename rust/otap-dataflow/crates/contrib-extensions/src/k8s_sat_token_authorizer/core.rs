@@ -5,23 +5,18 @@
 //!
 //! [`Core`] holds the immutable, thread-safe state (audiences, lazily-built
 //! Kubernetes client, admission policy) and performs the full authenticate +
-//! admit decision for a cache miss. It carries no cache: each variant wraps its
-//! own cache (a `Mutex` for the shared variant, a `RefCell` for the local one)
-//! around this common logic.
+//! admit decision for a cache miss. Each capability variant owns its own cache
+//! and request flow (see [`super::cache`]).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
 
 use otap_df_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCap;
-use otap_df_engine::capability::auth::{
-    AuthorizedIdentity, AuthzDecision, BearerToken, ClaimValue, DenyReason,
-};
+use otap_df_engine::capability::auth::{AuthorizedIdentity, AuthzDecision, ClaimValue, DenyReason};
 use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
 use otap_df_telemetry::otel_debug;
 use tokio::sync::OnceCell;
 
-use super::cache::{DecisionStore, digest};
 use super::config::{AudienceConfig, ResourceAttributesConfig};
 use super::reviewer::{AccessOutcome, AuthenticatedUser, KubeReviews, ReviewOutcome, Reviewer};
 
@@ -52,11 +47,10 @@ impl Admission {
     }
 }
 
-/// Immutable, thread-safe authorization core shared by both variants.
+/// Immutable, thread-safe authorization core used by both variants.
 ///
-/// `Core` is `Send + Sync`, so the shared variant can place it behind an `Arc`
-/// and the local variant behind an `Rc`; both share this one implementation of
-/// the authenticate + admit logic and the lazily-built Kubernetes client.
+/// `Core` is `Send + Sync`, so the shared variant can hold it behind an `Arc`
+/// and the local variant behind an `Rc`.
 pub(crate) struct Core {
     /// Union of all configured audiences, requested on every `TokenReview`.
     audiences: Vec<String>,
@@ -98,50 +92,6 @@ impl Core {
         AuthzDecision::deny(DenyReason::MissingCredential)
     }
 
-    /// The full authorize flow shared by both capability variants.
-    ///
-    /// This is the single source of truth for the request path: empty-credential
-    /// short-circuit, cache lookup, [`decide`](Self::decide) on a miss, then
-    /// cache store. The only per-variant difference is `store`'s
-    /// interior-mutability strategy (`Mutex` vs `RefCell`), injected via
-    /// [`DecisionStore`]; the shared and local wrappers each call this and add no
-    /// logic of their own, so the two variants cannot drift.
-    pub(crate) async fn authorize(
-        &self,
-        credential: &BearerToken,
-        store: &impl DecisionStore,
-    ) -> Result<AuthzDecision, CapabilityError> {
-        let token = credential.expose_token();
-
-        // An empty credential is a missing credential (401); never round-trip it
-        // to the API server.
-        if token.is_empty() {
-            otel_debug!("k8s_sat_token_authorizer.credential_missing");
-            return Ok(Self::missing());
-        }
-
-        // Hash once, outside the lock: a SAT is ~1 KB, so the SHA-256 dwarfs the
-        // map probe it keys.
-        let key = digest(token);
-
-        // Take the shared slot for this token and release the lock immediately;
-        // the decision itself is never awaited while holding it.
-        let slot = store.slot(key, Instant::now());
-
-        // Fast path: a decision has already been reached for this token.
-        if let Some(decision) = slot.get() {
-            return Ok(decision.clone());
-        }
-
-        // Slow path: the first requester for this token performs the
-        // `TokenReview` while every concurrent requester awaits the same cell,
-        // so a burst bearing one token costs one round-trip rather than one
-        // each. A failed init leaves the cell empty, so the next request
-        // retries rather than caching an undetermined outcome.
-        let decision = slot.get_or_try_init(|| self.decide(token)).await?;
-        Ok(decision.clone())
-    }
-
     /// Reaches a decision for a non-empty `token` on a cache miss: builds the
     /// client if needed, authenticates via `TokenReview`, then admits.
     ///
@@ -157,9 +107,9 @@ impl Core {
 
     /// Reaches a decision using `reviewer` for the Kubernetes calls.
     ///
-    /// Split out of [`Core::decide`] so the full authenticate-then-admit flow
-    /// can be driven against canned API-server responses; production always
-    /// passes the lazily built [`Reviewer`].
+    /// Takes the reviewer as a parameter so tests can drive the full
+    /// authenticate-then-admit flow against canned API-server responses;
+    /// production passes the lazily built [`Reviewer`].
     pub(crate) async fn decide_with<R: KubeReviews>(
         &self,
         reviewer: &R,
@@ -187,11 +137,9 @@ impl Core {
             ReviewOutcome::Authenticated(user) => {
                 // `TokenReview` authenticates any credential the API server
                 // accepts (OIDC, webhook, ...), not only service-account
-                // tokens. This authorizer speaks only for service accounts, so
-                // reject any identity without a canonical
-                // `system:serviceaccount:<ns>:<name>` username rather than
-                // emitting it under the `k8s_sat` scheme -- an audience-only
-                // entry would otherwise admit it.
+                // tokens. Reject any identity without a canonical
+                // `system:serviceaccount:<ns>:<name>` username, which an
+                // audience-only entry would otherwise admit.
                 if !Self::is_service_account(&user) {
                     otel_debug!(
                         "k8s_sat_token_authorizer.not_service_account",
@@ -200,13 +148,10 @@ impl Core {
                     return Ok(AuthzDecision::deny(DenyReason::InvalidCredential));
                 }
 
-                // Every configured audience the token was confirmed for. The
-                // `TokenReview` only requests configured audiences, so each
-                // confirmed audience is one we govern. Admission requires EVERY
-                // matched audience's policy to admit (fail closed on the first
-                // denial), so a token that also carries a laxer audience can
-                // never bypass a stricter tenant's policy; the emitted identity
-                // then lists all matched audiences.
+                // Admission requires EVERY matched audience's policy to admit,
+                // failing closed on the first denial, so a token that also
+                // carries a laxer audience cannot bypass a stricter tenant's
+                // policy.
                 let audiences = match self.match_audiences(&user.audiences) {
                     Ok(audiences) => audiences,
                     Err(deny) => {
@@ -272,18 +217,12 @@ impl Core {
     /// stable (sorted, deduplicated) order, or the deny to use when none are
     /// bound.
     ///
-    /// A token can be confirmed for several configured audiences at once (it may
-    /// be minted for multiple, and the order in `confirmed` is unspecified by
-    /// Kubernetes). Rather than pick one nondeterministically, all matched
-    /// audiences are returned so the caller can require every one's policy to
-    /// admit and can list them all on the emitted identity. Only an empty match
-    /// is a deny:
-    ///
-    /// - one or more configured audiences matched -> `Ok(vec![..])` (sorted, deduped);
-    /// - none matched -> `Err(Deny(NotPermitted, "token audience is not bound"))`.
+    /// A token may be confirmed for several configured audiences at once, and
+    /// Kubernetes leaves their order unspecified. All matches are returned so
+    /// the caller can require every one's policy to admit. Only an empty match
+    /// is a deny.
     fn match_audiences(&self, confirmed: &[String]) -> Result<Vec<String>, AuthzDecision> {
-        // Distinct confirmed audiences that are configured. Dedup so a repeated
-        // audience in the response is not counted twice.
+        // Deduped so a repeated audience in the response is not counted twice.
         let mut matched: Vec<String> = confirmed
             .iter()
             .filter(|aud| self.admission_by_audience.contains_key(*aud))
@@ -318,16 +257,15 @@ impl Core {
 
     /// Builds the `Allow` identity for an authenticated user.
     ///
-    /// Emits every claim the `TokenReview` verified so a downstream tenant /
-    /// authorization resolver can match on them: the SA username as the
-    /// `principal` and `sub` claim, the confirmed `aud` (single- or
-    /// multi-valued, listing every audience the token was admitted for), the
-    /// parsed `k8s.namespace` / `k8s.serviceaccount`, plus `uid`, `groups`, and
-    /// any `extra` attributes (namespaced `extra.<key>`). Scheme is `k8s_sat`.
+    /// Emits every claim the `TokenReview` verified so a downstream tenant or
+    /// authorization resolver can match on them: the SA username as `principal`
+    /// and `sub`, the confirmed `aud`, the parsed `k8s.namespace` /
+    /// `k8s.serviceaccount`, plus `uid`, `groups`, and any `extra` attributes
+    /// (namespaced `extra.<key>`).
     fn allow(user: &AuthenticatedUser, audiences: &[String]) -> AuthzDecision {
         let mut identity = AuthorizedIdentity::new().with_scheme(SCHEME);
-        // A single confirmed audience is a scalar `aud`; several are a
-        // multi-valued `aud`, so the identity faithfully lists them all.
+        // A single confirmed audience is a scalar `aud`; several are
+        // multi-valued.
         identity = match audiences {
             [] => identity,
             [audience] => identity.with_audience(audience),

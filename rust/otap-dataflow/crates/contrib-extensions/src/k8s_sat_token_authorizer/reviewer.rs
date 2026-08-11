@@ -167,10 +167,8 @@ impl Reviewer {
 
 /// The Kubernetes review calls the decision flow depends on.
 ///
-/// Exists so [`Core::decide`] can be exercised against canned API-server
-/// responses in unit tests. [`Reviewer`] is the only production implementor and
-/// simply forwards to its inherent methods; the trait deliberately adds no
-/// behavior of its own.
+/// Implemented by [`Reviewer`] in production and by fakes in unit tests, so
+/// [`Core::decide`] can run against canned API-server responses.
 pub(crate) trait KubeReviews {
     /// Authenticates `token` via `TokenReview`.
     fn review(&self, token: &str) -> impl Future<Output = Result<ReviewOutcome, Error>>;
@@ -237,8 +235,7 @@ pub(crate) fn review_outcome(status: TokenReviewStatus) -> ReviewOutcome {
 /// action described by `attrs`.
 ///
 /// Forwards the full subject (username, uid, groups, extra) so the API server
-/// evaluates RBAC against the exact identity `TokenReview` authenticated,
-/// rather than a reconstructed one.
+/// evaluates RBAC against the exact identity `TokenReview` authenticated.
 pub(crate) fn access_review_request(
     user: &AuthenticatedUser,
     attrs: &ResourceAttributesConfig,

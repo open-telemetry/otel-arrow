@@ -91,38 +91,35 @@ extension_capabilities!(
 )
 ```
 
-It is a **Passive** extension: it runs no event loop. Both variants live side by
-side in `authorizer.rs` and are thin wrappers over one shared implementation
-(`core`, `cache`, `config`, `reviewer`). The **entire request flow lives once**
-in `Core::authorize`; each wrapper only chooses how per-clone state is held and
-delegates in a single line, so the two cannot drift in logic:
+It is a **Passive** extension: it exposes a capability and builds its Kubernetes
+client on demand. Both variants live side by side in `authorizer.rs` over common
+`core`, `config`, and `reviewer` logic, each holding its own cache:
 
 - **Shared variant** (`SharedK8sSatTokenAuthorizer`): state shared across clones
   lives behind an `Arc` (required by the shared instance factory's `Send` bound)
   and the decision cache is guarded by a `std::sync::Mutex`. Served to `Send`
-  consumers, and to local consumers only when no local variant exists (the
+  consumers, and to local consumers when no local variant exists (the
   `SharedAsLocal` fallback).
 - **Local variant** (`LocalK8sSatTokenAuthorizer`): state lives behind an `Rc`
-  (the local instance factory has no `Send` bound) and the cache is a `RefCell`
-  rather than a `Mutex`. Thread-per-core (local) consumers therefore hit the
-  cache **lock-free** with no cross-core contention. Each core gets its own
-  instance and hence its own cache -- a shared-nothing, per-core memoization
-  consistent with the engine's thread-per-core model.
+  (the local instance factory has no `Send` bound) and the cache is a `RefCell`.
+  Thread-per-core consumers therefore hit the cache lock-free, with no
+  cross-core contention. Each core gets its own instance and hence its own
+  cache, consistent with the engine's thread-per-core model.
 
-The only per-variant difference is the interior-mutability strategy, injected
-into `Core::authorize` through the `DecisionStore` trait (implemented for
-`Mutex<DecisionCache>` and `RefCell<DecisionCache>`). Registering a native local
-variant means local consumers use this lock-free path instead of adapting the
-shared, `Mutex`-guarded instance via `SharedAsLocal`.
+Each variant calls its own cache, which supplies the guard and slot handle
+suited to its concurrency model; the security decision on a miss comes from the
+common `Core`. Registering a native local variant lets local consumers use the
+`RefCell` path directly instead of adapting the shared, `Mutex`-guarded instance
+via `SharedAsLocal`.
 
-The Kubernetes client is built **lazily on the first `authorize()` call**, not
-up front. `kube::Client::try_default()` is async (it reads the projected
-service-account token and cluster CA and resolves the API server), so it cannot
-run in the synchronous `create()` factory hook; a `tokio::sync::OnceCell` builds
-it once, on demand. A build failure is undetermined -- the request fails closed
-and the empty cell lets the next request retry -- so no separate readiness/warmup
-gate is needed (an early request simply pays the one-time construction latency,
-and an inability to construct fails closed rather than allowing).
+The Kubernetes client is built **lazily on the first `authorize()` call**.
+`kube::Client::try_default()` is async (it reads the projected service-account
+token and cluster CA and resolves the API server), so it cannot run in the
+synchronous `create()` factory hook; a `tokio::sync::OnceCell` builds it once, on
+demand. A build failure is undetermined -- the request fails closed and the empty
+cell lets the next request retry -- so a separate readiness gate is unnecessary:
+an early request pays the one-time construction latency, and a failure to
+construct fails closed.
 
 The extension is *passive* rather than *active* because it has no periodic work
 and nothing to drain or flush at shutdown: no background loop, no in-flight
@@ -219,52 +216,79 @@ them without re-parsing anything:
 - `k8s.namespace` / `k8s.serviceaccount` = parsed from the SA username.
 - `uid`; `groups` (multi-valued); and any `extra` attributes as `extra.<key>`.
 
-The extension deliberately emits the full verified claim set and does **not**
-itself resolve a tenant -- tenant resolution is a separate, configurable concern
-that consumes these claims. Claim names follow the shared
-`capability::auth::AuthorizedIdentity` vocabulary (standard `sub`/`aud`/`groups`,
-otherwise namespaced), so a resolver written against them is not specific to this
-authorizer.
+The extension emits the full verified claim set and leaves tenant resolution to
+a separate, configurable concern that consumes these claims. Claim names follow
+the shared `capability::auth::AuthorizedIdentity` vocabulary (standard
+`sub`/`aud`/`groups`, otherwise namespaced), so a resolver written against them
+works across authorizers.
 
 ### Decision cache
 
 Reached decisions are cached in a bounded map keyed by the token's **SHA-256
-digest** (never the plaintext token), with a configurable TTL (`cache_ttl`) and
-entry cap (`cache_max_entries`). Keying on the digest means no live credential is
-retained in the cache -- a memory or core dump exposes only 32-byte digests --
-and lookups compare unpredictable digests rather than secret bytes. SHA-256 is
-collision-resistant, so distinct tokens never share an entry.
+digest**, with a configurable TTL (`cache_ttl`) and entry cap
+(`cache_max_entries`). Keying on the digest keeps the cache holding only 32-byte
+digests, so a memory or core dump exposes no live credential, and lookups
+compare unpredictable digests. SHA-256 is collision-resistant, so distinct
+tokens always occupy distinct entries.
 
-Each entry holds a shared, lazily-initialized decision slot rather than a
-finished decision, which collapses a **cache stampede**: when several requests
-bearing the same token arrive together and miss, the first performs the
-`TokenReview` while the rest await that same slot, so one token costs one
-round-trip no matter how many requests race. This matters most at TTL expiry,
-where a single entry's expiry instant would otherwise release a synchronized
-burst of identical reviews at the API server every `cache_ttl` -- enough, under
-load, to trip API Priority and Fairness and have legitimate traffic denied by
-the extension's own fail-closed path. A failed review leaves the slot empty, so
-the next request retries rather than caching an undetermined outcome.
+Each entry holds a shared, lazily-initialized decision slot, which collapses a
+**cache stampede**: when several requests bearing the same token arrive together
+and miss, the first performs the `TokenReview` while the rest await that same
+slot, so one token costs one round-trip no matter how many requests race. This
+matters most at TTL expiry, where a single entry's expiry instant would
+otherwise release a synchronized burst of identical reviews at the API server
+every `cache_ttl` -- enough, under load, to trip API Priority and Fairness and
+have legitimate traffic denied by the extension's own fail-closed path. A failed
+review leaves the slot empty, so the next request retries.
 
-The token's SHA-256 is computed before the lock is taken, and the decision is
-cloned after it is released, so the critical section is just the map probe.
+Both variants need this. A thread-per-core runtime multiplexes many tasks on one
+thread and preempts a task at the `.await` on the `TokenReview`, so interleaved
+tasks holding one token each reach the miss path before any of them stores a
+result.
+
+The two variants use separate caches, `SharedDecisionCache` and
+`LocalDecisionCache`, each implementing its own hot path:
+
+| | `SharedDecisionCache` | `LocalDecisionCache` |
+| --- | --- | --- |
+| Guard | `Mutex` | `RefCell` |
+| Slot handle | `Arc` | `Rc` |
+| Hit clones the decision | after releasing the guard | under the borrow |
+| Hit touches the slot refcount | yes | never |
+| `Send` | yes | `!Send` |
+
+The shared variant runs requests in parallel, so anything done under the `Mutex`
+blocks unrelated tokens. It clones the slot under the guard and the decision
+only after releasing it, trading one atomic refcount bump for a locked region
+that is just a map probe.
+
+In the local variant tasks interleave on one thread, and preemption is possible
+only at an `.await`, of which the hit path has none. It clones the decision out
+of the entry while the borrow is held, so a hit costs one non-atomic borrow-flag
+update and leaves the slot's refcount untouched. Its slots are `Rc`, making them
+`!Send`, so thread-confinement is checked at compile time.
+
+The caches share their bookkeeping: TTL, bounds, and eviction. The security
+decision on a miss comes from the common `Core`.
+
+The token's SHA-256 is computed by the caller, before the lock is taken, so it
+stays outside the critical section.
 
 On insert at capacity, expired entries are reclaimed first; if the map is still
 full of live entries, an entry closest to expiry is evicted to make room, so the
-cache never exceeds its bound while always admitting the newest decision.
-Evicting rather than skipping is deliberate: cache keys derive from
-caller-supplied token bytes, so an unauthenticated caller can mint unlimited
-distinct keys, and refusing to cache while full would let such traffic pin the
-map and force a `TokenReview` round-trip on every legitimate request. The victim
-is chosen from a small sample rather than by scanning the whole map, keeping
-eviction O(1) under the lock.
+cache stays within its bound while always admitting the newest decision.
+Eviction protects availability: cache keys derive from caller-supplied token
+bytes, so an unauthenticated caller can mint unlimited distinct keys, and a full
+map would otherwise pin the cache and force a `TokenReview` round-trip on every
+legitimate request. The victim is chosen from a small sample, keeping eviction
+O(1) under the lock.
 
-`Allow` decisions are cached for up to `cache_ttl`, so a
-token revoked at the API server may continue to be admitted until its cached
-decision expires -- decision freshness is deliberately the implementation's
-concern (the capability's `Allow` carries no validity window).
+`Allow` decisions are cached for up to `cache_ttl`, so a token revoked at the
+API server may continue to be admitted until its cached decision expires;
+decision freshness is the implementation's concern, as the capability's `Allow`
+carries no validity window.
 
-Note that `cache_max_entries` bounds a *single* cache instance. The local
+`cache_max_entries` bounds a *single* cache instance. The local
 (thread-per-core) variant holds one cache per core, so total memory scales with
 core count and the same token is reviewed once per core.
 
@@ -305,9 +329,9 @@ extensions:
 ```
 
 A receiver binds it via its `capabilities:` map (see
-[`docs/configuration-model.md`](configuration-model.md)). Note that no built-in
-receiver invokes `bearer_token_authorizer` yet, so binding it does not itself
-enforce authentication.
+[`docs/configuration-model.md`](configuration-model.md)). No built-in receiver
+invokes `bearer_token_authorizer` yet, so binding it does not itself enforce
+authentication.
 
 ### Collector RBAC
 

@@ -10,11 +10,10 @@
 //! `SubjectAccessReview` check. See `docs/k8s-sat-token-authorizer-extension.md`
 //! for the design.
 //!
-//! The extension provides two capability variants sharing one common
-//! implementation ([`core`], [`cache`], [`config`], [`reviewer`]): a `Send`
-//! `Arc`/`Mutex` variant and a `!Send` `Rc`/lock-free-`RefCell` variant for
-//! thread-per-core consumers. Both live in [`authorizer`] and are thin
-//! delegations to `core::Core::authorize`, so they cannot drift.
+//! The extension provides two capability variants over common `core`,
+//! [`config`], and `reviewer` logic: a `Send` `Arc`/`Mutex` variant and a
+//! `!Send` `Rc`/`RefCell` variant for thread-per-core consumers. Both live in
+//! `authorizer`, each with its own `cache` hot path.
 
 pub mod config;
 pub mod error;
@@ -89,8 +88,8 @@ fn create(
         config.cache_max_entries,
     );
 
-    // Passive: the extension runs no event loop. It exposes the authorizer
-    // capability and builds its Kubernetes client lazily on first use.
+    // The extension is passive: it exposes the authorizer capability and builds
+    // its Kubernetes client lazily on first use.
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .passive()
         .cloned()

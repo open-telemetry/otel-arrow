@@ -12,6 +12,7 @@ use k8s_openapi::api::authentication::v1::{TokenReviewStatus, UserInfo};
 use k8s_openapi::api::authorization::v1::SubjectAccessReviewStatus;
 
 use otap_df_config::error::Error as ConfigError;
+use otap_df_engine::capability::CapabilityError;
 use otap_df_engine::capability::auth::{
     AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason,
 };
@@ -19,7 +20,7 @@ use otap_df_engine::local::capability::auth::bearer_token_authorizer::BearerToke
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
 
 use super::authorizer::{LocalK8sSatTokenAuthorizer, SharedK8sSatTokenAuthorizer};
-use super::cache::{DecisionCache, DecisionSlot, DecisionStore, digest};
+use super::cache::{Entries, LocalDecisionCache, SharedDecisionCache, SharedSlot, digest};
 use super::config::{AudienceConfig, Config, ResourceAttributesConfig, normalize_service_account};
 use super::core::Core;
 use super::error::Error;
@@ -828,13 +829,13 @@ async fn authorize_empty_credential_is_missing_local() {
 
 /// Stores `decision` in the slot `cache` hands out for `token`, mirroring what
 /// `Core::authorize` does after reaching a decision.
-fn set_slot(cache: &mut DecisionCache, token: &str, decision: AuthzDecision, now: Instant) {
+fn set_slot(cache: &mut Entries<SharedSlot>, token: &str, decision: AuthzDecision, now: Instant) {
     let slot = cache.slot(digest(token), now);
     slot.set(decision).expect("slot must be empty");
 }
 
 /// Reads the decision currently cached for `token`, if any.
-fn slot_value(cache: &mut DecisionCache, token: &str, now: Instant) -> Option<AuthzDecision> {
+fn slot_value(cache: &mut Entries<SharedSlot>, token: &str, now: Instant) -> Option<AuthzDecision> {
     cache.slot(digest(token), now).get().cloned()
 }
 
@@ -844,7 +845,7 @@ fn slot_value(cache: &mut DecisionCache, token: &str, now: Instant) -> Option<Au
 /// (forcing a fresh TokenReview).
 #[test]
 fn cache_returns_fresh_and_drops_expired() {
-    let mut cache = DecisionCache::new(Duration::from_secs(300), 1024);
+    let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(300), 1024);
     let now = Instant::now();
     let decision = AuthzDecision::allow_anonymous();
     set_slot(&mut cache, "tok", decision.clone(), now);
@@ -862,7 +863,7 @@ fn cache_returns_fresh_and_drops_expired() {
 /// stampeding the API server.
 #[test]
 fn cache_hands_concurrent_requests_the_same_slot() {
-    let mut cache = DecisionCache::new(Duration::from_secs(300), 1024);
+    let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(300), 1024);
     let now = Instant::now();
 
     let first = cache.slot(digest("tok"), now);
@@ -885,7 +886,7 @@ fn cache_hands_concurrent_requests_the_same_slot() {
 /// rather than duplicated.
 #[test]
 fn cache_replaces_an_expired_slot() {
-    let mut cache = DecisionCache::new(Duration::from_secs(300), 1024);
+    let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(300), 1024);
     let now = Instant::now();
     let stale = cache.slot(digest("tok"), now);
     stale
@@ -906,11 +907,11 @@ fn cache_replaces_an_expired_slot() {
 /// Scenario: many concurrent tasks race to initialize one shared decision slot,
 /// each attempting the (simulated) `TokenReview`.
 /// Guarantees: the initializer runs exactly once and every task observes the
-/// same decision -- one token costs one round-trip to the API server no matter
-/// how many requests arrive together.
+/// same decision, so one token costs one round-trip however many requests
+/// arrive together.
 #[tokio::test]
 async fn slot_initialization_collapses_into_a_single_review() {
-    let slot: DecisionSlot = Arc::new(tokio::sync::OnceCell::new());
+    let slot: SharedSlot = Arc::new(tokio::sync::OnceCell::new());
     let reviews = Arc::new(AtomicUsize::new(0));
 
     let mut tasks = Vec::new();
@@ -940,6 +941,56 @@ async fn slot_initialization_collapses_into_a_single_review() {
     );
 }
 
+/// Scenario: 32 parallel tasks call `SharedDecisionCache::get_or_decide` for
+/// the same token while the cache is cold, so every task misses together.
+/// Guarantees: the synchronized miss collapses onto exactly one `TokenReview`
+/// and all callers observe the same allow, so a burst bearing one token -- or a
+/// TTL expiry landing on many in-flight requests -- cannot stampede the API
+/// server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_authorize_for_one_token_performs_a_single_review() {
+    let core = Arc::new(make_core(None));
+    let cache = Arc::new(SharedDecisionCache::new(Duration::from_secs(300), 16));
+    let reviews = Arc::new(AtomicUsize::new(0));
+
+    let mut tasks = Vec::new();
+    for _ in 0..32 {
+        let core = Arc::clone(&core);
+        let cache = Arc::clone(&cache);
+        let reviews = Arc::clone(&reviews);
+        tasks.push(tokio::spawn(async move {
+            let credential = BearerToken::without_expiry("herd-token".to_string());
+            let reviewer = FakeReviewer::authenticated(
+                "system:serviceaccount:test-ns:test-sa",
+                &["my-service"],
+            );
+            cache
+                .get_or_decide(digest(credential.expose_token()), || async {
+                    // Stands in for the TokenReview round-trip; the yield lets
+                    // the other tasks race this one.
+                    let _ = reviews.fetch_add(1, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    core.decide_with(&reviewer, credential.expose_token()).await
+                })
+                .await
+                .expect("a decision must be reached")
+        }));
+    }
+
+    for task in tasks {
+        let decision = task.await.expect("task must not panic");
+        assert!(
+            matches!(decision, AuthzDecision::Allow { .. }),
+            "every racing caller must observe the same allow, got {decision:?}"
+        );
+    }
+    assert_eq!(
+        reviews.load(Ordering::SeqCst),
+        1,
+        "a cold-cache burst for one token must cost exactly one TokenReview"
+    );
+}
+
 /// Scenario: a slot initializer fails (the API server was unreachable, so no
 /// decision could be reached), then a later request retries.
 /// Guarantees: the failure is not cached -- the cell stays empty so the next
@@ -947,7 +998,7 @@ async fn slot_initialization_collapses_into_a_single_review() {
 /// pinning an undetermined outcome for the whole TTL.
 #[tokio::test]
 async fn failed_slot_initialization_is_not_cached() {
-    let slot: DecisionSlot = Arc::new(tokio::sync::OnceCell::new());
+    let slot: SharedSlot = Arc::new(tokio::sync::OnceCell::new());
 
     let failed = slot
         .get_or_try_init(|| async { Err::<AuthzDecision, &'static str>("api server unreachable") })
@@ -972,7 +1023,7 @@ async fn failed_slot_initialization_is_not_cached() {
 /// silently refusing to cache the new decision.
 #[test]
 fn cache_respects_max_entries() {
-    let mut cache = DecisionCache::new(Duration::from_secs(300), 2);
+    let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(300), 2);
     let now = Instant::now();
     for i in 0..10 {
         set_slot(
@@ -1000,7 +1051,7 @@ fn cache_respects_max_entries() {
 /// every subsequent legitimate request.
 #[test]
 fn cache_flood_does_not_starve_a_legitimate_entry() {
-    let mut cache = DecisionCache::new(Duration::from_secs(300), 8);
+    let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(300), 8);
     let now = Instant::now();
     for i in 0..64 {
         set_slot(
@@ -1027,7 +1078,7 @@ fn cache_flood_does_not_starve_a_legitimate_entry() {
 /// unreachable capacity.
 #[test]
 fn cache_with_zero_capacity_caches_nothing() {
-    let mut cache = DecisionCache::new(Duration::from_secs(300), 0);
+    let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(300), 0);
     let now = Instant::now();
     let slot = cache.slot(digest("tok"), now);
     slot.set(AuthzDecision::allow_anonymous())
@@ -1037,81 +1088,124 @@ fn cache_with_zero_capacity_caches_nothing() {
     assert_eq!(slot_value(&mut cache, "tok", now), None);
 }
 
-/// Scenario: drive the `DecisionStore` trait through both interior-mutability
-/// wrappers used by the two capability variants (`Mutex` for shared, `RefCell`
-/// for local).
-/// Guarantees: both wrappers share a slot for a live entry and hand out a fresh
-/// one once it expires, so the shared and local variants cache alike.
-#[test]
-fn decision_store_round_trips_through_both_wrappers() {
-    let now = Instant::now();
-    let expired = now + Duration::from_secs(301);
+/// Scenario: the shared variant's cache is asked twice for one token, counting
+/// how many times it has to reach a decision.
+/// Guarantees: the second request is served from cache without deciding again,
+/// so a hit never reaches the API server. Covered separately from the local
+/// cache, which implements its hit path independently.
+#[tokio::test]
+async fn shared_cache_serves_a_hit_without_deciding_again() {
+    let cache = SharedDecisionCache::new(Duration::from_secs(300), 1024);
     let decision = AuthzDecision::allow_anonymous();
+    let decisions = AtomicUsize::new(0);
 
-    let shared = std::sync::Mutex::new(DecisionCache::new(Duration::from_secs(300), 1024));
-    let slot = DecisionStore::slot(&shared, digest("tok"), now);
-    slot.set(decision.clone()).expect("cell is empty");
-    assert_eq!(
-        DecisionStore::slot(&shared, digest("tok"), now).get(),
-        Some(&decision),
-        "a live entry must be shared through the Mutex wrapper"
-    );
-    assert!(
-        DecisionStore::slot(&shared, digest("tok"), expired)
-            .get()
-            .is_none(),
-        "an expired entry must yield a fresh slot"
-    );
+    for attempt in 1..=2 {
+        let served = cache
+            .get_or_decide(digest("tok"), || async {
+                let _ = decisions.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, CapabilityError>(decision.clone())
+            })
+            .await
+            .expect("a decision must be reached");
+        assert_eq!(
+            served, decision,
+            "attempt {attempt} must serve the decision"
+        );
+    }
 
-    let local = std::cell::RefCell::new(DecisionCache::new(Duration::from_secs(300), 1024));
-    let slot = DecisionStore::slot(&local, digest("tok"), now);
-    slot.set(decision.clone()).expect("cell is empty");
     assert_eq!(
-        DecisionStore::slot(&local, digest("tok"), now).get(),
-        Some(&decision),
-        "a live entry must be shared through the RefCell wrapper"
+        decisions.load(Ordering::SeqCst),
+        1,
+        "a repeat request for one token must not decide again"
     );
-    assert!(
-        DecisionStore::slot(&local, digest("tok"), expired)
-            .get()
-            .is_none(),
-        "an expired entry must yield a fresh slot"
+}
+
+/// Scenario: the local variant's cache is asked twice for one token, counting
+/// how many times it has to reach a decision.
+/// Guarantees: the second request is served from cache without deciding again,
+/// so a hit never reaches the API server. Covered separately from the shared
+/// cache, which implements its hit path independently.
+#[tokio::test]
+async fn local_cache_serves_a_hit_without_deciding_again() {
+    let cache = LocalDecisionCache::new(Duration::from_secs(300), 1024);
+    let decision = AuthzDecision::allow_anonymous();
+    let decisions = std::cell::Cell::new(0usize);
+
+    for attempt in 1..=2 {
+        let served = cache
+            .get_or_decide(digest("tok"), || async {
+                decisions.set(decisions.get() + 1);
+                Ok::<_, CapabilityError>(decision.clone())
+            })
+            .await
+            .expect("a decision must be reached");
+        assert_eq!(
+            served, decision,
+            "attempt {attempt} must serve the decision"
+        );
+    }
+
+    assert_eq!(
+        decisions.get(),
+        1,
+        "a repeat request for one token must not decide again"
     );
+}
+
+/// Scenario: 32 tasks interleave on a single thread, all calling
+/// `LocalDecisionCache::get_or_decide` for the same token while the cache is
+/// cold.
+/// Guarantees: the burst collapses onto exactly one `TokenReview`. Tasks
+/// interleave at the `.await` on the round-trip, so a single thread is not by
+/// itself protection; the local variant holds the same guarantee as the shared
+/// one.
+#[tokio::test]
+async fn interleaved_local_authorize_for_one_token_performs_a_single_review() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let core = std::rc::Rc::new(make_core(None));
+            let cache = std::rc::Rc::new(LocalDecisionCache::new(Duration::from_secs(300), 16));
+            let reviews = std::rc::Rc::new(std::cell::Cell::new(0usize));
+
+            let mut tasks = Vec::new();
+            for _ in 0..32 {
+                let core = std::rc::Rc::clone(&core);
+                let cache = std::rc::Rc::clone(&cache);
+                let reviews = std::rc::Rc::clone(&reviews);
+                tasks.push(tokio::task::spawn_local(async move {
+                    let credential = BearerToken::without_expiry("herd-token".to_string());
+                    let reviewer = FakeReviewer::authenticated(
+                        "system:serviceaccount:test-ns:test-sa",
+                        &["my-service"],
+                    );
+                    cache
+                        .get_or_decide(digest(credential.expose_token()), || async {
+                            reviews.set(reviews.get() + 1);
+                            tokio::task::yield_now().await;
+                            core.decide_with(&reviewer, credential.expose_token()).await
+                        })
+                        .await
+                        .expect("a decision must be reached")
+                }));
+            }
+
+            for task in tasks {
+                let decision = task.await.expect("task must not panic");
+                assert!(
+                    matches!(decision, AuthzDecision::Allow { .. }),
+                    "every interleaved caller must observe the same allow, got {decision:?}"
+                );
+            }
+            assert_eq!(
+                reviews.get(),
+                1,
+                "interleaved requests for one token must cost exactly one TokenReview"
+            );
+        })
+        .await;
 }
 
 // -- TokenReview / SubjectAccessReview mapping tests -------------------------
-
-/// Scenario: authorize a token whose decision is already cached and unexpired,
-/// using a `Core` that has never built a Kubernetes client.
-/// Guarantees: the cached decision is returned without contacting the API
-/// server -- the property the cache exists for, since a client build would fail
-/// (and the call would error) if the fast path were skipped.
-#[tokio::test]
-async fn authorize_serves_a_cached_decision_without_contacting_kubernetes() {
-    let core = Core::new(
-        "test-authorizer",
-        vec![AudienceConfig {
-            audience: "my-service".to_string(),
-            allowed_service_accounts: Vec::new(),
-            resource_attributes: None,
-        }],
-    );
-    let store = std::sync::Mutex::new(DecisionCache::new(Duration::from_secs(300), 1024));
-    let cached = AuthzDecision::deny(DenyReason::NotPermitted);
-    DecisionStore::slot(&store, digest("cached-token"), Instant::now())
-        .set(cached.clone())
-        .expect("slot must be empty");
-
-    let decision = core
-        .authorize(
-            &BearerToken::without_expiry("cached-token".to_string()),
-            &store,
-        )
-        .await
-        .expect("a cache hit must not require a Kubernetes client");
-
-    assert_eq!(decision, cached);
-}
 
 /// Scenario: build the `TokenReview` submitted for a token.
 /// Guarantees: the token is sent verbatim and the request always carries the
