@@ -328,13 +328,13 @@ impl<T: EnumerableValueSource<T>> ArrayValue for ArrayValueStorage<T> {
         Ok(self.values.get(index).map(|v| v as &dyn AsStaticValue))
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
     ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
-            if !item_callback.next(index, value.to_value()) {
+            if !(item_callback)(index, value.to_value()) {
                 return false;
             }
         }
@@ -460,9 +460,9 @@ impl<T: EnumerableValueSource<T>> MapValue for MapValueStorage<T> {
         Ok(self.values.get(key).map(|v| v as &dyn AsStaticValue))
     }
 
-    fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(&str, Value<'a>) -> bool) -> bool {
         for (key, value) in self.values.iter() {
-            if !item_callback.next(key, value.to_value()) {
+            if !(item_callback)(key, value.to_value()) {
                 return false;
             }
         }

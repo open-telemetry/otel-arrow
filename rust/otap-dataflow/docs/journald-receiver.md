@@ -314,8 +314,16 @@ resume anchor. If the process crashes after entries are read from journald but
 before the first cursor commit succeeds, restart applies `start_at` again and
 may skip those uncommitted entries. While the process stays alive, a Nack before
 the first checkpoint replays the retained in-flight batch instead of reopening
-at the live tail. A production follow-up should add an initial durable anchor or
-document an operator policy for first-start loss tolerance.
+at the live tail.
+
+If no matching entry exists when `start_at: end` is positioned, the reader
+repositions to the journal head so it can follow the first future matching
+append. A later `SD_JOURNAL_INVALIDATE` (for example rotation, persistent
+journal flush, or a newly mounted journal root) can make older matching entries
+visible before that position. The receiver emits
+`journald_receiver.start_at_end_head_recovery` when it takes this fallback. A
+production follow-up must add a durable startup boundary; issue #3399 remains
+open for that work.
 
 Each emitted batch carries:
 
@@ -621,8 +629,8 @@ Deferred follow-ups include:
 - expanding receiver self-telemetry for stale cursors, permission warnings,
   worker restarts, last-entry timestamp, and backpressure duration
 - failing closed or warning clearly on partially readable journal trees
-- an initial durable resume anchor for `start_at: end` before the first
-  checkpoint commit
+- an initial durable resume anchor and replay boundary for `start_at: end`
+  before the first checkpoint commit, including journal invalidation handling
 - configurable recovery for corrupt or unsupported checkpoint envelopes, such
   as falling back to `start_at` and writing a fresh cursor when the operator
   opts in

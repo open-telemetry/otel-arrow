@@ -9,19 +9,48 @@
 //! Benchmark names follow the pattern: `group/description/N_events`
 //!
 //! Example: `encode/3_attrs/1000_events` = 300 us -> 300 ns per event
+//!
+//! ## Benchmark Results: `runtime_log_filter_emission`
+//!
+//! System: Apple M4 Pro, 24 GB RAM, 14 cores
+//!
+//! Compares the static `EnvFilter` layer against the reloadable
+//! `RuntimeLogFilter` layer when no reload occurs. Times are the criterion
+//! median with the 95% confidence interval in brackets.
+//!
+//! | Case             | Static `EnvFilter`             | `RuntimeLogFilter`             |
+//! |------------------|--------------------------------|--------------------------------|
+//! | enabled (`info`) | 135.25 ns [134.93, 135.55]     | 136.91 ns [136.57, 137.24]     |
+//! | disabled (`warn`)| 1.0038 ns [1.0016, 1.0064]     | 1.0029 ns [0.9994, 1.0082]     |
+//!
+//! Disabled callsites stay at the ~1 ns cached-interest floor: the intervals
+//! overlap, so the `ArcSwap` indirection is not reached once tracing caches the
+//! callsite as uninterested. Enabled callsites cost ~1.7 ns more (~1.2%); the
+//! intervals do not overlap, so this is small but real.
+//!
+//! Both figures assume level/target directives only. Span directives make
+//! `EnvFilter` report `Interest::sometimes()`, which evaluates `enabled()` per
+//! event and removes the cached-interest floor for every callsite.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use otap_df_config::observed_state::SendPolicy;
+use otap_df_config::settings::telemetry::logs::LogLevel;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-use otap_df_telemetry::event::LogEvent;
+use otap_df_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
+use otap_df_telemetry::log_filter::RuntimeLogFilter;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::self_tracing::{
     DirectLogRecordEncoder, LogContext, LogRecord, ScopeToBytesMap, encode_export_logs_request,
     format_log_record_to_string,
 };
-use std::time::SystemTime;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{Event, Subscriber};
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
@@ -372,6 +401,123 @@ fn bench_realistic(c: &mut Criterion) {
     group.finish();
 }
 
+struct ItsNoopLayer {
+    reporter: ObservedEventReporter,
+}
+
+impl<S> Layer<S> for ItsNoopLayer
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_event(&self, event: &Event<'_>, _context: tracing_subscriber::layer::Context<'_, S>) {
+        self.reporter.log(LogEvent {
+            time: UNIX_EPOCH,
+            record: LogRecord::new(event, LogContext::new()),
+        });
+    }
+}
+
+fn log_level(value: &str) -> LogLevel {
+    serde_json::from_value(serde_json::json!(value)).expect("log level should parse")
+}
+
+fn emit_enabled() {
+    otap_df_telemetry::otel_info!("benchmark.enabled", value = std::hint::black_box(42));
+}
+
+fn emit_disabled() {
+    otap_df_telemetry::otel_info!("benchmark.disabled", value = std::hint::black_box(42));
+}
+
+enum EmissionFilter {
+    Static(Box<EnvFilter>),
+    Runtime(RuntimeLogFilter),
+}
+
+/// Measures producer-side ITS emission while an unbounded noop consumer drains
+/// every accepted event. The consumer is not part of the timed operation.
+fn run_log_filter_emission_bench(
+    b: &mut criterion::Bencher<'_>,
+    filter: EmissionFilter,
+    emit: fn(),
+    expected_enabled: bool,
+) {
+    let (sender, receiver) = flume::unbounded();
+    let reporter = ObservedEventReporter::new(
+        SendPolicy {
+            blocking_timeout: None,
+            console_fallback: false,
+        },
+        sender,
+    );
+    let received = Arc::new(AtomicU64::new(0));
+    let consumer_count = Arc::clone(&received);
+    let consumer = thread::spawn(move || {
+        while let Ok(ObservedEvent::Log(_)) = receiver.recv() {
+            _ = consumer_count.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let layer = ItsNoopLayer { reporter };
+    let dispatch = match filter {
+        EmissionFilter::Static(filter) => {
+            tracing::Dispatch::new(tracing_subscriber::registry().with(*filter).with(layer))
+        }
+        EmissionFilter::Runtime(filter) => tracing::Dispatch::new(
+            tracing_subscriber::registry()
+                .with(filter.layer())
+                .with(layer),
+        ),
+    };
+
+    tracing::dispatcher::with_default(&dispatch, || b.iter(emit));
+    drop(dispatch);
+    consumer.join().expect("noop ITS consumer should stop");
+
+    if expected_enabled {
+        assert!(
+            received.load(Ordering::Relaxed) > 0,
+            "enabled benchmark must reach ITS"
+        );
+    } else {
+        assert_eq!(
+            received.load(Ordering::Relaxed),
+            0,
+            "disabled benchmark must be filtered before ITS"
+        );
+    }
+}
+
+fn bench_runtime_log_filter_emission(c: &mut Criterion) {
+    let mut group = c.benchmark_group("runtime_log_filter_emission");
+
+    _ = group.bench_function("enabled/static_info", |b| {
+        run_log_filter_emission_bench(
+            b,
+            EmissionFilter::Static(Box::new(EnvFilter::new("info"))),
+            emit_enabled,
+            true,
+        );
+    });
+    _ = group.bench_function("enabled/runtime_info", |b| {
+        let (filter, _handle) = RuntimeLogFilter::new_configured(&log_level("info"));
+        run_log_filter_emission_bench(b, EmissionFilter::Runtime(filter), emit_enabled, true);
+    });
+    _ = group.bench_function("disabled/static_warn", |b| {
+        run_log_filter_emission_bench(
+            b,
+            EmissionFilter::Static(Box::new(EnvFilter::new("warn"))),
+            emit_disabled,
+            false,
+        );
+    });
+    _ = group.bench_function("disabled/runtime_warn", |b| {
+        let (filter, _handle) = RuntimeLogFilter::new_configured(&log_level("warn"));
+        run_log_filter_emission_bench(b, EmissionFilter::Runtime(filter), emit_disabled, false);
+    });
+
+    group.finish();
+}
+
 #[allow(missing_docs)]
 mod bench_entry {
     use super::*;
@@ -380,7 +526,8 @@ mod bench_entry {
         name = benches;
         config = Criterion::default();
         targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto,
-                  bench_encode_proto_with_scope, bench_format_with_entity, bench_realistic
+                  bench_encode_proto_with_scope, bench_format_with_entity, bench_realistic,
+                  bench_runtime_log_filter_emission
     );
 }
 
