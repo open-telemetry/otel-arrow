@@ -46,11 +46,14 @@ The writer holds the stream lock while writing the entire frame, so another
 producer cannot insert bytes into it. Ordering is preserved for each producer,
 but output from different cores is not globally ordered.
 
-The queues limit the number of frames waiting to be written. Console exporters
-wait when their queue is full, applying backpressure to the pipeline. Internal
-diagnostics use a best-effort path instead: they are dropped when the stderr
-queue is full so logging cannot stall an engine core. By default, stdout holds
-up to 1024 queued frames and stderr holds up to 256.
+The queues bound both the number of frames and the number of bytes waiting to be
+written, because a frame owns its payload and payloads vary in size. Console
+exporters wait when either limit is reached, applying backpressure to the
+pipeline. Internal diagnostics use a best-effort path instead: they are dropped
+when the stderr queue is full so logging cannot stall an engine core. By default
+stdout holds up to 1024 frames or 64 MiB, and stderr up to 256 frames or 16 MiB.
+A frame larger than the whole byte budget is rejected rather than queued, since
+draining could never make room for it.
 
 Human-readable engine diagnostics always go to stderr. When the accepted
 configuration contains a `record_json` console exporter, stdout is reserved for

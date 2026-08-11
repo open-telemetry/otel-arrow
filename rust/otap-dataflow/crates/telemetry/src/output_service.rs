@@ -30,12 +30,22 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Default bounded queue capacity, in frames, for the stdout writer.
 pub const DEFAULT_STDOUT_QUEUE_CAPACITY: usize = 1024;
 
 /// Default bounded queue capacity, in frames, for the stderr writer.
 pub const DEFAULT_STDERR_QUEUE_CAPACITY: usize = 256;
+
+/// Default bounded queue capacity, in bytes, for the stdout writer.
+///
+/// The frame count alone does not bound memory, because a frame owns its
+/// payload and payloads are variable sized.
+pub const DEFAULT_STDOUT_BYTE_CAPACITY: usize = 64 * 1024 * 1024;
+
+/// Default bounded queue capacity, in bytes, for the stderr writer.
+pub const DEFAULT_STDERR_BYTE_CAPACITY: usize = 16 * 1024 * 1024;
 
 /// Default upper bound on how long shutdown waits for queued frames to drain.
 pub const DEFAULT_SHUTDOWN_DRAIN_DEADLINE: Duration = Duration::from_secs(5);
@@ -166,6 +176,10 @@ pub enum SubmitError {
     /// A non-blocking submit found the queue full.
     #[error("console output queue is full")]
     WouldBlock,
+    /// The frame is larger than the stream's whole byte budget, so no amount of
+    /// draining could ever admit it.
+    #[error("console output frame is larger than the stream byte budget")]
+    FrameTooLarge,
 }
 
 /// Destination for frames drained by a writer thread.
@@ -285,6 +299,10 @@ pub struct OutputServiceConfig {
     pub stdout_queue_capacity: usize,
     /// Bounded queue capacity, in frames, for the stderr writer.
     pub stderr_queue_capacity: usize,
+    /// Bounded queue capacity, in bytes, for the stdout writer.
+    pub stdout_byte_capacity: usize,
+    /// Bounded queue capacity, in bytes, for the stderr writer.
+    pub stderr_byte_capacity: usize,
     /// Flush whenever the queue is momentarily empty, bounding output latency.
     pub flush_on_idle: bool,
     /// Upper bound on how long shutdown waits for queued frames to drain.
@@ -296,6 +314,8 @@ impl Default for OutputServiceConfig {
         Self {
             stdout_queue_capacity: DEFAULT_STDOUT_QUEUE_CAPACITY,
             stderr_queue_capacity: DEFAULT_STDERR_QUEUE_CAPACITY,
+            stdout_byte_capacity: DEFAULT_STDOUT_BYTE_CAPACITY,
+            stderr_byte_capacity: DEFAULT_STDERR_BYTE_CAPACITY,
             flush_on_idle: true,
             shutdown_drain_deadline: DEFAULT_SHUTDOWN_DRAIN_DEADLINE,
         }
@@ -304,10 +324,21 @@ impl Default for OutputServiceConfig {
 
 /// Queue item. `Stop` ends the writer loop after everything ahead of it drains.
 enum Command {
-    Frame(Frame),
+    Frame(QueuedFrame),
     /// Flush everything queued ahead of this barrier, then acknowledge.
     Barrier(flume::Sender<()>),
     Stop,
+}
+
+/// A queued frame and the byte reservation it holds.
+///
+/// The reservation is pure accounting: it never copies the payload. It travels
+/// with the frame into the queue so the bytes are returned to the budget on the
+/// writer thread, once the frame has been written or abandoned, rather than
+/// when the producer finished enqueuing it.
+struct QueuedFrame {
+    frame: Frame,
+    _bytes: OwnedSemaphorePermit,
 }
 
 /// Why a writer thread stopped.
@@ -402,6 +433,9 @@ impl StreamShared {
 struct QueuedHandle {
     sender: flume::Sender<Command>,
     shared: Arc<StreamShared>,
+    /// One permit per byte currently queued but not yet written.
+    bytes: Arc<Semaphore>,
+    byte_capacity: usize,
 }
 
 impl QueuedHandle {
@@ -418,12 +452,32 @@ impl QueuedHandle {
         })
     }
 
+    /// Converts a frame length into a byte reservation size.
+    ///
+    /// A frame that cannot fit even in an empty queue is rejected here instead
+    /// of waiting for capacity that can never arrive.
+    fn reservation(&self, len: usize) -> Result<u32, SubmitError> {
+        if len > self.byte_capacity {
+            return Err(SubmitError::FrameTooLarge);
+        }
+        u32::try_from(len).map_err(|_| SubmitError::FrameTooLarge)
+    }
+
     fn rejected(&self, error: SubmitError) -> SubmitError {
         let _ = self
             .shared
             .frames_enqueue_failed
             .fetch_add(1, Ordering::Relaxed);
         error
+    }
+
+    /// Counts a frame the non-blocking path had to drop rather than queue.
+    fn dropped_diagnostic(&self, error: SubmitError) -> SubmitError {
+        let _ = self
+            .shared
+            .diagnostics_dropped
+            .fetch_add(1, Ordering::Relaxed);
+        self.rejected(error)
     }
 }
 
@@ -481,19 +535,36 @@ impl StreamHandle {
 
     /// Submits a frame, awaiting queue capacity when the queue is full.
     ///
-    /// This is the backpressure path: a full queue slows the producer down
-    /// instead of dropping data.
+    /// This is the backpressure path: a queue that is full by frame count or by
+    /// queued bytes slows the producer down instead of dropping data.
     ///
     /// # Errors
     ///
     /// Returns [`SubmitError`] when the stream is closing, its writer stopped,
-    /// or a direct fallback write failed.
+    /// the frame exceeds the stream byte budget, or a direct fallback write
+    /// failed.
     pub async fn submit(&self, frame: Frame) -> Result<(), SubmitError> {
         let Some(queued) = self.queued.as_ref() else {
             return write_direct(self.id, &frame);
         };
+        let reservation = queued
+            .reservation(frame.len())
+            .map_err(|error| queued.rejected(error))?;
         let admission = queued.admit().map_err(|error| queued.rejected(error))?;
-        match queued.sender.send_async(Command::Frame(frame)).await {
+        let Ok(bytes) = Arc::clone(&queued.bytes)
+            .acquire_many_owned(reservation)
+            .await
+        else {
+            return Err(queued.rejected(SubmitError::QueueClosed));
+        };
+        match queued
+            .sender
+            .send_async(Command::Frame(QueuedFrame {
+                frame,
+                _bytes: bytes,
+            }))
+            .await
+        {
             Ok(()) => {
                 admission.commit();
                 Ok(())
@@ -510,24 +581,31 @@ impl StreamHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`SubmitError::WouldBlock`] when the queue is full, or the other
-    /// [`SubmitError`] variants when the stream no longer accepts frames.
+    /// Returns [`SubmitError::WouldBlock`] when the queue is full by frame count
+    /// or by queued bytes, [`SubmitError::FrameTooLarge`] when the frame can
+    /// never fit, or the other [`SubmitError`] variants when the stream no
+    /// longer accepts frames.
     pub fn try_submit(&self, frame: Frame) -> Result<(), SubmitError> {
         let Some(queued) = self.queued.as_ref() else {
             return write_direct(self.id, &frame);
         };
+        let reservation = queued
+            .reservation(frame.len())
+            .map_err(|error| queued.dropped_diagnostic(error))?;
         let admission = queued.admit().map_err(|error| queued.rejected(error))?;
-        match queued.sender.try_send(Command::Frame(frame)) {
+        let Ok(bytes) = Arc::clone(&queued.bytes).try_acquire_many_owned(reservation) else {
+            return Err(queued.dropped_diagnostic(SubmitError::WouldBlock));
+        };
+        match queued.sender.try_send(Command::Frame(QueuedFrame {
+            frame,
+            _bytes: bytes,
+        })) {
             Ok(()) => {
                 admission.commit();
                 Ok(())
             }
             Err(flume::TrySendError::Full(_)) => {
-                let _ = queued
-                    .shared
-                    .diagnostics_dropped
-                    .fetch_add(1, Ordering::Relaxed);
-                Err(queued.rejected(SubmitError::WouldBlock))
+                Err(queued.dropped_diagnostic(SubmitError::WouldBlock))
             }
             Err(flume::TrySendError::Disconnected(_)) => {
                 Err(queued.rejected(SubmitError::QueueClosed))
@@ -586,11 +664,15 @@ impl OutputStream {
     pub fn start(
         id: StreamId,
         capacity: usize,
+        byte_capacity: usize,
         flush_on_idle: bool,
         sink: Box<dyn OutputSink>,
     ) -> io::Result<Self> {
         let (sender, receiver) = flume::bounded::<Command>(capacity.max(1));
         let (done_tx, done) = flume::bounded::<WriterExit>(1);
+        // Permits are counted in bytes, and one acquire is capped at u32.
+        let byte_capacity = byte_capacity.clamp(1, u32::MAX as usize);
+        let bytes = Arc::new(Semaphore::new(byte_capacity));
         let shared = Arc::new(StreamShared::default());
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
@@ -610,6 +692,8 @@ impl OutputStream {
                 queued: Some(QueuedHandle {
                     sender: sender.clone(),
                     shared: Arc::clone(&shared),
+                    bytes,
+                    byte_capacity,
                 }),
             },
             shared,
@@ -733,12 +817,14 @@ fn run_writer(
         let mut next = Some(first);
         while let Some(command) = next.take() {
             match command {
-                Command::Frame(frame) => {
-                    if !write_one(id, sink.as_mut(), &frame, shared) {
+                Command::Frame(queued) => {
+                    if !write_one(id, sink.as_mut(), &queued.frame, shared) {
                         return WriterExit::Failed;
                     }
-                    pending_bytes = pending_bytes.saturating_add(frame.len());
+                    pending_bytes = pending_bytes.saturating_add(queued.frame.len());
                     pending_frames += 1;
+                    // Dropping `queued` here returns its bytes to the budget.
+                    drop(queued);
                     // A saturated queue never goes idle, so flush on volume too.
                     if pending_bytes >= FLUSH_BYTES_THRESHOLD
                         || pending_frames >= FLUSH_FRAMES_THRESHOLD
@@ -884,12 +970,14 @@ impl OutputService {
         let stdout = OutputStream::start(
             StreamId::Stdout,
             config.stdout_queue_capacity,
+            config.stdout_byte_capacity,
             config.flush_on_idle,
             StreamId::Stdout.std_sink(),
         )?;
         let stderr = OutputStream::start(
             StreamId::Stderr,
             config.stderr_queue_capacity,
+            config.stderr_byte_capacity,
             config.flush_on_idle,
             StreamId::Stderr.std_sink(),
         )?;
@@ -1089,9 +1177,18 @@ mod tests {
         }
     }
 
+    /// A byte budget large enough that count-based tests never hit it.
+    const TEST_BYTE_CAPACITY: usize = DEFAULT_STDOUT_BYTE_CAPACITY;
+
     fn start(sink: &TestSink, capacity: usize) -> OutputStream {
-        OutputStream::start(StreamId::Stdout, capacity, true, sink.boxed())
-            .expect("writer thread spawns")
+        OutputStream::start(
+            StreamId::Stdout,
+            capacity,
+            TEST_BYTE_CAPACITY,
+            true,
+            sink.boxed(),
+        )
+        .expect("writer thread spawns")
     }
 
     /// Scenario: many threads concurrently submit distinguishable frames to one stream.
@@ -1236,6 +1333,7 @@ mod tests {
         let stream = OutputStream::start(
             StreamId::Stdout,
             CAPACITY,
+            TEST_BYTE_CAPACITY,
             true,
             Box::new(sink.clone()) as Box<dyn OutputSink>,
         )
@@ -1270,8 +1368,14 @@ mod tests {
         // under test: a dead stderr writer is reported on stdout, and a dead
         // stdout writer is reported through otel_error! to stderr.
         let sink = TestSink::new().failing_after(1);
-        let stream =
-            OutputStream::start(StreamId::Stderr, 4, true, Box::new(sink.clone())).expect("spawn");
+        let stream = OutputStream::start(
+            StreamId::Stderr,
+            4,
+            TEST_BYTE_CAPACITY,
+            true,
+            Box::new(sink.clone()),
+        )
+        .expect("spawn");
         let handle = stream.handle();
 
         handle
@@ -1305,8 +1409,14 @@ mod tests {
     #[tokio::test]
     async fn flush_error_reports_a_failed_drain() {
         let sink = TestSink::new().failing_flush();
-        let stream = OutputStream::start(StreamId::Stderr, 4, false, Box::new(sink.clone()))
-            .expect("writer thread spawns");
+        let stream = OutputStream::start(
+            StreamId::Stderr,
+            4,
+            TEST_BYTE_CAPACITY,
+            false,
+            Box::new(sink.clone()),
+        )
+        .expect("writer thread spawns");
         let handle = stream.handle();
 
         handle
@@ -1474,8 +1584,14 @@ mod tests {
             }
         }
 
-        let stream = OutputStream::start(StreamId::Stderr, 1, true, Box::new(PanickingSink))
-            .expect("writer thread spawns");
+        let stream = OutputStream::start(
+            StreamId::Stderr,
+            1,
+            TEST_BYTE_CAPACITY,
+            true,
+            Box::new(PanickingSink),
+        )
+        .expect("writer thread spawns");
         let handle = stream.handle();
 
         let mut error = None;
@@ -1522,6 +1638,144 @@ mod tests {
         assert!(sink.flushes.load(Ordering::Relaxed) > 0);
         let contents = String::from_utf8(sink.contents()).expect("utf8 output");
         assert_eq!(contents.lines().count(), FRAMES);
+    }
+
+    /// Scenario: queued frames reach the stream byte budget while the writer is stalled.
+    /// Guarantees: the queue stops accepting bytes well before its frame count is
+    /// reached, so a few large frames cannot retain unbounded memory.
+    #[tokio::test]
+    async fn queued_bytes_are_bounded_independently_of_frame_count() {
+        const BYTE_CAPACITY: usize = 4096;
+        const FRAME_BYTES: usize = 1024;
+
+        let stalled = Arc::new(AtomicBool::new(true));
+        let sink = TestSink::new().stalling(Arc::clone(&stalled));
+        // The frame count alone would admit 64 frames, the byte budget admits far fewer.
+        let stream = OutputStream::start(
+            StreamId::Stdout,
+            64,
+            BYTE_CAPACITY,
+            true,
+            Box::new(sink.clone()),
+        )
+        .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        let payload = "a".repeat(FRAME_BYTES - 1);
+        let mut accepted = 0usize;
+        for _ in 0..64 {
+            match tokio::time::timeout(
+                Duration::from_millis(50),
+                handle.submit(Frame::line(&payload)),
+            )
+            .await
+            {
+                Ok(result) => {
+                    result.expect("frame is accepted");
+                    accepted += 1;
+                }
+                // The byte budget is exhausted, so this submit is applying backpressure.
+                Err(_) => break,
+            }
+        }
+
+        assert!(accepted > 0, "the budget must admit at least one frame");
+        assert!(
+            accepted <= BYTE_CAPACITY / FRAME_BYTES + 1,
+            "queued bytes must be bounded by the budget, accepted {accepted} frames"
+        );
+
+        stalled.store(false, Ordering::Release);
+        let _ = stream.shutdown(Duration::from_secs(5));
+    }
+
+    /// Scenario: a frame larger than the whole stream byte budget is submitted.
+    /// Guarantees: both submit paths reject it immediately instead of waiting for
+    /// capacity that draining could never free.
+    #[tokio::test]
+    async fn frame_larger_than_the_budget_is_rejected() {
+        const BYTE_CAPACITY: usize = 1024;
+
+        let sink = TestSink::new();
+        let stream = OutputStream::start(
+            StreamId::Stdout,
+            8,
+            BYTE_CAPACITY,
+            true,
+            Box::new(sink.clone()),
+        )
+        .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        let oversized = Frame::new(vec![b'a'; BYTE_CAPACITY + 1]);
+        assert_eq!(
+            handle.try_submit(oversized.clone()),
+            Err(SubmitError::FrameTooLarge)
+        );
+        let awaited = tokio::time::timeout(Duration::from_secs(1), handle.submit(oversized)).await;
+        assert_eq!(
+            awaited.expect("an oversized submit must not wait"),
+            Err(SubmitError::FrameTooLarge)
+        );
+
+        // A frame that exactly fills the budget is still accepted.
+        handle
+            .submit(Frame::new(vec![b'a'; BYTE_CAPACITY]))
+            .await
+            .expect("a frame the size of the budget is accepted");
+
+        assert!(stream.shutdown(Duration::from_secs(5)).drained);
+        assert_eq!(stream.stats().frames_written, 1);
+    }
+
+    /// Scenario: a submit waiting for byte capacity is cancelled.
+    /// Guarantees: the cancelled attempt returns its reserved bytes, so a later
+    /// submit of the same size is not blocked by a reservation nobody holds.
+    #[tokio::test]
+    async fn cancelled_submit_releases_its_reserved_bytes() {
+        const BYTE_CAPACITY: usize = 1024;
+
+        let stalled = Arc::new(AtomicBool::new(true));
+        let sink = TestSink::new().stalling(Arc::clone(&stalled));
+        let stream = OutputStream::start(
+            StreamId::Stdout,
+            8,
+            BYTE_CAPACITY,
+            true,
+            Box::new(sink.clone()),
+        )
+        .expect("writer thread spawns");
+        let handle = stream.handle();
+
+        // Reserves the whole budget, so the next submit must wait for bytes.
+        handle
+            .submit(Frame::new(vec![b'a'; BYTE_CAPACITY]))
+            .await
+            .expect("the first frame is accepted");
+
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(100),
+            handle.submit(Frame::new(vec![b'b'; BYTE_CAPACITY])),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "the second submit must still be waiting"
+        );
+
+        stalled.store(false, Ordering::Release);
+        assert!(stream.drain(Duration::from_secs(5)).drained);
+
+        // Only possible if the cancelled attempt released its reservation.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            handle.submit(Frame::new(vec![b'c'; BYTE_CAPACITY])),
+        )
+        .await
+        .expect("a later submit must not inherit a cancelled reservation")
+        .expect("frame is accepted");
+
+        assert!(stream.shutdown(Duration::from_secs(5)).drained);
     }
 
     /// Scenario: shutdown runs against a sink that never completes a write.
@@ -1587,10 +1841,22 @@ mod tests {
         let stderr_stalled = Arc::new(AtomicBool::new(true));
         let stdout_sink = TestSink::new().stalling(Arc::clone(&stdout_stalled));
         let stderr_sink = TestSink::new().stalling(Arc::clone(&stderr_stalled));
-        let stdout = OutputStream::start(StreamId::Stdout, 4, true, Box::new(stdout_sink.clone()))
-            .expect("stdout writer spawns");
-        let stderr = OutputStream::start(StreamId::Stderr, 4, true, Box::new(stderr_sink.clone()))
-            .expect("stderr writer spawns");
+        let stdout = OutputStream::start(
+            StreamId::Stdout,
+            4,
+            TEST_BYTE_CAPACITY,
+            true,
+            Box::new(stdout_sink.clone()),
+        )
+        .expect("stdout writer spawns");
+        let stderr = OutputStream::start(
+            StreamId::Stderr,
+            4,
+            TEST_BYTE_CAPACITY,
+            true,
+            Box::new(stderr_sink.clone()),
+        )
+        .expect("stderr writer spawns");
 
         stdout
             .handle()
@@ -1679,8 +1945,14 @@ mod tests {
     #[tokio::test]
     async fn drain_reports_a_failed_writer_separately_from_a_timeout() {
         let failing = TestSink::new().failing_after(0);
-        let stream = OutputStream::start(StreamId::Stderr, 4, true, Box::new(failing.clone()))
-            .expect("writer thread spawns");
+        let stream = OutputStream::start(
+            StreamId::Stderr,
+            4,
+            TEST_BYTE_CAPACITY,
+            true,
+            Box::new(failing.clone()),
+        )
+        .expect("writer thread spawns");
         let handle = stream.handle();
         // Drive one write so the sink fails and the writer latches unavailable.
         let _ = handle.submit(Frame::line("doomed")).await;

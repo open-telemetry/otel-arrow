@@ -19,6 +19,7 @@ issues: [3624]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Every record_json line now parses independently, including payloads larger than 2 MiB.
-  The startup banner and engine diagnostics now go to stderr, so stdout carries only
-  exporter output, and a console exporter ACK now means only that the handoff finished.
+  Every record_json line now parses independently. The startup banner and engine
+  diagnostics now go to stderr. Queued output is bounded by bytes as well as frames,
+  so a slow console cannot retain unbounded memory, and an ACK means only that the
+  handoff finished.

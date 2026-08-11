@@ -686,7 +686,9 @@ mod tests {
     };
     use otap_df_pdata::testing::fixtures::logs_with_full_resource_and_scope;
     use otap_df_pdata::views::otap::OtapLogsView;
-    use otap_df_telemetry::output_service::{OutputSink, OutputStream, StreamId};
+    use otap_df_telemetry::output_service::{
+        DEFAULT_STDOUT_BYTE_CAPACITY, OutputSink, OutputStream, StreamId,
+    };
     use prost::Message;
     use serde_json::{Value, json};
     use std::time::Instant;
@@ -1197,8 +1199,14 @@ mod tests {
 
         let encoded = logs_with_full_resource_and_scope().encode_to_vec();
         let sink = RecordingSink::new();
-        let stream = OutputStream::start(StreamId::Stdout, 8, true, Box::new(sink.clone()))
-            .expect("writer thread spawns");
+        let stream = OutputStream::start(
+            StreamId::Stdout,
+            8,
+            DEFAULT_STDOUT_BYTE_CAPACITY,
+            true,
+            Box::new(sink.clone()),
+        )
+        .expect("writer thread spawns");
         let handle = stream.handle();
 
         let workers: Vec<_> = (0..EXPORTERS)
@@ -1244,8 +1252,14 @@ mod tests {
         let encoded = logs_with_full_resource_and_scope().encode_to_vec();
         let bytes = OtlpProtoBytes::ExportLogsRequest(encoded.into());
         let sink = RecordingSink::new();
-        let stream = OutputStream::start(StreamId::Stdout, 1, true, Box::new(sink.clone()))
-            .expect("writer thread spawns");
+        let stream = OutputStream::start(
+            StreamId::Stdout,
+            1,
+            DEFAULT_STDOUT_BYTE_CAPACITY,
+            true,
+            Box::new(sink.clone()),
+        )
+        .expect("writer thread spawns");
         let handle = stream.handle();
         assert!(stream.shutdown(Duration::from_secs(5)).drained);
 
@@ -1267,8 +1281,14 @@ mod tests {
         const SUBSCRIBER_NODE_ID: usize = 4242;
 
         let sink = RecordingSink::new();
-        let stream = OutputStream::start(StreamId::Stdout, 1, true, Box::new(sink.clone()))
-            .expect("writer thread spawns");
+        let stream = OutputStream::start(
+            StreamId::Stdout,
+            1,
+            DEFAULT_STDOUT_BYTE_CAPACITY,
+            true,
+            Box::new(sink.clone()),
+        )
+        .expect("writer thread spawns");
         let handle = stream.handle();
         assert!(stream.shutdown(Duration::from_secs(5)).drained);
 
@@ -1333,8 +1353,14 @@ mod tests {
         const PAYLOADS: usize = 3;
 
         let sink = RecordingSink::new();
-        let stream = OutputStream::start(StreamId::Stdout, 8, true, Box::new(sink.clone()))
-            .expect("writer thread spawns");
+        let stream = OutputStream::start(
+            StreamId::Stdout,
+            8,
+            DEFAULT_STDOUT_BYTE_CAPACITY,
+            true,
+            Box::new(sink.clone()),
+        )
+        .expect("writer thread spawns");
         let handle = stream.handle();
 
         let (exporter, resolutions) = ConsoleExporter::with_counted_output(
