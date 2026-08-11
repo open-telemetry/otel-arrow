@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786408264829,
+  "lastUpdate": 1786409764825,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -10923,6 +10923,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 100.35,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "dd499e06597b8f414996684794740dbb2dadaa22",
+          "message": "fix(metrics): Consolidate `durable_buffer` loss metrics (#3705)\n\n# Change Summary\n\nMake durable-buffer retention loss delta-native and consolidate it under\none public metric namespace:\n```text\nprocessor.durable_buffer.loss.segments{reason}\nprocessor.durable_buffer.loss.bundles{reason}\nprocessor.durable_buffer.loss.items{reason,signal}\n```\nThis replaces the cumulative `ObserveCounter` instruments and the\nseparate `processor.durable_buffer.item_loss` namespace.\n\n### Context\n\nThe former OpenTelemetry SDK path exported `ObserveCounter` values as\ngauges, causing the temporality problem reported in #3397. The native\nITS path introduced by #3523 removed that dispatcher and correctly maps\ninstruments according to their source semantics:\n\n```text\nCounter.add(delta)             -> delta monotonic sum\nObserveCounter.observe(total)  -> cumulative monotonic sum\n```\n\n\nhttps://github.com/open-telemetry/otel-arrow/blob/f507031c5004de0c6269d0f8522b4e5f8821d48a/rust/otap-dataflow/crates/telemetry-macros/src/lib.rs#L202-L215\n\nThis fixes the gauge bug, but there is no longer an SDK reader that can\nconvert cumulative observations according to a configured preference.\nDurable-buffer aggregate loss therefore remained cumulative while its\nsignal-specific item loss was delta, even though both describe the same\nretention events.\n\nRetention loss is event-like data, so this change makes all of its\nsource metrics delta. Consumer-selected conversion after pipeline\nfan-out remains a separate concern tracked by #3543.\n\n### Approach\n\nQuiver owns retention events and continues tracking engine-lifetime\ntotals. It now exposes those totals through a typed snapshot. The\ndurable-buffer processor retains the previous snapshot, calculates\ninterval differences, and records them into ITS `Counter`s:\n\n```text\nQuiver lifetime totals -> typed snapshot -> current - previous -> ITS delta counters\n```\n\nThis keeps storage accounting in Quiver without coupling it to pipeline\ntelemetry, while the processor owns the public metric contract.\n\nSegments and bundles are partitioned by retention `reason`. Segments may\ncontain multiple signals, and bundles are an internal Quiver\nrepresentation that does not need a public signal dimension. Items\nretain both `reason` and `signal`; the processor maps Quiver's opaque\nslot shapes to OTAP signals.\n\n## What issue does this PR close?\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Related to #3397\n\n## How are these changes tested?\n\nUnit tests\n\n## Are there any user-facing changes?\n\nYes, rename `item_loss.items{signal,reason}` to\n`loss.items{signal,reason}`. Sum across signal to replace former\naggregate item queries.\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-08-10T23:53:12Z",
+          "tree_id": "928db9374c33923a0872cf46a92f526af1970222",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/dd499e06597b8f414996684794740dbb2dadaa22"
+        },
+        "date": 1786409751104,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 81.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.95,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 68.82,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 113.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 100.41,
             "unit": "MB"
           }
         ]
