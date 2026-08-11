@@ -36,9 +36,11 @@ stderr are shared by the entire process. To prevent output from different cores
 from being interleaved, cooperating engine writers use a process-wide output
 service.
 
+```text
 producer -->   bounded queue -->  dedicated writer
 complete frame  -->  stdout queue  ------>  lock stdout, write, flush
 complete frame  -->  stderr queue  ------>  lock stderr, write, flush
+```
 
 Each producer formats a complete frame before submitting it. A frame may contain
 one pretty-printed payload or several newline-terminated `record_json` records.
@@ -61,8 +63,9 @@ structured records and any pretty console exporter also writes to stderr. The
 standard engine binary applies this policy before starting its pipelines.
 Applications embedding `Controller` directly must call
 `claim_structured_stdout` on the validated configuration before starting it.
-The first `record_json` exporter cannot be introduced through live control after
-a pretty-only process has started.
+Any process that did not preclaim stdout rejects a `record_json` exporter,
+including one with no console exporter configured, so live control cannot
+introduce the first `record_json` exporter into such a process.
 
 At the end of an engine run, the controller waits up to five seconds for
 accepted frames to be written and flushed. The process-wide writer threads
