@@ -1113,7 +1113,7 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1145,7 +1145,7 @@ dependencies = [
 [[package]]
 name = "azure_core_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3667,11 +3667,10 @@ dependencies = [
 
 [[package]]
 name = "event-listener"
-version = "5.4.1"
+version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
- "concurrent-queue",
  "parking",
  "pin-project-lite",
 ]
@@ -7349,6 +7348,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tracing-subscriber",
  "wiremock",
 ]
 
@@ -7505,6 +7505,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
 ]
@@ -7919,6 +7921,7 @@ dependencies = [
 name = "otap-df-telemetry"
 version = "0.50.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "chrono",
  "criterion",
@@ -11343,7 +11346,7 @@ dependencies = [
 [[package]]
 name = "typespec"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "base64",
  "bytes",
@@ -11381,7 +11384,7 @@ dependencies = [
 [[package]]
 name = "typespec_client_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "async-trait",
  "base64",
@@ -11416,7 +11419,7 @@ dependencies = [
 [[package]]
 name = "typespec_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "proc-macro2",
  "quote",
