@@ -28,6 +28,9 @@
 //! configuration fields.
 use secrecy::SecretString;
 use serde::Deserialize;
+use std::num::{NonZeroU64, NonZeroUsize};
+
+const DEFAULT_MAX_IN_FLIGHT: usize = 10;
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -38,6 +41,12 @@ pub struct ConfigPatch {
     pub password: SecretString,
 
     pub async_insert: Option<bool>,
+
+    /// Maximum number of ClickHouse insert requests allowed to run concurrently.
+    pub max_in_flight: Option<NonZeroUsize>,
+
+    /// Optional thresholds for grouping Arrow batches before assigning them to writer lanes.
+    pub insert_batching: Option<InsertBatchingConfig>,
 
     #[serde(default)]
     pub table_defaults: DefaultTableConfig,
@@ -59,6 +68,10 @@ pub struct Config {
     pub password: SecretString,
     /// Use async insert
     pub async_insert: bool,
+    /// Maximum number of ClickHouse insert requests allowed to run concurrently.
+    pub max_in_flight: usize,
+    /// Optional thresholds for grouping Arrow batches before assigning them to writer lanes.
+    pub insert_batching: Option<InsertBatchingConfig>,
     pub table_defaults: DefaultTableConfig,
     pub tables: TablesConfig,
 }
@@ -66,6 +79,10 @@ pub struct Config {
 impl Config {
     pub fn from_patch(p: ConfigPatch) -> Self {
         let async_insert = p.async_insert.unwrap_or(true);
+        let max_in_flight = p
+            .max_in_flight
+            .map(NonZeroUsize::get)
+            .unwrap_or(DEFAULT_MAX_IN_FLIGHT);
 
         let tables = TablesConfig::from_patch(p.tables);
 
@@ -75,10 +92,27 @@ impl Config {
             username: p.username,
             password: p.password,
             async_insert,
+            max_in_flight,
+            insert_batching: p.insert_batching,
             table_defaults: p.table_defaults,
             tables,
         }
     }
+}
+
+/// Thresholds that dispatch a coalesced group to a ClickHouse writer lane.
+///
+/// The first threshold reached closes the insertion. Requiring all three thresholds keeps both
+/// memory use and completion latency bounded whenever insertion batching is enabled.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InsertBatchingConfig {
+    /// Maximum number of rows accumulated in one insertion.
+    pub max_rows: NonZeroUsize,
+    /// Maximum estimated Arrow memory size accumulated in one insertion.
+    pub max_bytes: NonZeroUsize,
+    /// Maximum elapsed time after the first batch enters the coalescer.
+    pub max_delay_ms: NonZeroU64,
 }
 
 /// Configuration for a ClickHouse table engine
@@ -284,6 +318,125 @@ mod tests {
     use super::*;
     use secrecy::ExposeSecret;
 
+    /// Scenario: a ClickHouse exporter config omits the concurrency setting.
+    /// Guarantees: the runtime configuration permits ten concurrent inserts by default.
+    #[test]
+    fn max_in_flight_defaults_to_ten() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret"
+        }))
+        .unwrap();
+
+        assert_eq!(Config::from_patch(patch).max_in_flight, 10);
+    }
+
+    /// Scenario: a ClickHouse exporter config requests OTC-equivalent concurrency.
+    /// Guarantees: the configured maximum is preserved in the runtime configuration.
+    #[test]
+    fn max_in_flight_accepts_configured_value() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "max_in_flight": 10
+        }))
+        .unwrap();
+
+        assert_eq!(Config::from_patch(patch).max_in_flight, 10);
+    }
+
+    /// Scenario: a ClickHouse exporter config sets the concurrency limit to zero.
+    /// Guarantees: invalid zero-capacity configurations are rejected during deserialization.
+    #[test]
+    fn max_in_flight_rejects_zero() {
+        let error = serde_json::from_value::<ConfigPatch>(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "max_in_flight": 0
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("nonzero usize"));
+    }
+
+    /// Scenario: insertion batching is omitted from the ClickHouse exporter configuration.
+    /// Guarantees: the runtime keeps the existing one-message-per-insertion behavior by default.
+    #[test]
+    fn insert_batching_is_disabled_by_default() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret"
+        }))
+        .unwrap();
+
+        assert!(Config::from_patch(patch).insert_batching.is_none());
+    }
+
+    /// Scenario: all persistent insertion thresholds are explicitly configured.
+    /// Guarantees: row, estimated byte, and elapsed-time limits reach the runtime unchanged.
+    #[test]
+    fn insert_batching_accepts_all_thresholds() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "insert_batching": {
+                "max_rows": 8192,
+                "max_bytes": 16777216,
+                "max_delay_ms": 100
+            }
+        }))
+        .unwrap();
+
+        let batching = Config::from_patch(patch).insert_batching.unwrap();
+        assert_eq!(batching.max_rows.get(), 8192);
+        assert_eq!(batching.max_bytes.get(), 16_777_216);
+        assert_eq!(batching.max_delay_ms.get(), 100);
+    }
+
+    /// Scenario: insertion batching includes a zero threshold or omits a required threshold.
+    /// Guarantees: unsafe or unbounded batching configurations are rejected during parsing.
+    #[test]
+    fn insert_batching_requires_three_nonzero_thresholds() {
+        let zero_error = serde_json::from_value::<ConfigPatch>(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "insert_batching": {
+                "max_rows": 0,
+                "max_bytes": 16777216,
+                "max_delay_ms": 100
+            }
+        }))
+        .unwrap_err();
+        assert!(zero_error.to_string().contains("nonzero usize"));
+
+        let missing_error = serde_json::from_value::<ConfigPatch>(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "insert_batching": {
+                "max_rows": 8192,
+                "max_bytes": 16777216
+            }
+        }))
+        .unwrap_err();
+        assert!(missing_error.to_string().contains("max_delay_ms"));
+    }
+
+    /// Scenario: all supported top-level and nested exporter fields are configured.
+    /// Guarantees: explicit values are retained and unspecified table values use defaults.
     #[test]
     fn test_config_deserialization() {
         let json = serde_json::json!({
@@ -343,6 +496,8 @@ mod tests {
         assert_eq!(config.tables.metrics.sum.name, "otel_metrics_sum");
     }
 
+    /// Scenario: a ClickHouse exporter config contains an unsupported top-level field.
+    /// Guarantees: deserialization rejects the typo instead of silently ignoring it.
     #[test]
     fn test_config_patch_rejects_unknown_fields() {
         let json = serde_json::json!({
@@ -357,6 +512,8 @@ mod tests {
         assert!(err.to_string().contains("unknown field `unknown_field`"));
     }
 
+    /// Scenario: only the required connection fields are configured.
+    /// Guarantees: runtime table names and table settings match the documented defaults.
     #[test]
     fn test_config_defaults_match_spec() {
         let json = serde_json::json!({

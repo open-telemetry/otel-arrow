@@ -1,9 +1,9 @@
 # ClickHouse Exporter
 
-This exporter accepts OTAP Arrow payloads, reshapes them into
-ClickHouse-compatible Arrow `RecordBatch`es, and inserts them into ClickHouse
-over HTTP using the official ClickHouse Rust client (`clickhouse` +
-`clickhouse-ext-arrow`, `FORMAT ArrowStream`).
+This exporter accepts OTAP Arrow payloads and serialized OTLP requests,
+reshapes them into ClickHouse-compatible Arrow `RecordBatch`es, and inserts
+them into ClickHouse over HTTP using the official ClickHouse Rust client
+(`clickhouse` + `clickhouse-ext-arrow`, `FORMAT ArrowStream`).
 
 The current architecture is intentionally simple:
 
@@ -77,10 +77,14 @@ At runtime the exporter does the following:
 2. Connects to ClickHouse and creates the target database and configured
    tables if enabled
 3. Receives `OtapPdata` messages from the engine
-4. Converts payloads into `OtapArrowRecords`
-5. Runs the transform pipeline across supported payload types
+4. Transforms serialized OTLP logs directly into ClickHouse columns; if that
+   path cannot handle an input, converts it into `OtapArrowRecords`
+5. Uses a second specialized transformer for canonical OTAP logs, with the
+   generic transform pipeline as a fallback and for other inputs
 6. Returns only signal batches (`Logs`, `Spans`) from the transformer
 7. Inserts those batches into the destination tables
+8. Emits an ACK after a successful insert, or a NACK if conversion,
+   transformation, or insertion fails
 
 ## Supported Payloads
 
@@ -109,8 +113,45 @@ Top-level config fields:
 - `username`
 - `password` (supports `${env:VAR}` / `${env:VAR:-default}` substitution, e.g. `"${env:CLICKHOUSE_PASSWORD}"`)
 - `async_insert`
+- `max_in_flight` (positive integer, defaults to `10`)
+- `insert_batching` (optional; disabled by default)
 - `table_defaults`
 - `tables`
+
+`max_in_flight` bounds the number of ClickHouse HTTP insert requests that can
+run concurrently. Values greater than one overlap synchronous inserts and may
+complete them out of order. When the limit is reached, the exporter applies
+backpressure until an insert completes. The default of `10` matches the insert
+concurrency used by the benchmark Collector configuration. Set it to `1` to
+retain serialized insert behavior.
+
+`insert_batching` coalesces compatible Arrow batches before assigning a
+completed group to a writer lane. The lane keeps one ClickHouse insertion open
+while writing every Arrow batch in that group. The group is dispatched when
+the first configured threshold is reached:
+
+```yaml
+insert_batching:
+  max_rows: 65536
+  max_bytes: 67108864
+  max_delay_ms: 100
+```
+
+All three thresholds are required and must be greater than zero. `max_bytes`
+uses the batches' estimated Arrow in-memory size, not their encoded HTTP wire
+size, and an insertion can exceed a row or byte threshold by its final batch.
+The delay starts when the first batch enters the coalescer. Batches with a
+different destination table or Arrow schema dispatch the current group before
+starting another one. Because coalescing happens before lane selection,
+increasing `max_in_flight` does not dilute the batch arrival rate across lanes.
+
+When `insert_batching` is enabled, `max_in_flight` is the number of independent
+writer lanes that can execute completed insertion groups concurrently. Each
+accepted message is reported successful only after the shared insertion
+receives a successful final response. A final response error reports failure
+for every message grouped into that insertion. Omitting `insert_batching`
+preserves the existing behavior: each transformed message is written and
+completed in its own insertion.
 
 Inline attributes are always stored as `Map(LowCardinality(String), String)`;
 there is no per-group representation configuration.
@@ -166,10 +207,18 @@ Inline attributes are stored as:
 Map(LowCardinality(String), String)
 ```
 
-Nested attribute values (Map/Slice) are transcoded from binary/CBOR into a JSON
-string stored as the map value.
+Nested attribute values (Map/Slice) are stored as a JSON string. The raw OTLP
+path serializes them directly, while OTAP inputs transcode their CBOR values.
 
 ## Transform Pipeline
+
+Serialized OTLP log requests build the final ClickHouse columns directly from
+the protobuf byte view, avoiding an intermediate OTAP Arrow batch. Canonical
+OTAP log batches use a separate specialized transformation path. Both paths
+preserve the generic transformer's ClickHouse values. Raw OTLP transformation
+errors use the legacy conversion path, while unsupported OTAP layouts use the
+generic transformer. Traces and other supported payloads continue to use the
+generic pipeline.
 
 The transform pipeline has two stages per payload:
 
@@ -198,6 +247,11 @@ payloads remain internal to the transform process.
 - initializes configured tables
 - writes only signal payloads
 - maps `Logs -> logs table` and `Spans -> traces table`
+- runs at most `max_in_flight` insert requests concurrently
+- optionally coalesces compatible batches before assigning them to writer lanes
+- drains accepted insert requests during shutdown
+- preserves each input batch until its insert completes so pipeline delivery
+  tracking reflects the ClickHouse result
 
 There is no longer any special write ordering for attribute tables because
 attribute tables do not exist.
