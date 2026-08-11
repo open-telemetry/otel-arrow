@@ -380,7 +380,7 @@ impl TrackedPublishTracker {
     /// Called when a subscriber lags under the `DropOldest` policy: it stays
     /// connected but the messages it skipped (ring sequence `< seq_threshold`)
     /// were overwritten before it could read them, so it can never ack them.
-    /// Entries at or after `seq_threshold` are left pending — the subscriber can
+    /// Entries at or after `seq_threshold` are left pending - the subscriber can
     /// still read and ack those. Idempotent and a no-op for entries that do not
     /// require the subscriber.
     pub fn nack_owed_before(

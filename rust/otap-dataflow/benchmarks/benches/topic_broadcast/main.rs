@@ -392,8 +392,8 @@ fn bench_topic_broadcast_lag_vs_tokio(c: &mut Criterion) {
 /// Measure broadcast tracked-publish overhead across fan-out widths, comparing
 /// `first` ack mode (resolve on first ack, no registry) against `all`
 /// (consensus) mode (resolve after every subscriber acks). Both run the
-/// identical workload — same message count, same payload, every subscriber
-/// receives and acks every message — so the `first` -> `all` delta isolates the
+/// identical workload - same message count, same payload, every subscriber
+/// receives and acks every message - so the `first` -> `all` delta isolates the
 /// consensus-tracking cost.
 fn bench_topic_broadcast_tracked(c: &mut Criterion) {
     for &msg_size in &MSG_SIZES {

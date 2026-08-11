@@ -1865,7 +1865,7 @@ async fn tracked_publish_broadcast_mode() {
 }
 
 // =========================================================================
-// Broadcast `all` (consensus) ack mode – engine behavior
+// Broadcast `all` (consensus) ack mode - engine behavior
 //
 // These exercise the broadcast-only engine end to end by constructing
 // `TopicOptions::BroadcastOnly { ack_mode: All, .. }` directly.
