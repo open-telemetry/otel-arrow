@@ -640,17 +640,16 @@ impl OutputStream {
     pub fn drain(&self, deadline: Duration) -> ShutdownOutcome {
         let started = Instant::now();
         let (ack_tx, ack_rx) = flume::bounded::<()>(1);
-        if self
-            .sender
-            .send_timeout(Command::Barrier(ack_tx), deadline)
-            .is_err()
-        {
-            return self.pending_outcome();
+        match self.sender.send_timeout(Command::Barrier(ack_tx), deadline) {
+            Ok(()) => {}
+            Err(flume::SendTimeoutError::Timeout(_)) => return self.pending_outcome(true),
+            Err(flume::SendTimeoutError::Disconnected(_)) => return self.pending_outcome(false),
         }
         let remaining = deadline.saturating_sub(started.elapsed());
         match ack_rx.recv_timeout(remaining) {
             Ok(()) => ShutdownOutcome::default(),
-            Err(_) => self.pending_outcome(),
+            Err(flume::RecvTimeoutError::Timeout) => self.pending_outcome(true),
+            Err(flume::RecvTimeoutError::Disconnected) => self.pending_outcome(false),
         }
     }
 
@@ -670,9 +669,10 @@ impl OutputStream {
         let _ = self.sender.send_timeout(Command::Stop, remaining);
         let remaining = deadline.saturating_sub(started.elapsed());
         let exit = self.done.recv_timeout(remaining);
+        let deadline_expired = matches!(exit, Err(flume::RecvTimeoutError::Timeout));
 
         // A timed-out writer is still running, so it cannot be joined here.
-        if !matches!(exit, Err(flume::RecvTimeoutError::Timeout))
+        if !deadline_expired
             && let Some(worker) = self
                 .worker
                 .lock()
@@ -686,7 +686,7 @@ impl OutputStream {
             return ShutdownOutcome::default();
         }
 
-        let outcome = self.pending_outcome();
+        let outcome = self.pending_outcome(deadline_expired);
         let _ = self
             .shared
             .frames_dropped_shutdown
@@ -695,14 +695,11 @@ impl OutputStream {
     }
 
     /// Reports the frames that were accepted but are not on the stream yet.
-    fn pending_outcome(&self) -> ShutdownOutcome {
-        let writer_failed = self.shared.unavailable.load(Ordering::Acquire);
+    fn pending_outcome(&self, deadline_expired: bool) -> ShutdownOutcome {
         ShutdownOutcome {
             drained: false,
-            // The writer latches this before it exits, including on panic, so it
-            // separates an I/O failure from a deadline that simply expired.
-            writer_failed,
-            deadline_expired: !writer_failed,
+            writer_failed: self.shared.unavailable.load(Ordering::Acquire),
+            deadline_expired,
             frames_pending: self.shared.frames_pending(),
         }
     }
@@ -1556,6 +1553,29 @@ mod tests {
             outcome.frames_pending
         );
         stalled.store(false, Ordering::Release);
+    }
+
+    /// Scenario: a writer has failed but still misses the shutdown join deadline.
+    /// Guarantees: failure and timeout remain independent, so callers do not write
+    /// directly to a stream whose writer thread may still hold its lock.
+    #[tokio::test]
+    async fn shutdown_reports_failure_and_timeout_independently() {
+        let stalled = Arc::new(AtomicBool::new(true));
+        let sink = TestSink::new().stalling(Arc::clone(&stalled));
+        let stream = start(&sink, 1);
+        stream
+            .handle()
+            .submit(Frame::line("stuck"))
+            .await
+            .expect("frame is accepted");
+        stream.shared.unavailable.store(true, Ordering::Release);
+
+        let outcome = stream.shutdown(Duration::from_millis(200));
+
+        assert!(outcome.writer_failed);
+        assert!(outcome.deadline_expired);
+        stalled.store(false, Ordering::Release);
+        let _ = stream.shutdown(Duration::from_secs(5));
     }
 
     /// Scenario: both standard streams are stalled under one terminal deadline.

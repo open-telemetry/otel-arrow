@@ -672,7 +672,7 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::control::PipelineCompletionMsg;
-    use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
     use otap_df_engine::testing::test_node;
     use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack};
     use otap_df_pdata::OtlpProtoBytes;
@@ -1400,6 +1400,42 @@ mod tests {
         let error = require_structured_stdout_claim(ConsoleOutputFormat::RecordJson, false)
             .expect_err("an unclaimed record exporter must be rejected");
         assert!(error.to_string().contains("before pipeline startup"));
+    }
+
+    /// Scenario: the registered factory creates a record exporter in a fresh process
+    /// where stdout has not been preclaimed.
+    /// Guarantees: the factory call site rejects the exporter before it can emit JSON
+    /// into a stdout that may already contain pretty output.
+    #[test]
+    fn record_json_factory_rejects_unclaimed_stdout() {
+        const CHILD_ENV: &str = "OTAP_TEST_UNCLAIMED_RECORD_FACTORY";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let result =
+                create_exporter_from_factory(&CONSOLE_EXPORTER, json!({ "format": "record_json" }));
+            let error = match result {
+                Ok(_) => panic!("an unclaimed record exporter must be rejected"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("before pipeline startup"));
+            return;
+        }
+
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("the test executable path is available"),
+        )
+        .arg("record_json_factory_rejects_unclaimed_stdout")
+        .arg("--nocapture")
+        .env(CHILD_ENV, "1")
+        .output()
+        .expect("the isolated factory test starts");
+
+        assert!(
+            output.status.success(),
+            "isolated factory test failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn engine_config_with_console(config: &str) -> OtelDataflowSpec {
