@@ -1,4 +1,4 @@
-# Internal Telemetry Pipeline
+# Internal Telemetry System and Engine Observability Pipeline
 
 This documents the choices available in the internal telemetry configuration.
 See the
@@ -8,10 +8,9 @@ metrics data path.
 
 ## Overview
 
-The internal telemetry SDK is designed for the engine to safely
-consume its own telemetry, and we intend for the self-hosted telemetry
-pipeline to be the standard configuration for all OpenTelemetry
-signals.
+The Internal Telemetry System (ITS) lets the engine safely consume its own
+telemetry. The engine observability pipeline is the engine-managed dataflow
+pipeline that receives ITS signals and routes them to processors and exporters.
 
 Consuming self-generated telemetry presents a potential
 feedback loop, situations where a telemetry pipeline creates pressure
@@ -20,55 +19,48 @@ reliable even with this kind of dependency on itself.
 
 ## Internal Telemetry Receiver (ITR)
 
-The Internal Telemetry Receiver or "ITR" is an OTAP-Dataflow receiver
-component that receives telemetry from internal sources and sends
-to an internal telemetry pipeline. An internal
-telemetry pipeline consists of one (global) or more (NUMA-regional)
-ITR components and any of the connected processor and exporter
-components reachable from ITR source nodes.
+The Internal Telemetry Receiver (ITR) is an OTAP-Dataflow receiver that consumes
+logs from the ITS channel and metrics from the telemetry registry. The engine
+observability pipeline contains exactly one connected ITR plus the processors
+and exporters reachable from it.
 
-Nodes of an internal telemetry pipeline have identical structure with
-ordinary pipeline nodes, however they are separate and isolated. The
-main dataflow engine knows nothing about the internal telemetry
-pipeline engine.
+Observability nodes use the same component model as ordinary pipeline nodes,
+but the controller owns their lifecycle separately from user pipelines. The
+pipeline runs on one dedicated thread and remains active while producer
+pipelines finish reporting terminal telemetry.
 
 ## Logs instrumentation
 
-The OTAP Dataflow engine has dedicated macros, and every component is
-configured with an internal telemetry SDK meant for primary
-instrumentation. Using the `otel_info!(effect, name, args...)` macro
-requires access the component EffectHandler. This is considered
-first-party internal logging, and other uses of Tokio `tracing` are
-considered third-party internal logging.
+The OTAP Dataflow engine provides dedicated `otel_info!`, `otel_warn!`,
+`otel_error!`, and `otel_debug!` macros for primary instrumentation. The active
+logging provider determines whether those events use ITS, direct or asynchronous
+console output, or no output. Other uses of Tokio `tracing` are considered
+third-party internal logging.
 
 ## Pitfall avoidance
 
 The OTAP-Dataflow engine is safeguarded against many self-induced
 telemetry pitfalls, as follows:
 
-- OTAP-Dataflow components reachable from an ITR cannot be configured
-  to send to an ITR node. This avoids a direct feedback cycle for
-  internal telemetry because the components cannot reach
-  themselves.
-- Use of dedicated thread(s) for internal telemetry output.
-- Control over Tokio `tracing` subscriber in different contexts
+- The ITR is a source node, and the validated observability graph cannot route
+  output back into it. This prevents a direct telemetry feedback cycle.
+- A dedicated thread handles observability pipeline output.
+- Tokio `tracing` subscribers are selected independently by execution context.
 - Non-blocking interfaces. We prefer to drop and count dropped
   internal log events than to block the pipeline.
-- Option to configure internal telemetry multiple ways, including the
-  no-op implementation, direct console output, and global or regional
-  logs consumers.
+- Logging can use ITS, asynchronous or direct console output, or no output.
 
 ## OTLP-bytes first
 
 As a key design decision, the OTAP-Dataflow internal telemetry data
 path produces a partially encoded OTLP-bytes representation first.
 This is an intermediate format,
-`otap_df_telemetry::self_tracing::LogRecord` which include the
+`otap_df_telemetry::self_tracing::LogRecord`, which includes the
 timestamp, callsite metadata, and the OTLP bytes encoding of the body
-and attrbutes.
+and attributes.
 
 Because OTLP bytes is one of the builtin `OtapPayload` formats, it is
-simple to get from a slic of `LogRecord` to the `OtapPayload` we need
+simple to get from a slice of `LogRecord` to the `OtapPayload` we need
 to consume internal telemetry. To obtain the partial bytes encoding
 needed, we have a custom [Tokio `tracing` Event][TOKIOEVENT] handler
 based on `otap_df_pdata::otlp::common::ProtoBuffer`.
@@ -106,11 +98,10 @@ Provider mode values are:
 
 - Noop: Ignore logging.
 - ITS: Use the internal telemetry system.
-- OpenTelemetry: Use the OpenTelemetry SDK.
 - ConsoleDirect: Synchronously write to the console.
 - ConsoleAsync: Asynchronously write to the console.
 
-Note that the ITS and ConsoleAsync modes share a the same provider
+Note that the ITS and ConsoleAsync modes share the same provider
 logic, which writes to an internal channel. These modes differ in how
 the channel is consumed.
 
@@ -158,24 +149,9 @@ flowchart TB
     D --> E
 ```
 
-### OpenTelemetry Provider
-
-Routes logs through the OpenTelemetry SDK for export to backends.
-
-```mermaid
-flowchart TB
-    A["Application Code<br/>tracing::info!()"]
-    B["OTelTracingBridge<br/>+ EnvFilter"]
-    C["SdkLoggerProvider<br/>(queue processor)"]
-    D["OTLP Exporter<br/>(to backend)"]
-    A --> B
-    B -->|non-blocking| C
-    C --> D
-```
-
 ### ITS Provider (Internal Telemetry System)
 
-Routes logs through the internal telemetry pipeline for self-hosted
+Routes logs through the engine observability pipeline for self-hosted
 telemetry consumption. Uses the same channel mechanism as ConsoleAsync
 but consumed by the Internal Telemetry Receiver.
 
@@ -185,7 +161,7 @@ flowchart TB
     B["AsyncLayer<br/>+ EnvFilter"]
     C["Bounded Channel<br/>(flume::Sender)"]
 
-    subgraph ITP["Internal Telemetry Pipeline"]
+    subgraph ITP["Engine Observability Pipeline"]
         D["ITR Receiver"]
         E["Processor"]
         F["Exporter"]
@@ -197,25 +173,23 @@ flowchart TB
     C --> D
 ```
 
-## Metrics provider modes
+## Internal metrics export
 
 Internal metrics are updated in per-core metric sets on the hot path. A
 collector snapshots those sets into the registry on the cold path. The
-`engine.telemetry.metrics.provider` setting chooses how registry-backed values
-are exported:
-
-- `opentelemetry` (default) uses the OpenTelemetry client SDK and its configured
-  `readers` and `views`.
-- `its` lets the internal telemetry receiver periodically drain an independent
-  export view of the registry, encode it as OTLP metrics, and send it through
-  the observability pipeline.
-- `none` disables periodic export while retaining registry data for the admin
-  metrics endpoint.
+always-running internal telemetry receiver drains an independent export view of
+the registry, encodes it as OTLP metrics, and sends it through the engine
+observability pipeline. The built-in pipeline consumes these batches with a
+noop exporter.
 
 ITS keeps the admin endpoint and pipeline export isolated: an admin read or
-reset does not consume values waiting for the receiver. The mode requires an
-observability pipeline with exactly one `receiver:internal_telemetry`; metrics
-SDK `readers` and `views` cannot be combined with it.
+reset does not consume values waiting for the receiver. The observability
+pipeline must contain exactly one connected internal telemetry receiver, and
+its non-empty `signals` list can independently select logs and metrics. When
+metrics are omitted, the receiver still commits the private ITS export
+accumulator without OTLP conversion or emission, preserving registry cleanup
+and the admin accumulator. Optional `interval` and `views` settings control the
+cold-path export when metrics are selected.
 
 The bridge projects multivariate metric sets into standard univariate OTLP
 metrics, so the observability pipeline can use normal OTLP or OTAP exporters.
@@ -248,17 +222,20 @@ flowchart TB
         end
 
         subgraph Admin["Admin Observer Thread<br/>(e.g., for ConsoleAsync mode)"]
-            AD["Uses ConsoleDirect<br/>or Noop"]
+            AD["Uses configured admin provider"]
         end
     end
 ```
 
 ## Default configuration
 
-In this configuration, a dedicated `LogsCollector` thread consumes
-from the channel and prints directly to the console. This is an asynchronous
-form of console logging (unlike the use of the `raw` provider mode, which
-is synchronous).
+By default, global and engine logs use ConsoleAsync, preserving the established
+observed-state-store console path. The built-in observability pipeline still
+provides a styled console route when the global or engine provider explicitly
+selects ITS.
+The same receiver always handles internal metrics, which the default pipeline
+routes to the noop exporter. Admin logs use synchronous console output and
+internal-pipeline logs are disabled to avoid feedback.
 
 ```yaml
 version: otel_dataflow/v1
@@ -284,16 +261,14 @@ groups:
 ## Internal Telemetry Receiver configuration
 
 In this configuration, the `InternalTelemetryReceiver` node consumes internal
-logs and registry-backed metrics and emits OTLP pdata into the pipeline. The
-internal log provider is configured to print directly to the console in case
-the internal telemetry pipeline experiences errors.
+logs and registry-backed metrics and emits OTLP pdata into the engine
+observability pipeline. The internal log provider is configured to print
+directly to the console in case that pipeline experiences errors.
 
 ```yaml
 version: otel_dataflow/v1
 engine:
   telemetry:
-    metrics:
-      provider: its
     logs:
       level: info
       providers:
@@ -306,7 +281,8 @@ engine:
       nodes:
         telemetry:
           type: receiver:internal_telemetry
-          config: {}
+          config:
+            metrics: {}
         otlp_grpc_exporter:
           type: exporter:otlp_grpc
           config: {}

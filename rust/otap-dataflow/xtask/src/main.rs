@@ -19,6 +19,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
+mod component_inventory;
 mod diagnostics;
 mod genproto;
 mod structure_check;
@@ -49,6 +50,7 @@ fn main() -> anyhow::Result<()> {
                 ensure_no_extra_args("structure-check", &args.collect::<Vec<_>>())?;
                 structure_check::run()
             }
+            "component-inventory" => component_inventory::run(&args.collect::<Vec<_>>()),
             "help" => {
                 ensure_no_extra_args("help", &args.collect::<Vec<_>>())?;
                 print_help()
@@ -69,11 +71,12 @@ pub fn print_help() -> anyhow::Result<()> {
 Usage: Execute the command using `cargo xtask <task>`, e.g., `cargo xtask check`.
 
 Tasks:
-  - check [--diagnostics]: Run the required full validation suite: structure check, cargo fmt --all, cargo clippy --workspace --all-targets, and cargo test --workspace. The optional diagnostics flag prints end-of-run timing and hotspot summaries.
+  - check [--diagnostics]: Run the required full validation suite: structure check, cargo fmt --all, cargo clippy --workspace --all-targets, a no_std build of the crates that support it, and cargo test --workspace. The optional diagnostics flag prints end-of-run timing and hotspot summaries.
   - quick-check: Run a faster iterative subset: structure check, cargo fmt --all, cargo clippy --workspace --lib --bins --tests, and cargo test --workspace --lib --bins --tests --no-run. This is not a replacement for `cargo xtask check`.
   - check-benches: Lint and compile bench targets only.
   - structure-check: Validate the entire structure of the project.
   - compile-proto: Compile the protobufs files
+  - component-inventory [--check <baseline>] [--update-baseline] [--format <table|json|yaml>]: Manage and verify the component inventory baseline.
 "
     );
     Ok(())
@@ -112,8 +115,10 @@ fn check_all(options: CheckOptions) -> anyhow::Result<()> {
         .then(diagnostics::DiagnosticsCollector::new);
 
     run_structure_step(diagnostics.as_mut())?;
+    run_component_inventory_step(diagnostics.as_mut())?;
     format_all(diagnostics.as_mut())?;
     clippy_all(options, diagnostics.as_mut())?;
+    build_no_std()?;
     test_all(options, diagnostics.as_mut())?;
 
     if let Some(diagnostics) = diagnostics.as_ref() {
@@ -125,6 +130,10 @@ fn check_all(options: CheckOptions) -> anyhow::Result<()> {
 
 fn quick_check() -> anyhow::Result<()> {
     structure_check::run()?;
+    component_inventory::run(&[
+        "--check".to_string(),
+        "components-baseline.json".to_string(),
+    ])?;
     format_all(None)?;
     clippy_quick()?;
     test_quick()?;
@@ -157,10 +166,37 @@ fn run_structure_step(
     result
 }
 
+fn run_component_inventory_step(
+    mut diagnostics: Option<&mut diagnostics::DiagnosticsCollector>,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let result = component_inventory::run(&[
+        "--check".to_string(),
+        "components-baseline.json".to_string(),
+    ]);
+    let duration = start.elapsed();
+
+    if let Some(diagnostics) = &mut diagnostics {
+        diagnostics.record_step(
+            "component-inventory",
+            duration,
+            step_status_from_result(&result),
+        );
+    }
+
+    if result.is_err() {
+        if let Some(diagnostics) = &mut diagnostics {
+            diagnostics.print_summary();
+        }
+    }
+
+    result
+}
+
 fn format_all(
     mut diagnostics: Option<&mut diagnostics::DiagnosticsCollector>,
 ) -> anyhow::Result<()> {
-    println!("🚀 Formatting workspace with cargo fmt...");
+    println!("\u{1F680} Formatting workspace with cargo fmt...");
     let start = Instant::now();
     let result = run("cargo", &["fmt", "--all"]);
     let duration = start.elapsed();
@@ -176,7 +212,7 @@ fn format_all(
     }
 
     result?;
-    println!("✅ Formatting completed successfully.\n");
+    println!("\u{2705} Formatting completed successfully.\n");
     Ok(())
 }
 
@@ -184,7 +220,7 @@ fn clippy_all(
     options: CheckOptions,
     diagnostics: Option<&mut diagnostics::DiagnosticsCollector>,
 ) -> anyhow::Result<()> {
-    println!("🚀 Linting workspace with cargo clippy...");
+    println!("\u{1F680} Linting workspace with cargo clippy...");
     let mut args = vec![
         "clippy".to_owned(),
         "--workspace".to_owned(),
@@ -233,12 +269,12 @@ fn clippy_all(
     };
 
     result?;
-    println!("✅ Clippy linting passed without warnings.\n");
+    println!("\u{2705} Clippy linting passed without warnings.\n");
     Ok(())
 }
 
 fn clippy_quick() -> anyhow::Result<()> {
-    println!("🚀 Linting workspace targets for fast developer checks...");
+    println!("\u{1F680} Linting workspace targets for fast developer checks...");
     run(
         "cargo",
         &[
@@ -252,17 +288,32 @@ fn clippy_quick() -> anyhow::Result<()> {
             "warnings",
         ],
     )?;
-    println!("✅ Fast clippy linting passed without warnings.\n");
+    println!("\u{2705} Fast clippy linting passed without warnings.\n");
+    Ok(())
+}
+
+fn build_no_std() -> anyhow::Result<()> {
+    // A `no_std` crate builds against `std` in every other configuration, so
+    // nothing else in the suite notices a stray `use std::` until a downstream
+    // embedded build fails. Each crate here declares `#![no_std]` when its
+    // `std` feature is off.
+    const NO_STD_PACKAGES: &[&str] = &["otap-df-expohisto"];
+
+    println!("\u{1F680} Building no_std crates without default features...");
+    for package in NO_STD_PACKAGES {
+        run("cargo", &["build", "-p", package, "--no-default-features"])?;
+    }
+    println!("\u{2705} no_std builds succeeded.\n");
     Ok(())
 }
 
 fn clippy_benches() -> anyhow::Result<()> {
-    println!("🚀 Linting workspace bench targets with cargo clippy...");
+    println!("\u{1F680} Linting workspace bench targets with cargo clippy...");
     run(
         "cargo",
         &["clippy", "--workspace", "--benches", "--", "-D", "warnings"],
     )?;
-    println!("✅ Bench clippy linting passed without warnings.\n");
+    println!("\u{2705} Bench clippy linting passed without warnings.\n");
     Ok(())
 }
 
@@ -270,7 +321,7 @@ fn test_all(
     options: CheckOptions,
     diagnostics: Option<&mut diagnostics::DiagnosticsCollector>,
 ) -> anyhow::Result<()> {
-    println!("🚀 Running workspace tests with cargo test...");
+    println!("\u{1F680} Running workspace tests with cargo test...");
     let mut args = vec!["test".to_owned(), "--workspace".to_owned()];
     if options.diagnostics {
         args.push("--timings".to_owned());
@@ -301,12 +352,12 @@ fn test_all(
     };
 
     result?;
-    println!("✅ All tests passed successfully.\n");
+    println!("\u{2705} All tests passed successfully.\n");
     Ok(())
 }
 
 fn test_quick() -> anyhow::Result<()> {
-    println!("🚀 Compiling fast workspace test targets (no benches/examples/doctests)...");
+    println!("\u{1F680} Compiling fast workspace test targets (no benches/examples/doctests)...");
     run(
         "cargo",
         &[
@@ -318,14 +369,14 @@ fn test_quick() -> anyhow::Result<()> {
             "--no-run",
         ],
     )?;
-    println!("✅ Fast workspace test targets compiled successfully.\n");
+    println!("\u{2705} Fast workspace test targets compiled successfully.\n");
     Ok(())
 }
 
 fn compile_benches() -> anyhow::Result<()> {
-    println!("🚀 Compiling workspace bench targets with cargo check...");
+    println!("\u{1F680} Compiling workspace bench targets with cargo check...");
     run("cargo", &["check", "--workspace", "--benches"])?;
-    println!("✅ Bench targets compiled successfully.\n");
+    println!("\u{2705} Bench targets compiled successfully.\n");
     Ok(())
 }
 

@@ -7,18 +7,18 @@
 //! live in their respective nodes/crates and implement the `MetricSetHandler` trait defined
 //! here.
 
-pub mod dispatcher;
 pub mod otlp;
+
+mod exphist;
 
 use crate::attributes::{AttributeSetHandler, MeasurementAttributeSet};
 use crate::descriptor::{
-    Instrument, MeasurementAttributeDescriptor, MetricsDescriptor, MetricsField, Temporality,
+    Instrument, MeasurementAttributeDescriptor, MetricsDescriptor, MetricsField,
 };
 use crate::entity::{EntityAttributeSet, EntityRegistry};
-use crate::instrument::MmscSnapshot;
+use crate::instrument::{DistributionValue, Mmsc};
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
-use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -53,116 +53,112 @@ pub const fn check_cardinality(cardinality: usize) {
     );
 }
 
-/// Numeric metric value — a scalar integer or float, or a pre-aggregated MMSC summary.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-#[allow(variant_size_differences)] // Mmsc is 32 bytes vs 8 for scalars; acceptable for internal telemetry.
+/// Metric value -- a scalar integer or float, or a pre-aggregated distribution.
+///
+/// [`DistributionValue`] boxes its tier internally, so it is embedded here directly
+/// rather than boxed again.
+///
+/// This type has no serde representation on purpose: the OTLP encoder selects
+/// the wire form from the instrument and distribution tier, while consumers
+/// that need a textual rendering (the admin endpoints) project the summary
+/// themselves.
+#[derive(Debug, Clone, PartialEq)]
 pub enum MetricValue {
     /// Unsigned 64-bit integer value.
     U64(u64),
     /// 64-bit floating point value.
     F64(f64),
-    /// Pre-aggregated min/max/sum/count summary from an [`crate::instrument::Mmsc`] instrument.
-    Mmsc(MmscSnapshot),
+    /// A distribution aggregation from an [`Mmsc`] or exponential-histogram
+    /// instrument. The instrument descriptor determines its OTLP point type.
+    Distribution(DistributionValue),
 }
 
 impl MetricValue {
-    /// Returns `true` when the value is exactly zero.
+    /// Returns `true` when the value is exactly zero (or, for aggregations, empty).
     #[must_use]
-    pub const fn is_zero(self) -> bool {
+    pub fn is_zero(&self) -> bool {
         match self {
-            MetricValue::U64(v) => v == 0,
-            MetricValue::F64(v) => v == 0.0,
-            MetricValue::Mmsc(s) => s.count == 0,
+            MetricValue::U64(v) => *v == 0,
+            MetricValue::F64(v) => *v == 0.0,
+            MetricValue::Distribution(d) => d.is_empty(),
         }
     }
 
     /// Returns a zero value of the same variant.
     ///
-    /// For `Mmsc`, the zero state uses sentinel values (`f64::MAX` for min,
-    /// `f64::MIN` for max) so that subsequent merges work correctly.
+    /// For `Distribution`, the same tier is preserved and its aggregation is
+    /// cleared. A cleared aggregation is all zeros and carries no sentinel;
+    /// merging handles the empty case explicitly instead.
     #[must_use]
-    pub const fn zero_of_kind(self) -> Self {
+    pub fn zero_of_kind(&self) -> Self {
         match self {
             MetricValue::U64(_) => MetricValue::U64(0),
             MetricValue::F64(_) => MetricValue::F64(0.0),
-            MetricValue::Mmsc(_) => MetricValue::Mmsc(MmscSnapshot {
-                min: f64::MAX,
-                max: f64::MIN,
-                sum: 0.0,
-                count: 0,
-            }),
+            MetricValue::Distribution(d) => {
+                let mut cleared = d.clone();
+                cleared.reset();
+                MetricValue::Distribution(cleared)
+            }
         }
     }
 
-    /// Adds another metric value to this one, converting between numeric kinds if needed.
+    /// Adds another metric value into this one, converting between numeric kinds if needed.
     ///
-    /// For scalars, this performs addition. For MMSC, this performs a
-    /// merge (min of mins, max of maxes, sum of sums, count of counts).
+    /// For scalars, this performs addition. For `Distribution`, this performs a
+    /// same-tier merge.
     ///
     /// # Panics (debug only)
-    /// Debug-asserts that both values are the same variant.
-    pub const fn add_in_place(&mut self, other: MetricValue) {
-        match other {
-            MetricValue::U64(rhs) => match self {
-                MetricValue::U64(lhs) => {
-                    #[cfg(feature = "unchecked-arithmetic")]
-                    {
-                        *lhs = lhs.wrapping_add(rhs);
-                    }
-                    #[cfg(not(feature = "unchecked-arithmetic"))]
-                    {
-                        *lhs += rhs;
-                    }
+    /// Debug-asserts that both values are compatible variants.
+    pub fn add_in_place(&mut self, other: &MetricValue) {
+        match (self, other) {
+            (MetricValue::U64(lhs), MetricValue::U64(rhs)) => {
+                #[cfg(feature = "unchecked-arithmetic")]
+                {
+                    *lhs = lhs.wrapping_add(*rhs);
                 }
-                MetricValue::F64(lhs) => {
-                    *lhs += rhs as f64;
+                #[cfg(not(feature = "unchecked-arithmetic"))]
+                {
+                    *lhs += *rhs;
                 }
-                MetricValue::Mmsc(_) => {
-                    debug_assert!(false, "add_in_place: cannot add U64 to Mmsc");
-                }
-            },
-            MetricValue::F64(rhs) => match self {
-                MetricValue::U64(lhs) => {
-                    *self = MetricValue::F64(*lhs as f64 + rhs);
-                }
-                MetricValue::F64(lhs) => {
-                    *lhs += rhs;
-                }
-                MetricValue::Mmsc(_) => {
-                    debug_assert!(false, "add_in_place: cannot add F64 to Mmsc");
-                }
-            },
-            MetricValue::Mmsc(rhs) => match self {
-                MetricValue::Mmsc(lhs) => {
-                    lhs.min = lhs.min.min(rhs.min);
-                    lhs.max = lhs.max.max(rhs.max);
-                    lhs.sum += rhs.sum;
-                    lhs.count += rhs.count;
-                }
-                _ => {
-                    debug_assert!(false, "add_in_place: cannot add Mmsc to scalar");
-                }
-            },
+            }
+            (lhs @ MetricValue::U64(_), MetricValue::F64(rhs)) => {
+                *lhs = MetricValue::F64(lhs.to_f64() + *rhs);
+            }
+            (MetricValue::F64(lhs), MetricValue::U64(rhs)) => {
+                *lhs += *rhs as f64;
+            }
+            (MetricValue::F64(lhs), MetricValue::F64(rhs)) => {
+                *lhs += *rhs;
+            }
+            (MetricValue::Distribution(lhs), MetricValue::Distribution(rhs)) => {
+                lhs.merge(rhs);
+            }
+            _ => {
+                debug_assert!(false, "add_in_place: incompatible metric value kinds");
+            }
         }
     }
 
     /// Resets the value to zero while keeping the numeric variant.
-    pub const fn reset(&mut self) {
-        *self = self.zero_of_kind();
+    pub fn reset(&mut self) {
+        match self {
+            MetricValue::U64(v) => *v = 0,
+            MetricValue::F64(v) => *v = 0.0,
+            MetricValue::Distribution(d) => d.reset(),
+        }
     }
 
     /// Returns the floating-point representation of the value.
     ///
     /// This method is intended for **scalar** values only.
-    /// For `Mmsc` variants, use [`MmscSnapshot`] fields directly.
+    /// For the `Distribution` variant, read its aggregation directly.
     #[must_use]
-    pub const fn to_f64(self) -> f64 {
+    pub fn to_f64(&self) -> f64 {
         match self {
-            MetricValue::U64(v) => v as f64,
-            MetricValue::F64(v) => v,
-            MetricValue::Mmsc(_) => {
-                debug_assert!(false, "to_f64() called on Mmsc MetricValue");
+            MetricValue::U64(v) => *v as f64,
+            MetricValue::F64(v) => *v,
+            MetricValue::Distribution(_) => {
+                debug_assert!(false, "to_f64() called on a non-scalar MetricValue");
                 0.0
             }
         }
@@ -171,14 +167,14 @@ impl MetricValue {
     /// Converts the metric value to `u64`, lossy for floating-point values.
     ///
     /// This method is intended for **scalar** values only.
-    /// For `Mmsc` variants, use [`MmscSnapshot`] fields directly.
+    /// For the `Distribution` variant, read its aggregation directly.
     #[must_use]
-    pub const fn to_u64_lossy(self) -> u64 {
+    pub fn to_u64_lossy(&self) -> u64 {
         match self {
-            MetricValue::U64(v) => v,
-            MetricValue::F64(v) => v as u64,
-            MetricValue::Mmsc(_) => {
-                debug_assert!(false, "to_u64_lossy() called on Mmsc MetricValue");
+            MetricValue::U64(v) => *v,
+            MetricValue::F64(v) => *v as u64,
+            MetricValue::Distribution(_) => {
+                debug_assert!(false, "to_u64_lossy() called on a non-scalar MetricValue");
                 0
             }
         }
@@ -199,13 +195,19 @@ impl From<f64> for MetricValue {
 
 impl std::ops::AddAssign for MetricValue {
     fn add_assign(&mut self, rhs: Self) {
-        self.add_in_place(rhs);
+        self.add_in_place(&rhs);
     }
 }
 
-impl From<MmscSnapshot> for MetricValue {
-    fn from(value: MmscSnapshot) -> Self {
-        MetricValue::Mmsc(value)
+impl From<DistributionValue> for MetricValue {
+    fn from(value: DistributionValue) -> Self {
+        MetricValue::Distribution(value)
+    }
+}
+
+impl From<Mmsc> for MetricValue {
+    fn from(value: Mmsc) -> Self {
+        MetricValue::Distribution(DistributionValue::Basic(Box::new(value)))
     }
 }
 
@@ -318,26 +320,37 @@ impl MetricSetSnapshot {
         self.bucket
     }
 
+    /// Iterates over the measurement attributes decoded for this snapshot's bucket.
+    ///
+    /// Attributes are yielded in declaration order. Callers that need an
+    /// order-independent identity can sort the returned key-value pairs.
+    pub fn measurement_attributes(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
+        let mut rem = self.bucket;
+        self.measurement_attributes
+            .iter()
+            .filter_map(move |descriptor| {
+                let radix = descriptor.variants.len();
+                debug_assert!(
+                    radix > 0,
+                    "measurement attribute descriptor must have at least one variant"
+                );
+                if radix == 0 {
+                    return None;
+                }
+
+                let value = descriptor.variants[rem % radix];
+                rem /= radix;
+                Some((descriptor.key, value))
+            })
+    }
+
     /// Returns the value of a measurement attribute for this snapshot's bucket.
     #[must_use]
     pub fn measurement_attribute_value(&self, key: &str) -> Option<&'static str> {
-        let mut rem = self.bucket;
-        for descriptor in self.measurement_attributes {
-            let radix = descriptor.variants.len();
-            debug_assert!(
-                radix > 0,
-                "measurement attribute descriptor must have at least one variant"
-            );
-            if radix == 0 {
-                continue;
-            }
-            let value = descriptor.variants[rem % radix];
-            rem /= radix;
-            if descriptor.key == key {
-                return Some(value);
-            }
-        }
-        None
+        self.measurement_attributes()
+            .find_map(|(attribute_key, value)| (attribute_key == key).then_some(value))
     }
 
     /// get a reference to the metric values
@@ -476,6 +489,17 @@ pub struct MeasurementMetricSet<M: MeasurementMetricSetHandler> {
     pub(crate) entity_key: EntityKey,
     pub(crate) buckets: Vec<M>,
     pub(crate) touched: Vec<u64>,
+}
+
+impl<M: MeasurementMetricSetHandler + Clone> Clone for MeasurementMetricSet<M> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key,
+            entity_key: self.entity_key,
+            buckets: self.buckets.clone(),
+            touched: self.touched.clone(),
+        }
+    }
 }
 
 impl<M: MeasurementMetricSetHandler + Debug> Debug for MeasurementMetricSet<M> {
@@ -753,7 +777,7 @@ impl<'a> MetricsIterator<'a> {
 }
 
 impl<'a> Iterator for MetricsIterator<'a> {
-    type Item = (&'static MetricsField, MetricValue);
+    type Item = (&'static MetricsField, &'a MetricValue);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -769,11 +793,11 @@ impl<'a> Iterator for MetricsIterator<'a> {
             #[cfg(feature = "unchecked-index")]
             #[allow(unsafe_code)]
             unsafe {
-                *self.values.get_unchecked(i)
+                self.values.get_unchecked(i)
             }
             #[cfg(not(feature = "unchecked-index"))]
             {
-                self.values[i]
+                &self.values[i]
             }
         };
 
@@ -999,30 +1023,23 @@ impl MetricSetRegistry {
             .iter_mut()
             .zip(incoming_values)
             .zip(fields)
-            .for_each(|((current, incoming), field)| match field.instrument {
-                Instrument::Gauge => {
-                    // Gauges report absolute values; replace.
-                    *current = *incoming;
+            .for_each(|((current, incoming), field)| {
+                debug_assert!(
+                    !matches!(
+                        field.instrument,
+                        Instrument::Counter | Instrument::UpDownCounter
+                    ) || field.temporality.is_some(),
+                    "sum-like instrument must have a temporality"
+                );
+                if field.accumulates() {
+                    // Per-interval values accumulate across collections.
+                    current.add_in_place(incoming);
+                } else {
+                    // Gauges and cumulative sums report an absolute value;
+                    // replace. A sum-like field with no temporality also lands
+                    // here, preferring replacement over runaway accumulation.
+                    *current = incoming.clone();
                 }
-                Instrument::Histogram | Instrument::Mmsc => {
-                    // Histograms and MMSC instruments report per-interval changes.
-                    current.add_in_place(*incoming);
-                }
-                Instrument::Counter | Instrument::UpDownCounter => match field.temporality {
-                    Some(Temporality::Delta) => {
-                        // Delta sums report per-interval changes => accumulate.
-                        current.add_in_place(*incoming);
-                    }
-                    Some(Temporality::Cumulative) => {
-                        // Cumulative sums report the current value => replace.
-                        *current = *incoming;
-                    }
-                    None => {
-                        debug_assert!(false, "sum-like instrument must have a temporality");
-                        // Prefer replacing to avoid runaway accumulation if misconfigured.
-                        *current = *incoming;
-                    }
-                },
             });
     }
 
@@ -1100,7 +1117,7 @@ impl MetricSetRegistry {
                 let values = &mut entry.metric_values[start..start + fields_len];
                 if keep_all_zeroes
                     || entry.export_dirty[bucket]
-                    || values.iter().any(|&value| !value.is_zero())
+                    || values.iter().any(|value| !value.is_zero())
                 {
                     decode_bucket_item_attrs(
                         entry.measurement_attributes,
@@ -1209,13 +1226,7 @@ impl MetricSetRegistry {
                     });
 
                     for (field, value) in entry.metrics_descriptor.metrics.iter().zip(values) {
-                        let is_delta_sum = matches!(
-                            field.instrument,
-                            Instrument::Counter | Instrument::UpDownCounter
-                        ) && field.temporality == Some(Temporality::Delta);
-                        if is_delta_sum
-                            || matches!(field.instrument, Instrument::Histogram | Instrument::Mmsc)
-                        {
+                        if field.accumulates() {
                             value.reset();
                         }
                     }
@@ -1308,14 +1319,8 @@ impl MetricSetRegistry {
                 .zip(current_values)
                 .zip(&metric_set.values)
             {
-                let is_delta_sum = matches!(
-                    field.instrument,
-                    Instrument::Counter | Instrument::UpDownCounter
-                ) && field.temporality == Some(Temporality::Delta);
-                if is_delta_sum
-                    || matches!(field.instrument, Instrument::Histogram | Instrument::Mmsc)
-                {
-                    current.add_in_place(*exported);
+                if field.accumulates() {
+                    current.add_in_place(exported);
                 }
             }
             entry.delta_start_time_unix_nano[checkpoint.bucket] =
@@ -1351,7 +1356,7 @@ impl MetricSetRegistry {
                 let values = &mut entry.admin_metric_values[start..start + fields_len];
                 if keep_all_zeroes
                     || entry.admin_observed[bucket]
-                    || values.iter().any(|&value| !value.is_zero())
+                    || values.iter().any(|value| !value.is_zero())
                 {
                     decode_bucket_item_attrs(
                         entry.measurement_attributes,
@@ -1480,6 +1485,17 @@ fn decode_bucket_item_attrs<'a>(
 
 #[cfg(test)]
 mod tests {
+
+    /// Builds a normal-tier snapshot by recording through its instrument,
+    /// which is the only way a distribution is populated.
+    fn normal_distribution(observations: &[f64]) -> DistributionValue {
+        let mut histogram = crate::instrument::HistogramNormal::default();
+        for &value in observations {
+            histogram.record(value);
+        }
+        histogram.get()
+    }
+
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
@@ -1559,7 +1575,7 @@ mod tests {
         }
 
         fn needs_flush(&self) -> bool {
-            self.values.iter().any(|&v| !v.is_zero())
+            self.values.iter().any(|v| !v.is_zero())
         }
     }
 
@@ -1570,12 +1586,17 @@ mod tests {
     }
 
     impl MeasurementAttributeSet for MockMeasurementAttributes {
-        const CARDINALITY: usize = 2;
-        const DESCRIPTORS: &'static [MeasurementAttributeDescriptor] =
-            &[MeasurementAttributeDescriptor {
+        const CARDINALITY: usize = 4;
+        const DESCRIPTORS: &'static [MeasurementAttributeDescriptor] = &[
+            MeasurementAttributeDescriptor {
                 key: "outcome",
                 variants: &["first", "second"],
-            }];
+            },
+            MeasurementAttributeDescriptor {
+                key: "reason",
+                variants: &["one", "two"],
+            },
+        ];
 
         fn bucket_index(&self) -> usize {
             match self {
@@ -1638,7 +1659,7 @@ mod tests {
                 name: "histogram",
                 unit: "1",
                 brief: "Test histogram",
-                instrument: Instrument::Histogram,
+                instrument: Instrument::ExponentialHistogram,
                 temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
@@ -1659,7 +1680,7 @@ mod tests {
         }
 
         fn needs_flush(&self) -> bool {
-            self.values.iter().any(|&value| !value.is_zero())
+            self.values.iter().any(|value| !value.is_zero())
         }
     }
 
@@ -1732,6 +1753,8 @@ mod tests {
         assert_eq!(metrics.values[0], MetricValue::U64(0));
     }
 
+    /// Scenario: A snapshot is emitted for a measurement bucket.
+    /// Guarantees: The decoded measurement attributes are available for generic inspection.
     #[test]
     fn test_measurement_metric_set_get_and_snapshot_decode_attributes() {
         let mut entities = EntityRegistry::default();
@@ -1752,6 +1775,10 @@ mod tests {
         assert_eq!(
             snapshots[0].measurement_attribute_value("outcome"),
             Some("second")
+        );
+        assert_eq!(
+            snapshots[0].measurement_attributes().collect::<Vec<_>>(),
+            vec![("outcome", "second"), ("reason", "one")]
         );
         assert_eq!(
             snapshots[0].get_metrics(),
@@ -1856,7 +1883,7 @@ mod tests {
             &mut entities,
             |_desc, _attrs, _dp, iter| {
                 for (_field, value) in iter {
-                    accumulated_values.push(value);
+                    accumulated_values.push(value.clone());
                 }
             },
             false,
@@ -1907,7 +1934,7 @@ mod tests {
             &mut entities,
             |_desc, _attrs, _dp, iter| {
                 for (_field, value) in iter {
-                    accumulated_values.push(value);
+                    accumulated_values.push(value.clone());
                 }
             },
             false,
@@ -1959,7 +1986,7 @@ mod tests {
                 assert_eq!(desc.name, "test_metrics");
 
                 for (field, value) in iter {
-                    collected_values.push((field.name, value));
+                    collected_values.push((field.name, value.clone()));
                 }
             },
             false,
@@ -2218,7 +2245,7 @@ mod tests {
         metrics.visit_admin_metrics_and_reset(
             &entities,
             |_descriptor, _attributes, _datapoint_attributes, values| {
-                admin_values.extend(values.map(|(_, value)| value));
+                admin_values.extend(values.map(|(_, value)| value.clone()));
             },
             false,
         );
@@ -2278,11 +2305,11 @@ mod tests {
 
         let item1 = iter.next().unwrap();
         assert_eq!(item1.0.name, "metric1");
-        assert_eq!(item1.1, MetricValue::U64(0));
+        assert_eq!(*item1.1, MetricValue::U64(0));
 
         let item2 = iter.next().unwrap();
         assert_eq!(item2.0.name, "metric2");
-        assert_eq!(item2.1, MetricValue::U64(5));
+        assert_eq!(*item2.1, MetricValue::U64(5));
 
         assert!(iter.next().is_none());
     }
@@ -2380,7 +2407,7 @@ mod tests {
                 self.values.iter_mut().for_each(MetricValue::reset);
             }
             fn needs_flush(&self) -> bool {
-                self.values.iter().any(|&v| !v.is_zero())
+                self.values.iter().any(|v| !v.is_zero())
             }
         }
 
@@ -2445,7 +2472,7 @@ mod tests {
                 self.values.iter_mut().for_each(MetricValue::reset);
             }
             fn needs_flush(&self) -> bool {
-                self.values.iter().any(|&v| !v.is_zero())
+                self.values.iter().any(|v| !v.is_zero())
             }
         }
 
@@ -2463,117 +2490,139 @@ mod tests {
         assert_eq!(entry.metric_values, vec![MetricValue::U64(15)]);
     }
 
+    /// Builds a basic-tier distribution value from raw Mmsc fields.
+    fn mmsc_value(min: f64, max: f64, sum: f64, count: u64) -> MetricValue {
+        MetricValue::from(Mmsc {
+            min,
+            max,
+            sum,
+            count,
+        })
+    }
+
+    /// Extracts the basic-tier aggregation from a distribution value.
+    fn expect_mmsc(value: &MetricValue) -> Mmsc {
+        match value {
+            MetricValue::Distribution(DistributionValue::Basic(mmsc)) => **mmsc,
+            other => panic!("expected basic-tier distribution, got {other:?}"),
+        }
+    }
+
+    /// Scenario: Empty and populated basic-tier distribution values are tested
+    ///   for emptiness.
+    /// Guarantees: A zero-count aggregation reports as zero so the registry can
+    ///   drop it, while any recorded observation does not.
     #[test]
-    fn test_mmsc_snapshot_value_is_zero() {
-        let zero = MetricValue::Mmsc(MmscSnapshot {
-            min: f64::MAX,
-            max: f64::MIN,
-            sum: 0.0,
-            count: 0,
-        });
+    fn test_mmsc_value_is_zero() {
+        assert!(mmsc_value(0.0, 0.0, 0.0, 0).is_zero());
+        assert!(!mmsc_value(1.0, 5.0, 6.0, 2).is_zero());
+    }
+
+    /// Scenario: `zero_of_kind` is applied to a populated basic-tier value.
+    /// Guarantees: The basic tier is preserved and its aggregation is restored to
+    ///   an all-zero empty state carrying no sentinel, so the next delta interval
+    ///   starts clean and no consumer can read a bogus min or max.
+    #[test]
+    fn test_mmsc_value_zero_of_kind() {
+        let zero = mmsc_value(1.0, 5.0, 6.0, 2).zero_of_kind();
         assert!(zero.is_zero());
-
-        let non_zero = MetricValue::Mmsc(MmscSnapshot {
-            min: 1.0,
-            max: 5.0,
-            sum: 6.0,
-            count: 2,
-        });
-        assert!(!non_zero.is_zero());
+        assert_eq!(expect_mmsc(&zero), Mmsc::default());
     }
 
+    /// Scenario: Two populated basic-tier values are merged with `add_in_place`.
+    /// Guarantees: min/max widen, sum/count/zero_count accumulate, which is how
+    ///   the registry folds per-thread aggregations of the same series.
     #[test]
-    fn test_mmsc_snapshot_value_zero_of_kind() {
-        let val = MetricValue::Mmsc(MmscSnapshot {
-            min: 1.0,
-            max: 5.0,
-            sum: 6.0,
-            count: 2,
-        });
-        let zero = val.zero_of_kind();
-        assert!(zero.is_zero());
-        match zero {
-            MetricValue::Mmsc(s) => {
-                assert_eq!(s.min, f64::MAX);
-                assert_eq!(s.max, f64::MIN);
-                assert_eq!(s.sum, 0.0);
-                assert_eq!(s.count, 0);
+    fn test_mmsc_value_merge() {
+        let mut a = mmsc_value(2.0, 8.0, 15.0, 3);
+        a.add_in_place(&mmsc_value(1.0, 10.0, 20.0, 4));
+        let s = expect_mmsc(&a);
+        assert_eq!(s.min, 1.0);
+        assert_eq!(s.max, 10.0);
+        assert_eq!(s.sum, 35.0);
+        assert_eq!(s.count, 7);
+    }
+
+    /// Scenario: A populated basic-tier value is merged into an empty one whose
+    ///   min/max still hold the default sentinels.
+    /// Guarantees: The sentinels are replaced rather than compared against, so
+    ///   the merged result equals the incoming aggregation exactly.
+    #[test]
+    fn test_mmsc_value_merge_zero_to_value() {
+        let mut a = mmsc_value(0.0, 0.0, 0.0, 0);
+        a.add_in_place(&mmsc_value(3.0, 7.0, 10.0, 2));
+        let s = expect_mmsc(&a);
+        assert_eq!(s.min, 3.0);
+        assert_eq!(s.max, 7.0);
+        assert_eq!(s.sum, 10.0);
+        assert_eq!(s.count, 2);
+    }
+
+    /// Scenario: A `MetricValue::Distribution` (normal tier) records samples,
+    ///   is merged with a second distribution via `add_in_place`, then reset.
+    /// Guarantees: `is_zero` reflects emptiness, `add_in_place` merges same-tier
+    ///   distributions by summing their counts, `zero_of_kind` preserves the tier
+    ///   while clearing state, and `reset` empties the aggregation in place.
+    #[test]
+    fn test_distribution_value_merge_and_reset() {
+        use crate::instrument::HISTOGRAM_NORMAL_WORDS;
+
+        let a = normal_distribution(&[1.0, 2.0]);
+        let b = normal_distribution(&[3.0]);
+
+        let mut va = MetricValue::from(a);
+        let vb = MetricValue::from(b);
+
+        assert!(!va.is_zero());
+
+        // zero_of_kind preserves the tier but is empty.
+        let zeroed = va.zero_of_kind();
+        assert!(zeroed.is_zero());
+        match &zeroed {
+            MetricValue::Distribution(d) => {
+                assert!(matches!(d, DistributionValue::Normal(_)));
+                let _ = HISTOGRAM_NORMAL_WORDS; // tier constant is in scope for clarity
             }
-            _ => panic!("Expected Mmsc variant"),
+            _ => panic!("expected DistributionValue variant"),
+        }
+
+        // Merge b into a: combined count is 3.
+        va.add_in_place(&vb);
+        match &va {
+            MetricValue::Distribution(d) => assert_eq!(d.count(), 3),
+            _ => panic!("expected DistributionValue variant"),
+        }
+
+        // Reset empties the aggregation in place.
+        va.reset();
+        assert!(va.is_zero());
+        match &va {
+            MetricValue::Distribution(d) => assert_eq!(d.count(), 0),
+            _ => panic!("expected DistributionValue variant"),
         }
     }
 
+    /// Scenario: An `Mmsc` aggregation is converted into a `MetricValue`.
+    /// Guarantees: It becomes the basic tier of a distribution, preserving every
+    /// field while remaining distinguishable from the bucketed histogram tiers.
     #[test]
-    fn test_mmsc_snapshot_value_merge() {
-        let mut a = MetricValue::Mmsc(MmscSnapshot {
-            min: 2.0,
-            max: 8.0,
-            sum: 15.0,
-            count: 3,
-        });
-        let b = MetricValue::Mmsc(MmscSnapshot {
-            min: 1.0,
-            max: 10.0,
-            sum: 20.0,
-            count: 4,
-        });
-        a.add_in_place(b);
-        match a {
-            MetricValue::Mmsc(s) => {
-                assert_eq!(s.min, 1.0);
-                assert_eq!(s.max, 10.0);
-                assert_eq!(s.sum, 35.0);
-                assert_eq!(s.count, 7);
-            }
-            _ => panic!("Expected Mmsc variant"),
+    fn test_mmsc_converts_into_basic_tier_distribution() {
+        let mut mmsc = Mmsc::default();
+        for v in [0.0_f64, 1.0, 10.0] {
+            mmsc.record(v);
         }
-    }
 
-    #[test]
-    fn test_mmsc_snapshot_value_merge_zero_to_value() {
-        // Merging into a zero/sentinel Mmsc should produce the incoming value
-        let mut a = MetricValue::Mmsc(MmscSnapshot {
-            min: f64::MAX,
-            max: f64::MIN,
-            sum: 0.0,
-            count: 0,
-        });
-        let b = MetricValue::Mmsc(MmscSnapshot {
-            min: 3.0,
-            max: 7.0,
-            sum: 10.0,
-            count: 2,
-        });
-        a.add_in_place(b);
-        match a {
-            MetricValue::Mmsc(s) => {
-                assert_eq!(s.min, 3.0);
-                assert_eq!(s.max, 7.0);
-                assert_eq!(s.sum, 10.0);
-                assert_eq!(s.count, 2);
+        let value = MetricValue::from(mmsc);
+
+        assert_eq!(expect_mmsc(&value), mmsc);
+        match &value {
+            MetricValue::Distribution(d) => {
+                assert_eq!(d.tier_name(), "basic");
+                assert_eq!(d.count(), 3);
+                assert_eq!(d.scan_buckets(|_| {}).zero_count, 0);
             }
-            _ => panic!("Expected Mmsc variant"),
+            other => panic!("expected DistributionValue variant, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_mmsc_from_snapshot() {
-        let snap = MmscSnapshot {
-            min: 1.0,
-            max: 10.0,
-            sum: 25.0,
-            count: 5,
-        };
-        let val = MetricValue::from(snap);
-        assert_eq!(
-            val,
-            MetricValue::Mmsc(MmscSnapshot {
-                min: 1.0,
-                max: 10.0,
-                sum: 25.0,
-                count: 5,
-            })
-        );
     }
 
     #[test]
@@ -2586,12 +2635,7 @@ mod tests {
         impl MockMmscMetricSet {
             fn new() -> Self {
                 Self {
-                    values: vec![MetricValue::Mmsc(MmscSnapshot {
-                        min: f64::MAX,
-                        max: f64::MIN,
-                        sum: 0.0,
-                        count: 0,
-                    })],
+                    values: vec![mmsc_value(0.0, 0.0, 0.0, 0)],
                 }
             }
         }
@@ -2625,7 +2669,7 @@ mod tests {
                 self.values.iter_mut().for_each(MetricValue::reset);
             }
             fn needs_flush(&self) -> bool {
-                self.values.iter().any(|&v| !v.is_zero())
+                self.values.iter().any(|v| !v.is_zero())
             }
         }
 
@@ -2637,39 +2681,106 @@ mod tests {
         let metrics_key = metric_set.key;
 
         // First snapshot: min=2, max=8, sum=15, count=3
-        metrics.accumulate_snapshot(
-            metrics_key,
-            0,
-            &[MetricValue::Mmsc(MmscSnapshot {
-                min: 2.0,
-                max: 8.0,
-                sum: 15.0,
-                count: 3,
-            })],
-        );
+        metrics.accumulate_snapshot(metrics_key, 0, &[mmsc_value(2.0, 8.0, 15.0, 3)]);
 
         // Second snapshot: min=1, max=10, sum=20, count=4
-        metrics.accumulate_snapshot(
-            metrics_key,
-            0,
-            &[MetricValue::Mmsc(MmscSnapshot {
-                min: 1.0,
-                max: 10.0,
-                sum: 20.0,
-                count: 4,
-            })],
-        );
+        metrics.accumulate_snapshot(metrics_key, 0, &[mmsc_value(1.0, 10.0, 20.0, 4)]);
 
         // Accumulated: min=1, max=10, sum=35, count=7
         let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
-        match entry.metric_values[0] {
-            MetricValue::Mmsc(s) => {
-                assert_eq!(s.min, 1.0);
-                assert_eq!(s.max, 10.0);
-                assert_eq!(s.sum, 35.0);
-                assert_eq!(s.count, 7);
-            }
-            _ => panic!("Expected Mmsc variant"),
+        let s = expect_mmsc(&entry.metric_values[0]);
+        assert_eq!(s.min, 1.0);
+        assert_eq!(s.max, 10.0);
+        assert_eq!(s.sum, 35.0);
+        assert_eq!(s.count, 7);
+    }
+
+    /// Scenario: A bucketed exponential-histogram field is snapshotted and
+    /// exported over two successive collection cycles, with a fresh observation
+    /// recorded only in the first cycle.
+    /// Guarantees: The accumulator is cleared once the first batch is built, so
+    /// the second export does not re-send the first interval's observations.
+    /// Every instrument that is accumulated must also be reset, or a delta
+    /// export silently double-counts and grows without bound.
+    #[test]
+    fn test_exponential_histogram_export_resets_between_cycles() {
+        #[derive(Debug)]
+        struct MockHistogramMetricSet {
+            values: Vec<MetricValue>,
         }
+
+        impl Default for MockHistogramMetricSet {
+            fn default() -> Self {
+                Self {
+                    values: vec![MetricValue::Distribution(normal_distribution(&[]))],
+                }
+            }
+        }
+
+        static MOCK_HISTOGRAM_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "test_histogram_metrics",
+            metrics: &[MetricsField {
+                name: "latency",
+                unit: "ms",
+                brief: "Test exponential histogram instrument",
+                instrument: Instrument::ExponentialHistogram,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::F64,
+            }],
+        };
+
+        impl MetricSetHandler for MockHistogramMetricSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &MOCK_HISTOGRAM_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                self.values.clone()
+            }
+            fn clear_values(&mut self) {
+                self.values.iter_mut().for_each(MetricValue::reset);
+            }
+            fn needs_flush(&self) -> bool {
+                self.values.iter().any(|v| !v.is_zero())
+            }
+        }
+
+        fn histogram_value(observations: &[f64]) -> MetricValue {
+            MetricValue::Distribution(normal_distribution(observations))
+        }
+
+        fn count_of(value: &MetricValue) -> u64 {
+            match value {
+                MetricValue::Distribution(d) => d.count(),
+                other => panic!("expected DistributionValue, got {other:?}"),
+            }
+        }
+
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+        let metric_set: MetricSet<MockHistogramMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        metrics.accumulate_snapshot(metrics_key, 0, &[histogram_value(&[1.0, 2.0, 4.0])]);
+        let first = metrics.drain_export_batch(&mut entities, 100);
+        assert_eq!(first.metric_sets.len(), 1);
+        assert_eq!(count_of(&first.metric_sets[0].values[0]), 3);
+
+        // A second cycle with a single new observation must report only that
+        // observation, not the three already exported.
+        metrics.accumulate_snapshot(metrics_key, 0, &[histogram_value(&[8.0])]);
+        let second = metrics.drain_export_batch(&mut entities, 200);
+        assert_eq!(second.metric_sets.len(), 1);
+        assert_eq!(count_of(&second.metric_sets[0].values[0]), 1);
+
+        // A third cycle with no observations at all must report nothing
+        // outstanding.
+        let third = metrics.drain_export_batch(&mut entities, 300);
+        let outstanding: u64 = third
+            .metric_sets
+            .iter()
+            .map(|set| count_of(&set.values[0]))
+            .sum();
+        assert_eq!(outstanding, 0);
     }
 }

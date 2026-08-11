@@ -147,6 +147,7 @@ struct PendingForward {
 
 /// Declares the topic receiver as a local receiver factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: TOPIC_RECEIVER_URN,

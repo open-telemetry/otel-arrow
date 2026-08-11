@@ -55,7 +55,7 @@ Check that changes preserve the thread-per-core, share-nothing design:
   atomics, shared async runtimes, or cross-thread wakeups
 - no coordination pattern that centralizes work or breaks locality
 - prefer `!Send` futures unless `Send` is strictly required
-- prefer pipeline-local `spawn_local` / `LocalSet` work; require justification
+- prefer pipeline-local `spawn_local` work on the `LocalRuntime`; require justification
   for `tokio::spawn`, `Send` bounds, `Arc`, atomics, or cross-thread task
   movement
 

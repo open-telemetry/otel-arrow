@@ -165,7 +165,7 @@ pub(crate) fn with_node_telemetry_handle<T>(
 /// Scope-agnostic per-entity telemetry bookkeeping: the registered
 /// `EntityKey`, metric sets tied to it, and extra entities whose lifetime is
 /// bound to it. Usable for any registered entity (pipeline, node, extension,
-/// channel, …) — the kind is determined by which attribute set was used to
+/// channel, ...) -- the kind is determined by which attribute set was used to
 /// mint the `EntityKey`.
 #[derive(Clone)]
 pub(crate) struct EntityTelemetryHandle {
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn entity_telemetry_handle_cleanup_is_idempotent() {
-        // Handle state is `Rc<RefCell<…>>` so multiple paths can call
+        // Handle state is `Rc<RefCell<...>>` so multiple paths can call
         // `cleanup`. Second call must be a no-op; otherwise we'd
         // double-unregister an entity whose key may have been reissued.
         let registry = TelemetryRegistryHandle::new();

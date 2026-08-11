@@ -29,7 +29,7 @@ use crate::subscriber::{BundleIndex, BundleRef, SegmentProvider, SubscriberError
 const MAX_DELETE_ATTEMPTS: u32 = 10;
 
 /// Base interval for the exponential backoff between delete retries.
-/// Each failure doubles the wait time: 1 s → 2 s → 4 s → … capped at
+/// Each failure doubles the wait time: 1 s -> 2 s -> 4 s -> ... capped at
 /// [`MAX_RETRY_INTERVAL`].
 const BASE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -96,9 +96,9 @@ impl std::fmt::Display for SegmentReadMode {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // SegmentHandle
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Handle to a loaded segment, providing read access.
 struct SegmentHandle {
@@ -180,9 +180,9 @@ impl SegmentHandle {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // SegmentStore
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Callback type for segment finalization notifications.
 pub type SegmentCallback = Box<dyn Fn(SegmentSeq, u32) + Send + Sync>;
@@ -388,13 +388,13 @@ impl SegmentStore {
         if path.exists() {
             match Self::remove_readonly_file(&path) {
                 Ok(()) => {
-                    // File deleted — release budget bytes.
+                    // File deleted -- release budget bytes.
                     if let (Some(budget), Some(size)) = (&self.budget, file_size) {
                         budget.remove(size);
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Raced with external deletion — file is gone, release budget.
+                    // Raced with external deletion -- file is gone, release budget.
                     if let (Some(budget), Some(size)) = (&self.budget, file_size) {
                         budget.remove(size);
                     }
@@ -423,7 +423,7 @@ impl SegmentStore {
                 }
             }
         } else {
-            // File doesn't exist on disk — release budget.
+            // File doesn't exist on disk -- release budget.
             if let (Some(budget), Some(size)) = (&self.budget, file_size) {
                 budget.remove(size);
             }
@@ -514,7 +514,7 @@ impl SegmentStore {
         for (seq, pd) in pending {
             let path = self.segment_path(seq);
             if !path.exists() {
-                // File was deleted externally — release budget and remove from pending.
+                // File was deleted externally -- release budget and remove from pending.
                 let _ = self.pending_deletes.lock().remove(&seq);
                 if let Some(budget) = &self.budget {
                     budget.remove(pd.file_size);
@@ -538,7 +538,7 @@ impl SegmentStore {
                     cleared += 1;
                 }
                 Err(e) if Self::is_sharing_violation(&e) => {
-                    // Still in use — schedule next retry with backoff.
+                    // Still in use -- schedule next retry with backoff.
                     let mut pending = self.pending_deletes.lock();
                     if let Some(entry) = pending.get_mut(&seq) {
                         entry.attempts += 1;
@@ -554,7 +554,7 @@ impl SegmentStore {
                     );
                 }
                 Err(e) => {
-                    // Other error — schedule next retry with backoff.
+                    // Other error -- schedule next retry with backoff.
                     let mut pending = self.pending_deletes.lock();
                     if let Some(entry) = pending.get_mut(&seq) {
                         entry.attempts += 1;
@@ -1190,7 +1190,7 @@ mod tests {
         );
     }
 
-    // ── Budget interaction tests ─────────────────────────────────────────
+    // -- Budget interaction tests -----------------------------------------
 
     /// Helper: creates a store with a budget and writes a real segment file
     /// that can be registered. Returns (store, budget, segment_seq, file_size).
@@ -1247,7 +1247,7 @@ mod tests {
         let _ = store.register_existing_segment(seq).unwrap();
         assert_eq!(budget.used(), file_size);
 
-        // Delete the segment — file should be removed and budget released.
+        // Delete the segment -- file should be removed and budget released.
         store.delete_segment(seq).unwrap();
         assert_eq!(
             budget.used(),
@@ -1358,7 +1358,7 @@ mod tests {
             );
         }
 
-        // File doesn't exist — retry should release budget and clear pending.
+        // File doesn't exist -- retry should release budget and clear pending.
         let deleted = store.retry_pending_deletes();
         assert_eq!(deleted, 1);
         assert_eq!(store.pending_delete_count(), 0);
@@ -1601,7 +1601,7 @@ mod tests {
             "budget should remain 0 for orphaned cleanup"
         );
 
-        // Retry the pending delete — the orphaned file should be cleaned up.
+        // Retry the pending delete -- the orphaned file should be cleaned up.
         let cleared = store.retry_pending_deletes();
         assert_eq!(cleared, 1, "orphaned file should be successfully deleted");
         assert_eq!(store.pending_delete_count(), 0);

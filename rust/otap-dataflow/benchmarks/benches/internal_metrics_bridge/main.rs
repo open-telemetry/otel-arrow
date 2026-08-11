@@ -23,7 +23,6 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
 use otap_df_config::pipeline::telemetry::TelemetryConfig;
-use otap_df_config::pipeline::telemetry::metrics::{MetricsConfig, MetricsProvider};
 use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc, ObserveCounter, ObserveUpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::metrics::otlp::{
@@ -45,7 +44,7 @@ const METRICS_PER_SET: u64 = 8;
 const SCOPE_NAME: &str = "benchmark.internal_metrics_bridge";
 const WORKLOAD_KIND: &str = "representative";
 
-#[attribute_set(name = "benchmark.internal_metrics_bridge.attrs")]
+#[attribute_set(scope, name = "benchmark.internal_metrics_bridge.attrs")]
 #[derive(Debug, Clone, Hash)]
 struct BenchmarkAttributes {
     /// Unique entity identifier.
@@ -120,14 +119,11 @@ impl BridgeBenchmark {
         let registry = TelemetryRegistryHandle::new();
         let config = TelemetryConfig {
             reporting_channel_size: entity_count + 1,
-            metrics: MetricsConfig {
-                provider: MetricsProvider::Its,
-                ..Default::default()
-            },
             ..Default::default()
         };
         let telemetry = InternalTelemetrySystem::new(
             &config,
+            config.reporting_interval,
             registry.clone(),
             None,
             SendPolicy::default(),
@@ -135,10 +131,7 @@ impl BridgeBenchmark {
             None,
         )
         .expect("benchmark telemetry system should initialize");
-        let resource_bytes = telemetry
-            .internal_telemetry_settings()
-            .expect("ITS metrics should provide receiver settings")
-            .resource_bytes;
+        let resource_bytes = telemetry.internal_telemetry_settings().resource_field_bytes;
         let encoder = MetricsOtlpEncoder::new_with_views(&resource_bytes, views)
             .expect("resource bytes should be valid");
         let collector = telemetry.collector();

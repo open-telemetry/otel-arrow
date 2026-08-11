@@ -4,6 +4,7 @@
 //! Async Pipeline Engine
 
 use crate::{
+    admission::AdmissionBinder,
     channel_metrics::{
         CHANNEL_IMPL_FLUME, CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_PDATA,
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
@@ -31,16 +32,19 @@ use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::MetricLevel;
+use otap_df_config::SignalType;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
+    engine::INTERNAL_TELEMETRY_RECEIVER_URN,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
-    policy::{ChannelCapacityPolicy, TelemetryPolicy},
+    policy::{
+        ChannelCapacityPolicy, RateLimiterDeclarationScope, RateLimiterPolicy, TelemetryPolicy,
+    },
     transport_headers_policy::{
         HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
     },
 };
-use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::{otel_debug, otel_debug_span, otel_info, otel_warn};
 use std::borrow::Cow;
@@ -48,10 +52,11 @@ use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::OnceLock,
 };
 
+pub mod admission;
 pub mod capability;
 #[doc(hidden)]
 pub mod clock;
@@ -60,6 +65,8 @@ pub mod exporter;
 pub mod extension;
 mod extension_lifecycle;
 mod extension_monitor;
+pub mod inventory;
+pub use otap_df_engine_macros::component_inventory;
 pub mod message;
 pub mod processor;
 pub mod receiver;
@@ -96,6 +103,31 @@ pub mod wiring_contract;
 pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
 pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};
 pub use route_admission::RouteAdmission;
+
+fn resolve_admission_binding(
+    node_config: &NodeUserConfig,
+    policies: &BTreeMap<String, RateLimiterPolicy>,
+    declaration_scope: Option<RateLimiterDeclarationScope>,
+) -> Result<AdmissionBinder, String> {
+    match node_config.rate_limiters.as_deref() {
+        Some([]) => Ok(AdmissionBinder::none()),
+        Some([limiter_name]) => {
+            let policy = policies.get(limiter_name).copied().ok_or_else(|| {
+                format!("rate limiter binding '{limiter_name}' does not name an effective limiter")
+            })?;
+            Ok(AdmissionBinder::configured_at_scope(
+                limiter_name.clone(),
+                declaration_scope,
+                policy,
+            ))
+        }
+        Some(limiter_names) => Err(format!(
+            "V1 supports at most one rate limiter binding per node; found {}",
+            limiter_names.len()
+        )),
+        None => Ok(AdmissionBinder::none()),
+    }
+}
 
 /// Trait for factory types that expose a name.
 ///
@@ -240,7 +272,7 @@ impl<PData> NamedFactory for ExporterFactory<PData> {
 
 /// A factory for creating extensions.
 ///
-/// Extension factories are NOT generic over PData — extensions never process
+/// Extension factories are NOT generic over PData -- extensions never process
 /// pipeline data. This makes them fully decoupled from the data-plane type.
 #[derive(Clone)]
 pub struct ExtensionFactory {
@@ -254,7 +286,7 @@ pub struct ExtensionFactory {
     ///
     /// `Some(caps)` for active or passive extensions (caps lists are
     /// non-empty by macro construction). `None` marks a Background
-    /// extension — engine-driven event loop with no capabilities
+    /// extension -- engine-driven event loop with no capabilities
     /// exposed to nodes; `register_into` skips capability registration.
     pub capabilities: Option<capability::ExtensionCapabilities>,
     /// A function that creates a new extension instance.
@@ -291,11 +323,11 @@ where
 }
 
 bitflags::bitflags! {
-/// An 8-bit flags struct intended to store various intents describing
+/// A 16-bit flags struct intended to store various intents describing
 /// callers in a pipeline, e.g., detail about whether Ack and/or
 /// Nack should be delivered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Interests: u8 {
+pub struct Interests: u16 {
     /// Acks interest
     const ACKS   = 1 << 0;
 
@@ -323,9 +355,12 @@ pub struct Interests: u8 {
     const SOURCE_TAGGING = 1 << 6;
 
     /// Process-duration timing requested for processors.
-    // NOTE: this is the last available bit in u8. Adding another flag
-    // requires widening the repr to u16.
     const PROCESS_DURATION = 1 << 7;
+
+    /// Per-signal produced/consumed item counts requested. Opt-in (counting
+    /// items is expensive for OTLP payloads): enabled at the `Detailed` metric
+    /// level, or per node via `policies.telemetry.item_counts`.
+    const PRODUCED_CONSUMED_ITEM_COUNTS = 1 << 8;
 
     /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.
     const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
@@ -338,14 +373,18 @@ impl Interests {
     /// None:     empty()
     /// Basic:    empty() with only channel metrics, no use of Context
     /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
-    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION | ENTRY_TIMESTAMP
+    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
+    ///           | ENTRY_TIMESTAMP | PRODUCED_CONSUMED_ITEM_COUNTS
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
             MetricLevel::None | MetricLevel::Basic => Self::empty(),
             MetricLevel::Normal => Self::PIPELINE_METRICS | Self::PROCESS_DURATION,
             MetricLevel::Detailed => {
-                Self::PIPELINE_METRICS | Self::PROCESS_DURATION | Self::ENTRY_TIMESTAMP
+                Self::PIPELINE_METRICS
+                    | Self::PROCESS_DURATION
+                    | Self::ENTRY_TIMESTAMP
+                    | Self::PRODUCED_CONSUMED_ITEM_COUNTS
             }
         }
     }
@@ -362,6 +401,17 @@ pub trait Unwindable {
     /// Remove and return the top frame.
     fn pop_frame(&mut self) -> Option<control::Frame>;
 
+    /// Signal type of the payload, used to attribute per-signal produced /
+    /// consumed item counts during unwinding. Returns `None` when unknown or
+    /// not applicable.
+    ///
+    /// Signal is a property of the whole pdata batch (a batch is homogeneous),
+    /// so it is stored once on the pdata context rather than per frame. It is
+    /// captured on the forward path while the payload is live and survives
+    /// [`Unwindable::drop_payload`], so it remains readable throughout
+    /// unwinding.
+    fn signal(&self) -> Option<SignalType>;
+
     /// Drop the retained payload unless RETURN_DATA is set.
     fn drop_payload(&mut self);
 }
@@ -373,6 +423,9 @@ impl Unwindable for () {
     fn pop_frame(&mut self) -> Option<control::Frame> {
         None
     }
+    fn signal(&self) -> Option<SignalType> {
+        None
+    }
     fn drop_payload(&mut self) {}
 }
 
@@ -381,6 +434,9 @@ impl Unwindable for String {
         false
     }
     fn pop_frame(&mut self) -> Option<control::Frame> {
+        None
+    }
+    fn signal(&self) -> Option<SignalType> {
         None
     }
     fn drop_payload(&mut self) {}
@@ -701,6 +757,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
+        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
+        rate_limiter_scope: Option<RateLimiterDeclarationScope>,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
@@ -747,14 +805,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             );
         }
 
-        // If every node was removed, the pipeline config is broken — fail early.
+        // If every node was removed, the pipeline config is broken -- fail early.
         if config.nodes().is_empty() {
             return Err(Error::EmptyPipeline);
         }
 
         self.validate_connection_wiring_contracts(&config)?;
 
-        let channel_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
+        let basic_runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
 
         // First pass: allocate all node IDs from the build_state.
         let mut receiver_count = 0usize;
@@ -779,11 +837,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     exporter_count += 1;
                     (NodeType::Exporter, pn)
                 }
-                otap_df_config::node::NodeKind::ProcessorChain => {
-                    return Err(Error::UnsupportedNodeKind {
-                        kind: "ProcessorChain".into(),
-                    });
-                }
             };
             let node_id = build_state.next_node_id(name.clone(), node_type, pipe_node)?;
             let _ = node_ids.insert(name.clone(), node_id);
@@ -797,13 +850,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         pipeline_ctx.set_node_names(node_names);
 
-        // ── Extension instantiation + capability registry build ─────────────
+        // -- Extension instantiation + capability registry build -------------
         //
         // Run before node-wrapper creation so resolve_bindings can validate
         // each node's `node_config.capabilities` against the populated
         // registry, and so factories that call `require_local::<C>()` /
         // `require_shared::<C>()` see a fully-populated `Capabilities`.
-        // Capabilities are resolved EAGERLY at build time — node create()
+        // Capabilities are resolved EAGERLY at build time -- node create()
         // bodies run inside this same `build` call, so extension `start()`
         // side effects (which happen later, in `run_forever`) cannot be
         // observed by capability construction.
@@ -812,7 +865,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let mut capability_registry = capability::registry::CapabilityRegistry::new();
         // Each entry tracks (extension id, bundle, is_background). The
         // `is_background` flag is captured here while we still have the
-        // factory in hand — Background extensions register zero
+        // factory in hand -- Background extensions register zero
         // capabilities (`factory.capabilities == None`), and the
         // post-build pruning step uses this flag to keep them
         // unconditionally (they are engine-driven and do not need a
@@ -848,7 +901,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 ext_id.clone(),
                 &ext_ctx,
                 &mut build_state.channel_metrics,
-                channel_metrics_enabled,
+                basic_runtime_metrics_enabled,
             );
             bundle
                 .register_into(factory.capabilities.as_ref(), &mut capability_registry)
@@ -885,15 +938,35 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // so we look them up from `node_ids` instead of calling `next_node_id`.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         let empty_capabilities = capability::registry::Capabilities::empty();
+        let mut admission_bound_nodes = Vec::new();
+        let mut admission_explicitly_opted_out_nodes = Vec::new();
         for (name, node_config) in config.node_iter() {
             let node_kind = node_config.kind();
             let node_id = node_ids.get(name).expect("allocated in first pass").clone();
-            let base_ctx = pipeline_ctx.with_node_context(
+            let mut base_ctx = pipeline_ctx.with_node_context(
                 name.clone(),
                 node_config.r#type.clone(),
                 node_kind,
                 node_config.identity_attributes(),
             );
+            let invalid_binding = |error: String| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "Component `{}` in pipeline_group={} pipeline={} node={}: {error}",
+                        node_config.r#type.as_ref(),
+                        pipeline_ctx.pipeline_group_id().as_ref(),
+                        pipeline_ctx.pipeline_id().as_ref(),
+                        name.as_ref(),
+                    ),
+                }))
+            };
+            let admission = resolve_admission_binding(
+                node_config,
+                &rate_limiter_policies,
+                rate_limiter_scope.clone(),
+            )
+            .map_err(invalid_binding)?;
+            base_ctx.set_admission(admission);
             // Per-node Capabilities resolved in the build-time pass above.
             // Falls back to empty for nodes that declared no bindings (the
             // resolver populates the map for every node, including those
@@ -906,7 +979,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 otap_df_config::node::NodeKind::Receiver => {
                     // Inject internal telemetry settings into context if this is the ITR node.
                     // The ITR factory will extract these settings during construction.
-                    let mut base_ctx = base_ctx;
                     if node_config.r#type.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
                         if let Some(ref settings) = internal_telemetry {
                             base_ctx.set_internal_telemetry(settings.clone());
@@ -918,7 +990,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         &base_ctx,
                         NodeType::Receiver,
                         node_id.clone(),
-                        channel_metrics_enabled,
+                        basic_runtime_metrics_enabled,
                         || {
                             self.create_receiver(
                                 &base_ctx,
@@ -939,7 +1011,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         &base_ctx,
                         NodeType::Processor,
                         node_id.clone(),
-                        channel_metrics_enabled,
+                        basic_runtime_metrics_enabled,
                         || {
                             self.create_processor(
                                 &base_ctx,
@@ -959,7 +1031,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         &base_ctx,
                         NodeType::Exporter,
                         node_id.clone(),
-                        channel_metrics_enabled,
+                        basic_runtime_metrics_enabled,
                         || {
                             self.create_exporter(
                                 &base_ctx,
@@ -974,19 +1046,30 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     )?;
                     exporters.push(wrapper);
                 }
-                otap_df_config::node::NodeKind::ProcessorChain => {
-                    // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
-                    unreachable!("rejected in first pass");
-                }
+            }
+
+            if base_ctx.admission().was_bound() {
+                admission_bound_nodes.push(name.as_ref().to_owned());
+            } else if matches!(node_config.rate_limiters.as_deref(), Some([])) {
+                admission_explicitly_opted_out_nodes.push(name.as_ref().to_owned());
             }
         }
 
-        // ── Decide which extension variants to keep ────────────────────
+        if !admission_bound_nodes.is_empty() || !admission_explicitly_opted_out_nodes.is_empty() {
+            otel_info!(
+                "admission.binding.summary",
+                bound_nodes = admission_bound_nodes.join(","),
+                explicitly_opted_out_nodes = admission_explicitly_opted_out_nodes.join(","),
+                message = "Resolved pipeline admission bindings"
+            );
+        }
+
+        // -- Decide which extension variants to keep --------------------
         //
         // Three categories of extension-level decision are handled here.
         // Per-variant decisions (drop a single local or shared variant
         // because nothing consumes it while the other variant *is*
-        // consumed) are made silently — no warning, since the extension
+        // consumed) are made silently -- no warning, since the extension
         // as a whole is serving its purpose.
         //
         //   1. **Background extension** (`factory.capabilities == None`):
@@ -1000,7 +1083,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         //   2. **Defined but unbound** (no node references this extension
         //      from `node_config.capabilities`): warn + drop the entire
         //      bundle. The author wrote an extension into the pipeline
-        //      config but no node references it — keeping it would
+        //      config but no node references it -- keeping it would
         //      waste the resources of an active lifecycle (or hold
         //      passive state) for nothing. The warning helps debug
         //      "why isn't my extension running?" by surfacing the
@@ -1020,7 +1103,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         //       wanted that path), not an error condition.
         //
         // A bundle's two variants (local + shared) are evaluated
-        // independently in 3/3a — a SharedAsLocal-fallback bundle
+        // independently in 3/3a -- a SharedAsLocal-fallback bundle
         // (shared-only) only ever populates the consumed_shared set,
         // so the local check naturally fails for it (and the bundle's
         // missing local variant is dropped accordingly).
@@ -1033,7 +1116,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // capabilities it exposes for that variant was bound by some
         // node. Tracking presence-of-consumed (rather than
         // presence-of-unconsumed) is required because an extension may
-        // expose multiple capabilities of the same variant — under the
+        // expose multiple capabilities of the same variant -- under the
         // unconsumed view, a single unbound capability would mask the
         // bound ones and the whole variant would be incorrectly dropped.
         let consumed_local: HashSet<otap_df_config::ExtensionId> =
@@ -1051,7 +1134,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     otap_df_telemetry::registry::EntityKey,
                 )> = Vec::new();
 
-                // Category 1: Background — always kept, no warning.
+                // Category 1: Background -- always kept, no warning.
                 if is_background {
                     if let Some(local) = bundle.take_local() {
                         kept.push((
@@ -1096,7 +1179,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 let local_consumed = local_present && consumed_local.contains(&ext_id);
                 let shared_consumed = shared_present && consumed_shared.contains(&ext_id);
 
-                // Category 3: bound but no variant consumed → warn + drop.
+                // Category 3: bound but no variant consumed -> warn + drop.
                 if !local_consumed && !shared_consumed {
                     otel_warn!(
                         "extension.unconsumed",
@@ -1110,7 +1193,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 }
 
                 // Category 3a: at least one variant consumed. Keep the
-                // consumed variant(s); silently drop the unused one — no
+                // consumed variant(s); silently drop the unused one -- no
                 // warning, since the extension as a whole is in use.
                 if let Some(local) = bundle.take_local()
                     && local_consumed
@@ -1159,7 +1242,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     &pipeline,
                     &mut build_state,
                     buffer_size,
-                    channel_metrics_enabled,
+                    basic_runtime_metrics_enabled,
                     &pipeline_group_id,
                     &pipeline_id,
                     core_id,
@@ -1172,6 +1255,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             wiring.apply(&mut pipeline, &pipeline_group_id, &pipeline_id, core_id)?;
         }
         pipeline.set_channel_metrics(build_state.channel_metrics.into_handles());
+        pipeline.set_admission_metrics(build_state.admission_metrics.into_handles());
 
         Ok(pipeline)
     }
@@ -1221,11 +1305,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         })?
                         .wiring_contract
                 }
-                otap_df_config::node::NodeKind::ProcessorChain => {
-                    return Err(Error::UnsupportedNodeKind {
-                        kind: "ProcessorChain".into(),
-                    });
-                }
             };
 
             _ = contracts_by_node.insert(node_name.as_ref().to_string().into(), contract);
@@ -1273,7 +1352,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         base_ctx: &PipelineContext,
         node_type: NodeType,
         node_id: NodeId,
-        channel_metrics_enabled: bool,
+        basic_runtime_metrics_enabled: bool,
         create_wrapper: F,
     ) -> Result<W, Error>
     where
@@ -1294,11 +1373,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let wrapper =
             with_node_telemetry_handle(node_telemetry_handle.clone(), || -> Result<W, Error> {
                 let wrapper = create_wrapper()?;
-                Ok(wrapper.with_control_channel_metrics(
+                let wrapper = wrapper.with_control_channel_metrics(
                     base_ctx,
                     &mut build_state.channel_metrics,
-                    channel_metrics_enabled,
-                ))
+                    basic_runtime_metrics_enabled,
+                );
+                build_state
+                    .admission_metrics
+                    .register_if_enabled(basic_runtime_metrics_enabled, || {
+                        base_ctx.admission().metrics_handle(base_ctx)
+                    });
+                Ok(wrapper)
             })?;
         Ok(wrapper
             .with_node_telemetry_guard(node_guard.take().expect("node telemetry guard missing")))
@@ -1789,8 +1874,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let factory = self
             .get_receiver_factory_map()
             .get(normalized.as_str())
-            .ok_or(Error::UnknownReceiver {
-                plugin_urn: normalized,
+            .ok_or_else(|| Error::UnknownReceiver {
+                plugin_urn: normalized.clone(),
             })?;
         let runtime_config = ReceiverConfig::with_channel_capacities(
             name.clone(),
@@ -1810,6 +1895,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_capture_policy(capture_policy);
+        pipeline_ctx
+            .admission()
+            .validate_factory_consumption(normalized.as_str())
+            .map_err(|error| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: error.to_string(),
+                }))
+            })?;
 
         otel_debug!(
             "receiver.create.complete",
@@ -1856,7 +1949,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .get_processor_factory_map()
             .get(normalized.as_str())
             .ok_or(Error::UnknownProcessor {
-                plugin_urn: normalized,
+                plugin_urn: normalized.clone(),
             })?;
         let processor_config = ProcessorConfig::with_channel_capacities(
             name.clone(),
@@ -1873,6 +1966,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
+        pipeline_ctx
+            .admission()
+            .validate_factory_consumption(normalized.as_str())
+            .map_err(|error| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: error.to_string(),
+                }))
+            })?;
 
         validate_local_wakeup_requirements(&node_id, processor.runtime_requirements())?;
 
@@ -1922,7 +2023,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .get_exporter_factory_map()
             .get(normalized.as_str())
             .ok_or(Error::UnknownExporter {
-                plugin_urn: normalized,
+                plugin_urn: normalized.clone(),
             })?;
         let exporter_config = ExporterConfig::with_channel_capacities(
             name.clone(),
@@ -1942,6 +2043,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_propagation_policy(propagation_policy);
+        pipeline_ctx
+            .admission()
+            .validate_factory_consumption(normalized.as_str())
+            .map_err(|error| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: error.to_string(),
+                }))
+            })?;
 
         otel_debug!(
             "exporter.create.complete",
@@ -2074,6 +2183,7 @@ struct BuildState<PData> {
     nodes: NodeDefs<PData, PipeNode>,
     registry: HashMap<NodeName, NodeRegistration>,
     channel_metrics: ChannelMetricsRegistry,
+    admission_metrics: admission::metrics::AdmissionMetricsRegistry,
 }
 
 impl<PData> BuildState<PData> {
@@ -2082,6 +2192,7 @@ impl<PData> BuildState<PData> {
             nodes: NodeDefs::default(),
             registry: HashMap::new(),
             channel_metrics: ChannelMetricsRegistry::default(),
+            admission_metrics: admission::metrics::AdmissionMetricsRegistry::default(),
         }
     }
 
@@ -2499,10 +2610,108 @@ fn stable_hash64(value: &str) -> u64 {
 #[cfg(test)]
 mod test {
     use super::*;
+    use otap_df_config::policy::{
+        RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+        TokenBucketPolicy,
+    };
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
         PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
     };
+    use std::time::Duration;
+
+    fn admission_policy(unit: RateLimitUnit) -> RateLimiterPolicy {
+        RateLimiterPolicy {
+            enforcement: RateLimitEnforcement::Enforce,
+            aggregation: RateLimitAggregation::ReceiverInstance,
+            unit,
+            pressure: RateLimitPressure::Soft,
+            token_bucket: TokenBucketPolicy {
+                allow: 10,
+                interval: Duration::from_secs(1),
+                burst: Some(10),
+            },
+        }
+    }
+
+    /// Scenario: a node explicitly opts out while effective limiters are available.
+    /// Guarantees: an empty binding list produces an unconfigured binder.
+    #[test]
+    fn admission_resolution_honors_explicit_empty_opt_out() {
+        let mut node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        node.rate_limiters = Some(Vec::new());
+        let policies = BTreeMap::from([(
+            "ingress".to_owned(),
+            admission_policy(RateLimitUnit::RequestBytes),
+        )]);
+
+        let binder = resolve_admission_binding(&node, &policies, None).expect("opt out resolves");
+
+        assert!(!binder.is_configured());
+    }
+
+    /// Scenario: a node explicitly names a limiter absent from its effective policy map.
+    /// Guarantees: resolution fails at startup instead of silently disabling admission.
+    #[test]
+    fn admission_resolution_rejects_unknown_explicit_name() {
+        let mut node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        node.rate_limiters = Some(vec!["missing".to_owned()]);
+
+        let error = resolve_admission_binding(&node, &BTreeMap::new(), None)
+            .expect_err("unknown limiter must fail");
+
+        assert!(error.contains("does not name an effective limiter"));
+    }
+
+    /// Scenario: a node explicitly names two otherwise valid limiters.
+    /// Guarantees: V1 rejects multi-limiter composition rather than applying only one
+    /// or charging two buckets without atomic reservation semantics.
+    #[test]
+    fn admission_resolution_rejects_multiple_explicit_names() {
+        let mut node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        node.rate_limiters = Some(vec!["first".to_owned(), "second".to_owned()]);
+        let policy = admission_policy(RateLimitUnit::RequestBytes);
+        let policies =
+            BTreeMap::from([("first".to_owned(), policy), ("second".to_owned(), policy)]);
+
+        let error = resolve_admission_binding(&node, &policies, None)
+            .expect_err("multiple bindings must fail");
+
+        assert!(error.contains("at most one rate limiter binding"));
+    }
+
+    /// Scenario: a node omits its binding while an effective limiter exists.
+    /// Guarantees: policy declarations remain ambient configuration until a node explicitly
+    /// selects a limiter.
+    #[test]
+    fn admission_resolution_requires_explicit_binding() {
+        let node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        let policies = BTreeMap::from([(
+            "ingress".to_owned(),
+            admission_policy(RateLimitUnit::RequestBytes),
+        )]);
+
+        let binder =
+            resolve_admission_binding(&node, &policies, Some(RateLimiterDeclarationScope::Engine))
+                .expect("omitted binding resolves");
+
+        assert!(!binder.is_configured());
+    }
+
+    /// Scenario: a node omits its binding while several effective limiters exist.
+    /// Guarantees: the node remains unbound without requiring special ambiguity handling.
+    #[test]
+    fn admission_resolution_ignores_unselected_limiters() {
+        let node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        let policy = admission_policy(RateLimitUnit::RequestBytes);
+        let policies =
+            BTreeMap::from([("first".to_owned(), policy), ("second".to_owned(), policy)]);
+
+        let binder =
+            resolve_admission_binding(&node, &policies, None).expect("omitted binding resolves");
+
+        assert!(!binder.is_configured());
+    }
 
     #[test]
     fn test_interests() {

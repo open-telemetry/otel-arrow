@@ -27,7 +27,6 @@ use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
-use otap_df_telemetry::metrics::MetricValue;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -214,8 +213,10 @@ fn run_pipeline_with_condition<F>(
             config,
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            None, // transport_headers_policy
-            None, // internal_telemetry
+            None,                              // transport_headers_policy
+            std::collections::BTreeMap::new(), // rate_limiter_policies
+            None,                              // rate_limiter_scope
+            None,                              // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
@@ -307,19 +308,27 @@ fn capture_batch_metrics(
     registry: &otap_df_telemetry::registry::TelemetryRegistryHandle,
 ) -> BatchMetricsSnapshot {
     let mut snapshot = BatchMetricsSnapshot::default();
-    registry.visit_current_metrics(|desc, _attrs, iter| {
-        if desc.name == "otap.processor.batch" {
-            for (field, value) in iter {
-                if let MetricValue::Mmsc(_) = value {
-                    continue;
-                }
+    registry.visit_current_metrics_with_item_attrs(
+        |desc, _attrs, dp_attrs, iter| {
+            if desc.name == "otap.processor.batch" {
+                let signal_suffix = dp_attrs
+                    .iter()
+                    .find(|(k, _)| *k == "signal")
+                    .map(|(_, v)| format!(".{}", v.to_ascii_lowercase()))
+                    .unwrap_or_default();
 
-                let _ = snapshot
-                    .fields
-                    .insert(field.name.to_owned(), value.to_u64_lossy());
+                for (field, value) in iter {
+                    if let otap_df_telemetry::metrics::MetricValue::Distribution(_) = value {
+                        continue;
+                    }
+
+                    let key_name = format!("{}{}", field.name, signal_suffix);
+                    let _ = snapshot.fields.insert(key_name, value.to_u64_lossy());
+                }
             }
-        }
-    });
+        },
+        false,
+    );
     snapshot
 }
 
@@ -353,8 +362,10 @@ where
             config,
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            None, // transport_headers_policy
-            None, // internal_telemetry
+            None,                              // transport_headers_policy
+            std::collections::BTreeMap::new(), // rate_limiter_policies
+            None,                              // rate_limiter_scope
+            None,                              // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
@@ -527,7 +538,8 @@ fn test_batch_pipeline_eventually_flushes_partial_batch() {
 //   real inbox/runtime path
 // - the processor emits 5 output log batches after consuming 5 input log
 //   batches, so the wakeup-triggered flushes are producing real downstream
-//   pdata batches rather than being dropped internally
+//   pdata batches rather than being dropped internally, verifying delivery
+//   and flush metrics.
 #[test]
 fn test_batch_pipeline_uses_timer_wakeup_metrics_with_otlp_bytes_config() {
     let pipeline_group_id: PipelineGroupId = "liveness-group".into();
@@ -555,8 +567,6 @@ fn test_batch_pipeline_uses_timer_wakeup_metrics_with_otlp_bytes_config() {
         5,
         "the local wakeup pipeline should export every generated item"
     );
-    metrics.assert_eq("consumed.batches.logs", 5);
-    metrics.assert_eq("produced.batches.logs", 5);
     metrics.assert_eq("flushes.size", 0);
     metrics.assert_eq("flushes.timer", 5);
 

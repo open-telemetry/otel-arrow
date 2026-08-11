@@ -24,7 +24,7 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer;
 use otap_df_pdata::TryIntoWithOptions;
@@ -36,8 +36,9 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::instrument::{Gauge, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
@@ -60,7 +61,7 @@ use config::Config;
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
     config: Config,
-    pdata_metrics: MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
     async_metrics: MetricSet<OtapGrpcAsyncMetrics>,
     export_latency_window: ExportLatencyWindow,
 }
@@ -158,6 +159,7 @@ impl ExportLatencyWindow {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTAP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTAP_EXPORTER_URN,
@@ -207,7 +209,7 @@ impl OTAPExporter {
     /// Creates a new OTAPExporter
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
         let async_metrics = pipeline_ctx.register_metrics::<OtapGrpcAsyncMetrics>();
         OTAPExporter {
             config,
@@ -257,7 +259,13 @@ impl OTAPExporter {
                         .record(duration_ns);
                     self.export_latency_window.record(duration_ns);
                 }
-                self.pdata_metrics.inc_failed(signal_type);
+                self.pdata_metrics
+                    .with(SignalOutcomeAttributes {
+                        signal: signal_type,
+                        outcome: Outcome::Failure,
+                    })
+                    .messages
+                    .inc();
                 effect_handler
                     .notify_nack(NackMsg::new("export failed", pdata))
                     .await?;
@@ -267,7 +275,13 @@ impl OTAPExporter {
                     .export_rpc_duration_ns
                     .record(response_duration_ns);
                 self.export_latency_window.record(response_duration_ns);
-                self.pdata_metrics.inc_exported(signal_type);
+                self.pdata_metrics
+                    .with(SignalOutcomeAttributes {
+                        signal: signal_type,
+                        outcome: Outcome::Success,
+                    })
+                    .messages
+                    .inc();
                 effect_handler.notify_ack(AckMsg::new(pdata)).await?;
             }
             PDataMetricsUpdate::RecordStreamEncodeDuration(duration_ns) => {
@@ -318,7 +332,7 @@ impl OTAPExporter {
                 Ok(EnqueueResult::Done)
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(item)) => {
-                // Queue is full — return to caller so it can wait for capacity
+                // Queue is full -- return to caller so it can wait for capacity
                 // while still polling the control channel in the main select.
                 Ok(EnqueueResult::QueueFull(item, enqueue_start))
             }
@@ -549,7 +563,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }) => {
                         self.export_latency_window
                             .report_into(&mut self.async_metrics);
-                        _ = metrics_reporter.report(&mut self.pdata_metrics);
+                        _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
                         _ = metrics_reporter.report(&mut self.async_metrics);
                     }
                     // shutdown the exporter
@@ -580,20 +594,29 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             .report_into(&mut self.async_metrics);
                         return Ok(TerminalState::new(
                             deadline,
-                            [self.pdata_metrics.snapshot(), self.async_metrics.snapshot()],
+                            {
+                                let mut snapshots = self.pdata_metrics.terminal_snapshots();
+                                snapshots.push(self.async_metrics.snapshot());
+                                snapshots
+                            },
                         ))
                     }
                     //send data
                     Message::PData(mut pdata) => {
                         let signal_type = pdata.signal_type();
 
-                        self.pdata_metrics.inc_consumed(signal_type);
                         let payload = pdata.take_payload();
 
                         let message: OtapArrowRecords = match payload.try_into_with_default() {
                             Ok(m) => m,
                             Err(e) => {
-                                self.pdata_metrics.inc_failed(signal_type);
+                                self.pdata_metrics
+                                    .with(SignalOutcomeAttributes {
+                                        signal: signal_type,
+                                        outcome: Outcome::Failure,
+                                    })
+                                    .messages
+                                    .inc();
                                 effect_handler.notify_nack(NackMsg::new("payload conversion failed", pdata)).await?;
                                 return Err(e.into());
                             }
@@ -1685,6 +1708,8 @@ mod tests {
         );
     }
 
+    /// Scenario: The OTAP endpoint becomes available after an initial failed logs export.
+    /// Guarantees: Reconnection succeeds and one success plus one failure are reported for logs.
     #[test]
     fn test_receiver_not_ready_on_start() {
         let grpc_addr = "127.0.0.1";
@@ -1820,10 +1845,25 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let metrics = metrics_receiver.recv_async().await.unwrap();
-            let logs_exported_count = metrics.get_metrics()[4].to_u64_lossy(); // logs exported
+            let mut logs_exported_count = 0;
+            let mut logs_failed_count = 0;
+            for _ in 0..3 {
+                let metrics = metrics_receiver.recv_async().await.unwrap();
+                if metrics.descriptor().name == "exporter.pdata.exports"
+                    && metrics.measurement_attribute_value("signal") == Some("logs")
+                {
+                    match metrics.measurement_attribute_value("outcome") {
+                        Some("success") => {
+                            logs_exported_count = metrics.get_metrics()[0].to_u64_lossy();
+                        }
+                        Some("failure") => {
+                            logs_failed_count = metrics.get_metrics()[0].to_u64_lossy();
+                        }
+                        _ => {}
+                    }
+                }
+            }
             assert_eq!(logs_exported_count, 1);
-            let logs_failed_count = metrics.get_metrics()[5].to_u64_lossy(); // logs failed
             assert_eq!(logs_failed_count, 1);
 
             control_sender
@@ -1872,7 +1912,7 @@ mod tests {
             )
             .await;
         });
-        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(3);
 
         tokio_rt.block_on(async move {
             let metrics_reporter_start_exporter = metrics_reporter.clone();
@@ -1991,7 +2031,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    /// Scenario: stream creation repeatedly fails while the exporter is in reconnect backoff.
+    /// Guarantees: a shutdown signal interrupts backoff and joins the local worker promptly.
+    #[tokio::test(flavor = "local")]
     async fn test_stream_arrow_batches_shutdown_interrupts_retry_backoff() {
         use super::{PDataMetricsUpdate, stream_arrow_batches};
 
@@ -2009,38 +2051,34 @@ mod tests {
                 .unwrap();
         }
 
-        // Production drives `stream_arrow_batches` via `spawn_local` (the exporter
-        // runs on a thread-local set), so the worker future is `!Send`. Mirror that
-        // here with a `LocalSet` rather than `tokio::spawn`, which would require
-        // `Send` and does not reflect how the exporter actually runs.
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async move {
-                let handle = tokio::task::spawn_local(stream_arrow_batches(
-                    MockAlwaysFail,
-                    SignalType::Logs,
-                    None,
-                    batches_rx,
-                    metrics_tx,
-                    shutdown_rx,
-                    None,
-                ));
+        // Production drives `stream_arrow_batches` via `spawn_local` on a
+        // `LocalRuntime`, so the worker future is intentionally `!Send`.
+        async move {
+            let handle = tokio::task::spawn_local(stream_arrow_batches(
+                MockAlwaysFail,
+                SignalType::Logs,
+                None,
+                batches_rx,
+                metrics_tx,
+                shutdown_rx,
+                None,
+            ));
 
-                for attempt in 0..4 {
-                    let update = metrics_rx.recv().await.expect("metrics channel closed");
-                    assert!(
-                        matches!(update, PDataMetricsUpdate::IncFailed(SignalType::Logs, ..)),
-                        "expected IncFailed update for failed stream attempt #{attempt}"
-                    );
-                }
+            for attempt in 0..4 {
+                let update = metrics_rx.recv().await.expect("metrics channel closed");
+                assert!(
+                    matches!(update, PDataMetricsUpdate::IncFailed(SignalType::Logs, ..)),
+                    "expected IncFailed update for failed stream attempt #{attempt}"
+                );
+            }
 
-                _ = shutdown_tx.send_replace(true);
-                timeout(Duration::from_millis(40), handle)
-                    .await
-                    .expect("shutdown should interrupt reconnect backoff promptly")
-                    .unwrap();
-            })
-            .await;
+            _ = shutdown_tx.send_replace(true);
+            timeout(Duration::from_millis(40), handle)
+                .await
+                .expect("shutdown should interrupt reconnect backoff promptly")
+                .unwrap();
+        }
+        .await;
     }
 
     /// gRPC service mock that returns statuses out of request order.
@@ -3005,13 +3043,14 @@ mod tests {
         }
     }
 
+    /// Scenario: the configured OTAP endpoint refuses the initial connection attempt.
+    /// Guarantees: shutdown interrupts connection-failure backoff and the exporter exits cleanly.
     #[test]
     fn test_otap_exporter_connection_failure_backoff() {
         use std::ops::Add;
-        use tokio::runtime::Runtime;
         use tokio::time::timeout;
 
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-connection-failure-test");
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -3049,8 +3088,7 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
         tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
-            let exporter_handle = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 exporter
                     .start(
                         runtime_ctrl_msg_tx,
@@ -3061,38 +3099,38 @@ mod tests {
                     .await
             });
 
-            local_set
-                .run_until(async move {
-                    let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
-                    let pdata1 = OtapPdata::new_default(log_message.into());
-                    pdata_tx.send(pdata1).await.unwrap();
+            async move {
+                let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+                let pdata1 = OtapPdata::new_default(log_message.into());
+                pdata_tx.send(pdata1).await.unwrap();
 
-                    // Wait enough time for handle_req_stream to fail with connection refused
-                    // and enter the Err(e) branch which sleeps for 50ms (INITIAL_BACKOFF).
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                // Wait enough time for handle_req_stream to fail with connection refused
+                // and enter the Err(e) branch which sleeps for 50ms (INITIAL_BACKOFF).
+                tokio::time::sleep(Duration::from_millis(200)).await;
 
-                    control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: Instant::now().add(Duration::from_millis(500)),
-                            reason: "shutdown test".into(),
-                        })
-                        .await
-                        .unwrap();
+                control_sender
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: Instant::now().add(Duration::from_millis(500)),
+                        reason: "shutdown test".into(),
+                    })
+                    .await
+                    .unwrap();
 
-                    let shutdown_result = timeout(Duration::from_secs(1), exporter_handle).await;
-                    assert!(shutdown_result.is_ok(), "Expected clean shutdown");
-                })
-                .await;
+                let shutdown_result = timeout(Duration::from_secs(1), exporter_handle).await;
+                assert!(shutdown_result.is_ok(), "Expected clean shutdown");
+            }
+            .await;
         });
     }
 
+    /// Scenario: the OTAP stream queue is full while downstream remains unreachable.
+    /// Guarantees: shutdown completes within its bound instead of deadlocking on queue backpressure.
     #[test]
     fn test_otap_exporter_deadlock_on_full_queue_shutdown() {
         use std::ops::Add;
-        use tokio::runtime::Runtime;
         use tokio::time::timeout;
 
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-full-queue-shutdown-test");
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
@@ -3131,8 +3169,7 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
         tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
-            let exporter_handle = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 exporter
                     .start(
                         runtime_ctrl_msg_tx,
@@ -3143,55 +3180,53 @@ mod tests {
                     .await
             });
 
-            local_set
-                .run_until(async move {
-                    // Send first batch — exporter forwards it to a stream worker.
-                    let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
-                    let pdata1 = OtapPdata::new_default(log_message.into());
-                    pdata_tx.send(pdata1).await.unwrap();
+            async move {
+                // Send first batch -- exporter forwards it to a stream worker.
+                let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+                let pdata1 = OtapPdata::new_default(log_message.into());
+                pdata_tx.send(pdata1).await.unwrap();
 
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
 
-                    // Send second batch — fills the stream queue (capacity=1).
-                    let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
-                    let pdata2 = OtapPdata::new_default(log_message.into());
-                    pdata_tx.send(pdata2).await.unwrap();
+                // Send second batch -- fills the stream queue (capacity=1).
+                let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
+                let pdata2 = OtapPdata::new_default(log_message.into());
+                pdata_tx.send(pdata2).await.unwrap();
 
-                    // Send third batch in a background task — this will block inside
-                    // enqueue_stream_batch waiting for queue space, simulating full
-                    // backpressure with an unreachable downstream.
-                    let log_message = create_otap_batch(LOG_BATCH_ID + 2, ArrowPayloadType::Logs);
-                    let pdata3 = OtapPdata::new_default(log_message.into());
-                    let pdata_tx_clone = pdata_tx.clone();
-                    let send_handle = tokio::task::spawn_local(async move {
-                        _ = pdata_tx_clone.send(pdata3).await;
-                    });
+                // Send third batch in a background task -- this will block inside
+                // enqueue_stream_batch waiting for queue space, simulating full
+                // backpressure with an unreachable downstream.
+                let log_message = create_otap_batch(LOG_BATCH_ID + 2, ArrowPayloadType::Logs);
+                let pdata3 = OtapPdata::new_default(log_message.into());
+                let pdata_tx_clone = pdata_tx.clone();
+                let send_handle = tokio::task::spawn_local(async move {
+                    _ = pdata_tx_clone.send(pdata3).await;
+                });
 
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
 
-                    // Request shutdown — before the fix, the exporter would deadlock
-                    // because the main loop was blocked in enqueue_stream_batch and
-                    // could never process this Shutdown control message.
-                    control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: Instant::now().add(Duration::from_millis(10)),
-                            reason: "shutdown test".into(),
-                        })
-                        .await
-                        .unwrap();
+                // Request shutdown -- before the fix, the exporter would deadlock
+                // because the main loop was blocked in enqueue_stream_batch and
+                // could never process this Shutdown control message.
+                control_sender
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: Instant::now().add(Duration::from_millis(10)),
+                        reason: "shutdown test".into(),
+                    })
+                    .await
+                    .unwrap();
 
-                    // The exporter must shut down within 200ms, not hang forever.
-                    let shutdown_result =
-                        timeout(Duration::from_millis(200), exporter_handle).await;
-                    assert!(
-                        shutdown_result.is_ok(),
-                        "Expected exporter to shut down successfully and not deadlock"
-                    );
+                // The exporter must shut down within 200ms, not hang forever.
+                let shutdown_result = timeout(Duration::from_millis(200), exporter_handle).await;
+                assert!(
+                    shutdown_result.is_ok(),
+                    "Expected exporter to shut down successfully and not deadlock"
+                );
 
-                    send_handle.abort();
-                    drop(pdata_tx);
-                })
-                .await;
+                send_handle.abort();
+                drop(pdata_tx);
+            }
+            .await;
         });
     }
 }

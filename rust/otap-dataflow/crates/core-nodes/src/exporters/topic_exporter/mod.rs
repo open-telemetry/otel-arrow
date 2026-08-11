@@ -111,6 +111,7 @@ enum BlockedPublishCompletion {
 
 /// Declares the topic exporter as a local exporter factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: TOPIC_EXPORTER_URN,

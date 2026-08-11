@@ -334,7 +334,7 @@ mod test {
 
     #[test]
     fn test_sanitize_dict_with_null_keys() {
-        // Null keys should be skipped — only non-null keys determine which values are live.
+        // Null keys should be skipped -- only non-null keys determine which values are live.
         // Values at indices 0 and 2 are orphaned (no non-null key references them).
         let input = DictionaryArray::new(
             UInt16Array::from(vec![Some(1), None, Some(3), None, Some(3)]),

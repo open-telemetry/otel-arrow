@@ -6,7 +6,7 @@
 //! A reference capability with no internal state, intended for end-to-end
 //! tests of the extension/capability wiring (registration, resolution,
 //! `SharedAsLocal` fallback, builder APIs). Methods cover the relevant
-//! codegen permutations: `&self` × {sync, async} × {with-args, no-args} ×
+//! codegen permutations: `&self` x {sync, async} x {with-args, no-args} x
 //! {borrowed return, owned return}.
 //!
 //! The `#[capability]` proc macro expands the trait below into:

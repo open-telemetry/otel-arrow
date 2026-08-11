@@ -32,6 +32,33 @@ include measurement `outcome`. One metric set can combine both kinds: use a
 registration attribute for context shared by every recording and measurement
 attributes for the dimensions that vary.
 
+## Declare attribute attachment
+
+`#[attribute_set]` explicitly declares where attributes attach:
+
+```rust
+// Stable entity context, exported as instrumentation scope attributes.
+#[attribute_set(scope, name = "component.scope")]
+struct ComponentScopeAttributes {
+    component_id: String,
+}
+
+// Fixed attributes emitted on every item from one metric-set registration.
+#[attribute_set(item, registration)]
+struct RegistrationAttributes {
+    signal: SignalType,
+}
+
+// Bounded attributes emitted with each metric recording.
+#[attribute_set(item, measurement)]
+struct MeasurementAttributes {
+    outcome: LossOutcome,
+}
+```
+
+Scope attribute sets MUST declare both `scope` and `name`. Registration and
+measurement attribute sets MUST declare `item` and MUST NOT declare `name`.
+
 ## Declare closed values
 
 Derive `AttributeEnum` for every value type. Variant order defines the internal
@@ -85,8 +112,8 @@ applies to every emitted item from that registration.
 Every non-composed field in an attribute set becomes an attribute. Its key
 defaults to the field name with underscores replaced by dots. Use
 `#[attribute_key = "..."]` only when the exported key differs from that default.
-Unlike scope and entity attribute sets, registration attributes do not need a
-schema name because they are emitted directly on telemetry items.
+Registration attributes are emitted directly on telemetry items, so they do not
+have a schema name.
 
 ```rust
 // This component only works on logs.

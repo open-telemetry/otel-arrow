@@ -211,10 +211,8 @@ impl<'a> Summary<'a> {
                 }
                 Value::Null => hasher.update([3]),
                 _ => {
-                    v.convert_to_string(&mut |s| {
-                        hasher.update([4]);
-                        hasher.update(s.as_bytes());
-                    });
+                    hasher.update([4]);
+                    hasher.update(v.convert_to_string().as_ref().as_bytes());
                 }
             }
         }

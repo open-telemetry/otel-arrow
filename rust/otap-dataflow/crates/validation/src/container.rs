@@ -7,7 +7,7 @@
 //! the validation pipeline. The containers start before the pipeline group and
 //! stop after it shuts down.
 //!
-//! The underlying `testcontainers` crate is fully abstracted — users only
+//! The underlying `testcontainers` crate is fully abstracted -- users only
 //! interact with plain Rust types defined here.
 
 use crate::error::ValidationError;

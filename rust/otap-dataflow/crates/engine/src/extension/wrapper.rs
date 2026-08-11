@@ -3,7 +3,7 @@
 
 //! Extension wrapper, control channel, and bundle types.
 //!
-//! Extensions are PData-free — they never process PData, only control
+//! Extensions are PData-free -- they never process PData, only control
 //! messages. This module defines [`EffectHandler`], [`ExtensionWrapper`], and
 //! [`ExtensionBundle`]. The typestate builder that constructs bundles lives
 //! in [`super::builder`].
@@ -34,7 +34,7 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use std::future::Future;
 use std::sync::Arc;
 
-// ── ControlChannel ──────────────────────────────────────────────────────────
+// -- ControlChannel ----------------------------------------------------------
 
 /// A shutdown-aware channel for receiving extension control messages.
 ///
@@ -130,7 +130,7 @@ impl<R: ControlReceiver + Unpin> ControlChannel<R> {
     }
 }
 
-// ── EffectHandler ───────────────────────────────────────────────────────────
+// -- EffectHandler -----------------------------------------------------------
 
 /// The effect handler for extensions.
 ///
@@ -176,13 +176,13 @@ impl EffectHandler {
     }
 }
 
-// ── Variant kind ─────────────────────────────────────────────────────────────
+// -- Variant kind -------------------------------------------------------------
 
 /// Identifies a physical extension variant within an [`ExtensionBundle`].
 /// A single `ExtensionId` may register both `Local` and `Shared` variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExtensionVariant {
-    /// `!Send` variant scheduled onto the host `LocalSet`.
+    /// `!Send` variant scheduled onto the host `LocalRuntime`.
     Local,
     /// `Send` variant runnable on multi-threaded executors.
     /// Whether an extension is shared between pipelines or not
@@ -203,7 +203,7 @@ impl ExtensionVariant {
     }
 }
 
-// ── Lifecycle ────────────────────────────────────────────────────────────────
+// -- Lifecycle ----------------------------------------------------------------
 
 /// The lifecycle state of an extension variant (local or shared).
 ///
@@ -232,15 +232,15 @@ pub enum ExtensionLifecycle<E, R> {
         /// Send-side handle paired with `readiness_probe`.
         readiness_signaller: Option<super::readiness::ReadinessSignaller>,
     },
-    /// Passive extension — capabilities only, no task spawned.
+    /// Passive extension -- capabilities only, no task spawned.
     Passive,
 }
 
-// ── ExtensionWrapper ────────────────────────────────────────────────────────
+// -- ExtensionWrapper --------------------------------------------------------
 
 /// Wrapper for a single extension variant in the engine.
 ///
-/// Extensions are NOT generic over PData — they operate exclusively on
+/// Extensions are NOT generic over PData -- they operate exclusively on
 /// [`ExtensionControlMsg`], keeping the extension system entirely decoupled
 /// from the data-plane type.
 ///
@@ -587,7 +587,7 @@ impl ExtensionWrapper {
     }
 
     /// Returns `true` if a readiness signaller is attached to this
-    /// variant — i.e. the extension opted in via the builder's
+    /// variant -- i.e. the extension opted in via the builder's
     /// `with_readiness_probe`. The signaller itself is private to the
     /// engine; it is consumed by [`Self::start`] and threaded into the
     /// extension's [`EffectHandler`]. Intended for tests that need to

@@ -281,7 +281,7 @@ struct InboxCore<PData, ControlRx, PDataRx> {
     local_scheduler: Option<NodeLocalSchedulerHandle<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` representing the drain deadline.
     shutting_down_deadline: Option<Instant>,
-    /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
+    /// Holds the ControlMsg::Shutdown until after we've drained pdata.
     pending_shutdown: Option<NodeControlMsg<PData>>,
     /// Node ID for entry-frame stamping via `ReceivedAtNode`.
     node_id: usize,
@@ -408,7 +408,7 @@ where
 
             // When pdata is guarded (!accept_pdata), detect a closed pdata
             // channel eagerly so we don't block forever on control-only select.
-            // We only probe when the buffer is empty — try_recv on an empty
+            // We only probe when the buffer is empty -- try_recv on an empty
             // channel distinguishes Closed from Empty without consuming data.
             if !accept_pdata
                 && self
