@@ -1451,19 +1451,18 @@ impl QuiverEngine {
                     );
                 }
             }
-            if let Err(e) = self.segment_store.delete_segment(*seq) {
-                otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, error_type = "io", reason = "force_drop");
-            } else {
-                if let Ok(bytes) = file_size {
-                    bytes_dropped += bytes;
-                }
-                otel_info!(
-                    "quiver.segment.drop",
-                    segment = seq.raw(),
-                    reason = "force_drop",
-                );
-                deleted += 1;
+            self.segment_store
+                .delete_segment(*seq)
+                .expect("physical deletion failures are deferred");
+            if let Ok(bytes) = file_size {
+                bytes_dropped += bytes;
             }
+            otel_info!(
+                "quiver.segment.drop",
+                segment = seq.raw(),
+                reason = "force_drop",
+            );
+            deleted += 1;
         }
 
         // Update the force-dropped counters
@@ -1548,26 +1547,19 @@ impl QuiverEngine {
                 }
             }
 
-            if let Err(e) = self.segment_store.delete_segment(*seq) {
-                otel_warn!(
-                    "quiver.segment.drop",
-                    segment = seq.raw(),
-                    error = %e,
-                    error_type = "io",
-                    reason = "expired",
-                );
-            } else {
-                if let Ok(bytes) = file_size {
-                    bytes_expired += bytes;
-                }
-                otel_info!(
-                    "quiver.segment.drop",
-                    segment = seq.raw(),
-                    max_age_secs = max_age.as_secs(),
-                    reason = "expired",
-                );
-                deleted += 1;
+            self.segment_store
+                .delete_segment(*seq)
+                .expect("physical deletion failures are deferred");
+            if let Ok(bytes) = file_size {
+                bytes_expired += bytes;
             }
+            otel_info!(
+                "quiver.segment.drop",
+                segment = seq.raw(),
+                max_age_secs = max_age.as_secs(),
+                reason = "expired",
+            );
+            deleted += 1;
         }
 
         // Clean up registry internal state for deleted segments
