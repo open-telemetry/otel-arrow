@@ -88,40 +88,6 @@ Each format object contains:
   same `split.budget.fallbacks` metric; emission also aborts early once the
   running amplification passes the budget, bounding transient memory.
 
-In addition to these per-entry budgets, splitting is bounded per *flush* by the
-remaining outbound request capacity (`outbound_request_limit`). When a flush is
-subscribed (its inputs carry Ack/Nack interest), the splitter will not fan an
-oversize entry out into more fragments than there are free outbound slots left
-for the whole flush -- reserving, for each resource entry still to be processed,
-the number of output batches its own greedy packing would produce (not one slot
-per entry), so many small trailing entries that pack together are not
-over-reserved and an early greedy split still cannot starve later entries. An
-entry that would exceed the remaining capacity is emitted whole instead
-(best-effort, possibly exceeding `max_size`) and counted by the
-`split.capacity.fallbacks` metric. For a split resource entry this keeps the
-entry's own fragments all-or-nothing: an oversize entry is never fanned into
-more subscribed fragments than the pool can track, so a late fragment is never
-Nacked for outbound-slot exhaustion while its siblings are already in flight.
-
-The reservation bounds an entry's *split fan-out*; it does not force a whole
-multi-output input down to a single batch. If one subscribed input's minimum
-output floor still exceeds the flush's remaining capacity -- for example
-`outbound_request_limit = 1` with an input carrying both an oversize resource
-entry and an oversize opaque top-level field, which must produce at least two
-batches -- one output can be subscribed while another Nacks that input. This
-degenerate case (an input whose mandatory minimum outputs alone exceed the
-outbound limit) predates this feature and is not changed here.
-
-An *unsubscribed* flush reserves no outbound slots, but its entire output vector
-is still built in memory before anything is sent, so an unbounded split fan-out
-would blow up memory with no downstream backpressure to throttle it. Unsubscribed
-flushes are therefore bounded the same way, using the pool's *total* capacity
-(`outbound_request_limit`) as the per-flush limit: an oversize entry whose split
-would push the flush past that many output batches is emitted whole instead
-(counted by `split.capacity.fallbacks`). Whole entries carry only the input's own
-bytes (no header duplication), so peak memory is bounded to roughly the input
-size plus `outbound_request_limit * max_size` of split amplification.
-
 ## Examples
 
 Flush every incoming message:
@@ -162,7 +128,6 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `otap.processor.batch.nacked_inbound_slots` | `{msg}` | Number of requests nacked due to inbound slot exhaustion. |
 | `otap.processor.batch.nacked_outbound_slots` | `{msg}` | Number of requests nacked due to outbound slot exhaustion. |
 | `otap.processor.batch.split_budget_fallbacks` | `{entry}` | Number of oversize resource entries emitted whole because splitting would have exceeded `max_split_fragments` or `max_split_overhead_bytes`. |
-| `otap.processor.batch.split_capacity_fallbacks` | `{entry}` | Number of oversize resource entries emitted whole because splitting them would have exceeded the flush's remaining outbound request capacity (`outbound_request_limit`). |
 
 ### Events
 

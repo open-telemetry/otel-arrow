@@ -206,7 +206,6 @@ pub enum BatchingFormat {
 struct BatchingOutput<T> {
     batches: Vec<(T, usize)>,
     budget_fallbacks: u64,
-    capacity_fallbacks: u64,
 }
 
 /// The common signature of the batching methods
@@ -215,7 +214,6 @@ trait Batcher<T: OtapPayloadHelpers> {
         fmtcfg: &FormatConfig,
         signal: SignalType,
         records: Vec<T>,
-        output_budget: usize,
     ) -> Result<BatchingOutput<T>, PDataError>;
 
     fn wakeup_slot(signal: SignalType) -> WakeupSlot;
@@ -607,16 +605,6 @@ pub struct BatchProcessorMetrics {
     /// splitting them would have exceeded the configured fragment budget.
     #[metric(unit = "{entry}")]
     split_budget_fallbacks: Counter<u64>,
-
-    /// Number of oversize resource entries emitted whole (best-effort) because
-    /// splitting them would have produced more outbound batches than the
-    /// flush's remaining outbound capacity (`outbound_request_limit`) could
-    /// track. Distinct from `split_budget_fallbacks` (per-entry fragment/byte
-    /// budgets): a rising count here means Ack/Nack-subscribed flushes are
-    /// outrunning the outbound slot pool -- consider raising
-    /// `outbound_request_limit`.
-    #[metric(unit = "{entry}")]
-    split_capacity_fallbacks: Counter<u64>,
 }
 
 fn nzu_to_nz64(nz: Option<NonZeroUsize>) -> Option<NonZeroU64> {
@@ -838,7 +826,6 @@ impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
         fmtcfg: &FormatConfig,
         signal: SignalType,
         pending: Vec<OtapArrowRecords>,
-        _output_budget: usize,
     ) -> Result<BatchingOutput<OtapArrowRecords>, PDataError> {
         // OTAP only supports Sizer::Items (checked in validate)
         debug_assert_eq!(fmtcfg.sizer, Sizer::Items);
@@ -855,7 +842,6 @@ impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
         Ok(BatchingOutput {
             batches,
             budget_fallbacks: 0,
-            capacity_fallbacks: 0,
         })
     }
 
@@ -879,26 +865,22 @@ impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
         fmtcfg: &FormatConfig,
         signal: SignalType,
         pending: Vec<OtlpProtoBytes>,
-        output_budget: usize,
     ) -> Result<BatchingOutput<OtlpProtoBytes>, PDataError> {
         // OTLP only supports Sizer::Bytes (checked in validate)
         debug_assert_eq!(fmtcfg.sizer, Sizer::Bytes);
         let BytesBatches {
             batches,
             budget_fallbacks,
-            capacity_fallbacks,
         } = make_bytes_batches_owned(
             signal,
             nzu_to_nz64(fmtcfg.max_size),
             nzu_to_nz64(fmtcfg.max_split_fragments),
             nzu_to_nz64(fmtcfg.max_split_overhead_bytes),
-            output_budget,
             pending,
         )?;
         Ok(BatchingOutput {
             batches,
             budget_fallbacks,
-            capacity_fallbacks,
         })
     }
 
@@ -1071,39 +1053,12 @@ where
 
         let count = inputs.requests();
 
-        // Bound split fan-out per flush so the entire output vector -- built in
-        // memory before anything is sent -- cannot grow without limit.
-        //
-        // Subscribed flushes are capped at the outbound pool's *remaining*
-        // capacity: only Ack/Nack-subscribed outputs consume outbound slots (see
-        // `drain_context`), so this keeps one flush's many split fragments (each
-        // under their per-entry budget) from collectively exhausting the shared
-        // pool mid-flush and Nacking a late fragment while its siblings are in
-        // flight.
-        //
-        // Unsubscribed flushes reserve no slots, but a flush with many large
-        // entries could still amplify into a huge number of split fragments in
-        // memory before any send, and downstream backpressure cannot throttle
-        // that build-up. Cap them at the pool's *total* capacity
-        // (`outbound_request_limit`): over-budget entries collapse to a single
-        // whole batch (just the input's own bytes, no header duplication), so
-        // the byte amplification from splitting is bounded to roughly
-        // `outbound_request_limit * max_size` on top of the input.
-        let subscribed = inputs.context.iter().any(|bp| bp.inkey.is_some());
-        let output_budget = if subscribed {
-            self.buffer.outbound.remaining_capacity()
-        } else {
-            self.config.outbound_request_limit.get()
-        };
-
         let pending = inputs.take_pending();
 
         let BatchingOutput {
             batches: mut output_batches,
             budget_fallbacks,
-            capacity_fallbacks,
-        } = match SignalBuffer::<T>::make_batches(self.fmtcfg, self.signal, pending, output_budget)
-        {
+        } = match SignalBuffer::<T>::make_batches(self.fmtcfg, self.signal, pending) {
             Ok(v) => v,
             Err(e) => {
                 self.metrics.batching_errors.add(count as u64);
@@ -1120,11 +1075,6 @@ where
 
         if budget_fallbacks > 0 {
             self.metrics.split_budget_fallbacks.add(budget_fallbacks);
-        }
-        if capacity_fallbacks > 0 {
-            self.metrics
-                .split_capacity_fallbacks
-                .add(capacity_fallbacks);
         }
 
         // If size-triggered and we requested splitting (upper_limit is Some), re-buffer the last partial
@@ -3865,151 +3815,6 @@ mod tests {
         );
     }
 
-    /// Builds an OTLP logs request with `num_resources` `ResourceLogs`, each a
-    /// single `ScopeLogs` with `records_per` sizable records, so every resource
-    /// entry individually exceeds a small `max_size` and would split -- letting a
-    /// flush's *combined* split fan-out exceed the outbound pool even when each
-    /// entry stays under its per-entry budget.
-    fn multi_resource_logs_bytes(num_resources: usize, records_per: usize) -> OtlpProtoBytes {
-        let resource_logs = (0..num_resources)
-            .map(|_| {
-                let records: Vec<LogRecord> = (0..records_per)
-                    .map(|i| LogRecord {
-                        severity_text: format!("record-{i:02}-{}", "x".repeat(40)),
-                        ..Default::default()
-                    })
-                    .collect();
-                ResourceLogs {
-                    scope_logs: vec![ScopeLogs {
-                        log_records: records,
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }
-            })
-            .collect();
-        otlp_message_to_bytes(&OtlpProtoMessage::Logs(LogsData { resource_logs }))
-    }
-
-    /// Builds an OTLP logs request that is a single oversize `ResourceLogs`
-    /// (field 1, `records` sizable records) followed by an unknown top-level
-    /// field (field 15, LEN wire type) whose payload is `opaque_len` bytes. The
-    /// splitter treats the unknown field as an opaque unit: when it exceeds
-    /// `max_size` it is emitted as its own output batch, in addition to the
-    /// fragments produced by splitting the resource entry -- exercising the case
-    /// where a separately-emitted opaque output must also be reserved against the
-    /// flush's outbound capacity.
-    fn logs_bytes_with_trailing_opaque(records: usize, opaque_len: usize) -> OtlpProtoBytes {
-        let mut bytes = single_resource_logs_bytes(records).as_bytes().to_vec();
-        // Unknown top-level field 15, LEN wire type: tag = (15 << 3) | 2.
-        bytes.push((15 << 3) | 2);
-        // Length as a base-128 varint.
-        let mut remaining = opaque_len;
-        loop {
-            let mut byte = (remaining & 0x7f) as u8;
-            remaining >>= 7;
-            if remaining != 0 {
-                byte |= 0x80;
-            }
-            bytes.push(byte);
-            if remaining == 0 {
-                break;
-            }
-        }
-        bytes.extend(std::iter::repeat_n(0xAAu8, opaque_len));
-        OtlpProtoBytes::new_from_bytes(SignalType::Logs, bytes)
-    }
-
-    /// Scenario: a subscribed flush is a single oversize `ResourceLogs` that
-    /// splits into exactly two fragments, followed by an oversize opaque
-    /// top-level field that emits its own batch -- three outputs against an
-    /// outbound capacity of 2. All three belong to the same input's subscription.
-    ///
-    /// Guarantees: the capacity reservation counts the projected opaque output,
-    /// so keeping the two-fragment split (which would leave no slot for the
-    /// opaque batch and Nack it while the fragments are already in flight) is
-    /// rejected; the entry collapses to one whole batch, giving two outputs that
-    /// fit capacity, no `nacked_outbound_slots`, and a recorded capacity
-    /// fallback. Acking both yields coherent Acks to the input.
-    #[test]
-    fn test_split_capacity_reserves_trailing_opaque_output() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
-            "otlp": {
-                "min_size": null,
-                "max_size": 100,
-                "sizer": "bytes",
-                "max_split_fragments": 1000,
-            },
-            "format": "otlp",
-            "max_batch_duration": "0s",
-            "outbound_request_limit": 2,
-        }));
-
-        phase
-            .run_test(move |mut ctx| async move {
-                let (pipeline_completion_tx, _pipeline_completion_rx) =
-                    pipeline_completion_msg_channel(16);
-                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
-
-                // Two records split into two fragments at max_size = 100; the
-                // trailing 150-byte opaque field forces a third would-be output.
-                let bytes = logs_bytes_with_trailing_opaque(2, 150);
-                let pdata = OtapPdata::new_default(bytes.into()).test_subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(0, 0).into(),
-                    1,
-                );
-
-                ctx.process(Message::PData(pdata))
-                    .await
-                    .expect("process input");
-
-                let outputs = ctx.drain_pdata().await;
-                assert_eq!(
-                    outputs.len(),
-                    2,
-                    "resource entry must collapse to one whole batch so the whole \
-                     entry plus the opaque output fit capacity, got {}",
-                    outputs.len()
-                );
-
-                // Ack every emitted batch -> coherent, no lingering slots.
-                for out in outputs {
-                    ctx.process(Message::Control(NodeControlMsg::Ack(
-                        next_ack(AckMsg::new(out)).expect("has subs").1,
-                    )))
-                    .await
-                    .expect("process ack");
-                }
-
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                }))
-                .await
-                .expect("collect telemetry");
-            })
-            .validate(move |_| async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                assert!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "split.capacity.fallbacks"
-                    ) >= 1,
-                    "the split must fall back to whole once the opaque output is reserved"
-                );
-                assert_eq!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "nacked.outbound.slots"
-                    ),
-                    0,
-                    "no mid-flush outbound-slot exhaustion should occur"
-                );
-            });
-    }
-
     /// Scenario: a single oversize `ResourceLogs` has a large scope header and
     /// many tiny records that greedily pack several-per-fragment, so the *real*
     /// split produces only a handful of fragments -- but a per-record projection
@@ -4083,557 +3888,6 @@ mod tests {
                     ),
                     0,
                     "the real packing stays under the overhead budget, so no fallback"
-                );
-            });
-    }
-
-    /// Scenario: a subscribed oversize `ResourceLogs` would split into more
-    /// fragments (8) than the flush's remaining outbound capacity
-    /// (`outbound_request_limit` = 2) can track.
-    ///
-    /// Guarantees: the per-flush output budget collapses the entry to a single
-    /// whole batch instead of fanning out past capacity, so it fits one outbound
-    /// slot -- exactly one output, no mid-flush `nacked_outbound_slots`
-    /// exhaustion, and `split.capacity.fallbacks` records the fallback. Acking
-    /// the whole batch yields a single coherent Ack to the input.
-    #[test]
-    fn test_split_capacity_fallback_bounds_flush_fanout() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
-            "otlp": {
-                "min_size": null,
-                "max_size": 100,
-                "sizer": "bytes",
-                // Per-entry budgets are generous; only the flush capacity bites.
-                "max_split_fragments": 1000,
-            },
-            "format": "otlp",
-            "max_batch_duration": "0s",
-            "outbound_request_limit": 2,
-        }));
-
-        phase
-            .run_test(move |mut ctx| async move {
-                let (pipeline_completion_tx, _pipeline_completion_rx) =
-                    pipeline_completion_msg_channel(16);
-                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
-
-                let bytes = multi_resource_logs_bytes(1, 8);
-                let input_bytes = bytes.num_bytes();
-                let pdata = OtapPdata::new_default(bytes.into()).test_subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(0, 0).into(),
-                    1,
-                );
-
-                ctx.process(Message::PData(pdata))
-                    .await
-                    .expect("process input");
-
-                let outputs = ctx.drain_pdata().await;
-                assert_eq!(
-                    outputs.len(),
-                    1,
-                    "split over remaining outbound capacity must collapse to one whole batch"
-                );
-                let out_bytes = outputs[0]
-                    .clone()
-                    .payload()
-                    .num_bytes()
-                    .expect("otlp bytes size known");
-                assert_eq!(
-                    out_bytes, input_bytes,
-                    "the whole entry is emitted unchanged"
-                );
-                assert!(
-                    outputs[0].has_subscribers(),
-                    "the whole batch must stay subscribed for ack/nack"
-                );
-
-                // Ack the single whole batch -> one coherent Ack to the input.
-                for out in outputs {
-                    ctx.process(Message::Control(NodeControlMsg::Ack(
-                        next_ack(AckMsg::new(out)).expect("has subs").1,
-                    )))
-                    .await
-                    .expect("process ack");
-                }
-
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                }))
-                .await
-                .expect("collect telemetry");
-            })
-            .validate(move |_| async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                assert_eq!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "split.capacity.fallbacks"
-                    ),
-                    1,
-                    "exactly one capacity fallback should be recorded"
-                );
-                assert_eq!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "nacked.outbound.slots"
-                    ),
-                    0,
-                    "no mid-flush outbound-slot exhaustion should occur"
-                );
-            });
-    }
-
-    /// Scenario: a subscribed flush carries several oversize resource entries
-    /// that each split into a few fragments -- individually under their per-entry
-    /// budgets, but collectively many more than the remaining outbound capacity
-    /// (`outbound_request_limit` = 4) can track once split.
-    ///
-    /// Guarantees: the running per-flush budget reserves a slot per remaining
-    /// entry, so each entry falls back to a single whole batch (one per resource
-    /// entry) rather than fanning out. No batch is Nacked for outbound-slot
-    /// exhaustion and at least one capacity fallback is recorded.
-    #[test]
-    fn test_split_capacity_fallback_bounds_multi_entry_flush() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
-            "otlp": {
-                "min_size": null,
-                "max_size": 100,
-                "sizer": "bytes",
-                "max_split_fragments": 1000,
-            },
-            "format": "otlp",
-            "max_batch_duration": "0s",
-            "outbound_request_limit": 4,
-        }));
-
-        phase
-            .run_test(move |mut ctx| async move {
-                let (pipeline_completion_tx, _pipeline_completion_rx) =
-                    pipeline_completion_msg_channel(16);
-                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
-
-                // 4 resource entries, each of which would split into 4 fragments
-                // (16 total) -- far over the outbound capacity of 4.
-                let bytes = multi_resource_logs_bytes(4, 4);
-                let pdata = OtapPdata::new_default(bytes.into()).test_subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(0, 0).into(),
-                    1,
-                );
-
-                ctx.process(Message::PData(pdata))
-                    .await
-                    .expect("process input");
-
-                let outputs = ctx.drain_pdata().await;
-                assert_eq!(
-                    outputs.len(),
-                    4,
-                    "each oversize entry must collapse to one whole batch, got {}",
-                    outputs.len()
-                );
-
-                // Ack every emitted batch -> coherent, no lingering slots.
-                for out in outputs {
-                    ctx.process(Message::Control(NodeControlMsg::Ack(
-                        next_ack(AckMsg::new(out)).expect("has subs").1,
-                    )))
-                    .await
-                    .expect("process ack");
-                }
-
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                }))
-                .await
-                .expect("collect telemetry");
-            })
-            .validate(move |_| async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                assert!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "split.capacity.fallbacks"
-                    ) >= 1,
-                    "at least one capacity fallback should be recorded"
-                );
-                assert_eq!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "nacked.outbound.slots"
-                    ),
-                    0,
-                    "no mid-flush outbound-slot exhaustion should occur"
-                );
-            });
-    }
-
-    /// Scenario: an *unsubscribed* flush (no Ack/Nack interest) carries several
-    /// oversize resource entries that would each split into multiple fragments.
-    /// Unsubscribed outputs reserve no outbound slots, but the whole output
-    /// vector is still materialized in memory before anything is sent, so an
-    /// unbounded split fan-out would blow up memory with no downstream
-    /// backpressure to throttle it.
-    ///
-    /// Guarantees: unsubscribed flushes are bounded by the pool's total capacity
-    /// (`outbound_request_limit` = 4), so each oversize entry collapses to a
-    /// single whole batch (one per resource entry, no fragment explosion) and at
-    /// least one capacity fallback is recorded. Without the bound each entry
-    /// would fan out into several fragments (many more than the entry count).
-    #[test]
-    fn test_split_capacity_bounds_unsubscribed_multi_entry_flush() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
-            "otlp": {
-                "min_size": null,
-                "max_size": 100,
-                "sizer": "bytes",
-                "max_split_fragments": 1000,
-            },
-            "format": "otlp",
-            "max_batch_duration": "0s",
-            "outbound_request_limit": 4,
-        }));
-
-        phase
-            .run_test(move |mut ctx| async move {
-                let (pipeline_completion_tx, _pipeline_completion_rx) =
-                    pipeline_completion_msg_channel(16);
-                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
-
-                // 6 resource entries, each of which would split into several
-                // fragments (well over the outbound capacity of 4) if unbounded.
-                // No `test_subscribe_to`: the input is unsubscribed.
-                let bytes = multi_resource_logs_bytes(6, 4);
-                let pdata = OtapPdata::new_default(bytes.into());
-
-                ctx.process(Message::PData(pdata))
-                    .await
-                    .expect("process input");
-
-                let outputs = ctx.drain_pdata().await;
-                assert_eq!(
-                    outputs.len(),
-                    6,
-                    "each oversize entry must collapse to one whole batch, got {}",
-                    outputs.len()
-                );
-                for out in &outputs {
-                    assert!(
-                        !out.has_subscribers(),
-                        "unsubscribed input must yield unsubscribed outputs"
-                    );
-                }
-
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                }))
-                .await
-                .expect("collect telemetry");
-            })
-            .validate(move |_| async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                assert!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "split.capacity.fallbacks"
-                    ) >= 1,
-                    "at least one capacity fallback should bound the unsubscribed flush"
-                );
-                assert_eq!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "nacked.outbound.slots"
-                    ),
-                    0,
-                    "unsubscribed outputs consume no slots, so none can be Nacked"
-                );
-            });
-    }
-
-    /// Scenario: a subscribed oversize `ResourceLogs` has more records (8) than
-    /// the remaining outbound capacity (4), but at a larger `max_size` those
-    /// small records pack into far fewer greedy fragments than records.
-    ///
-    /// Guarantees: the bound uses the *real* greedy fragment count, not the
-    /// worst-case record count, so the entry is still split (more than one
-    /// output, fewer than the record count, within capacity) and no capacity
-    /// fallback is triggered.
-    #[test]
-    fn test_split_capacity_no_false_fallback_uses_greedy_count() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
-            "otlp": {
-                "min_size": null,
-                // Large enough that several ~50-byte records pack per fragment.
-                "max_size": 300,
-                "sizer": "bytes",
-                "max_split_fragments": 1000,
-            },
-            "format": "otlp",
-            "max_batch_duration": "0s",
-            "outbound_request_limit": 4,
-        }));
-
-        phase
-            .run_test(move |mut ctx| async move {
-                let (pipeline_completion_tx, _pipeline_completion_rx) =
-                    pipeline_completion_msg_channel(16);
-                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
-
-                let bytes = multi_resource_logs_bytes(1, 8);
-                let pdata = OtapPdata::new_default(bytes.into()).test_subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(0, 0).into(),
-                    1,
-                );
-
-                ctx.process(Message::PData(pdata))
-                    .await
-                    .expect("process input");
-
-                let outputs = ctx.drain_pdata().await;
-                assert!(
-                    outputs.len() > 1,
-                    "records that pack within capacity must still be split, got {}",
-                    outputs.len()
-                );
-                assert!(
-                    outputs.len() <= 4,
-                    "greedy packing must stay within capacity, got {}",
-                    outputs.len()
-                );
-                assert!(
-                    outputs.len() < 8,
-                    "greedy packing must produce fewer fragments than records, got {}",
-                    outputs.len()
-                );
-
-                for out in outputs {
-                    ctx.process(Message::Control(NodeControlMsg::Ack(
-                        next_ack(AckMsg::new(out)).expect("has subs").1,
-                    )))
-                    .await
-                    .expect("process ack");
-                }
-
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                }))
-                .await
-                .expect("collect telemetry");
-            })
-            .validate(move |_| async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                assert_eq!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "split.capacity.fallbacks"
-                    ),
-                    0,
-                    "no capacity fallback: greedy count fits within capacity"
-                );
-            });
-    }
-
-    /// Scenario: a subscribed flush carries many (200) small resource entries
-    /// that each fit within `max_size` and pack together into a handful of output
-    /// batches -- none of them needs splitting -- under a finite
-    /// `outbound_request_limit`.
-    ///
-    /// Guarantees: entries that pack normally take the linear path and never
-    /// consult the outbound-capacity projection (which is only computed for an
-    /// entry that itself exceeds `max_size`), so no capacity or budget fallback
-    /// is triggered, every packed output stays within `max_size`, and Acking all
-    /// outputs yields coherent Acks to every input.
-    #[test]
-    fn test_split_capacity_many_small_entries_no_projection_fallback() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
-            "otlp": {
-                "min_size": null,
-                // Large enough that many ~58-byte entries pack per output batch,
-                // and no single entry ever exceeds it (so none splits).
-                "max_size": 2000,
-                "sizer": "bytes",
-            },
-            "format": "otlp",
-            "max_batch_duration": "0s",
-            "outbound_request_limit": 512,
-        }));
-
-        phase
-            .run_test(move |mut ctx| async move {
-                let (pipeline_completion_tx, _pipeline_completion_rx) =
-                    pipeline_completion_msg_channel(16);
-                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
-
-                let bytes = multi_resource_logs_bytes(200, 1);
-                let pdata = OtapPdata::new_default(bytes.into()).test_subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(0, 0).into(),
-                    1,
-                );
-
-                ctx.process(Message::PData(pdata))
-                    .await
-                    .expect("process input");
-
-                let outputs = ctx.drain_pdata().await;
-                assert!(
-                    outputs.len() > 1,
-                    "200 small entries must pack into several batches, got {}",
-                    outputs.len()
-                );
-                assert!(
-                    outputs.len() < 200,
-                    "small entries must pack together, not one batch each, got {}",
-                    outputs.len()
-                );
-                for out in &outputs {
-                    let out_bytes = out
-                        .clone()
-                        .payload()
-                        .num_bytes()
-                        .expect("otlp bytes size known");
-                    assert!(
-                        out_bytes <= 2000,
-                        "no packed batch may exceed max_size, got {out_bytes}"
-                    );
-                    assert!(
-                        out.has_subscribers(),
-                        "every packed batch must remain subscribed"
-                    );
-                }
-
-                for out in outputs {
-                    ctx.process(Message::Control(NodeControlMsg::Ack(
-                        next_ack(AckMsg::new(out)).expect("has subs").1,
-                    )))
-                    .await
-                    .expect("process ack");
-                }
-
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                }))
-                .await
-                .expect("collect telemetry");
-            })
-            .validate(move |_| async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                assert_eq!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "split.capacity.fallbacks"
-                    ),
-                    0,
-                    "no capacity fallback: small entries never split or project"
-                );
-                assert_eq!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "split.budget.fallbacks"
-                    ),
-                    0,
-                    "no budget fallback: small entries never split"
-                );
-            });
-    }
-
-    /// Scenario: the outbound pool (`outbound_request_limit` = 1) is already
-    /// fully occupied by a prior in-flight subscribed batch when a second
-    /// subscribed oversize input arrives (remaining capacity = 0).
-    ///
-    /// Guarantees: with zero capacity the oversize entry is collapsed to a
-    /// single whole batch (never split into partially-trackable siblings). That
-    /// lone batch cannot get a slot, so it is Nacked as one coherent unit via
-    /// the existing outbound-exhaustion path -- exactly one Nack, and a capacity
-    /// fallback is still recorded.
-    #[test]
-    fn test_split_capacity_zero_falls_back_whole_and_nacks_coherently() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
-            "otlp": {
-                "min_size": null,
-                "max_size": 100,
-                "sizer": "bytes",
-                "max_split_fragments": 1000,
-            },
-            "format": "otlp",
-            "max_batch_duration": "0s",
-            "outbound_request_limit": 1,
-        }));
-
-        phase
-            .run_test(move |mut ctx| async move {
-                let (pipeline_completion_tx, mut pipeline_completion_rx) =
-                    pipeline_completion_msg_channel(16);
-                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
-
-                // First input: a small logs request that fits max_size, so it
-                // becomes one whole subscribed batch and holds the only outbound
-                // slot (we never Ack it, so the slot stays occupied).
-                let small = multi_resource_logs_bytes(1, 1);
-                let pdata1 = OtapPdata::new_default(small.into()).test_subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(0, 0).into(),
-                    1,
-                );
-                ctx.process(Message::PData(pdata1))
-                    .await
-                    .expect("process first input");
-                // Drain (but do not Ack) so the outbound slot remains held.
-                let held = ctx.drain_pdata().await;
-                assert_eq!(held.len(), 1, "small input is a single subscribed batch");
-
-                // Second input: oversize, would split into many fragments, but
-                // remaining outbound capacity is now 0.
-                let big = multi_resource_logs_bytes(1, 8);
-                let pdata2 = OtapPdata::new_default(big.into()).test_subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(1, 0).into(),
-                    1,
-                );
-                ctx.process(Message::PData(pdata2))
-                    .await
-                    .expect("process second input (nacked, not engine error)");
-
-                let mut nack_count = 0;
-                while let Ok(msg) = pipeline_completion_rx.try_recv() {
-                    if let PipelineCompletionMsg::DeliverNack { nack } = msg {
-                        assert!(nack.reason.contains("outbound routes exhausted"));
-                        nack_count += 1;
-                    }
-                }
-                assert_eq!(
-                    nack_count, 1,
-                    "the whole fallback batch is Nacked as one coherent unit"
-                );
-
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                }))
-                .await
-                .expect("collect telemetry");
-            })
-            .validate(move |_| async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                assert_eq!(
-                    counter_metric_value(
-                        &telemetry_registry,
-                        "otap.processor.batch",
-                        "split.capacity.fallbacks"
-                    ),
-                    1,
-                    "zero-capacity split must record a capacity fallback"
                 );
             });
     }

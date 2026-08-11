@@ -30,7 +30,7 @@ const CHILD_LIST_FIELD: u64 = 2;
 type OwnedBatch = (OtlpProtoBytes, usize);
 
 /// Result of byte batching: the output batches (each with its ownership weight)
-/// plus the counts of oversize entries that were emitted whole instead of split.
+/// plus the count of oversize entries that were emitted whole instead of split.
 pub struct BytesBatches {
     /// Output batches, each paired with the input-byte ownership weight it
     /// represents. The weights sum to the input byte total.
@@ -39,10 +39,6 @@ pub struct BytesBatches {
     /// because their projected fragment count or duplicated wrapper bytes
     /// exceeded the per-entry `fragment_budget` / `overhead_budget`.
     pub budget_fallbacks: u64,
-    /// Number of resource entries emitted whole (best-effort) instead of split
-    /// because splitting them would have produced more output batches than the
-    /// flush's remaining outbound capacity (`output_budget`) could track.
-    pub capacity_fallbacks: u64,
 }
 
 /// Number of bytes needed to encode `v` as a protobuf varint.
@@ -112,73 +108,6 @@ fn next_field(buf: &[u8], pos: usize) -> Option<(u64, u64, usize, usize)> {
         }
         _ => None,
     }
-}
-
-/// Records the encoded length of every top-level field in `buf`, in order,
-/// appending to `sizes`. Each length is the full field span (tag, length prefix
-/// and payload); a malformed tail is recorded as one final unit spanning the
-/// rest of the buffer. The enumeration matches the main packing loop exactly, so
-/// `sizes` is a faithful stand-in for the top-level units used to project the
-/// remaining output-batch count when bounding a split against outbound capacity.
-fn collect_top_level_sizes(buf: &[u8], sizes: &mut Vec<usize>) {
-    let mut pos = 0;
-    while pos < buf.len() {
-        match next_field(buf, pos) {
-            Some((_, _, _, field_end)) => {
-                sizes.push(field_end - pos);
-                pos = field_end;
-            }
-            None => {
-                sizes.push(buf.len() - pos);
-                pos = buf.len();
-            }
-        }
-    }
-}
-
-/// Projects how many output batches the greedy top-level packing will produce
-/// for a run of top-level units whose encoded lengths are `sizes`, starting from
-/// an empty accumulator. Small units (`<= max_size`) pack together into shared
-/// batches exactly as [`push_opaque`]/[`push_resource_entry`] do; a unit larger
-/// than `max_size` flushes any pending accumulator and then counts as at least
-/// one batch of its own (its floor -- an oversize resource entry that keeps its
-/// split produces more, but self-limits against the same capacity bound). Used
-/// to reserve outbound slots for not-yet-processed units so an early split does
-/// not starve them: because small units share batches and oversize opaque units
-/// are counted too, this neither over-reserves packable entries nor omits
-/// separately-emitted opaque outputs.
-///
-/// The scan stops early once the running count exceeds `cap`, returning a value
-/// `> cap`. The only caller compares `batches.len() + reserved_after >
-/// output_budget`, i.e. tests whether the projection exceeds a threshold
-/// `<= cap`; any returned value `> cap` preserves that comparison, while a count
-/// `<= cap` is returned exactly. This bounds the scan (relevant when many
-/// oversize units follow, each contributing at least one batch) instead of
-/// always walking the entire remaining list.
-fn project_output_batches(sizes: &[usize], max_size: usize, cap: usize) -> usize {
-    let mut batches = 0;
-    let mut cur = 0usize;
-    for &size in sizes {
-        if size > max_size {
-            if cur > 0 {
-                batches += 1;
-                cur = 0;
-            }
-            batches += 1;
-        } else if cur + size <= max_size {
-            cur += size;
-        } else {
-            batches += 1;
-            cur = size;
-        }
-        if batches > cap {
-            return batches;
-        }
-    }
-    if cur > 0 {
-        batches += 1;
-    }
-    batches
 }
 
 /// Returns `true` when every field in `buf` parses cleanly through to the end
@@ -271,12 +200,9 @@ fn push_resource_entry(
     max_size: usize,
     fragment_budget: usize,
     overhead_budget: usize,
-    output_budget: usize,
-    reserved_after: usize,
     cur: &mut Vec<u8>,
     batches: &mut Vec<OwnedBatch>,
     budget_fallbacks: &mut u64,
-    capacity_fallbacks: &mut u64,
 ) {
     if cur.len() + full.len() <= max_size {
         cur.extend_from_slice(full);
@@ -299,26 +225,6 @@ fn push_resource_entry(
         batches,
         budget_fallbacks,
     );
-    // Bound cumulative fan-out across the whole flush. `batches.len()` is the
-    // running total of committed outputs (the `cur` accumulator was just
-    // flushed, so nothing is pending). `reserved_after` is the projected number
-    // of output batches the not-yet-processed top-level units will produce (their
-    // greedy packing, including separately-emitted opaque units): each of those
-    // needs an outbound slot, so this entry may only keep its split if the
-    // running total plus those reservations still fits `output_budget` -- the
-    // flush's remaining outbound capacity. Without the reservation a greedy early
-    // entry could consume the whole budget and force later outputs to be Nacked.
-    // Collapsing back to a single whole entry keeps the input's Ack/Nack
-    // coherent: a real split would create more subscribed fragments than the
-    // outbound pool can track, so a later fragment (or a sibling opaque output of
-    // the same input) would be Nacked while its siblings are already in flight.
-    // Nothing has been sent yet (the caller builds the entire output vec first),
-    // so truncation is safe.
-    if batches.len() - start > 1 && batches.len().saturating_add(reserved_after) > output_budget {
-        batches.truncate(start);
-        emit_top(signal, payload, batches);
-        *capacity_fallbacks += 1;
-    }
     // Every fragment produced by this split re-encodes the resource/scope
     // headers, so their encoded lengths sum to more than the input entry.
     // Reattribute the entry's input bytes across the fragments (or the single
@@ -616,7 +522,7 @@ pub fn make_bytes_batches(
     inputs: Vec<OtlpProtoBytes>,
 ) -> Result<Vec<OtlpProtoBytes>> {
     Ok(
-        make_bytes_batches_owned(signal, max_bytes, None, None, usize::MAX, inputs)?
+        make_bytes_batches_owned(signal, max_bytes, None, None, inputs)?
             .batches
             .into_iter()
             .map(|(batch, _weight)| batch)
@@ -641,25 +547,11 @@ pub fn make_bytes_batches(
 /// either budget is emitted whole (best-effort) and counted in
 /// `budget_fallbacks`, so no records are ever partially emitted before falling
 /// back. `None` means unbounded.
-///
-/// `output_budget` caps the *cumulative* number of output batches across the
-/// whole call, tying split fan-out to the caller's remaining outbound capacity.
-/// When deciding whether to keep an entry's split, it reserves a slot for the
-/// output batches the not-yet-processed top-level units will produce -- projected
-/// from the same greedy packing, so small units that pack together reserve one
-/// shared slot and separately-emitted opaque units are still counted. If keeping
-/// the split would push the running total (plus those reservations) past this
-/// bound, the entry is instead emitted whole and counted in `capacity_fallbacks`,
-/// so a single input never fans out into more subscribed fragments than the
-/// caller can track (which would otherwise Nack a late fragment, or a sibling
-/// opaque output of the same input, while its siblings are in flight). Pass
-/// `usize::MAX` for unbounded.
 pub fn make_bytes_batches_owned(
     signal: SignalType,
     max_bytes: Option<NonZeroU64>,
     fragment_budget: Option<NonZeroU64>,
     overhead_budget: Option<NonZeroU64>,
-    output_budget: usize,
     inputs: Vec<OtlpProtoBytes>,
 ) -> Result<BytesBatches> {
     if inputs.is_empty() {
@@ -679,7 +571,6 @@ pub fn make_bytes_batches_owned(
             return BytesBatches {
                 batches: vec![(batch, weight)],
                 budget_fallbacks: 0,
-                capacity_fallbacks: 0,
             };
         }
         let bytes = inputs
@@ -692,7 +583,6 @@ pub fn make_bytes_batches_owned(
         BytesBatches {
             batches: vec![(OtlpProtoBytes::new_from_bytes(signal, bytes), weight)],
             budget_fallbacks: 0,
-            capacity_fallbacks: 0,
         }
     };
 
@@ -719,23 +609,6 @@ pub fn make_bytes_batches_owned(
     // `max_size` unless a single indivisible unit forces it.
     let mut cur: Vec<u8> = Vec::with_capacity(total_size.min(max_size));
     let mut budget_fallbacks: u64 = 0;
-    let mut capacity_fallbacks: u64 = 0;
-
-    // Encoded length of every top-level unit across all inputs, in packing
-    // order. Used to project the number of output batches the not-yet-processed
-    // units will produce, so a split can reserve outbound slots for them (their
-    // greedy packing, including separately-emitted opaque units). Only needed
-    // when `output_budget` is finite; the scan is cheap (field tags only).
-    let field_sizes: Vec<usize> = if output_budget == usize::MAX {
-        Vec::new()
-    } else {
-        let mut sizes = Vec::new();
-        for input in &inputs {
-            collect_top_level_sizes(input.as_bytes(), &mut sizes);
-        }
-        sizes
-    };
-    let mut field_idx: usize = 0;
 
     for input in &inputs {
         let buf = input.as_bytes();
@@ -746,29 +619,6 @@ pub fn make_bytes_batches_owned(
                     let full = &buf[pos..field_end];
                     pos = field_end;
                     if field == RESOURCE_ENTRY_FIELD && wire == wire_types::LEN {
-                        // Reserve outbound slots for every top-level unit that
-                        // still follows this entry, by projecting how many
-                        // output batches their greedy packing will produce. Only
-                        // an entry that itself exceeds `max_size` can split (and
-                        // thus consult the reservation), so skip the projection
-                        // scan for entries that pack normally -- this keeps the
-                        // common small-entry path linear instead of O(N^2). The
-                        // projection also stops early once it exceeds the
-                        // remaining budget (`output_budget - batches.len()`),
-                        // since the caller only needs to know whether the
-                        // reservation overflows that threshold -- so a run of
-                        // many oversize (possibly unsplittable) trailing entries
-                        // is not fully rescanned for every split.
-                        let reserved_after =
-                            if output_budget == usize::MAX || full.len() <= max_size {
-                                0
-                            } else {
-                                project_output_batches(
-                                    &field_sizes[field_idx + 1..],
-                                    max_size,
-                                    output_budget.saturating_sub(batches.len()),
-                                )
-                            };
                         push_resource_entry(
                             signal,
                             full,
@@ -776,24 +626,19 @@ pub fn make_bytes_batches_owned(
                             max_size,
                             fragment_budget,
                             overhead_budget,
-                            output_budget,
-                            reserved_after,
                             &mut cur,
                             &mut batches,
                             &mut budget_fallbacks,
-                            &mut capacity_fallbacks,
                         );
                     } else {
                         push_opaque(signal, full, max_size, &mut cur, &mut batches);
                     }
-                    field_idx += 1;
                 }
                 None => {
                     // Malformed field: treat the rest of the buffer as opaque.
                     let full = &buf[pos..];
                     pos = buf.len();
                     push_opaque(signal, full, max_size, &mut cur, &mut batches);
-                    field_idx += 1;
                 }
             }
         }
@@ -803,6 +648,5 @@ pub fn make_bytes_batches_owned(
     Ok(BytesBatches {
         batches,
         budget_fallbacks,
-        capacity_fallbacks,
     })
 }
