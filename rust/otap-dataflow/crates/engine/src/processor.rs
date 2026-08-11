@@ -644,6 +644,9 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_needs_timing,
                 );
 
+                // Preserve the first processing error so final metric
+                // collection can run before the error is returned.
+                let mut processing_error: Option<Error> = None;
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
                     if effect_handler.flow_metrics_active() {
                         match &mut msg {
@@ -661,7 +664,10 @@ impl<PData> ProcessorWrapper<PData> {
                             _ => {}
                         }
                     }
-                    processor.process(msg, &mut effect_handler).await?;
+                    if let Err(err) = processor.process(msg, &mut effect_handler).await {
+                        processing_error = Some(err);
+                        break;
+                    }
                 }
                 // Collect final metrics before exiting
                 let terminal_metrics_deadline = terminal_metrics_deadline.get();
@@ -681,7 +687,7 @@ impl<PData> ProcessorWrapper<PData> {
                 }
                 let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
                 let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
-                let process_result = processor
+                let collect_result = processor
                     .process(
                         Message::Control(NodeControlMsg::CollectTelemetry {
                             metrics_reporter: terminal_metrics_reporter,
@@ -700,7 +706,12 @@ impl<PData> ProcessorWrapper<PData> {
                         );
                     }
                 }
-                process_result?
+                // Return the original processing error if present; otherwise
+                // surface any error from the final CollectTelemetry call.
+                if let Some(err) = processing_error {
+                    return Err(err);
+                }
+                collect_result?
             }
             ProcessorWrapperRuntime::Shared {
                 mut processor,
@@ -728,6 +739,9 @@ impl<PData> ProcessorWrapper<PData> {
                     flow_needs_timing,
                 );
 
+                // Preserve the first processing error so final metric
+                // collection can run before the error is returned.
+                let mut processing_error: Option<Error> = None;
                 while let Ok(mut msg) = inbox.recv_when(processor.accept_pdata()).await {
                     if effect_handler.flow_metrics_active() {
                         match &mut msg {
@@ -745,7 +759,10 @@ impl<PData> ProcessorWrapper<PData> {
                             _ => {}
                         }
                     }
-                    processor.process(msg, &mut effect_handler).await?;
+                    if let Err(err) = processor.process(msg, &mut effect_handler).await {
+                        processing_error = Some(err);
+                        break;
+                    }
                 }
                 // Collect final metrics before exiting
                 let terminal_metrics_deadline = terminal_metrics_deadline.get();
@@ -765,7 +782,7 @@ impl<PData> ProcessorWrapper<PData> {
                 }
                 let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
                 let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
-                let process_result = processor
+                let collect_result = processor
                     .process(
                         Message::Control(NodeControlMsg::CollectTelemetry {
                             metrics_reporter: terminal_metrics_reporter,
@@ -784,7 +801,12 @@ impl<PData> ProcessorWrapper<PData> {
                         );
                     }
                 }
-                process_result?
+                // Return the original processing error if present; otherwise
+                // surface any error from the final CollectTelemetry call.
+                if let Some(err) = processing_error {
+                    return Err(err);
+                }
+                collect_result?
             }
         }
         Ok(())
@@ -938,11 +960,13 @@ impl<PData> NodeWithPDataReceiver<PData> for ProcessorWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::ProcessorConfig;
     use crate::control::{
         Controllable, NodeControlMsg,
         NodeControlMsg::{Config, Shutdown, TimerTick},
         pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
+    use crate::error::ProcessorErrorKind;
     use crate::flow_metrics::{
         FlowAttributeSet, FlowConsumedItemsMetrics, FlowDroppedItemsMetrics, FlowDurationMetrics,
         FlowProducedItemsMetrics,
@@ -950,17 +974,19 @@ mod tests {
     use crate::local::message::{LocalReceiver, LocalSender};
     use crate::local::processor as local;
     use crate::message::{Message, Receiver, Sender};
-    use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
+    use crate::node::{Node, NodeWithPDataReceiver, NodeWithPDataSender};
     use crate::processor::{
         Error, ProcessorRuntimeRequirements, ProcessorWrapper, validate_local_wakeup_requirements,
     };
+    use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::shared::processor as shared;
     use crate::testing::processor::TestRuntime;
     use crate::testing::processor::{TestContext, ValidateContext};
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
     use otap_df_config::{SignalType, node::NodeUserConfig};
-    use otap_df_telemetry::metrics::MetricValue;
+    use otap_df_telemetry::common_attributes::SignalAttributes;
+    use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricValue};
     use serde_json::Value;
     use std::ops::Add;
     use std::pin::Pin;
@@ -1412,7 +1438,7 @@ mod tests {
         let duration_metric_set = FlowDurationMetrics::register(&registrar);
         let outgoing_metric_set = FlowProducedItemsMetrics::register(&registrar);
 
-        let config = crate::config::ProcessorConfig::new("auto_measure_processor");
+        let config = ProcessorConfig::new("auto_measure_processor");
         let node_id = test_node(config.name.clone());
         let user_config = Arc::new(NodeUserConfig::new_processor_config(
             "auto_measure_processor",
@@ -1531,5 +1557,436 @@ mod tests {
                 assert_eq!(*produced_items, 1);
             })
             .await;
+    }
+
+    /// A processor that returns a deliberate error on every PData message and
+    /// emits one processor-local metrics snapshot when it receives the engine's
+    /// final CollectTelemetry call.  Used with FlowMetricTestPData so that
+    /// after_processor_receive records one pending consumed-items count before
+    /// the error, giving the finalization block real flow metrics to flush.
+    struct ErrorOnPDataProcessor {
+        node_id: String,
+        // The snapshot_metric is registered externally and shared with the test
+        // so the test can verify a snapshot was delivered to metrics_rx.
+        snapshot_metric: MeasurementMetricSet<FlowConsumedItemsMetrics>,
+    }
+
+    #[async_trait(?Send)]
+    impl local::Processor<FlowMetricTestPData> for ErrorOnPDataProcessor {
+        async fn process(
+            &mut self,
+            msg: Message<FlowMetricTestPData>,
+            _effect_handler: &mut local::EffectHandler<FlowMetricTestPData>,
+        ) -> Result<(), Error> {
+            match msg {
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                    ..
+                }) => {
+                    // Emit a real processor-local snapshot.  The test asserts
+                    // this snapshot arrives on the outer metrics_rx.
+                    self.snapshot_metric
+                        .with(SignalAttributes {
+                            signal: SignalType::Logs,
+                        })
+                        .consumed_items
+                        .add(7);
+                    metrics_reporter
+                        .report_measurement(&mut self.snapshot_metric)
+                        .expect("test: failed to emit processor-local snapshot");
+                    Ok(())
+                }
+                Message::PData(_) => Err(Error::ProcessorError {
+                    processor: test_node(self.node_id.clone()),
+                    kind: ProcessorErrorKind::Other,
+                    error: "deliberate test error".to_owned(),
+                    source_detail: String::new(),
+                }),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl shared::Processor<FlowMetricTestPData> for ErrorOnPDataProcessor {
+        async fn process(
+            &mut self,
+            msg: Message<FlowMetricTestPData>,
+            _effect_handler: &mut shared::EffectHandler<FlowMetricTestPData>,
+        ) -> Result<(), Error> {
+            match msg {
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                    ..
+                }) => {
+                    self.snapshot_metric
+                        .with(SignalAttributes {
+                            signal: SignalType::Logs,
+                        })
+                        .consumed_items
+                        .add(7);
+                    metrics_reporter
+                        .report_measurement(&mut self.snapshot_metric)
+                        .expect("test: failed to emit processor-local snapshot");
+                    Ok(())
+                }
+                Message::PData(_) => Err(Error::ProcessorError {
+                    processor: test_node(self.node_id.clone()),
+                    kind: ProcessorErrorKind::Other,
+                    error: "deliberate test error".to_owned(),
+                    source_detail: String::new(),
+                }),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    /// Wire up a `ProcessorWrapper` for the error-on-pdata regression scenario,
+    /// run it with one PData message configured as a flow-start node, and return
+    /// (error, metrics_rx).  The caller asserts the error identity and inspects
+    /// the snapshots that arrive on metrics_rx.
+    async fn run_error_on_pdata_scenario(
+        processor: ProcessorWrapper<FlowMetricTestPData>,
+        consumed_metric: MeasurementMetricSet<FlowConsumedItemsMetrics>,
+    ) -> (
+        Error,
+        flume::Receiver<otap_df_telemetry::metrics::MetricSetSnapshot>,
+    ) {
+        let config = ProcessorConfig::new("test_processor");
+        let node_id = test_node(config.name.clone());
+        let mut p = processor;
+        let is_shared = p.is_shared();
+
+        if !is_shared {
+            let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
+            let (out_tx, _out_rx) = otap_df_channel::mpsc::Channel::new(4);
+            p.set_pdata_receiver(node_id.clone(), Receiver::Local(LocalReceiver::mpsc(rx)))
+                .expect("set pdata receiver");
+            p.set_pdata_sender(
+                node_id,
+                "default".into(),
+                Sender::Local(LocalSender::mpsc(out_tx)),
+            )
+            .expect("set pdata sender");
+            tx.send(FlowMetricTestPData::default())
+                .expect("pdata should enqueue");
+            // tx dropped: inbox will close after draining the queued message.
+        } else {
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            let (out_tx, _out_rx) = tokio::sync::mpsc::channel(4);
+            p.set_pdata_receiver(node_id.clone(), Receiver::Shared(SharedReceiver::mpsc(rx)))
+                .expect("set pdata receiver");
+            p.set_pdata_sender(
+                node_id,
+                "default".into(),
+                Sender::Shared(SharedSender::mpsc(out_tx)),
+            )
+            .expect("set pdata sender");
+            tx.send(FlowMetricTestPData::default())
+                .await
+                .expect("pdata should enqueue");
+            // tx dropped: inbox will close after draining the queued message.
+        }
+
+        let (metrics_rx, metrics_reporter) =
+            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(16);
+        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(4);
+
+        let _ctrl_keepalive = p.control_sender();
+
+        let result = p
+            .start_with_completion_metrics(
+                runtime_ctrl_tx,
+                completion_tx,
+                metrics_reporter,
+                crate::Interests::empty(),
+                None,
+                true, // flow_is_start: pending consumed items are tracked
+                false,
+                Some(consumed_metric),
+                None,
+                None,
+                None,
+                true, // flow_metrics_active
+                false,
+                crate::terminal_state::TerminalMetricsDeadline::default(),
+            )
+            .await;
+
+        drop(_ctrl_keepalive);
+        let err = result.expect_err("run loop must return the processing error");
+        (err, metrics_rx)
+    }
+
+    /// Scenario: a local processor returns an error on a PData message;
+    /// after_processor_receive has already recorded one pending consumed-item;
+    /// the processor emits a processor-local snapshot on final CollectTelemetry.
+    /// Guarantees: (1) the original processing error is returned; (2) the pending
+    /// flow consumed-items snapshot arrives on metrics_rx; (3) the processor-local
+    /// snapshot from final CollectTelemetry also arrives on metrics_rx.
+    #[tokio::test]
+    async fn local_processor_error_flushes_flow_and_local_metrics() {
+        let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
+        let entity_key = pipeline_ctx
+            .metrics_registry()
+            .register_entity(FlowAttributeSet::default());
+        let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
+        let consumed_metric = FlowConsumedItemsMetrics::register(&registrar);
+        // A second registration for the processor-local snapshot emitted on
+        // CollectTelemetry.
+        let local_metric = FlowConsumedItemsMetrics::register(&registrar);
+
+        let config = ProcessorConfig::new("test_processor");
+        let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
+        let proc = ErrorOnPDataProcessor {
+            node_id: config.name.to_string(),
+            snapshot_metric: local_metric,
+        };
+        let wrapper =
+            ProcessorWrapper::local(proc, test_node(config.name.clone()), user_config, &config);
+
+        let (err, metrics_rx) = run_error_on_pdata_scenario(wrapper, consumed_metric).await;
+
+        let Error::ProcessorError { error, .. } = err else {
+            panic!("expected ProcessorError, got {err:?}");
+        };
+        assert_eq!(
+            error, "deliberate test error",
+            "original error must be returned"
+        );
+
+        // The pending flow consumed-items snapshot flushed during finalization.
+        let flow_snapshot = metrics_rx
+            .try_recv()
+            .expect("flow consumed-items snapshot must be delivered after error");
+        let [MetricValue::U64(consumed)] = flow_snapshot.get_metrics() else {
+            panic!(
+                "expected U64 consumed-items metric, got {:?}",
+                flow_snapshot.get_metrics()
+            );
+        };
+        assert_eq!(
+            *consumed, 1,
+            "one PData message was consumed before the error"
+        );
+
+        // The processor-local snapshot emitted during final CollectTelemetry.
+        let local_snapshot = metrics_rx
+            .try_recv()
+            .expect("processor-local snapshot from CollectTelemetry must be delivered");
+        let [MetricValue::U64(local_val)] = local_snapshot.get_metrics() else {
+            panic!(
+                "expected U64 local metric, got {:?}",
+                local_snapshot.get_metrics()
+            );
+        };
+        assert_eq!(
+            *local_val, 7,
+            "processor emitted one local snapshot on CollectTelemetry"
+        );
+
+        assert!(
+            metrics_rx.try_recv().is_err(),
+            "no extra snapshots expected"
+        );
+    }
+
+    /// Scenario: a shared processor returns an error on a PData message;
+    /// after_processor_receive has already recorded one pending consumed-item;
+    /// the processor emits a processor-local snapshot on final CollectTelemetry.
+    /// Guarantees: (1) the original processing error is returned; (2) the pending
+    /// flow consumed-items snapshot arrives on metrics_rx; (3) the processor-local
+    /// snapshot from final CollectTelemetry also arrives on metrics_rx.
+    #[tokio::test]
+    async fn shared_processor_error_flushes_flow_and_local_metrics() {
+        let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
+        let entity_key = pipeline_ctx
+            .metrics_registry()
+            .register_entity(FlowAttributeSet::default());
+        let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
+        let consumed_metric = FlowConsumedItemsMetrics::register(&registrar);
+        let local_metric = FlowConsumedItemsMetrics::register(&registrar);
+
+        let config = ProcessorConfig::new("test_processor");
+        let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
+        let proc = ErrorOnPDataProcessor {
+            node_id: config.name.to_string(),
+            snapshot_metric: local_metric,
+        };
+        let wrapper =
+            ProcessorWrapper::shared(proc, test_node(config.name.clone()), user_config, &config);
+
+        let (err, metrics_rx) = run_error_on_pdata_scenario(wrapper, consumed_metric).await;
+
+        let Error::ProcessorError { error, .. } = err else {
+            panic!("expected ProcessorError, got {err:?}");
+        };
+        assert_eq!(
+            error, "deliberate test error",
+            "original error must be returned"
+        );
+
+        let flow_snapshot = metrics_rx
+            .try_recv()
+            .expect("flow consumed-items snapshot must be delivered after error");
+        let [MetricValue::U64(consumed)] = flow_snapshot.get_metrics() else {
+            panic!(
+                "expected U64 consumed-items metric, got {:?}",
+                flow_snapshot.get_metrics()
+            );
+        };
+        assert_eq!(
+            *consumed, 1,
+            "one PData message was consumed before the error"
+        );
+
+        let local_snapshot = metrics_rx
+            .try_recv()
+            .expect("processor-local snapshot from CollectTelemetry must be delivered");
+        let [MetricValue::U64(local_val)] = local_snapshot.get_metrics() else {
+            panic!(
+                "expected U64 local metric, got {:?}",
+                local_snapshot.get_metrics()
+            );
+        };
+        assert_eq!(
+            *local_val, 7,
+            "processor emitted one local snapshot on CollectTelemetry"
+        );
+
+        assert!(
+            metrics_rx.try_recv().is_err(),
+            "no extra snapshots expected"
+        );
+    }
+
+    /// Scenario: a local processor error occurs first; then final CollectTelemetry
+    /// also returns an error.
+    /// Guarantees: the original processing error is returned, not the secondary
+    /// CollectTelemetry error.
+    #[tokio::test]
+    async fn local_processor_error_takes_precedence_over_collect_telemetry_error() {
+        struct ErrorOnPDataAndCollectProcessor;
+
+        #[async_trait(?Send)]
+        impl local::Processor<FlowMetricTestPData> for ErrorOnPDataAndCollectProcessor {
+            async fn process(
+                &mut self,
+                msg: Message<FlowMetricTestPData>,
+                _effect_handler: &mut local::EffectHandler<FlowMetricTestPData>,
+            ) -> Result<(), Error> {
+                match msg {
+                    Message::Control(NodeControlMsg::CollectTelemetry { .. }) => {
+                        Err(Error::ProcessorError {
+                            processor: test_node("err_collect_proc"),
+                            kind: ProcessorErrorKind::Other,
+                            error: "secondary collect error".to_owned(),
+                            source_detail: String::new(),
+                        })
+                    }
+                    Message::PData(_) => Err(Error::ProcessorError {
+                        processor: test_node("err_collect_proc"),
+                        kind: ProcessorErrorKind::Other,
+                        error: "original processing error".to_owned(),
+                        source_detail: String::new(),
+                    }),
+                    _ => Ok(()),
+                }
+            }
+        }
+
+        let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
+        let entity_key = pipeline_ctx
+            .metrics_registry()
+            .register_entity(FlowAttributeSet::default());
+        let consumed_metric = FlowConsumedItemsMetrics::register(
+            &pipeline_ctx.metric_set_registrar_for_entity(entity_key),
+        );
+
+        let config = ProcessorConfig::new("test_processor");
+        let node_id = test_node(config.name.clone());
+        let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
+        let (input_tx, input_rx) = otap_df_channel::mpsc::Channel::new(4);
+        let (out_tx, _out_rx) = otap_df_channel::mpsc::Channel::new(4);
+        let mut p = ProcessorWrapper::local(
+            ErrorOnPDataAndCollectProcessor,
+            node_id.clone(),
+            user_config,
+            &config,
+        );
+        p.set_pdata_receiver(
+            node_id.clone(),
+            Receiver::Local(LocalReceiver::mpsc(input_rx)),
+        )
+        .expect("set pdata receiver");
+        p.set_pdata_sender(
+            node_id,
+            "default".into(),
+            Sender::Local(LocalSender::mpsc(out_tx)),
+        )
+        .expect("set pdata sender");
+
+        let (metrics_rx, metrics_reporter) =
+            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(4);
+
+        input_tx
+            .send(FlowMetricTestPData::default())
+            .expect("pdata should enqueue");
+        drop(input_tx);
+        let _ctrl_keepalive = p.control_sender();
+
+        let result = p
+            .start_with_completion_metrics(
+                runtime_ctrl_tx,
+                completion_tx,
+                metrics_reporter,
+                crate::Interests::empty(),
+                None,
+                true,
+                false,
+                Some(consumed_metric),
+                None,
+                None,
+                None,
+                true,
+                false,
+                crate::terminal_state::TerminalMetricsDeadline::default(),
+            )
+            .await;
+
+        drop(_ctrl_keepalive);
+        // The finalization block still flushes the flow consumed-items snapshot
+        // that was accumulated by after_processor_receive before the error.
+        let flow_snapshot = metrics_rx
+            .try_recv()
+            .expect("flow consumed-items snapshot must still be delivered");
+        let [MetricValue::U64(consumed)] = flow_snapshot.get_metrics() else {
+            panic!(
+                "expected U64 consumed-items metric, got {:?}",
+                flow_snapshot.get_metrics()
+            );
+        };
+        assert_eq!(
+            *consumed, 1,
+            "one PData message was consumed before the error"
+        );
+        // CollectTelemetry returned an error before emitting any processor-local
+        // snapshot, so no additional snapshots should be present.
+        assert!(
+            metrics_rx.try_recv().is_err(),
+            "no processor-local snapshot expected when CollectTelemetry itself errors"
+        );
+
+        let err = result.expect_err("must return an error");
+        let Error::ProcessorError { error, .. } = err else {
+            panic!("expected ProcessorError, got {err:?}");
+        };
+        assert_eq!(
+            error, "original processing error",
+            "original error must take precedence over CollectTelemetry error"
+        );
     }
 }

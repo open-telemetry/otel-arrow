@@ -84,3 +84,26 @@ curl http://localhost:8080/api/v1/debug/pprof/heap -o heap.pprof
 ```bash
 go tool pprof -http=:18080 ./target/debug/df_engine ./heap.pprof
 ```
+
+## Live CPU profiling (pprof)
+
+The admin server exposes a CPU profiling endpoint at
+`/api/v1/debug/pprof/profile` that collects a CPU profile and returns it
+in pprof format. Not available on Windows.
+
+Optional query parameters:
+
+- `seconds` -- sampling duration in seconds (default 30).
+- `frequency` -- sampling frequency in Hz (default 100).
+
+**Fetch** a 10-second CPU profile:
+
+```bash
+curl "http://localhost:8080/api/v1/debug/pprof/profile?seconds=10" -o cpu.pprof
+```
+
+**View** with `go tool pprof`:
+
+```bash
+go tool pprof -http=:18080 ./target/debug/df_engine ./cpu.pprof
+```
