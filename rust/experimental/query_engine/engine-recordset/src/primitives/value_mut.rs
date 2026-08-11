@@ -57,7 +57,10 @@ pub trait ArrayValueMut: ArrayValue {
 
     fn remove(&mut self, index: usize) -> ValueMutRemoveResult;
 
-    fn retain(&mut self, item_callback: &mut dyn FnMut(usize, &mut (dyn AsStaticValueMut + 'static)) -> bool);
+    fn retain(
+        &mut self,
+        item_callback: &mut dyn FnMut(usize, &mut (dyn AsStaticValueMut + 'static)) -> bool,
+    );
 }
 
 pub trait MapValueMut: MapValue {
@@ -69,7 +72,10 @@ pub trait MapValueMut: MapValue {
 
     fn remove(&mut self, key: &str) -> ValueMutRemoveResult;
 
-    fn retain(&mut self, item_callback: &mut dyn FnMut(&str, &mut (dyn AsStaticValueMut + 'static)) -> bool);
+    fn retain(
+        &mut self,
+        item_callback: &mut dyn FnMut(&str, &mut (dyn AsStaticValueMut + 'static)) -> bool,
+    );
 }
 
 pub trait StringValueMut: StringValue {
