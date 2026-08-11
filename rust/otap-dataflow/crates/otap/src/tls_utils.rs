@@ -1593,7 +1593,12 @@ where
     }
 }
 
-pub(crate) async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, io::Error> {
+/// Reads a file, rejecting anything larger than `MAX_TLS_FILE_SIZE` (4MB).
+///
+/// Shared by every component that loads certificate, key, or credential
+/// material from disk, so a misconfigured or hostile path cannot OOM the
+/// collector.
+pub async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, io::Error> {
     let metadata = tokio::fs::metadata(path).await?;
     if metadata.len() > MAX_TLS_FILE_SIZE {
         return Err(io::Error::new(
@@ -1609,7 +1614,9 @@ pub(crate) async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, i
     tokio::fs::read(path).await
 }
 
-fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
+/// Blocking counterpart to [`read_file_with_limit_async`], for callers that
+/// load PEM material outside an async context.
+pub fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
     let metadata = std::fs::metadata(path)?;
     if metadata.len() > MAX_TLS_FILE_SIZE {
         return Err(io::Error::new(
