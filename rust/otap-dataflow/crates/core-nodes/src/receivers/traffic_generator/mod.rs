@@ -72,6 +72,9 @@ pub struct TrafficGeneratorReceiver {
 
     /// Metrics for the traffic generator
     metrics: MetricSet<TrafficGeneratorReceiverMetrics>,
+
+    /// Successfully admitted batches still waiting for Ack/Nack completion.
+    pending_completions: u64,
 }
 
 fn smooth_batch_interval(run_len: usize) -> Option<Duration> {
@@ -122,7 +125,11 @@ impl TrafficGeneratorReceiver {
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
         let metrics = pipeline_ctx.register_metrics::<TrafficGeneratorReceiverMetrics>();
-        Self { config, metrics }
+        Self {
+            config,
+            metrics,
+            pending_completions: 0,
+        }
     }
 
     /// Creates a new traffic generator from a configuration object
@@ -150,13 +157,21 @@ impl TrafficGeneratorReceiver {
     ) -> Result<TerminalState, Error> {
         let mut run_produced: u64 = 0;
         let mut next_pdata: Option<OtapPdata> = None;
+        let enable_ack_nack = self.config.enable_ack_nack();
 
         loop {
             producer.record_production(run_produced);
             run_produced = 0;
 
             let Ok(Some(mut current_run)) = producer.next_run() else {
-                return wait_for_terminal(ctrl_msg_recv, handler, &mut self.metrics).await;
+                return wait_for_terminal(
+                    ctrl_msg_recv,
+                    handler,
+                    enable_ack_nack,
+                    &mut self.pending_completions,
+                    &mut self.metrics,
+                )
+                .await;
             };
 
             self.metrics.smooth_runs_started.inc();
@@ -167,7 +182,14 @@ impl TrafficGeneratorReceiver {
                     biased;
 
                     msg = ctrl_msg_recv.recv() => {
-                        if let Some(terminal) = handle_control_msg(msg, handler, &mut self.metrics).await? {
+                        if let Some(terminal) = handle_control_msg(
+                            msg,
+                            &mut ctrl_msg_recv,
+                            handler,
+                            enable_ack_nack,
+                            &mut self.pending_completions,
+                            &mut self.metrics,
+                        ).await? {
                             return Ok(terminal);
                         }
                     }
@@ -267,12 +289,20 @@ impl TrafficGeneratorReceiver {
         transport_headers: Option<TransportHeaders>,
     ) -> Result<TerminalState, Error> {
         let mut run_produced: u64 = 0;
+        let enable_ack_nack = self.config.enable_ack_nack();
         'start: loop {
             producer.record_production(run_produced);
             run_produced = 0;
 
             let Ok(Some(mut current_run)) = producer.next_run() else {
-                return wait_for_terminal(ctrl_msg_recv, handler, &mut self.metrics).await;
+                return wait_for_terminal(
+                    ctrl_msg_recv,
+                    handler,
+                    enable_ack_nack,
+                    &mut self.pending_completions,
+                    &mut self.metrics,
+                )
+                .await;
             };
 
             // First phase is the open export phase where we pump data as fast as
@@ -285,7 +315,14 @@ impl TrafficGeneratorReceiver {
                     biased;
 
                     msg = ctrl_msg_recv.recv() => {
-                        if let Some(terminal) = handle_control_msg(msg, handler, &mut self.metrics).await? {
+                        if let Some(terminal) = handle_control_msg(
+                            msg,
+                            &mut ctrl_msg_recv,
+                            handler,
+                            enable_ack_nack,
+                            &mut self.pending_completions,
+                            &mut self.metrics,
+                        ).await? {
                             return Ok(terminal);
                         }
                     }
@@ -335,7 +372,14 @@ impl TrafficGeneratorReceiver {
                     biased;
 
                     msg = ctrl_msg_recv.recv() => {
-                        if let Some(terminal) = handle_control_msg(msg, handler, &mut self.metrics).await? {
+                        if let Some(terminal) = handle_control_msg(
+                            msg,
+                            &mut ctrl_msg_recv,
+                            handler,
+                            enable_ack_nack,
+                            &mut self.pending_completions,
+                            &mut self.metrics,
+                        ).await? {
                             return Ok(terminal);
                         }
                     }
@@ -392,6 +436,12 @@ impl TrafficGeneratorReceiver {
         let payload_bytes = pdata.payload_ref().num_bytes();
         match handler.try_send_message_with_source_node(pdata) {
             Ok(()) => {
+                if self.config.enable_ack_nack() {
+                    self.pending_completions = self.pending_completions.saturating_add(1);
+                    self.metrics
+                        .completion_pending
+                        .set(self.pending_completions);
+                }
                 match signal {
                     otap_df_config::SignalType::Traces => self.metrics.spans_produced.add(count),
                     otap_df_config::SignalType::Metrics => self.metrics.metrics_produced.add(count),
@@ -481,14 +531,84 @@ fn build_transport_headers(
 async fn wait_for_terminal(
     mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
     handler: &local::EffectHandler<OtapPdata>,
+    enable_ack_nack: bool,
+    pending_completions: &mut u64,
     metrics: &mut MetricSet<TrafficGeneratorReceiverMetrics>,
 ) -> Result<TerminalState, Error> {
     loop {
         let msg = ctrl_msg_recv.recv().await;
-        if let Some(terminal) = handle_control_msg(msg, handler, metrics).await? {
+        if let Some(terminal) = handle_control_msg(
+            msg,
+            &mut ctrl_msg_recv,
+            handler,
+            enable_ack_nack,
+            pending_completions,
+            metrics,
+        )
+        .await?
+        {
             return Ok(terminal);
         }
     }
+}
+
+fn record_completion(
+    is_ack: bool,
+    pending_completions: &mut u64,
+    metrics: &mut MetricSet<TrafficGeneratorReceiverMetrics>,
+) {
+    if is_ack {
+        metrics.completion_acks.inc();
+    } else {
+        metrics.completion_nacks.inc();
+    }
+    *pending_completions = pending_completions.saturating_sub(1);
+    metrics.completion_pending.set(*pending_completions);
+}
+
+async fn drain_pending_completions(
+    ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
+    effect_handler: &local::EffectHandler<OtapPdata>,
+    deadline: StdInstant,
+    pending_completions: &mut u64,
+    metrics: &mut MetricSet<TrafficGeneratorReceiverMetrics>,
+) -> Result<TerminalState, Error> {
+    while *pending_completions > 0 {
+        tokio::select! {
+            biased;
+
+            msg = ctrl_msg_recv.recv() => match msg {
+                Ok(NodeControlMsg::Ack(_)) => {
+                    record_completion(true, pending_completions, metrics);
+                }
+                Ok(NodeControlMsg::Nack(_)) => {
+                    record_completion(false, pending_completions, metrics);
+                }
+                Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                    _ = metrics_reporter.report(metrics);
+                }
+                Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    otel_info!("traffic_generator.shutdown");
+                    return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                }
+                Err(e) => return Err(Error::ChannelRecvError(e)),
+                _ => {}
+            },
+
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                metrics.completion_drain_deadline_forced.inc();
+                otel_warn!(
+                    "traffic_generator.completion_drain.deadline_reached",
+                    pending_batches = *pending_completions,
+                    message = "Completion drain deadline reached with unresolved batches"
+                );
+                break;
+            }
+        }
+    }
+
+    effect_handler.notify_receiver_drained().await?;
+    Ok(TerminalState::new(deadline, [metrics.snapshot()]))
 }
 
 /// Handle a control message received on the control channel.
@@ -498,7 +618,10 @@ async fn wait_for_terminal(
 /// channel error.
 async fn handle_control_msg(
     ctrl_msg: Result<NodeControlMsg<OtapPdata>, RecvError>,
+    ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     effect_handler: &local::EffectHandler<OtapPdata>,
+    enable_ack_nack: bool,
+    pending_completions: &mut u64,
     metrics: &mut MetricSet<TrafficGeneratorReceiverMetrics>,
 ) -> Result<Option<TerminalState>, Error> {
     match ctrl_msg {
@@ -510,8 +633,27 @@ async fn handle_control_msg(
         }
         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
             otel_info!("traffic_generator.drain_ingress");
+            if enable_ack_nack && *pending_completions > 0 {
+                return drain_pending_completions(
+                    ctrl_msg_recv,
+                    effect_handler,
+                    deadline,
+                    pending_completions,
+                    metrics,
+                )
+                .await
+                .map(Some);
+            }
             effect_handler.notify_receiver_drained().await?;
             Ok(Some(TerminalState::new(deadline, [metrics.snapshot()])))
+        }
+        Ok(NodeControlMsg::Ack(_)) if enable_ack_nack => {
+            record_completion(true, pending_completions, metrics);
+            Ok(None)
+        }
+        Ok(NodeControlMsg::Nack(_)) if enable_ack_nack => {
+            record_completion(false, pending_completions, metrics);
+            Ok(None)
         }
         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
             otel_info!("traffic_generator.shutdown");
@@ -646,6 +788,69 @@ mod tests {
     const MESSAGE_PER_SECOND: usize = 3;
     const MAX_SIGNALS: u64 = 3;
     const MAX_BATCH: usize = 30;
+
+    /// Scenario: Ack/Nack tracking is enabled, one generated batch remains
+    /// unresolved when receiver-first shutdown begins, and its Ack arrives later.
+    /// Guarantees: DrainIngress keeps the receiver alive until the Ack resolves
+    /// the pending batch, then reports the receiver as drained.
+    #[test]
+    fn test_drain_ingress_waits_for_pending_ack() {
+        let test_runtime = TestRuntime::new();
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+        let traffic_config = TrafficConfig::new(None, Some(1), 1, 0, 0, 1);
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Synthetic)
+            .with_generation_strategy(GenerationStrategy::PreGenerated)
+            .with_ack_nack(true);
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            TRAFFIC_GENERATOR_RECEIVER_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let receiver = ReceiverWrapper::local(
+            TrafficGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("traffic_generator_ack_drain"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = |ctx: TestContext<OtapPdata>| async move {
+            sleep(Duration::from_millis(50)).await;
+            ctx.send_control_msg(NodeControlMsg::DrainIngress {
+                deadline: std::time::Instant::now() + Duration::from_secs(2),
+                reason: "test completion drain".to_owned(),
+            })
+            .await
+            .expect("Failed to send DrainIngress");
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(|mut ctx| async move {
+                let pdata = tokio::time::timeout(Duration::from_secs(1), ctx.recv())
+                    .await
+                    .expect("timed out waiting for generated pdata")
+                    .expect("generated pdata channel closed");
+
+                // Send the Ack after DrainIngress. If the receiver reports
+                // drained immediately, its control channel closes and this
+                // completion cannot be delivered.
+                sleep(Duration::from_millis(100)).await;
+                ctx.send_control_msg(NodeControlMsg::Ack(otap_df_engine::control::AckMsg::new(
+                    pdata,
+                )))
+                .await
+                .expect("receiver must remain alive for the pending Ack");
+            });
+    }
 
     #[test]
     fn test_smooth_batch_interval_uses_sub_millisecond_precision() {

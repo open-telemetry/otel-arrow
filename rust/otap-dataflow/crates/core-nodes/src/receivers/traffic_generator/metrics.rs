@@ -24,6 +24,18 @@ pub struct TrafficGeneratorReceiverMetrics {
     /// Number of metrics generated.
     #[metric(unit = "{metric}")]
     pub metrics_produced: Counter<u64>,
+    /// Number of subscribed batches waiting for Ack/Nack completion.
+    #[metric(name = "completion.pending", unit = "{batch}")]
+    pub completion_pending: Gauge<u64>,
+    /// Number of Ack completions received for generated batches.
+    #[metric(name = "completion.acks", unit = "{batch}")]
+    pub completion_acks: Counter<u64>,
+    /// Number of Nack completions received for generated batches.
+    #[metric(name = "completion.nacks", unit = "{batch}")]
+    pub completion_nacks: Counter<u64>,
+    /// Number of drains forced to finish with unresolved batches at the deadline.
+    #[metric(name = "completion.drain.deadline_forced", unit = "{drain}")]
+    pub completion_drain_deadline_forced: Counter<u64>,
     /// Number of smooth-mode production runs started.
     #[metric(name = "smooth.runs.started", unit = "{run}")]
     pub smooth_runs_started: Counter<u64>,

@@ -38,16 +38,16 @@ use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::validation::validate_typed_config;
 use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
@@ -158,12 +158,17 @@ impl ClickhouseExporter {
         TerminalState::new(deadline, snapshots)
     }
 
-    fn finalize_write(&mut self, completed: CompletedWrite) {
+    async fn finalize_write(
+        &mut self,
+        completed: CompletedWrite,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         let CompletedWrite {
-            signal_type,
+            pdata,
             export_started_at,
             result,
         } = completed;
+        let signal_type = pdata.signal_type();
 
         match result {
             Ok(written_rows) => {
@@ -176,6 +181,7 @@ impl ClickhouseExporter {
                         outcome: Outcome::Success,
                     })
                     .record(export_started_at.elapsed());
+                effect_handler.notify_ack(AckMsg::new(pdata)).await?;
             }
             Err(error) => {
                 self.pdata_metrics
@@ -189,8 +195,12 @@ impl ClickhouseExporter {
                     message = format!("Error writing batch to clickhouse: {error}"),
                     signal_type = format!("{signal_type:?}"),
                 );
+                effect_handler
+                    .notify_nack(NackMsg::new(error.to_string(), pdata))
+                    .await?;
             }
         }
+        Ok(())
     }
 }
 
@@ -282,7 +292,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
                 completed = in_flight_writes.next_completion(), if !in_flight_writes.is_empty() => {
                     if let Some(completed) = completed {
-                        self.finalize_write(completed);
+                        self.finalize_write(completed, &effect_handler).await?;
                     }
                     continue;
                 }
@@ -295,11 +305,19 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         "clickhouse.exporter.shutdown",
                         message = "Clickhouse exporter shutting down",
                     );
-                    let abandoned = in_flight_writes
-                        .drain_until(tokio::time::Instant::from_std(deadline), |completed| {
-                            self.finalize_write(completed);
-                        })
-                        .await;
+                    let shutdown_deadline = tokio::time::Instant::from_std(deadline);
+                    let abandoned = loop {
+                        match in_flight_writes
+                            .next_completion_until(shutdown_deadline)
+                            .await
+                        {
+                            Ok(Some(completed)) => {
+                                self.finalize_write(completed, &effect_handler).await?;
+                            }
+                            Ok(None) => break 0,
+                            Err(abandoned) => break abandoned,
+                        }
+                    };
                     if abandoned > 0 {
                         otel_warn!(
                             "clickhouse.exporter.shutdown.deadline_exceeded",
@@ -325,7 +343,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     let signal_type = pdata.signal_type();
                     let signal_format = pdata.signal_format();
 
-                    let (_context, payload) = pdata.into_parts();
+                    let payload = pdata.payload_ref().clone();
 
                     let direct_otlp_batches =
                         match transform_raw_otlp_logs(&payload, &mut otlp_logs_transformer) {
@@ -341,6 +359,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     )
                                 }
                                 Err(error) if is_invalid_protobuf(&error) => {
+                                    let reason = error.to_string();
                                     self.pdata_metrics
                                         .with(SignalOutcomeAttributes {
                                             signal: signal_type,
@@ -350,8 +369,11 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     otel_warn!(
                                         "clickhouse.exporter.otlp.invalid_protobuf",
                                         message = "Rejecting malformed raw OTLP logs.",
-                                        error = error.to_string(),
+                                        error = reason.clone(),
                                     );
+                                    effect_handler
+                                        .notify_nack(NackMsg::new(reason, pdata))
+                                        .await?;
                                     continue;
                                 }
                                 Err(error) => {
@@ -371,45 +393,51 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     let write_batches = if let Some(batches) = direct_otlp_batches {
                         batches
                     } else {
-                        let mut arrow_records: OtapArrowRecords =
-                            match payload.try_into_with_default() {
-                                Ok(arrow_records) => arrow_records,
-                                Err(e) => {
-                                    self.pdata_metrics
-                                        .with(SignalOutcomeAttributes {
-                                            signal: signal_type,
-                                            outcome: Outcome::Failure,
-                                        })
-                                        .record(export_started_at.elapsed());
-                                    otel_warn!(
-                                        "clickhouse.exporter.convert.error",
-                                        message = format!(
-                                            "Failed to convert payload to OtapArrowRecords: {e:?}"
-                                        ),
-                                        signal_type = format!("{:?}", signal_type),
-                                    );
-                                    continue;
-                                }
-                            };
-
-                        // Decode transport-optimized IDs before joining payloads against them.
-                        arrow_records
-                            .decode_transport_optimized_ids()
-                            .map_err(|e| {
+                        let mut arrow_records: OtapArrowRecords = match payload
+                            .try_into_with_default()
+                        {
+                            Ok(arrow_records) => arrow_records,
+                            Err(e) => {
+                                let reason =
+                                    format!("Failed to convert payload to OtapArrowRecords: {e:?}");
                                 self.pdata_metrics
                                     .with(SignalOutcomeAttributes {
                                         signal: signal_type,
                                         outcome: Outcome::Failure,
                                     })
                                     .record(export_started_at.elapsed());
-                                let source_detail = format_error_sources(&e);
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    kind: ExporterErrorKind::Other,
-                                    error: format!("Failed to decode transport optimized IDs: {e}"),
-                                    source_detail,
-                                }
-                            })?;
+                                otel_warn!(
+                                    "clickhouse.exporter.convert.error",
+                                    message = reason.clone(),
+                                    signal_type = format!("{:?}", signal_type),
+                                );
+                                effect_handler
+                                    .notify_nack(NackMsg::new(reason, pdata))
+                                    .await?;
+                                continue;
+                            }
+                        };
+
+                        // Decode transport-optimized IDs before joining payloads against them.
+                        if let Err(e) = arrow_records.decode_transport_optimized_ids() {
+                            let reason = format!("Failed to decode transport optimized IDs: {e}");
+                            self.pdata_metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .record(export_started_at.elapsed());
+                            otel_warn!(
+                                "clickhouse.exporter.decode.error",
+                                message = reason.clone(),
+                                source_detail = format_error_sources(&e),
+                                signal_type = format!("{:?}", signal_type),
+                            );
+                            effect_handler
+                                .notify_nack(NackMsg::new(reason, pdata))
+                                .await?;
+                            continue;
+                        }
 
                         let transform_result = if signal_type == SignalType::Logs
                             && signal_format == SignalFormat::OtapRecords
@@ -435,6 +463,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         match transform_result {
                             Ok(batches) => batches,
                             Err(e) => {
+                                let reason = format!("Error transforming batch for export: {e}");
                                 self.pdata_metrics
                                     .with(SignalOutcomeAttributes {
                                         signal: signal_type,
@@ -447,6 +476,9 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     error = e.to_string(),
                                     signal_type = format!("{:?}", signal_type),
                                 );
+                                effect_handler
+                                    .notify_nack(NackMsg::new(reason, pdata))
+                                    .await?;
                                 continue;
                             }
                         }
@@ -455,7 +487,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     let write_future: LocalBoxFuture<'static, CompletedWrite> =
                         Box::pin(async move {
                             CompletedWrite {
-                                signal_type,
+                                pdata,
                                 export_started_at,
                                 result: writer.write_batches(&write_batches).await,
                             }
