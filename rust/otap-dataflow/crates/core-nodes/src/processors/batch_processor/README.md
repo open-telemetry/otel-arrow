@@ -112,6 +112,16 @@ batches -- one output can be subscribed while another Nacks that input. This
 degenerate case (an input whose mandatory minimum outputs alone exceed the
 outbound limit) predates this feature and is not changed here.
 
+An *unsubscribed* flush reserves no outbound slots, but its entire output vector
+is still built in memory before anything is sent, so an unbounded split fan-out
+would blow up memory with no downstream backpressure to throttle it. Unsubscribed
+flushes are therefore bounded the same way, using the pool's *total* capacity
+(`outbound_request_limit`) as the per-flush limit: an oversize entry whose split
+would push the flush past that many output batches is emitted whole instead
+(counted by `split.capacity.fallbacks`). Whole entries carry only the input's own
+bytes (no header duplication), so peak memory is bounded to roughly the input
+size plus `outbound_request_limit * max_size` of split amplification.
+
 ## Examples
 
 Flush every incoming message:

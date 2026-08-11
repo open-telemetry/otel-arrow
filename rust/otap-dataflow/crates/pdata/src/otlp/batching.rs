@@ -147,7 +147,15 @@ fn collect_top_level_sizes(buf: &[u8], sizes: &mut Vec<usize>) {
 /// not starve them: because small units share batches and oversize opaque units
 /// are counted too, this neither over-reserves packable entries nor omits
 /// separately-emitted opaque outputs.
-fn project_output_batches(sizes: &[usize], max_size: usize) -> usize {
+///
+/// The scan stops early once the running count exceeds `cap`, returning a value
+/// `> cap`. The only caller compares `batches.len() + reserved_after >
+/// output_budget`, i.e. tests whether the projection exceeds a threshold
+/// `<= cap`; any returned value `> cap` preserves that comparison, while a count
+/// `<= cap` is returned exactly. This bounds the scan (relevant when many
+/// oversize units follow, each contributing at least one batch) instead of
+/// always walking the entire remaining list.
+fn project_output_batches(sizes: &[usize], max_size: usize, cap: usize) -> usize {
     let mut batches = 0;
     let mut cur = 0usize;
     for &size in sizes {
@@ -162,6 +170,9 @@ fn project_output_batches(sizes: &[usize], max_size: usize) -> usize {
         } else {
             batches += 1;
             cur = size;
+        }
+        if batches > cap {
+            return batches;
         }
     }
     if cur > 0 {
@@ -741,12 +752,22 @@ pub fn make_bytes_batches_owned(
                         // an entry that itself exceeds `max_size` can split (and
                         // thus consult the reservation), so skip the projection
                         // scan for entries that pack normally -- this keeps the
-                        // common small-entry path linear instead of O(N^2).
+                        // common small-entry path linear instead of O(N^2). The
+                        // projection also stops early once it exceeds the
+                        // remaining budget (`output_budget - batches.len()`),
+                        // since the caller only needs to know whether the
+                        // reservation overflows that threshold -- so a run of
+                        // many oversize (possibly unsplittable) trailing entries
+                        // is not fully rescanned for every split.
                         let reserved_after =
                             if output_budget == usize::MAX || full.len() <= max_size {
                                 0
                             } else {
-                                project_output_batches(&field_sizes[field_idx + 1..], max_size)
+                                project_output_batches(
+                                    &field_sizes[field_idx + 1..],
+                                    max_size,
+                                    output_budget.saturating_sub(batches.len()),
+                                )
                             };
                         push_resource_entry(
                             signal,

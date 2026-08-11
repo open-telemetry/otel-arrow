@@ -1071,18 +1071,29 @@ where
 
         let count = inputs.requests();
 
-        // Bound split fan-out to what the outbound slot pool can still track.
-        // Only Ack/Nack-subscribed outputs consume outbound slots (see
-        // `drain_context`), so an unsubscribed flush needs no bound. When
-        // subscribed, cap the total output batches at the pool's remaining
-        // capacity: without this, one flush's many split fragments (each under
-        // their per-entry budget) could collectively exhaust the shared pool
-        // mid-flush, Nacking a late fragment while its siblings are in flight.
+        // Bound split fan-out per flush so the entire output vector -- built in
+        // memory before anything is sent -- cannot grow without limit.
+        //
+        // Subscribed flushes are capped at the outbound pool's *remaining*
+        // capacity: only Ack/Nack-subscribed outputs consume outbound slots (see
+        // `drain_context`), so this keeps one flush's many split fragments (each
+        // under their per-entry budget) from collectively exhausting the shared
+        // pool mid-flush and Nacking a late fragment while its siblings are in
+        // flight.
+        //
+        // Unsubscribed flushes reserve no slots, but a flush with many large
+        // entries could still amplify into a huge number of split fragments in
+        // memory before any send, and downstream backpressure cannot throttle
+        // that build-up. Cap them at the pool's *total* capacity
+        // (`outbound_request_limit`): over-budget entries collapse to a single
+        // whole batch (just the input's own bytes, no header duplication), so
+        // the byte amplification from splitting is bounded to roughly
+        // `outbound_request_limit * max_size` on top of the input.
         let subscribed = inputs.context.iter().any(|bp| bp.inkey.is_some());
         let output_budget = if subscribed {
             self.buffer.outbound.remaining_capacity()
         } else {
-            usize::MAX
+            self.config.outbound_request_limit.get()
         };
 
         let pending = inputs.take_pending();
@@ -4258,6 +4269,90 @@ mod tests {
                     ),
                     0,
                     "no mid-flush outbound-slot exhaustion should occur"
+                );
+            });
+    }
+
+    /// Scenario: an *unsubscribed* flush (no Ack/Nack interest) carries several
+    /// oversize resource entries that would each split into multiple fragments.
+    /// Unsubscribed outputs reserve no outbound slots, but the whole output
+    /// vector is still materialized in memory before anything is sent, so an
+    /// unbounded split fan-out would blow up memory with no downstream
+    /// backpressure to throttle it.
+    ///
+    /// Guarantees: unsubscribed flushes are bounded by the pool's total capacity
+    /// (`outbound_request_limit` = 4), so each oversize entry collapses to a
+    /// single whole batch (one per resource entry, no fragment explosion) and at
+    /// least one capacity fallback is recorded. Without the bound each entry
+    /// would fan out into several fragments (many more than the entry count).
+    #[test]
+    fn test_split_capacity_bounds_unsubscribed_multi_entry_flush() {
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "otlp": {
+                "min_size": null,
+                "max_size": 100,
+                "sizer": "bytes",
+                "max_split_fragments": 1000,
+            },
+            "format": "otlp",
+            "max_batch_duration": "0s",
+            "outbound_request_limit": 4,
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(16);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                // 6 resource entries, each of which would split into several
+                // fragments (well over the outbound capacity of 4) if unbounded.
+                // No `test_subscribe_to`: the input is unsubscribed.
+                let bytes = multi_resource_logs_bytes(6, 4);
+                let pdata = OtapPdata::new_default(bytes.into());
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("process input");
+
+                let outputs = ctx.drain_pdata().await;
+                assert_eq!(
+                    outputs.len(),
+                    6,
+                    "each oversize entry must collapse to one whole batch, got {}",
+                    outputs.len()
+                );
+                for out in &outputs {
+                    assert!(
+                        !out.has_subscribers(),
+                        "unsubscribed input must yield unsubscribed outputs"
+                    );
+                }
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(
+                    counter_metric_value(
+                        &telemetry_registry,
+                        "otap.processor.batch",
+                        "split.capacity.fallbacks"
+                    ) >= 1,
+                    "at least one capacity fallback should bound the unsubscribed flush"
+                );
+                assert_eq!(
+                    counter_metric_value(
+                        &telemetry_registry,
+                        "otap.processor.batch",
+                        "nacked.outbound.slots"
+                    ),
+                    0,
+                    "unsubscribed outputs consume no slots, so none can be Nacked"
                 );
             });
     }

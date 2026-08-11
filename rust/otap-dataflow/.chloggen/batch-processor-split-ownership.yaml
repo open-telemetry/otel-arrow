@@ -8,7 +8,7 @@ change_type: bug_fix
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Attribute Ack/Nack ownership of byte-split OTLP fragments back to the originating input so no fragment can Ack/Nack untracked, and bound split fan-out with configurable fragment and byte-amplification budgets.
+note: Attribute Ack/Nack ownership of byte-split OTLP fragments to the originating input so no fragment is untracked, and bound split fan-out with fragment and byte-amplification budgets.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3661]
@@ -19,17 +19,7 @@ issues: [3661]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Byte splitting duplicates resource/scope headers, so output bytes exceed input
-  bytes. The batch processor now apportions Ack/Nack subscribers by each output's
-  input-byte ownership weight (summing to the input total) rather than its encoded
-  size, so every fragment of a split input is tracked. New otlp.max_split_fragments
-  and otlp.max_split_overhead_bytes (default 8 MiB) configs cap per-entry fan-out and
-  duplicated-wrapper-byte amplification; over-budget entries are emitted whole
-  (best-effort) and counted by the otap.processor.batch split.budget.fallbacks metric.
-  Splitting is additionally bounded per flush by the remaining outbound_request_limit
-  capacity so an oversize entry's split fan-out never exceeds the free outbound slots
-  (no fragment Nacked mid-flush while siblings are in flight); over-capacity entries
-  fall back to whole and are counted by the split.capacity.fallbacks metric. (A
-  degenerate input whose mandatory minimum outputs alone exceed the outbound limit,
-  e.g. limit 1 with an oversize entry plus an oversize opaque field, can still be
-  partly subscribed -- pre-existing behavior, unchanged here.)
+  Byte splitting duplicates resource/scope headers, so output bytes exceed input.
+  Ack/Nack subscribers are apportioned by each output's input-byte ownership weight,
+  so every fragment is tracked. Per-entry fan-out/bytes and per-flush total are
+  bounded, with over-limit entries emitted whole.

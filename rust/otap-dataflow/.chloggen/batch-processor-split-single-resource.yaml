@@ -20,8 +20,6 @@ issues: [3661]
 # characters and subtext to 300 characters.
 subtext: |
   Previously make_bytes_batches only cut at top-level resource-entry boundaries,
-  so a request with a single ResourceLogs/ResourceSpans/ResourceMetrics was
-  emitted whole regardless of max_size. Splitting is best-effort: wrapper headers
-  are re-encoded per fragment and an indivisible unit (a lone record, or a single
-  metric with many data points) may still exceed max_size. Records are never
-  lost, duplicated or reordered.
+  so a request with a single ResourceLogs/Spans/Metrics was emitted whole regardless
+  of max_size. Splitting is best-effort: an indivisible unit (a lone record, or a
+  metric with many data points) may still exceed max_size.

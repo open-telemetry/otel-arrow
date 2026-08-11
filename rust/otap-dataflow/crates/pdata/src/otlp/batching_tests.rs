@@ -5,6 +5,7 @@
 
 use crate::otlp::OtlpProtoBytes;
 use crate::otlp::batching::make_bytes_batches;
+use crate::otlp::batching::make_bytes_batches_owned;
 use crate::proto::OtlpProtoMessage;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope};
@@ -303,6 +304,87 @@ fn wfixed64(buf: &mut Vec<u8>, field: u64, val: u64) {
 fn wfixed32(buf: &mut Vec<u8>, field: u64, val: u32) {
     wv(buf, (field << 3) | 5);
     buf.extend_from_slice(&val.to_le_bytes());
+}
+
+/// Scenario: many oversize resource entries that each *cannot* be split (every
+/// entry carries a truncated trailing field, so it is emitted whole) are batched
+/// under a small finite `output_budget`. Each oversize entry consults the
+/// outbound-capacity projection over all the entries that still follow it.
+///
+/// Guarantees: the projection's early-exit keeps the result correct even though
+/// none of the entries can actually split -- every entry is emitted as exactly
+/// one whole batch, byte-for-byte, in order; no capacity or budget fallback is
+/// recorded (an unsplittable entry never reaches the capacity-truncation path);
+/// and the output count equals the entry count regardless of `output_budget`.
+#[test]
+fn test_split_capacity_projection_many_unsplittable_entries() {
+    const N: usize = 64;
+
+    // One malformed (truncated) resource entry: a valid Resource + ScopeLogs
+    // with several records, then a field declaring 127 payload bytes that never
+    // follow -- so the entry cannot be safely split and is emitted whole.
+    let make_entry = |seed: u8| -> Vec<u8> {
+        let mut scope = Vec::new();
+        wlen(&mut scope, 1, &[]); // InstrumentationScope (empty)
+        for i in 0..8u8 {
+            wlen(&mut scope, 2, &[0x08, seed.wrapping_add(i)]); // valid LogRecord
+        }
+        let mut entry = Vec::new();
+        wlen(&mut entry, 1, &[]); // Resource (empty)
+        wlen(&mut entry, 2, &scope); // ScopeLogs (valid)
+        entry.push((3 << 3) | 2); // field 3, wire type 2 (LEN)
+        entry.push(0x7F); // declares 127 payload bytes but none follow: truncated
+        entry
+    };
+
+    let mut top = Vec::new();
+    let mut entries: Vec<Vec<u8>> = Vec::with_capacity(N);
+    for i in 0..N {
+        let entry = make_entry(i as u8);
+        wlen(&mut top, 1, &entry); // top-level ResourceLogs (field 1)
+        entries.push(entry);
+    }
+
+    let input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, top.clone());
+    // Small enough that every single entry exceeds it (so each takes the
+    // "oversize" path that computes the reservation), yet unsplittable.
+    let max_size = entries[0].len().max(4);
+
+    let out = make_bytes_batches_owned(
+        SignalType::Logs,
+        NonZeroU64::new(max_size as u64),
+        None,
+        None,
+        2, // tiny finite output_budget: exercises the capped projection scan
+        vec![input],
+    )
+    .expect("ok");
+
+    assert_eq!(
+        out.batches.len(),
+        N,
+        "each unsplittable oversize entry is emitted as exactly one whole batch",
+    );
+    assert_eq!(
+        out.capacity_fallbacks, 0,
+        "an unsplittable entry never reaches the capacity-truncation path",
+    );
+    assert_eq!(
+        out.budget_fallbacks, 0,
+        "unsplittable entries never trip the fragment/overhead budgets",
+    );
+
+    // Byte-for-byte order preservation: concatenating the outputs reproduces the
+    // input exactly (each output is one whole top-level ResourceLogs field).
+    let mut rebuilt = Vec::new();
+    for (batch, _weight) in &out.batches {
+        rebuilt.extend_from_slice(batch.as_bytes());
+    }
+    assert_eq!(
+        rebuilt,
+        top.as_slice(),
+        "outputs must reconstruct the input byte-for-byte, in order",
+    );
 }
 
 /// Scenario: A single ExportLogsServiceRequest carrying one ResourceLogs with a
