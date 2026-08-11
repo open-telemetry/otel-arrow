@@ -177,7 +177,7 @@ impl MapValueMut for TestRecord {
         }
     }
 
-    fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback) {
-        self.values.retain(|k, v| item_callback.next(k, v));
+    fn retain(&mut self, item_callback: &mut dyn FnMut(&str, &mut (dyn AsStaticValueMut + 'static)) -> bool) {
+        self.values.retain(|k, v| (item_callback)(k, v));
     }
 }
