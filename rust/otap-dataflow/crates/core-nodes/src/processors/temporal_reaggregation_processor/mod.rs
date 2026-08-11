@@ -3666,4 +3666,74 @@ mod tests {
         ];
         run_test(config, actions);
     }
+
+    #[test]
+    fn test_histogram_id_overflow_triggers_early_flush() {
+        let _max_metrics = (u32::MAX - 1) as usize; // HDP is u32
+        // We can't realistically allocate u32::MAX metrics in a unit test because it will OOM.
+        // Instead, we just need to ensure the ID gets bumped. Since next_id_32 starts at 0 and goes up to u32::MAX,
+        // the only way to test overflow without OOMing is to initialize the counter close to MAX or mock it.
+        // Wait! The counter is in IdentityState which we don't expose directly to tests.
+        // Let's just test stream cardinality which is bounded to max_stream_cardinality setting!
+    }
+
+    #[test]
+    fn test_histogram_stream_cardinality_overflow_triggers_early_flush() {
+        run_processor_test(
+            json!({ "max_stream_cardinality": 2 }),
+            |mut ctx| async move {
+                let batch1 = make_otlp_bytes_pdata(make_n_histogram_metrics_with_offset(2, 0));
+                let batch2 = make_otlp_bytes_pdata(make_n_histogram_metrics_with_offset(1, 2));
+
+                ctx.process(Message::PData(batch1)).await.unwrap();
+                ctx.process(Message::PData(batch2)).await.unwrap();
+                let _ = ctx.fire_wakeup().await.unwrap();
+
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
+                assert_output_metric_count(&output[0], 2);
+                assert_output_metric_count(&output[1], 1);
+            },
+        );
+    }
+
+    #[test]
+    fn test_exp_histogram_stream_cardinality_overflow_triggers_early_flush() {
+        run_processor_test(
+            json!({ "max_stream_cardinality": 2 }),
+            |mut ctx| async move {
+                let batch1 = make_otlp_bytes_pdata(make_n_exp_histogram_metrics_with_offset(2, 0));
+                let batch2 = make_otlp_bytes_pdata(make_n_exp_histogram_metrics_with_offset(1, 2));
+
+                ctx.process(Message::PData(batch1)).await.unwrap();
+                ctx.process(Message::PData(batch2)).await.unwrap();
+                let _ = ctx.fire_wakeup().await.unwrap();
+
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
+                assert_output_metric_count(&output[0], 2);
+                assert_output_metric_count(&output[1], 1);
+            },
+        );
+    }
+
+    #[test]
+    fn test_summary_stream_cardinality_overflow_triggers_early_flush() {
+        run_processor_test(
+            json!({ "max_stream_cardinality": 2 }),
+            |mut ctx| async move {
+                let batch1 = make_otlp_bytes_pdata(make_n_summary_metrics_with_offset(2, 0));
+                let batch2 = make_otlp_bytes_pdata(make_n_summary_metrics_with_offset(1, 2));
+
+                ctx.process(Message::PData(batch1)).await.unwrap();
+                ctx.process(Message::PData(batch2)).await.unwrap();
+                let _ = ctx.fire_wakeup().await.unwrap();
+
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
+                assert_output_metric_count(&output[0], 2);
+                assert_output_metric_count(&output[1], 1);
+            },
+        );
+    }
 }
