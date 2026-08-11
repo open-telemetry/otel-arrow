@@ -30,7 +30,7 @@ use secrecy::SecretString;
 use serde::Deserialize;
 use std::num::NonZeroUsize;
 
-const DEFAULT_MAX_IN_FLIGHT: usize = 1;
+const DEFAULT_MAX_IN_FLIGHT: usize = 10;
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -298,9 +298,9 @@ mod tests {
     use secrecy::ExposeSecret;
 
     /// Scenario: a ClickHouse exporter config omits the concurrency setting.
-    /// Guarantees: inserts remain serialized by default for backward compatibility.
+    /// Guarantees: the runtime configuration permits ten concurrent inserts by default.
     #[test]
-    fn max_in_flight_defaults_to_one() {
+    fn max_in_flight_defaults_to_ten() {
         let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
             "endpoint": "http://localhost:8123",
             "database": "otap",
@@ -309,7 +309,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(Config::from_patch(patch).max_in_flight, 1);
+        assert_eq!(Config::from_patch(patch).max_in_flight, 10);
     }
 
     /// Scenario: a ClickHouse exporter config requests OTC-equivalent concurrency.
