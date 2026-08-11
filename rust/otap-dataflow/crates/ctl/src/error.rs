@@ -107,7 +107,7 @@ impl CliError {
 
     fn agent_report(&self) -> AgentErrorReport {
         AgentErrorReport {
-            schema_version: "dfctl/v1",
+            schema_version: crate::branding::active().schema_version,
             kind: "error",
             generated_at: humantime::format_rfc3339_seconds(std::time::SystemTime::now())
                 .to_string(),

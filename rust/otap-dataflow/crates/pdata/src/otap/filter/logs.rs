@@ -110,6 +110,10 @@ impl LogFilter {
         &self,
         mut logs_payload: OtapArrowRecords,
     ) -> Result<(OtapArrowRecords, u64, u64)> {
+        if logs_payload.num_items() == 0 {
+            return Ok((logs_payload, 0, 0));
+        }
+
         let (resource_attr_filter, log_record_filter, log_attr_filter) = if let Some(include_config) =
             &self.include
             && let Some(exclude_config) = &self.exclude
@@ -144,9 +148,10 @@ impl LogFilter {
             // both include and exclude is none
             let num_rows = logs_payload
                 .get(ArrowPayloadType::Logs)
-                .ok_or_else(|| Error::RecordBatchNotFound {
-                    payload_type: ArrowPayloadType::Logs,
-                })?
+                // Safety: We check at the top of this function whether the
+                // number of rows is 0 and return early. Rows > 0 implies a
+                // root record batch is present.
+                .expect("Logs payload has a root record")
                 .num_rows() as u64;
             return Ok((logs_payload, num_rows, num_rows));
         };

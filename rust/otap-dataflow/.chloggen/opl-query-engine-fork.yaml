@@ -1,4 +1,0 @@
-change_type: enhancement
-component: query-engine
-note: Add `fork` operator call to OPL language and support in query-engine
-issues: [3188]

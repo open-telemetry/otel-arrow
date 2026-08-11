@@ -166,10 +166,14 @@
   const themeToggleTrack = document.getElementById("theme-toggle-track");
   const themeToggle = document.getElementById("theme-toggle");
   const themeToggleLabel = document.getElementById("theme-toggle-label");
+  const fullWidthToggleWrap = document.getElementById("toggle-fullwidth-wrap");
+  const fullWidthToggleTrack = document.getElementById("toggle-fullwidth-track");
+  const fullWidthToggle = document.getElementById("toggle-fullwidth");
 
   document.title = "Rust Dataflow Engine";
 
   const THEME_STORAGE_KEY = "ogdp-theme";
+  const LAYOUT_WIDTH_STORAGE_KEY = "ogdp-layout-width";
 
   function perfStart() {
     if (!PERF_ENABLED) return null;
@@ -228,6 +232,19 @@
       themeToggleLabel.classList.toggle("text-slate-400", !isDay);
     }
     applyChartTheme();
+  }
+
+  // Applies the page-width preference: full-bleed vs. centered max-width shell.
+  function applyLayoutWidth(fullWidth) {
+    document.body.classList.toggle("full-width", fullWidth);
+    if (fullWidthToggle) {
+      fullWidthToggle.checked = fullWidth;
+    }
+    setToggleVisualState({
+      wrapEl: fullWidthToggleWrap,
+      trackEl: fullWidthToggleTrack,
+      active: fullWidth,
+    });
   }
 
   const dagCanvas = document.getElementById("dag-canvas");
@@ -3785,6 +3802,19 @@
   }
   const storedTheme = localStorage.getItem(THEME_STORAGE_KEY);
   applyTheme(storedTheme === "day" ? "day" : "night");
+
+  if (fullWidthToggle) {
+    fullWidthToggle.addEventListener("change", () => {
+      const fullWidth = fullWidthToggle.checked;
+      localStorage.setItem(
+        LAYOUT_WIDTH_STORAGE_KEY,
+        fullWidth ? "full" : "fixed"
+      );
+      applyLayoutWidth(fullWidth);
+    });
+  }
+  // Default is the centered, capped shell; only "full" opts into full width.
+  applyLayoutWidth(localStorage.getItem(LAYOUT_WIDTH_STORAGE_KEY) === "full");
   initStickyPanels();
 
   updateDagScopeButtonState();

@@ -1625,25 +1625,6 @@ mod tests {
     }
 
     // -------------------------------------------------------
-    // Arrow ConversionError test
-    // -------------------------------------------------------
-
-    #[test]
-    fn test_resolve_arrow_logs_conversion_error() {
-        use otap_df_pdata::otap::{Logs, OtapArrowRecords};
-
-        let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
-        let router = ContentRouter::new(make_config(routes, None));
-
-        // Default Logs has no record batches, so OtapLogsView::try_from fails
-        let arrow = OtapArrowRecords::Logs(Logs::default());
-        assert!(matches!(
-            router.resolve_arrow_logs_route(&arrow),
-            RouteResolution::ConversionError
-        ));
-    }
-
-    // -------------------------------------------------------
     // Pipeline integration test
     // -------------------------------------------------------
 
@@ -2130,9 +2111,9 @@ mod tests {
             let telemetry = InternalTelemetrySystem::default();
             let telemetry_registry = telemetry.registry();
             let reporter = telemetry.reporter();
+            let collection = telemetry.collector().run_collection_loop();
             let collector_task = tokio::task::spawn_local(async move {
-                let collector = telemetry.collector();
-                let _ = collector.run_collection_loop().await;
+                let _ = collection.await;
             });
             (telemetry_registry, reporter, collector_task)
         }
@@ -2778,8 +2759,11 @@ mod tests {
             });
         }
 
+        /// Scenario: The router receives valid-but-empty OTAP Arrow logs with no resources.
+        /// Guarantees: The router nacks the message as missing the routing key without
+        /// misclassifying the empty view as a conversion error.
         #[test]
-        fn test_metrics_conversion_error_nacked() {
+        fn test_empty_arrow_logs_missing_key_nacked() {
             use otap_df_pdata::otap::{Logs, OtapArrowRecords};
 
             let rt = setup_test_runtime();
@@ -2789,7 +2773,7 @@ mod tests {
                 let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline =
                     controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
-                let node_id = test_node("content_router_conversion_error_test");
+                let node_id = test_node("content_router_empty_arrow_logs_test");
 
                 let config = ContentRouterConfig {
                     routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
@@ -2804,13 +2788,14 @@ mod tests {
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
-                // Default Logs Arrow records have no batches -> ConversionError
+                // Default Logs Arrow records have no batches. The OTAP view layer treats
+                // that as a valid empty view rather than a conversion error.
                 let arrow = OtapArrowRecords::Logs(Logs::default());
                 let pdata = OtapPdata::new_default(arrow.into());
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
-                    .expect("router should NACK conversion error gracefully");
+                    .expect("router should NACK missing key gracefully");
 
                 router
                     .process(
@@ -2827,11 +2812,15 @@ mod tests {
                 let metrics = collect_metrics_map(&telemetry_registry);
                 assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
+                    metrics.get("signals.no.routing.key").copied().unwrap_or(0),
+                    1
+                );
+                assert_eq!(
                     metrics
                         .get("signals.conversion.error")
                         .copied()
                         .unwrap_or(0),
-                    1
+                    0
                 );
 
                 stop_telemetry(reporter, collector_task);

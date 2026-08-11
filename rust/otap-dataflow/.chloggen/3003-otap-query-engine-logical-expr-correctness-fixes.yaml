@@ -1,4 +1,0 @@
-change_type: bug_fix
-component: query-engine
-note: Resolves handful of correctness issues in the otap query-engine related to logical expression evaluation
-issues: [ 3003 ]

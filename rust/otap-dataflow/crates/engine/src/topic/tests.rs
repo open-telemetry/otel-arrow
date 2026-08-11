@@ -27,12 +27,12 @@ use crate::error::Error;
 use crate::topic::backend::{InMemoryBackend, SubscriptionBackend};
 use crate::topic::subscription::{DeliveryBackend, DeliveryStorageKind};
 use crate::topic::types::{
-    Envelope, PublishOutcome, RecvItem, SubscriberOptions, SubscriptionMode, TopicOptions,
-    TopicPublishOutcomeConfig, TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishTracker,
-    TrackedTryPublishOutcome,
+    AckFromResult, BroadcastSubscriberId, Envelope, PublishOutcome, RecvItem, SubscriberOptions,
+    SubscriptionMode, TopicOptions, TopicPublishOutcomeConfig, TrackedPublishOutcome,
+    TrackedPublishPermit, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
 use crate::topic::{Delivery, RecvDelivery, Subscription, TopicBroker, TopicSet};
-use otap_df_config::topic::TopicBroadcastOnLagPolicy;
+use otap_df_config::topic::{TopicBroadcastAckMode, TopicBroadcastOnLagPolicy};
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -310,6 +310,7 @@ async fn broadcast_all_subscribers_see_all_messages_in_order() {
                 balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 1024,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
         )
         .unwrap();
@@ -355,6 +356,7 @@ async fn broadcast_lag_reported_on_slow_subscriber() {
                 balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 8,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
         )
         .unwrap();
@@ -406,6 +408,7 @@ async fn broadcast_slow_subscriber_does_not_block_fast_subscriber() {
                 balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 4,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
         )
         .unwrap();
@@ -440,6 +443,7 @@ async fn broadcast_disconnects_slow_subscriber_on_lag() {
             TopicOptions::BroadcastOnly {
                 capacity: 8,
                 on_lag: TopicBroadcastOnLagPolicy::Disconnect,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -473,6 +477,7 @@ async fn mixed_async_publish_waits_for_balanced_admission_before_broadcast() {
                 balanced_capacity: 1,
                 broadcast_capacity: 16,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -562,6 +567,7 @@ async fn mixed_async_publish_does_not_reserve_free_groups_while_waiting() {
                 balanced_capacity: 1,
                 broadcast_capacity: 16,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -644,6 +650,7 @@ async fn mixed_async_publish_drop_does_not_publish_to_broadcast() {
                 balanced_capacity: 1,
                 broadcast_capacity: 16,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -755,6 +762,7 @@ async fn broadcast_delivery_commit_advances_to_next_message() {
             TopicOptions::BroadcastOnly {
                 capacity: 16,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -835,6 +843,7 @@ async fn broadcast_delivery_uses_specialized_inline_storage() {
             TopicOptions::BroadcastOnly {
                 capacity: 16,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -981,6 +990,7 @@ async fn mixed_disconnects_only_lagging_broadcast_subscriber() {
                 balanced_capacity: 32,
                 broadcast_capacity: 4,
                 on_lag: TopicBroadcastOnLagPolicy::Disconnect,
+                ack_mode: TopicBroadcastAckMode::First,
             },
         )
         .unwrap();
@@ -1197,6 +1207,7 @@ async fn balanced_backpressure_blocks_publisher() {
                 balanced_capacity: 2,
                 broadcast_capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -1308,6 +1319,7 @@ async fn broadcast_multi_threaded_all_receive() {
                 balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: 2048,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -1576,6 +1588,7 @@ async fn mixed_rejects_balanced_subscribe_after_close() {
                 balanced_capacity: TopicOptions::DEFAULT_BALANCED_CAPACITY,
                 broadcast_capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -1657,6 +1670,7 @@ async fn broadcast_only_basic_delivery() {
             TopicOptions::BroadcastOnly {
                 capacity: 1024,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -1698,6 +1712,7 @@ async fn broadcast_only_rejects_balanced() {
             TopicOptions::BroadcastOnly {
                 capacity: TopicOptions::DEFAULT_BROADCAST_CAPACITY,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -1726,6 +1741,7 @@ async fn broadcast_only_lag_reported() {
             TopicOptions::BroadcastOnly {
                 capacity: 8,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -1823,6 +1839,7 @@ async fn tracked_publish_broadcast_mode() {
             TopicOptions::BroadcastOnly {
                 capacity: 1024,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -1894,6 +1911,7 @@ async fn try_publish_mixed_rejects_broadcast_when_balanced_is_full() {
                 balanced_capacity: 1,
                 broadcast_capacity: 8,
                 on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                ack_mode: TopicBroadcastAckMode::First,
             },
             InMemoryBackend,
         )
@@ -2161,6 +2179,270 @@ async fn tracked_publish_tracker_register_after_close_resolves_immediately() {
         receipt.wait_for_outcome().await,
         TrackedPublishOutcome::TopicClosed
     );
+}
+
+// =========================================================================
+// TrackedPublishTracker consensus (`all`-mode) primitives
+//
+// These exercise the tracker primitive directly
+// =========================================================================
+
+fn consensus_permit_from(sem: &Arc<Semaphore>) -> TrackedPublishPermit {
+    TrackedPublishPermit::from_tokio_owned(
+        sem.clone()
+            .try_acquire_owned()
+            .expect("semaphore permit available"),
+    )
+}
+
+fn consensus_permit() -> TrackedPublishPermit {
+    consensus_permit_from(&Arc::new(Semaphore::new(1)))
+}
+
+fn subscriber_set(ids: impl IntoIterator<Item = u64>) -> HashSet<BroadcastSubscriberId> {
+    ids.into_iter().map(BroadcastSubscriberId).collect()
+}
+
+// A consensus entry resolves as Ack only once every required subscriber has acked,
+// and further acks for that message are no longer tracked.
+#[tokio::test]
+async fn consensus_resolves_ack_only_after_all_subscribers_ack() {
+    let tracker = TrackedPublishTracker::new();
+    let receipt = tracker.register_consensus(
+        7,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1, 2]),
+    );
+
+    assert_eq!(
+        tracker.resolve_ack_from(7, BroadcastSubscriberId(1)),
+        AckFromResult::StillPending
+    );
+    assert_eq!(
+        tracker.resolve_ack_from(7, BroadcastSubscriberId(2)),
+        AckFromResult::Resolved
+    );
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
+
+    assert_eq!(
+        tracker.resolve_ack_from(7, BroadcastSubscriberId(1)),
+        AckFromResult::NotTracked
+    );
+}
+
+// A repeated ack from the same subscriber must not falsely complete the consensus.
+#[tokio::test]
+async fn consensus_duplicate_ack_does_not_complete() {
+    let tracker = TrackedPublishTracker::new();
+    let _receipt = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1, 2]),
+    );
+
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::StillPending
+    );
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::StillPending
+    );
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(2)),
+        AckFromResult::Resolved
+    );
+}
+
+// Zero eligible subscribers resolves immediately as Ack without registering.
+#[tokio::test]
+async fn consensus_empty_set_resolves_ack_immediately() {
+    let tracker = TrackedPublishTracker::new();
+    let receipt = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit(),
+        HashSet::new(),
+    );
+
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::NotTracked
+    );
+}
+
+// Acking an unknown message id is reported as not-tracked.
+#[tokio::test]
+async fn consensus_resolve_ack_from_unknown_message_not_tracked() {
+    let tracker = TrackedPublishTracker::new();
+    assert_eq!(
+        tracker.resolve_ack_from(99, BroadcastSubscriberId(1)),
+        AckFromResult::NotTracked
+    );
+}
+
+// resolve_ack_from is consensus-only: a first-wins (`First`-kind) entry reports
+// not-tracked and is left pending, so the first-wins resolve path still works.
+#[tokio::test]
+async fn resolve_ack_from_first_kind_entry_is_not_tracked() {
+    let tracker = TrackedPublishTracker::new();
+    let receipt = tracker.register(1, Duration::from_secs(30), consensus_permit());
+
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::NotTracked
+    );
+    // Still pending: the first-wins path resolves it.
+    assert!(tracker.resolve(1, TrackedPublishOutcome::Ack));
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
+}
+
+// A required subscriber disappearing nacks its outstanding consensus entries.
+#[tokio::test]
+async fn consensus_subscriber_disappearance_nacks_outstanding() {
+    let tracker = TrackedPublishTracker::new();
+    let receipt = tracker.register_consensus(
+        5,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1, 2]),
+    );
+
+    tracker.nack_pending_for_subscriber(
+        BroadcastSubscriberId(2),
+        Arc::from("subscriber disconnected"),
+    );
+
+    match receipt.wait_for_outcome().await {
+        TrackedPublishOutcome::Nack { reason } => assert_eq!(&*reason, "subscriber disconnected"),
+        other => panic!("expected Nack, got {other:?}"),
+    }
+    assert_eq!(
+        tracker.resolve_ack_from(5, BroadcastSubscriberId(1)),
+        AckFromResult::NotTracked
+    );
+}
+
+// Disconnecting a subscriber only nacks entries that still require it.
+#[tokio::test]
+async fn consensus_disappearance_only_nacks_entries_requiring_subscriber() {
+    let tracker = TrackedPublishTracker::new();
+    let r1 = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1]),
+    );
+    let r2 = tracker.register_consensus(
+        2,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([2]),
+    );
+
+    tracker.nack_pending_for_subscriber(BroadcastSubscriberId(1), Arc::from("gone"));
+
+    assert!(matches!(
+        r1.wait_for_outcome().await,
+        TrackedPublishOutcome::Nack { .. }
+    ));
+    assert_eq!(
+        tracker.resolve_ack_from(2, BroadcastSubscriberId(2)),
+        AckFromResult::Resolved
+    );
+    assert_eq!(r2.wait_for_outcome().await, TrackedPublishOutcome::Ack);
+}
+
+// A single Nack via the standard resolve path overrides an incomplete consensus.
+#[tokio::test]
+async fn consensus_single_resolve_nack_overrides_consensus() {
+    let tracker = TrackedPublishTracker::new();
+    let receipt = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1, 2]),
+    );
+
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::StillPending
+    );
+    assert!(tracker.resolve(
+        1,
+        TrackedPublishOutcome::Nack {
+            reason: Arc::from("boom")
+        }
+    ));
+    assert!(matches!(
+        receipt.wait_for_outcome().await,
+        TrackedPublishOutcome::Nack { .. }
+    ));
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(2)),
+        AckFromResult::NotTracked
+    );
+}
+
+// First terminal transition wins: an ack that completes the consensus makes a
+// later disconnect of the (already satisfied) subscriber a no-op.
+#[tokio::test]
+async fn consensus_ack_completion_beats_late_disconnect() {
+    let tracker = TrackedPublishTracker::new();
+    let receipt = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1]),
+    );
+
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::Resolved
+    );
+    tracker.nack_pending_for_subscriber(BroadcastSubscriberId(1), Arc::from("late"));
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
+}
+
+// Registering a consensus entry against a closed tracker resolves immediately.
+#[tokio::test]
+async fn consensus_register_after_close_resolves_topic_closed() {
+    let tracker = TrackedPublishTracker::new();
+    tracker.close_all();
+    let receipt = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1]),
+    );
+    assert_eq!(
+        receipt.wait_for_outcome().await,
+        TrackedPublishOutcome::TopicClosed
+    );
+}
+
+// The in-flight permit is released exactly once the consensus entry resolves.
+#[tokio::test]
+async fn consensus_releases_permit_on_resolution() {
+    let sem = Arc::new(Semaphore::new(1));
+    let tracker = TrackedPublishTracker::new();
+    let receipt = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit_from(&sem),
+        subscriber_set([1]),
+    );
+
+    assert_eq!(sem.available_permits(), 0);
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::Resolved
+    );
+    let _ = receipt.wait_for_outcome().await;
+    assert_eq!(sem.available_permits(), 1);
 }
 
 // =========================================================================

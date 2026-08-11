@@ -1,0 +1,90 @@
+name: Label breaking changes
+
+# Auto-applies the `breaking change` label to any PR whose changelog (chloggen)
+# fragment declares `change_type: breaking`. The signal exists so downstream
+# consumers that pin a commit of this repo can tell, at bump time, whether a
+# range of commits contains a breaking change worth a closer look.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "**/.chloggen/**"
+
+# Serialize per-PR and cancel superseded runs. Without this, two quick pushes
+# (e.g. flip breaking -> not -> breaking) race: Actions gives no completion-
+# ordering guarantee, so a stale run's addLabels could land after a newer run's
+# removeLabel (a read-modify-write TOCTOU on the label). cancel-in-progress
+# keeps only the newest run, which reads the newest diff, so the label
+# converges to head state.
+concurrency:
+  group: label-breaking-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  label-breaking:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # add/remove the `breaking change` label
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const LABEL = 'breaking change';
+            // Matches any chloggen dir in the repo (go/.chloggen,
+            // rust/otap-dataflow/.chloggen, rust/semantic-conventions/.chloggen,
+            // and any future one).
+            const CHLOGGEN = /(^|\/)\.chloggen\//;
+            // A `+`-prefixed diff line declaring the breaking change_type.
+            // chloggen writes `change_type: breaking` (unquoted); optional
+            // surrounding whitespace/quotes are allowed defensively. Use
+            // [ \t] (not \s, which matches newlines) so the match cannot
+            // spill across diff lines into unchanged context.
+            const BREAKING = /^\+[ \t]*change_type:[ \t]*['"]?breaking\b/m;
+
+            const pr = context.payload.pull_request;
+
+            // listFiles takes no ref: it returns the PR's *current* head-vs-base
+            // diff, so even a stale (about-to-be-cancelled) run reads live state.
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+
+            const isBreaking = files.some(
+              f => CHLOGGEN.test(f.filename) && BREAKING.test(f.patch || '')
+            );
+            const hasLabel = (pr.labels || []).some(l => l.name === LABEL);
+
+            if (isBreaking && !hasLabel) {
+              await github.rest.issues.addLabels({
+                ...context.repo,
+                issue_number: pr.number,
+                labels: [LABEL],
+              });
+              core.info(`Added '${LABEL}' label (chloggen change_type: breaking).`);
+            } else if (!isBreaking && hasLabel) {
+              // Reconcile: the entry was edited/removed to non-breaking. Keep the
+              // label honest so the commit bumper is not misled. A 404 means the
+              // label was already gone -- ignore it, re-raise anything else.
+              await github.rest.issues.removeLabel({
+                ...context.repo,
+                issue_number: pr.number,
+                name: LABEL,
+              }).catch(e => {
+                if (e.status !== 404) throw e;
+              });
+              core.info(`Removed '${LABEL}' label (no breaking chloggen entry).`);
+            } else {
+              core.info(`No change: isBreaking=${isBreaking}, hasLabel=${hasLabel}.`);
+            }

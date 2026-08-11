@@ -110,6 +110,7 @@ pub struct RecordSetEngineBatch<'a, 'b, TRecord: Record> {
     global_variables: RefCell<MapValueStorage<OwnedValue>>,
     summaries: Summaries<'a>,
     included_records: Vec<RecordSetEngineRecord<'a, TRecord>>,
+    counters: RecordSetEngineCounters,
 }
 
 impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
@@ -124,6 +125,7 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
             global_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
             summaries: Summaries::new(engine.summary_cardinality_limit),
             included_records: Vec::new(),
+            counters: RecordSetEngineCounters::default(),
         }
     }
 
@@ -189,8 +191,18 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
         records.drain(&mut |attached_records, record| match self
             .process_record(attached_records, record)
         {
-            RecordSetEngineResult::Drop(d) => dropped_records.push(d),
-            RecordSetEngineResult::Include(i) => self.included_records.push(i),
+            RecordSetEngineResult::Drop(d) => {
+                self.counters.dropped += 1;
+                dropped_records.push(d);
+            }
+            RecordSetEngineResult::Include(i) => {
+                self.counters.included += 1;
+                self.included_records.push(i);
+            }
+            RecordSetEngineResult::Summarized(_) => {
+                // Folded into an aggregation; counted separately from filter-drops.
+                self.counters.summarized += 1;
+            }
         });
 
         dropped_records
@@ -209,6 +221,7 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
             ),
             self.included_records,
             Vec::new(),
+            self.counters,
         )
     }
 
@@ -280,10 +293,10 @@ fn process_record<'a, TRecord: Record + 'static>(
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Info,
                             s,
-                            || "Record summarized and dropped".into(),
+                            || "Record summarized".into(),
                         );
 
-                        return RecordSetEngineResult::Drop(execution_context.into());
+                        return RecordSetEngineResult::Summarized(execution_context.into());
                     }
                     Err(e) => {
                         execution_context.add_diagnostic_if_enabled(
@@ -362,7 +375,7 @@ fn process_summaries<'a>(
             );
 
             match process_record(execution_context, post_expressions) {
-                RecordSetEngineResult::Drop(r) => {
+                RecordSetEngineResult::Drop(r) | RecordSetEngineResult::Summarized(r) => {
                     dropped_summaries.push(RecordSetEngineSummary::new(
                         Some(pipeline),
                         r.diagnostics,
@@ -426,6 +439,10 @@ pub trait AttachedRecords {
 pub enum RecordSetEngineResult<'a, TRecord: Record> {
     Drop(RecordSetEngineRecord<'a, TRecord>),
     Include(RecordSetEngineRecord<'a, TRecord>),
+    /// Consumed by a `summarize` aggregation: not emitted individually and
+    /// counted separately from filter-drops (see
+    /// [`RecordSetEngineCounters::summarized`]).
+    Summarized(RecordSetEngineRecord<'a, TRecord>),
 }
 
 #[derive(Debug)]
@@ -574,7 +591,7 @@ fn write_diagnostics(
             if let Some(nested_diagnostics) = message.get_nested_diagnostics() {
                 let nested = write_diagnostics(query, nested_diagnostics, false);
                 for line in nested.lines() {
-                    diagnostics.push((column, format!("{}|    {line}", &" ".repeat(column + 7))));
+                    diagnostics.push((column, format!("{}|    {line}", " ".repeat(column + 7))));
                 }
             }
         }
@@ -605,6 +622,24 @@ pub struct RecordSetEngineResults<'a, TRecord: Record> {
     pub summaries: RecordSetEngineSummaryResults<'a>,
     pub included_records: Vec<RecordSetEngineRecord<'a, TRecord>>,
     pub dropped_records: Vec<RecordSetEngineRecord<'a, TRecord>>,
+    /// Per-input-record classification counts for the batch. See
+    /// [`RecordSetEngineCounters`].
+    pub counters: RecordSetEngineCounters,
+}
+
+/// Per-input-record classification counts accumulated while a batch is
+/// processed, tracked by the engine rather than inferred from batch sizes (e.g.
+/// `input - output`). The counts are disjoint: each input record is counted in
+/// exactly one field.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordSetEngineCounters {
+    /// Records emitted individually (passed all filters and were not folded into
+    /// an aggregation).
+    pub included: usize,
+    /// Records removed by a filter predicate (e.g. a `where` clause).
+    pub dropped: usize,
+    /// Records folded into a `summarize` aggregation.
+    pub summarized: usize,
 }
 
 impl<'a, TRecord: Record> RecordSetEngineResults<'a, TRecord> {
@@ -614,6 +649,7 @@ impl<'a, TRecord: Record> RecordSetEngineResults<'a, TRecord> {
         summaries: RecordSetEngineSummaryResults<'a>,
         included_records: Vec<RecordSetEngineRecord<'a, TRecord>>,
         dropped_records: Vec<RecordSetEngineRecord<'a, TRecord>>,
+        counters: RecordSetEngineCounters,
     ) -> RecordSetEngineResults<'a, TRecord> {
         Self {
             pipeline,
@@ -621,6 +657,7 @@ impl<'a, TRecord: Record> RecordSetEngineResults<'a, TRecord> {
             summaries,
             included_records,
             dropped_records,
+            counters,
         }
     }
 
@@ -803,11 +840,13 @@ mod tests {
         let mut batch = engine.begin_batch(&pipeline).unwrap();
 
         let dropped_records = batch.push_records(&mut records);
-
-        assert_eq!(3, dropped_records.len());
+        assert_eq!(0, dropped_records.len());
 
         let results = batch.flush();
 
+        assert_eq!(3, results.counters.summarized);
+        assert_eq!(0, results.counters.dropped);
+        assert_eq!(0, results.counters.included);
         assert_eq!(2, results.summaries.included_summaries.len());
         assert_eq!(0, results.summaries.dropped_summaries.len());
         assert_eq!(0, results.included_records.len());
@@ -895,11 +934,13 @@ mod tests {
         let mut batch = engine.begin_batch(&pipeline).unwrap();
 
         let dropped_records = batch.push_records(&mut records);
-
-        assert_eq!(3, dropped_records.len());
+        assert_eq!(0, dropped_records.len());
 
         let results = batch.flush();
 
+        assert_eq!(3, results.counters.summarized);
+        assert_eq!(0, results.counters.dropped);
+        assert_eq!(0, results.counters.included);
         assert_eq!(1, results.summaries.included_summaries.len());
         assert_eq!(1, results.summaries.dropped_summaries.len());
         assert_eq!(0, results.included_records.len());

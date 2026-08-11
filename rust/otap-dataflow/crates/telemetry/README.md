@@ -81,9 +81,9 @@ otel_info!(
 
 ## Internal telemetry collection
 
-The dataflow engine supports multiple ways to configure internal
-logging, with a number of provider modes that determine how logging is
-configured in different parts of the code.
+The dataflow engine supports multiple ways to configure internal logs and
+metrics. Log provider modes determine how logging is configured in different
+parts of the code.
 
 All modes configure the [Rust-standard `env_logger`
 crate](https://docs.rs/env_logger/latest/env_logger/), making the
@@ -101,7 +101,7 @@ There are four aspects that can be configured:
 - `internal`: logging for the internal telemetry pipeline itself;
   restricted to `console_direct` or `noop` to avoid feedback loops
 
-These modes are configured through the `service::telemetry::logs::providers`
+These modes are configured through the `engine.telemetry.logs.providers`
 field, with the following choices:
 
 - `its`: configure the Internal Telemetry System using nodes defined
@@ -116,6 +116,22 @@ field, with the following choices:
   supports more extensive diagnostics, including support for
   distributed tracing events.
 - `noop`: disables logging.
+
+Internal metrics use `engine.telemetry.metrics.provider`:
+
+- `opentelemetry` (default) publishes through configured OpenTelemetry SDK
+  readers and views.
+- `its` drains aggregated registry snapshots through the internal telemetry
+  receiver as OTLP metrics. It requires exactly one such receiver in the engine
+  observability pipeline and cannot be combined with SDK readers or views.
+- `none` disables periodic metric export while retaining the registry for the
+  admin metrics endpoint.
+
+ITS metric export and admin endpoint reads use independent registry views, so
+an admin reset does not consume metrics waiting for pipeline export.
+The bridge projects multivariate metric sets into standard univariate OTLP
+metrics that normal OTLP or OTAP exporters can consume. This is a transitional
+representation pending native multivariate metric-set support in OTAP.
 
 For more on this design, see the [self-tracing architecture
 document](../../docs/self_tracing_architecture.md). See a sample

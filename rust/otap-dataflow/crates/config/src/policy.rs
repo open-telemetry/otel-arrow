@@ -329,6 +329,8 @@ pub enum FlowMetric {
     SignalsIncoming,
     /// Signal item count leaving the flow.
     SignalsOutgoing,
+    /// Signal item count a decision node chose to drop.
+    SignalsDropped,
 }
 
 impl TelemetryPolicy {
@@ -883,6 +885,7 @@ mod tests {
         assert!(flow.has(super::FlowMetric::ComputeDuration));
         assert!(flow.has(super::FlowMetric::SignalsIncoming));
         assert!(flow.has(super::FlowMetric::SignalsOutgoing));
+        assert!(flow.has(super::FlowMetric::SignalsDropped));
     }
 
     #[test]
@@ -898,6 +901,21 @@ mod tests {
         assert!(flow.has(super::FlowMetric::ComputeDuration));
         assert!(!flow.has(super::FlowMetric::SignalsIncoming));
         assert!(!flow.has(super::FlowMetric::SignalsOutgoing));
+        assert!(!flow.has(super::FlowMetric::SignalsDropped));
+    }
+
+    #[test]
+    fn flow_metrics_dropped_is_parsed() {
+        let yaml = r#"
+            flow_metrics:
+              - id: flow1
+                bounds: { start_node: a, end_node: b }
+                metrics: [signals_dropped]
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        let flow = &policy.flow_metrics[0];
+        assert!(flow.has(super::FlowMetric::SignalsDropped));
+        assert!(!flow.has(super::FlowMetric::ComputeDuration));
     }
 
     #[test]

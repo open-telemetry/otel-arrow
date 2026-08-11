@@ -17,7 +17,7 @@
 #
 # The pinned tag and digest are kept up to date automatically by Renovate
 # (see .github/renovate.json5, `docker:pinDigests`).
-FROM otel/opentelemetry-collector-contrib:0.153.0@sha256:93aad750175cbf1a973ae1c5886c3371f4d800f61be25cdd26870b8441ffe9fa
+FROM otel/opentelemetry-collector-contrib:0.156.0@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108
 
 # Network ports
 # 4317 - OpenTelemetry gRPC services:

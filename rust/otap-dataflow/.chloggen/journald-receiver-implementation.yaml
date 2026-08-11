@@ -1,7 +1,0 @@
-change_type: enhancement
-component: pipeline
-note: Implement journald receiver ingestion, encoding, and cursor checkpointing.
-issues: [2858]
-subtext: |
-  Adds the Linux sd-journal worker, OTAP log projection, downstream Ack/Nack
-  handling, durable cursor commits, and source metrics for the journald receiver.

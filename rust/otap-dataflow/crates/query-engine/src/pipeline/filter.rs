@@ -54,7 +54,7 @@ impl PipelineStage for FilterPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_state: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         let root_rb = match otap_batch.root_record_batch() {
             Some(rb) => rb,
@@ -87,6 +87,13 @@ impl PipelineStage for FilterPipelineStage {
                 }
             }
         };
+
+        // Record the number of root records removed by this filter so callers
+        // can observe genuine drops without inferring them from batch sizes.
+        // Rows whose predicate result is null are treated as not passing (see
+        // `scoped_value_to_boolean_array`), so `true_count` is exactly the rows
+        // kept.
+        exec_state.add_filtered(num_rows.saturating_sub(selection_vec.true_count()));
 
         let otap_batch = filter_otap_batch(&selection_vec, &otap_batch, &mut self.id_bitmap_pool)?;
 
@@ -568,6 +575,65 @@ mod test {
         let result_where_false =
             exec_logs_pipeline::<OplParser>("logs | where false", to_logs_data(log_records)).await;
         assert_eq!(result_where_false.resource_logs.len(), 0);
+    }
+
+    /// The engine must report the exact number of root records removed by a
+    /// filter predicate via `ExecutionState`, so callers can observe genuine
+    /// drops without inferring them from batch sizes.
+    #[tokio::test]
+    async fn test_filter_reports_dropped_count_in_exec_state() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("TRACE")
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("3")
+                .finish(),
+        ];
+
+        async fn dropped_count(query: &str, records: &[LogRecord]) -> usize {
+            let parser_result = KqlParser::parse(query).unwrap();
+            let mut pipeline = Pipeline::new(parser_result.pipeline);
+            let mut exec_state = ExecutionState::new();
+            let _ = pipeline
+                .execute_with_state(to_otap_logs(records.to_vec()), &mut exec_state)
+                .await
+                .unwrap();
+            exec_state.counters().filtered
+        }
+
+        // 2 of 3 records removed.
+        assert_eq!(
+            dropped_count("logs | where severity_text == \"ERROR\"", &log_records).await,
+            2
+        );
+        // All records removed.
+        assert_eq!(dropped_count("logs | where false", &log_records).await, 3);
+        // No records removed.
+        assert_eq!(dropped_count("logs | where true", &log_records).await, 0);
+        // A non-filtering transform drops nothing.
+        assert_eq!(
+            dropped_count("logs | extend attributes[\"x\"] = 1", &log_records).await,
+            0
+        );
+
+        // Counters accumulate across stages and reset on demand.
+        let parser_result = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut exec_state = ExecutionState::new();
+        let _ = pipeline
+            .execute_with_state(to_otap_logs(log_records.clone()), &mut exec_state)
+            .await
+            .unwrap();
+        assert_eq!(exec_state.counters().filtered, 2);
+        exec_state.reset_counters();
+        assert_eq!(exec_state.counters().filtered, 0);
     }
 
     async fn test_simple_attrs_filter<P: Parser>() {

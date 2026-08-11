@@ -24,7 +24,6 @@ Goal:
 | Area                 | Gap                                                     | Impact                                                   |
 |----------------------|---------------------------------------------------------|----------------------------------------------------------|
 | Metrics              | Histograms not supported yet                            | Limits latency and size distributions                    |
-| Metrics              | Bounded signal-specific metric attributes not supported | Limits modeling of small enum dimensions on core metrics |
 | Multivariate metrics | OTLP and OTAP lack first-class multivariate metric sets | Limits protocol efficiency; some semantics may be lossy  |
 | Tracing              | Traces not implemented (draft only)                     | Limits end-to-end causality and latency debugging        |
 
@@ -54,6 +53,5 @@ Goal:
 
 | Topic                      | Question                                                              |
 |----------------------------|-----------------------------------------------------------------------|
-| Bounded dynamic attributes | How do we implement them?                                             |
 | Metrics endpoint           | What is the default deployment posture (off by default vs protected)? |
 | Schema endpoint            | What is the default deployment posture (off by default vs protected)? |

@@ -19,7 +19,9 @@ use otap_df_engine::message::{Receiver as PDataReceiver, Sender as PDataSender};
 use otap_df_engine::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use otap_df_engine::testing::exporter::create_test_pipeline_context;
 use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
-use otap_df_engine::topic::{TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet};
+use otap_df_engine::topic::{
+    TopicBroadcastAckMode, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
+};
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -48,6 +50,7 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
                     balanced_capacity: 16,
                     broadcast_capacity: 16,
                     on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                    ack_mode: TopicBroadcastAckMode::First,
                 },
             )
             .expect("topic should be created");
@@ -200,6 +203,7 @@ fn topic_receiver_applies_source_tag_when_enabled() {
                     balanced_capacity: 16,
                     broadcast_capacity: 16,
                     on_lag: TopicBroadcastOnLagPolicy::DropOldest,
+                    ack_mode: TopicBroadcastAckMode::First,
                 },
             )
             .expect("topic should be created");

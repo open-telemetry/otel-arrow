@@ -1006,7 +1006,7 @@ mod tests {
         use tokio::sync::mpsc as tokio_mpsc;
         use tokio_util::sync::CancellationToken;
 
-        let port = portpicker::pick_unused_port().expect("free port");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
         // Minimal shared receiver plumbing.
@@ -1135,7 +1135,7 @@ mod tests {
         use tokio::sync::mpsc as tokio_mpsc;
         use tokio_util::sync::CancellationToken;
 
-        let port = portpicker::pick_unused_port().expect("free port");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
         let gate = Arc::new(Semaphore::new(1));
@@ -1277,7 +1277,7 @@ mod tests {
         use tokio::sync::mpsc as tokio_mpsc;
         use tokio_util::sync::CancellationToken;
 
-        let port = portpicker::pick_unused_port().expect("free port");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
         let (msg_tx, mut msg_rx) = tokio_mpsc::channel(4);

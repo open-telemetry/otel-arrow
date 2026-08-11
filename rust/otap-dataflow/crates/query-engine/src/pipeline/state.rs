@@ -26,13 +26,50 @@ use std::hash::{BuildHasherDefault, Hasher};
 #[derive(Default)]
 pub struct ExecutionState {
     extensions: Option<ExtensionMap>,
+    counters: ExecutionCounters,
+}
+
+/// Engine-level counters accumulated while a pipeline executes.
+///
+/// This is the home for any per-execution count the engine wants to expose to
+/// its caller — tracked by the engine itself rather than inferred from batch
+/// sizes. Callers read these after execution (e.g. to emit telemetry) and reset
+/// them between batches when the `ExecutionState` is reused. Add new fields here
+/// as the engine gains more to report; keep each counter distinct so callers can
+/// attribute counts to the specific reason a record left the stream.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutionCounters {
+    /// Records removed by a filter predicate (e.g. a `where` clause).
+    pub filtered: usize,
 }
 
 impl ExecutionState {
     /// Create new execution options.
     #[must_use]
     pub fn new() -> Self {
-        Self { extensions: None }
+        Self {
+            extensions: None,
+            counters: ExecutionCounters::default(),
+        }
+    }
+
+    /// Returns the engine's record-removal counters accumulated so far.
+    #[must_use]
+    pub fn counters(&self) -> ExecutionCounters {
+        self.counters
+    }
+
+    /// Record that `count` records were removed by a filter predicate.
+    pub fn add_filtered(&mut self, count: usize) {
+        self.counters.filtered = self.counters.filtered.saturating_add(count);
+    }
+
+    /// Resets the record-removal counters to zero.
+    ///
+    /// Call this before executing a pipeline for a fresh batch when the
+    /// `ExecutionState` is reused across batches.
+    pub fn reset_counters(&mut self) {
+        self.counters = ExecutionCounters::default();
     }
 
     /// Get extension of type T, if it exists.

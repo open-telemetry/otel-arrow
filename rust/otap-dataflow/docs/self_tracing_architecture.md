@@ -1,11 +1,10 @@
-# Internal Telemetry Logging Pipeline
+# Internal Telemetry Pipeline
 
-This documents the choices available in the internal logging
-configuration object in
-`otap_df_config::settings::telemetry::logs`. See the
+This documents the choices available in the internal telemetry configuration.
+See the
 [internal telemetry crate's README](../crates/telemetry/README.md) for
-the motivation behind this configuration as well as for a description
-of the internal metrics pipeline.
+the motivation behind this configuration and a description of the internal
+metrics data path.
 
 ## Overview
 
@@ -198,6 +197,31 @@ flowchart TB
     C --> D
 ```
 
+## Metrics provider modes
+
+Internal metrics are updated in per-core metric sets on the hot path. A
+collector snapshots those sets into the registry on the cold path. The
+`engine.telemetry.metrics.provider` setting chooses how registry-backed values
+are exported:
+
+- `opentelemetry` (default) uses the OpenTelemetry client SDK and its configured
+  `readers` and `views`.
+- `its` lets the internal telemetry receiver periodically drain an independent
+  export view of the registry, encode it as OTLP metrics, and send it through
+  the observability pipeline.
+- `none` disables periodic export while retaining registry data for the admin
+  metrics endpoint.
+
+ITS keeps the admin endpoint and pipeline export isolated: an admin read or
+reset does not consume values waiting for the receiver. The mode requires an
+observability pipeline with exactly one `receiver:internal_telemetry`; metrics
+SDK `readers` and `views` cannot be combined with it.
+
+The bridge projects multivariate metric sets into standard univariate OTLP
+metrics, so the observability pipeline can use normal OTLP or OTAP exporters.
+This representation is transitional pending native multivariate metric-set
+support in OTAP.
+
 ## Thread Model and Subscriber Scopes
 
 The tracing subscriber can be configured at two scopes:
@@ -259,15 +283,17 @@ groups:
 
 ## Internal Telemetry Receiver configuration
 
-In this configuration, the `InternalTelemetryReceiver` node consumes
-from the channel and emits `OtapPayload::ExportLogsRequest` into the
-pipeline. The internal provider is configured to print directly to the
-console in case the internal telemetry pipeline experiences errors.
+In this configuration, the `InternalTelemetryReceiver` node consumes internal
+logs and registry-backed metrics and emits OTLP pdata into the pipeline. The
+internal log provider is configured to print directly to the console in case
+the internal telemetry pipeline experiences errors.
 
 ```yaml
 version: otel_dataflow/v1
 engine:
   telemetry:
+    metrics:
+      provider: its
     logs:
       level: info
       providers:

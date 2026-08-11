@@ -21,6 +21,10 @@ pub(crate) fn compile_proto() -> anyhow::Result<()> {
     // Generate OTLP protos
     generate_otlp_protos(out_dir, &base);
 
+    // Generate the opamp protos
+    let opamp_path = Path::new("crates/controller/src/extension/opamp/proto");
+    generate_opamp_protos(opamp_path, &base);
+
     Ok(())
 }
 
@@ -84,4 +88,18 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
             &[format!("{base}/../../../proto/opentelemetry-proto").as_str()],
         )
         .expect("Failed to compile OTLP protos.");
+}
+
+fn generate_opamp_protos(out_dir: &Path, base: &str) {
+    let builder = tonic_prost_build::configure()
+        .disable_comments(["."])
+        .out_dir(out_dir);
+
+    builder
+        .compile_with_config(
+            prost_cfg(),
+            &["opamp/v1/opamp.proto", "opamp/v1/anyvalue.proto"],
+            &[format!("{base}/../../../proto/opamp-spec/proto").as_str()],
+        )
+        .expect("Failed to compile OpAMP protos")
 }

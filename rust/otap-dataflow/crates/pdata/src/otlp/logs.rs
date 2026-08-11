@@ -210,11 +210,8 @@ impl ProtoBytesEncoder for LogsProtoBytesEncoder {
     ) -> Result<()> {
         otap_batch.decode_transport_optimized_ids()?;
 
-        // Check if logs table exists - if not, num_items() == 0 (empty batch)
-        // Return early with empty result (valid per OTLP spec)
-        let logs_rb = match otap_batch.get(ArrowPayloadType::Logs) {
-            Some(rb) => rb,
-            None => return Ok(()), // Empty batch, nothing to encode
+        let Some(logs_rb) = otap_batch.root_record_batch() else {
+            return Ok(());
         };
 
         let logs_data_arrays = LogsDataArrays::try_from(&*otap_batch)?;
@@ -694,6 +691,74 @@ mod test {
     }
 
     #[test]
+    fn test_proto_encode_missing_root_no_payloads_returns_ok() {
+        // A missing root Logs payload is semantically equivalent to 0 rows: encode
+        // should succeed and produce an empty result rather than erroring.
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let mut result_buf = ProtoBuffer::default();
+        let mut encoder = LogsProtoBytesEncoder::new();
+
+        let result = encoder.encode(&mut otap_batch, &mut result_buf);
+
+        assert!(result.is_ok(), "encode should succeed: {result:?}");
+        assert!(
+            result_buf.is_empty(),
+            "nothing should be encoded when the root is missing"
+        );
+        let decoded = LogsData::decode(result_buf.as_ref()).unwrap();
+        assert!(decoded.resource_logs.is_empty());
+    }
+
+    #[test]
+    fn test_proto_encode_missing_root_with_child_payloads_returns_ok() {
+        // Even when non-root child payloads are present, a missing root Logs
+        // payload should still encode to an empty result.
+        let attrs_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    3,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["ka", "ka", "kb"])),
+                Arc::new(StringArray::from_iter_values(vec!["va", "va", "vb"])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        // Set child payloads but deliberately omit the root Logs payload.
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, attrs_record_batch.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ResourceAttrs, attrs_record_batch.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ScopeAttrs, attrs_record_batch)
+            .unwrap();
+
+        let mut result_buf = ProtoBuffer::default();
+        let mut encoder = LogsProtoBytesEncoder::new();
+
+        let result = encoder.encode(&mut otap_batch, &mut result_buf);
+
+        assert!(result.is_ok(), "encode should succeed: {result:?}");
+        assert!(
+            result_buf.is_empty(),
+            "nothing should be encoded when the root is missing"
+        );
+        let decoded = LogsData::decode(result_buf.as_ref()).unwrap();
+        assert!(decoded.resource_logs.is_empty());
+    }
+
+    #[test]
     fn test_proto_encode_without_id_column() {
         // Test encoding logs that have no attributes, which means no
         // ID column is encoded or decoded.
@@ -891,6 +956,166 @@ mod test {
                 ],
             )],
         )]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_proto_encode_when_scope_ids_non_monotonic_across_resources() {
+        let res_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]);
+        let scope_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+            Field::new(consts::NAME, DataType::Utf8, true),
+        ]);
+        let body_struct_fields = Fields::from(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]);
+
+        let logs_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(res_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(
+                    consts::SCOPE,
+                    DataType::Struct(scope_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(
+                    consts::TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+                Field::new(
+                    consts::BODY,
+                    DataType::Struct(body_struct_fields.clone()),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(StructArray::new(
+                    res_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter_values([0, 1, 1]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    scope_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt16Array::from_iter_values([5, 2, 3])),
+                        Arc::new(StringArray::from_iter_values(vec![
+                            "scope5", "scope2", "scope3",
+                        ])),
+                    ],
+                    None,
+                )),
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2])),
+                Arc::new(TimestampNanosecondArray::from_iter_values([1, 2, 3])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "ERROR", "INFO", "DEBUG",
+                ])),
+                Arc::new(StructArray::new(
+                    body_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                            AttributeValueType::Str as u8,
+                            3,
+                        ))),
+                        Arc::new(StringArray::from_iter_values(vec!["a", "b", "c"])),
+                    ],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+
+        // ScopeAttrs parent IDs stored sorted ascending: parent 2 -> "v2", 3 -> "v3", 5 -> "v5".
+        let scope_attrs_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![2, 3, 5])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    3,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["k", "k", "k"])),
+                Arc::new(StringArray::from_iter_values(vec!["v2", "v3", "v5"])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch
+            .set(ArrowPayloadType::Logs, logs_record_batch)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ScopeAttrs, scope_attrs_record_batch)
+            .unwrap();
+        let mut result_buf = ProtoBuffer::default();
+        let mut encoder = LogsProtoBytesEncoder::new();
+        encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
+        let result = LogsData::decode(result_buf.as_ref()).unwrap();
+
+        let expected = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name("scope5")
+                        .attributes(vec![KeyValue::new("k", AnyValue::new_string("v5"))])
+                        .finish(),
+                    vec![
+                        LogRecord::build()
+                            .time_unix_nano(1u64)
+                            .severity_text("ERROR")
+                            .body(AnyValue::new_string("a"))
+                            .finish(),
+                    ],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource::default(),
+                vec![
+                    ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("scope2")
+                            .attributes(vec![KeyValue::new("k", AnyValue::new_string("v2"))])
+                            .finish(),
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(2u64)
+                                .severity_text("INFO")
+                                .body(AnyValue::new_string("b"))
+                                .finish(),
+                        ],
+                    ),
+                    ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("scope3")
+                            .attributes(vec![KeyValue::new("k", AnyValue::new_string("v3"))])
+                            .finish(),
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(3u64)
+                                .severity_text("DEBUG")
+                                .body(AnyValue::new_string("c"))
+                                .finish(),
+                        ],
+                    ),
+                ],
+            ),
+        ]);
+
         assert_eq!(result, expected);
     }
 }

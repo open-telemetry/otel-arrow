@@ -81,7 +81,6 @@ pub(crate) struct PlannedOp {
 
 impl ExprPlanner {
     /// Creates a new `ExprPlanner` with case-sensitive attribute key matching
-    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             attr_key_case_sensitive: true,
@@ -173,6 +172,10 @@ impl ExprPlanner {
                         },
                         expr_type: ExprLogicalType::AnyValue,
                         requires_dict_downcast: false,
+                    }),
+                    ColumnAccessor::NestedAttribute(_, _, _) => Err(Error::NotYetSupportedError {
+                        message: "reading nested serialized attribute paths is not yet supported"
+                            .into(),
                     }),
                 }
             }
@@ -1222,6 +1225,7 @@ impl ExprPlanner {
                             )?,
                         }))))
                     }
+                    ColumnAccessor::NestedAttribute(_, _, _) => Ok(None),
                 };
             }
         }

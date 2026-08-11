@@ -146,6 +146,8 @@ mod tests {
 
     #[test]
     fn test_meter_provider_configure_with_non_runtime_readers() -> Result<(), Error> {
+        crate::ensure_test_crypto_provider();
+
         let resource = Resource::builder().build();
         let metric_readers = vec![
             MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
@@ -184,6 +186,7 @@ mod tests {
         let metrics_config = MetricsConfig {
             readers: metric_readers,
             views: Vec::new(),
+            ..MetricsConfig::default()
         };
 
         let meter_provider = MeterProvider::configure(resource, &metrics_config, None)?;
@@ -219,7 +222,7 @@ mod tests {
                 exporter: MetricsPullExporterConfig {
                     exporter_type: MetricsPullExporterType::Prometheus,
                     config: serde_json::json!({
-                        "host": "0.0.0.0",
+                        "host": "127.0.0.1",
                         "port": 9090,
                         "path": "/metrics"
                     }),
@@ -229,6 +232,7 @@ mod tests {
         let metrics_config = MetricsConfig {
             readers: metric_readers,
             views: Vec::new(),
+            ..MetricsConfig::default()
         };
         let meter_provider = MeterProvider::configure(resource, &metrics_config, None)?;
         let (_sdk_meter_provider, runtime) = meter_provider.into_parts();
