@@ -17,3 +17,7 @@ issues: [3530]
 # Use pipe (|) for multiline entries.
 subtext: |
   Migrate internal metrics to the new MeasurementMetricSet schema with enum attributes.
+
+# Mandatory if change_type is breaking: A description of how to migrate from the old behavior.
+Migration: |
+  Dashboard queries referencing `processor.temporal_reaggregation.batches_rejected` should be updated to use `processor.temporal_reaggregation.dropped.items`.
