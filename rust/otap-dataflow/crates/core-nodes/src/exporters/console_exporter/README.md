@@ -31,67 +31,45 @@ durably.
 
 ## Console Output Serialization
 
-Console output from the engine's cooperating writers -- this exporter, node
-`info` messages, and internal diagnostics -- flows through a single writer
-thread per standard stream. That thread holds the stream lock for the whole
-frame, so concurrent exporters on different cores can never interleave bytes
-inside one frame, even when a payload is larger than a single underlying write.
-Every `record_json` line therefore stays independently parseable.
+Console exporters can run concurrently on multiple engine cores, but stdout and
+stderr are shared by the entire process. To prevent output from different cores
+from being interleaved, cooperating engine writers use a process-wide output
+service.
 
-The queue feeding the writer is bounded, so a console that cannot keep up slows
-producers down instead of dropping data or growing without limit. Best-effort
-internal diagnostics are the exception: they are dropped rather than allowed to
-stall an engine core thread. Ordering is FIFO per producer; output from
-different cores is not globally ordered by timestamp.
+producer -->   bounded queue -->  dedicated writer
+complete frame  -->  stdout queue  ------>  lock stdout, write, flush
+complete frame  -->  stderr queue  ------>  lock stderr, write, flush
 
-Defaults require no configuration: 1024 queued frames for stdout, 256 for
-stderr, a flush whenever the queue goes idle, and a 5 second drain deadline at
-shutdown. When an engine run ends, accepted frames are written and flushed
-before it returns; anything still queued when that deadline expires is reported
-instead of waited on. The writer threads are process-wide and stay running, so
-another engine run in the same process keeps its console output. The process
-itself stops the writers on exit, which drains, flushes, and joins them.
+Each producer formats a complete frame before submitting it. A frame may contain
+one pretty-printed payload or several newline-terminated `record_json` records.
+The writer holds the stream lock while writing the entire frame, so another
+producer cannot insert bytes into it. Ordering is preserved for each producer,
+but output from different cores is not globally ordered.
 
-A console that never accepts writes is a separate case. Because the queue
-applies backpressure by design, producers wait once it fills, and the pipeline
-stops making progress until the console drains. The drain deadline bounds the
-final flush, not that upstream stall.
+The queues limit the number of frames waiting to be written. Console exporters
+wait when their queue is full, applying backpressure to the pipeline. Internal
+diagnostics use a best-effort path instead: they are dropped when the stderr
+queue is full so logging cannot stall an engine core. By default, stdout holds
+up to 1024 queued frames and stderr holds up to 256.
 
-Human-readable engine diagnostics always use stderr. Exporters are created while
-pipelines start, so a `record_json` exporter may claim stdout after the first
-diagnostics have already been emitted; keeping prose off stdout unconditionally
-is what makes stdout parseable regardless of when that claim lands.
+Human-readable engine diagnostics always go to stderr. When the accepted
+configuration contains a `record_json` console exporter, stdout is reserved for
+structured records and any pretty console exporter also writes to stderr. The
+standard engine binary applies this policy before starting its pipelines.
+Applications embedding `Controller` directly must call
+`claim_structured_stdout` on the validated configuration before starting it.
+The first `record_json` exporter cannot be introduced through live control after
+a pretty-only process has started.
 
-This exporter's own `pretty` output is its product rather than engine prose, so
-it uses stdout until another exporter claims stdout for machine-readable
-records, and moves to stderr from then on. The engine binary applies that claim
-to the accepted configuration before any pipeline starts, so a `pretty` exporter
-configured alongside a `record_json` one writes to stderr from its first
-payload. An embedder driving `Controller` directly should call
-`claim_structured_stdout` on its validated configuration to get the same
-guarantee. A `record_json` exporter created without that prestartup claim is
-rejected rather than allowed to append JSON to a stdout that may already
-contain pretty output. Live control therefore cannot introduce the first
-`record_json` exporter into a running pretty-only process; start a new process
-with the desired format instead. Prefer a single console output format per
-process: mixing them means the `pretty` output you configured does not appear
-on stdout.
+At the end of an engine run, the controller waits up to five seconds for
+accepted frames to be written and flushed. The process-wide writer threads
+remain available for later runs in the same process. On final process shutdown,
+the engine attempts to drain and join them. Writer failures and incomplete
+drains are reported with the number of frames still pending.
 
-The claim helper treats an invalid console config conservatively as structured
-stdout. The normal binary validates first and reports the configuration error;
-an embedder that reverses those calls still keeps prose off stdout.
-
-When a writer stops on an I/O error, the failure is reported off the failed
-stream, and the engine run returns an error carrying the number of frames that
-were never written, so lost output stays visible even when no console stream is
-left to report on. A drain that merely runs out of time is not an error: the
-writer is still running and its queued frames can still land.
-
-The integrity guarantee covers output submitted through this writer only. It
-excludes writers that bypass it: raw file descriptors, inherited child
-processes, the debug processor's console fallback, last-resort messages emitted
-while a controller thread is being torn down, and standalone binaries such as
-`ctl`.
+Only output submitted through this service receives the frame-integrity
+guarantee. Direct file-descriptor writes, child-process output, standalone
+binaries, and the debug processor's console fallback remain outside it.
 
 ## Getting Started
 
