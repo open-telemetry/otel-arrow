@@ -421,13 +421,14 @@ sending an unauthenticated request. Its factory already receives a
 `capabilities` argument, so this is additive and does not change the default
 (no-auth) behavior.
 
-The OTLP gRPC (`urn:otel:exporter:otlp_grpc`) exporter can adopt the same
-pattern, but is intentionally left out for now: the only bearer provider today
-is `azure_identity_auth` (scope `https://monitor.azure.com/.default`), and Azure
+The OTLP gRPC (`urn:otel:exporter:otlp_grpc`) exporter consumes
+`BearerTokenProvider` the same way, sharing the adapter with the HTTP exporter.
+It is **not** intended to be bound to `azure_identity_auth`, though: Azure
 Monitor's OTLP ingestion endpoints are HTTP-only (per-signal `.../otlp/v1/{logs,
-metrics,traces}` URLs, consumed by the collector's `otlphttp` exporter), so
-there is no gRPC provider + backend combination to exercise it. It can be wired
-up when a gRPC bearer backend or a non-Azure provider exists.
+metrics,traces}` URLs, consumed by the collector's `otlphttp` exporter), so an
+Azure-scoped token has no gRPC backend to authenticate against. The gRPC
+exporter's intended pairing is `oauth2_client_auth` or another non-Azure
+provider.
 
 ## Telemetry
 

@@ -58,6 +58,7 @@ use reqwest::{Client, Response};
 use secrecy::ExposeSecret;
 
 use self::config::Config;
+use crate::exporters::common::bearer_auth::{BearerAuth, BearerAuthEvents};
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataExportMetrics;
@@ -65,13 +66,30 @@ use otap_df_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettin
 use otap_df_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use otap_df_otap::pdata::{Context, OtapPdata};
 
-use self::bearer_auth::BearerAuth;
-
-mod bearer_auth;
 mod config;
 
 /// The URN for the OTLP HTTP exporter
 pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
+
+/// Emits the shared bearer-auth warnings under this exporter's event namespace.
+struct HttpBearerAuthEvents;
+
+impl BearerAuthEvents for HttpBearerAuthEvents {
+    fn invalid_token(error: &http::header::InvalidHeaderValue) {
+        otel_warn!("otlp.exporter.http.invalid_bearer_token", error = %error);
+    }
+
+    fn token_stream_closed() {
+        otel_warn!(
+            "otlp.exporter.http.token_stream_closed",
+            message = "bearer token provider closed its stream; \
+                no further token refreshes will arrive"
+        );
+    }
+}
+
+/// The bearer-token adapter as used by this exporter.
+type HttpBearerAuth = BearerAuth<HttpBearerAuthEvents>;
 
 /// Exporter that sends OTLP data via HTTP
 pub struct OtlpHttpExporter {
@@ -232,7 +250,7 @@ struct CompletedExport {
     /// Generation of the bearer token stamped on this request (`None` when no
     /// provider is bound). Echoed back so a 401 invalidates exactly the token
     /// that was used, not a newer one already cached (see
-    /// [`BearerAuth::invalidate`]).
+    /// [`HttpBearerAuth::invalidate`]).
     token_generation: Option<u64>,
 }
 
@@ -305,7 +323,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         // the token subscription, the cached `Authorization` header, and token
         // usability; the loop below stays auth-agnostic -- it only asks whether
         // it may send and stamps the header the adapter hands back.
-        let mut auth = self.token_provider.take().map(BearerAuth::new);
+        let mut auth = self.token_provider.take().map(HttpBearerAuth::new);
         // Constant for the whole run (the adapter is created once), so precompute
         // it for the auth-aware retry decision in `finalize_completed_export`.
         let auth_bound = auth.is_some();
@@ -319,14 +337,14 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             // holds data-path startup until the first publish, and its watch stream
             // stays live while we hold the provider handle -- so waiting (not
             // dropping) is always correct here.
-            let accepting_pdata = auth.as_ref().is_none_or(BearerAuth::is_ready)
+            let accepting_pdata = auth.as_ref().is_none_or(HttpBearerAuth::is_ready)
                 && inflight_exports.len() < max_in_flight;
 
             // Instant at which a currently-usable token crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
+            let token_margin_deadline = auth.as_ref().and_then(HttpBearerAuth::refresh_deadline);
 
             let msg = tokio::select! {
                 biased;
@@ -356,7 +374,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         Some(a) => a.poll_refresh().await,
                         None => std::future::pending().await,
                     }
-                }, if auth.as_ref().is_some_and(BearerAuth::is_active) => {
+                }, if auth.as_ref().is_some_and(HttpBearerAuth::is_active) => {
                     // A refresh was drained (the adapter caches it and logs any
                     // anomaly); loop to re-evaluate intake readiness.
                     continue;
@@ -452,7 +470,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // generation is echoed back on completion so a 401 can be matched
                     // to the exact token used and a stale rejection ignored.
                     let (auth_header, token_generation) =
-                        match auth.as_ref().and_then(BearerAuth::header) {
+                        match auth.as_ref().and_then(HttpBearerAuth::header) {
                             Some((header, generation)) => (Some(header), Some(generation)),
                             None => (None, None),
                         };
@@ -827,8 +845,8 @@ async fn collect_body(response: Response, max_len: usize) -> Result<Bytes, Servi
 /// bearer adapter: drops the rejected token generation so a retry waits for a
 /// fresh token instead of reusing the rejected one. A no-op when no provider is
 /// bound (`rejected_generation` is `None`) or the rejection is stale (a newer
-/// token was already cached), per [`BearerAuth::invalidate`]'s generation guard.
-fn apply_auth_rejection(auth: &mut Option<BearerAuth>, rejected_generation: Option<u64>) {
+/// token was already cached), per [`HttpBearerAuth::invalidate`]'s generation guard.
+fn apply_auth_rejection(auth: &mut Option<HttpBearerAuth>, rejected_generation: Option<u64>) {
     if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
         adapter.invalidate(generation);
     }

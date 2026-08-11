@@ -63,9 +63,10 @@ keepalive, HTTP/2 settings, TLS, proxy, and transport buffer settings.
 
 `headers` is a map of metadata name to value added to every outbound request
 (multi-tenant routing IDs, tracing-vendor metadata, and similar). For request
-authentication, prefer a dedicated Auth extension rather than hard-coding an
-`authorization` entry here. Values are sent verbatim, so treat any secret in
-the rendered config as sensitive.
+authentication, prefer the `bearer_token_provider` capability (see
+[Authentication](#authentication)) rather than hard-coding an `authorization`
+entry here. Values are sent verbatim, so treat any secret in the rendered config
+as sensitive.
 
 Validation at config load rejects:
 
@@ -81,6 +82,70 @@ When [header propagation](../../../../../docs/transport-headers.md) is also
 enabled, statically configured headers take precedence: a propagated header
 whose key matches a configured one is dropped, so a configured routing header
 (e.g. `x-scope-orgid`) is never overridden or duplicated.
+
+## Authentication
+
+The exporter can inject an OAuth `authorization: Bearer <token>` on every
+outbound request by consuming the `bearer_token_provider` capability. Binding is
+optional and additive: without it the exporter sends no `authorization` metadata
+(the default); with it, the bound extension acquires and refreshes the token in
+the background so credentials rotate without restarting the exporter.
+
+Declare a provider extension -- for gRPC that is
+[`oauth2_client_auth`](../../../../contrib-extensions/src/oauth2_client_auth/README.md)
+(any OAuth 2.0 token endpoint), or any other extension exposing
+`bearer_token_provider` whose tokens are accepted by a gRPC OTLP endpoint -- in
+the pipeline's `extensions:` section and bind it on the exporter node via the
+node's `capabilities:` map. See the chosen extension's README for its
+configuration reference; only the binding is documented here.
+
+```yaml
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          oauth2:
+            type: "urn:otel:extension:oauth2_client_auth"
+            config:
+              grant_type: client_credentials
+              token_url: "https://idp.example.com/oauth2/v1/token"
+              client_id: "someclientid"
+              client_secret_file: "/etc/secrets/oauth2_client_secret"
+              scopes: ["telemetry.write"]
+
+        nodes:
+          otlp-grpc-exporter:
+            type: "urn:otel:exporter:otlp_grpc"
+            # Bind the bearer token provider to the extension declared above.
+            capabilities:
+              bearer_token_provider: oauth2
+            config:
+              grpc_endpoint: "https://otlp.example.com:4317"
+```
+
+The `azure_identity_auth` extension is **not** a useful pairing here: Azure
+Monitor's OTLP ingestion endpoints are HTTP-only, so its tokens have no gRPC
+backend to authenticate against. Use it with the
+[OTLP HTTP exporter](../otlp_http_exporter/README.md) instead.
+
+The bearer token is applied per request, so it takes precedence over both a
+statically configured `authorization` entry and any propagated `authorization`
+transport header; exactly one `authorization` value is sent. The exporter
+subscribes to the provider's token stream and caches the built metadata value,
+rebuilding it only when the provider refreshes the token, so credential work
+stays off the per-request path. The value is marked sensitive, which keeps the
+credential out of the HTTP/2 HPACK dynamic table.
+
+When no usable token is cached yet -- before the provider's first publish, or in
+a degraded window where a refresh is failing and the cached token is within a
+small safety margin of expiring -- the exporter **stops accepting new batches**
+(back-pressures upstream) rather than sending an unauthenticated or soon-to-lapse
+request. It resumes as soon as a usable token arrives; nothing is dropped. (If
+buffered batches are force-drained during shutdown while no token is available,
+they are NACK'd as **retryable**.) A token is guaranteed to eventually arrive:
+the bound extension holds data-path startup until its first token publish, and
+its token stream stays live for the exporter's lifetime.
 
 ## Examples
 
@@ -120,6 +185,8 @@ channel and is not duplicated by the exporter.
 | `otlp.exporter.grpc.shutdown` | `info` | Exporter shutdown. |
 | `otlp.exporter.http.export_error` | `warn` | A gRPC export request did not complete successfully. |
 | `otlp.exporter.grpc.header_skip` | `debug` | A propagated transport header was skipped while building gRPC metadata. |
+| `otlp.exporter.grpc.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `authorization` header. |
+| `otlp.exporter.grpc.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
 
 ## Limits
 
@@ -132,6 +199,7 @@ channel and is not duplicated by the exporter.
 ## Related Docs
 
 - [Configuration model](../../../../../docs/configuration-model.md)
+- [OAuth2 client auth extension](../../../../contrib-extensions/src/oauth2_client_auth/README.md)
 - [Proxy support](../../../../../docs/proxy-support.md)
 - [Transport headers](../../../../../docs/transport-headers.md)
 - [Core node catalog](../../../README.md)

@@ -7,7 +7,9 @@
 //! with a bearer token, so the exporter itself stays auth-agnostic: it drives
 //! [`BearerAuth::poll_refresh`] in its `select!` loop, asks
 //! [`BearerAuth::is_ready`] before admitting data, and stamps
-//! [`BearerAuth::header`] onto each request.
+//! [`BearerAuth::header`] onto each request. Shared by the OTLP HTTP and OTLP
+//! gRPC exporters; the cached credential is an `http::HeaderValue`, which both
+//! transports accept (tonic's `MetadataMap` is backed by an `http::HeaderMap`).
 //!
 //! The division of labor mirrors the capability design: the **provider**
 //! (extension) owns credential acquisition, background refresh, and startup
@@ -15,13 +17,14 @@
 //! stream, caches the built `Authorization` header, and tracks whether that
 //! cached token is still usable. The exporter is the "dumb caller".
 
+use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use http::HeaderValue;
+use http::header::InvalidHeaderValue;
 use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
 use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
-use otap_df_telemetry::otel_warn;
 
 /// Safety margin before a cached token's expiry within which it is treated as
 /// unusable, so the exporter back-pressures (awaiting a fresh token) rather than
@@ -30,12 +33,24 @@ use otap_df_telemetry::otel_warn;
 /// cached token genuinely near expiry).
 const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 
+/// The warnings this adapter can raise, emitted by the owning exporter so each
+/// event name is namespaced to that exporter (e.g. `otlp.exporter.grpc.*`)
+/// rather than to the shared adapter. `otel_warn!` const-validates its event
+/// name, so the name has to be a literal at the emitting call site.
+pub(crate) trait BearerAuthEvents {
+    /// A published token could not be turned into an `Authorization` header.
+    fn invalid_token(error: &InvalidHeaderValue);
+
+    /// The provider closed its token stream; no further refreshes will arrive.
+    fn token_stream_closed();
+}
+
 /// Consumer-side bearer-token authenticator: subscribes to a provider's token
 /// stream, caches the built `Authorization` header, and reports usability.
 ///
 /// All token/expiry/stream state lives here, so an exporter holds one of these
 /// and never touches a token directly.
-pub(crate) struct BearerAuth {
+pub(crate) struct BearerAuth<E: BearerAuthEvents> {
     /// Subscription to the provider's token refreshes.
     stream: TokenStream,
     /// Whether the stream is still live and worth polling.
@@ -49,9 +64,11 @@ pub(crate) struct BearerAuth {
     /// each request so a later 401 can be matched to the exact token generation
     /// it used, letting a rejection for an already-replaced token be ignored.
     generation: u64,
+    /// Selects the exporter-specific event names; carries no state.
+    _events: PhantomData<E>,
 }
 
-impl BearerAuth {
+impl<E: BearerAuthEvents> BearerAuth<E> {
     /// Subscribes to `provider`'s token stream. Per the
     /// `BearerTokenProvider::token_stream` contract, a subscription created
     /// after a token has been published immediately yields that current token,
@@ -63,6 +80,7 @@ impl BearerAuth {
             cached_header: None,
             cached_expiry: None,
             generation: 0,
+            _events: PhantomData,
         }
     }
 
@@ -151,7 +169,7 @@ impl BearerAuth {
                     }
                     Err(e) => {
                         // Malformed token: keep the previous cached token (if any).
-                        otel_warn!("otlp.exporter.http.invalid_bearer_token", error = %e);
+                        E::invalid_token(&e);
                     }
                 }
             }
@@ -160,11 +178,7 @@ impl BearerAuth {
                 // Keep using the last cached token. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
-                otel_warn!(
-                    "otlp.exporter.http.token_stream_closed",
-                    message = "bearer token provider closed its stream; \
-                        no further token refreshes will arrive"
-                );
+                E::token_stream_closed();
             }
         }
     }
@@ -175,15 +189,23 @@ mod tests {
     use super::*;
     use futures::stream;
 
+    struct TestEvents;
+
+    impl BearerAuthEvents for TestEvents {
+        fn invalid_token(_error: &InvalidHeaderValue) {}
+        fn token_stream_closed() {}
+    }
+
     /// Builds an adapter holding a usable, non-expiring token at `generation`,
     /// with an inert (empty) stream so only `invalidate` behavior is exercised.
-    fn auth_with_cached_token(generation: u64) -> BearerAuth {
+    fn auth_with_cached_token(generation: u64) -> BearerAuth<TestEvents> {
         BearerAuth {
             stream: stream::empty().boxed_local(),
             stream_active: false,
             cached_header: Some(HeaderValue::from_static("Bearer test-token")),
             cached_expiry: None,
             generation,
+            _events: PhantomData,
         }
     }
 
