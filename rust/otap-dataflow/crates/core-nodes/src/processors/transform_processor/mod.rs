@@ -275,6 +275,10 @@ impl TransformProcessor {
             return Ok(());
         }
 
+        // Must be built before the context is moved into the slot map below. Holds no
+        // frames, so cloning it per outbound batch is cheap.
+        let outbound_context = inbound_context.clone_detached();
+
         // keep error reason if there was an error, so we can send it to upstream in Nack once
         // all routed outbound batches have been Ack/Nack'd
         let inbound_ctx_key = self
@@ -296,7 +300,7 @@ impl TransformProcessor {
         // the output of the pipeline. We need to do this b/c we'll be emitting this batch, plus
         // any routed batches, and we don't want to Ack the inbound context until we receive Acks
         // from all downstream batches (including this result)
-        let mut pdata = OtapPdata::new(Context::default(), default_otap_batch.into());
+        let mut pdata = OtapPdata::new(outbound_context.clone(), default_otap_batch.into());
         let outbound_key = self
             .contexts
             .insert_outbound(inbound_ctx_key)
@@ -364,8 +368,7 @@ impl TransformProcessor {
 
             // setup the pdata with the new outbound context
             let payload = OtapPayload::OtapArrowRecords(otap_batch);
-            let context = Context::default();
-            let mut pdata = OtapPdata::new(context, payload);
+            let mut pdata = OtapPdata::new(outbound_context.clone(), payload);
             let outbound_key = self
                 .contexts
                 .insert_outbound(inbound_ctx_key)
@@ -451,6 +454,7 @@ fn create_transform_processor(
 
 /// Register TransformProcessor
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: TRANSFORM_PROCESSOR_URN,
@@ -700,8 +704,10 @@ mod test {
     use otap_df_otap::{
         pdata::{Context, OtapPdata},
         testing::{TestCallData, next_ack, next_nack},
+        transport_headers::{TransportHeader, TransportHeaders},
     };
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use std::net::SocketAddr;
 
     #[derive(Debug, PartialEq, Eq)]
     struct TransformMetricPoint {
@@ -2126,6 +2132,101 @@ mod test {
                         panic!("got unexpected pipeline ctrl message {other:?}")
                     }
                 };
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    /// Scenario: an inbound batch carrying transport headers and a peer address is
+    /// split across the default output port and two routed output ports.
+    /// Guarantees: every outbound batch carries the originating request's transport
+    /// headers and peer address, while the inbound Ack frames stay behind so the
+    /// upstream node is still Ack'd exactly once after all outbound batches settle.
+    #[test]
+    fn test_split_batch_retains_inbound_request_metadata() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            } else if (severity_text == "INFO") {
+                route_to "info_port"
+            }"#;
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+        let info_port_rx = set_pdata_sender("info_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let peer_addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
+                let mut headers = TransportHeaders::new();
+                headers.push(TransportHeader::text("tenant", "x-tenant", "acme"));
+
+                let upstream_node_id = 999;
+                let pdata = create_pdata_with_subscriber(
+                    to_otap_logs(create_log_records(&["ERROR", "INFO", "DEBUG"])),
+                    Interests::ACKS,
+                    1,
+                    upstream_node_id,
+                )
+                .with_transport_headers(headers.clone())
+                .with_peer_addr(peer_addr);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // DEBUG stays on the default port, ERROR and INFO are routed
+                let (default_ctx, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                let (error_ctx, _) = error_port_rx.recv().await.unwrap().into_parts();
+                let (info_ctx, _) = info_port_rx.recv().await.unwrap().into_parts();
+
+                for (port, context) in [
+                    ("default", &default_ctx),
+                    ("error_port", &error_ctx),
+                    ("info_port", &info_ctx),
+                ] {
+                    assert_eq!(
+                        context.transport_headers(),
+                        Some(&headers),
+                        "{port} lost the inbound transport headers"
+                    );
+                    assert_eq!(
+                        context.peer_addr(),
+                        Some(peer_addr),
+                        "{port} lost the inbound peer address"
+                    );
+                }
+
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                send_ack(&mut ctx, default_ctx, SignalType::Logs)
+                    .await
+                    .unwrap();
+                assert!(pipeline_completion_rx.is_empty());
+                send_ack(&mut ctx, error_ctx, SignalType::Logs)
+                    .await
+                    .unwrap();
+                assert!(pipeline_completion_rx.is_empty());
+                send_ack(&mut ctx, info_ctx, SignalType::Logs)
+                    .await
+                    .unwrap();
+
+                match pipeline_completion_rx.recv().await.unwrap() {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
+                        let (node_id, _ack) = next_ack(ack).expect("expected ack subscriber");
+                        assert_eq!(node_id, upstream_node_id);
+                    }
+                    other => panic!("got unexpected pipeline ctrl message {other:?}"),
+                };
+                assert!(
+                    pipeline_completion_rx.is_empty(),
+                    "upstream must be Ack'd once, not once per outbound batch"
+                );
             })
             .validate(|_ctx| async move {})
     }

@@ -648,8 +648,6 @@ pub enum NodeKind {
     Processor,
     /// Exporter.
     Exporter,
-    /// Processor chain.
-    ProcessorChain,
 }
 
 /// Engine event type.

@@ -35,6 +35,76 @@ config:
   max_concurrent_uploads: 4
 ```
 
+### Agent-fed credentials
+
+When the embedding host supplies the Geneva token and routing metadata, bind
+the combined credential-provider capability and use `agentfed` authentication:
+
+```yaml
+type: urn:microsoft:exporter:geneva
+capabilities:
+  agent_fed_credential_provider: agent-auth
+config:
+  environment: production
+  account: "my-account"
+  namespace: "my-namespace"
+  config_major_version: 1
+  tenant: "my-tenant"
+  role_name: "df-engine"
+  role_instance: "instance-001"
+  auth:
+    type: agentfed
+  max_concurrent_uploads: 4
+```
+
+The `attributes` object in each credential snapshot must use this shape:
+
+```json
+{
+  "endpoint": "https://ingest.example.com",
+  "moniker_map": {
+    "my-account": "my-moniker",
+    "default": "fallback-moniker"
+  }
+}
+```
+
+`endpoint` and `region` are not required in this mode because the host supplies
+the ingestion endpoint through the credential snapshot's `endpoint` attribute.
+That attribute must be a non-empty absolute HTTPS URL with a host and cannot
+contain embedded credentials, a query string, or a fragment. The exporter
+canonicalizes it before use. The uploader uses that canonical value as both the
+upload base URL and the `endpoint=` query fallback when a token has no usable
+Endpoint claim. The exporter
+selects a non-empty string from `moniker_map` by the configured `account`,
+falling back only to an explicit `default`. A map containing neither key is
+rejected, even if it has a single entry. Empty or malformed routing is also
+rejected. If the configured account or `default` key exists with an invalid
+value, the snapshot is rejected instead of falling back to another entry. The
+selected moniker must be safe to use as one URL query value without additional
+encoding. Surrounding whitespace is trimmed; the remaining value may contain
+only ASCII letters, digits, hyphen, dot, underscore, and tilde. Embedded
+whitespace, non-ASCII text, and reserved delimiters are rejected.
+
+The provider must load the token and routing attributes from one atomically
+published host snapshot. Each upload consumes one immutable snapshot, so a host
+rotation cannot produce a mixed-generation token/routing pair. Subsequent
+uploads observe the new snapshot without reconstructing the exporter. Tokens
+with a known expiry must remain usable for more than 30 seconds; expired or
+near-expiry snapshots fail closed while the provider refreshes them.
+Credential lookup, including time waiting for another lookup to release the
+provider, is limited to five seconds. Provider futures must be cancellation-safe
+and should normally clone an already-published snapshot instead of performing
+network I/O.
+
+Capability bindings are checked when the exporter is created because the
+factory's earlier config-validation hook receives only the `config` object.
+Capability factories create a clone for each consumer, so the host extension's
+clones must share the same atomically swapped snapshot state. The host extension
+must register `agent_fed_credential_provider` for the shared execution model;
+a local-only registration cannot satisfy the uploader's thread-safe credential
+source.
+
 ## Build df_engine with Geneva Exporter
 
 From the `otap-dataflow` directory:
@@ -70,7 +140,8 @@ You should see `urn:microsoft:exporter:geneva` in the Exporters list.
 ```yaml
 type: urn:microsoft:exporter:geneva
 config:
-  # Geneva endpoint and routing identity (all required).
+  # Geneva config-service endpoint and region are required for every
+  # authentication method except "agentfed".
   endpoint: "https://geneva.example.com"
   environment: production
   account: "my-account"
@@ -82,8 +153,8 @@ config:
   role_instance: "instance-001"
 
   # Authentication method. Other supported values are "certificate",
-  # "usermanagedidentity", "usermanagedidentitybyarmresourceid", and
-  # "workloadidentity".
+  # "usermanagedidentity", "usermanagedidentitybyarmresourceid",
+  # "workloadidentity", and "agentfed".
   auth:
     type: systemmanagedidentity
     msi_resource: "https://monitor.azure.com/"

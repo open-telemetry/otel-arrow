@@ -21,12 +21,12 @@ data-path nodes through a `BearerTokenProvider` capability.
 
 It builds on the extension system foundations:
 
-- [Extension System Proposal](extension-requirements.md) - the *what* and *why*
+- [Extension System Proposal](../../../../docs/extension-requirements.md) - the *what* and *why*
   of the capability-based extension system.
-- [Extension System Architecture](extension-system-architecture.md) - the
+- [Extension System Architecture](../../../../docs/extension-system-architecture.md) - the
   Phase 1 *how* (capability proc macro, registry, Active/Passive lifecycle,
   local/shared execution models).
-- [Design Principles and Constraints](design-principles.md) - thread-per-core
+- [Design Principles and Constraints](../../../../docs/design-principles.md) - thread-per-core
   execution, minimal synchronization, security/privacy first.
 
 ## Problem
@@ -85,7 +85,7 @@ path free of authentication plumbing.
 - A general-purpose capability framework. `BearerTokenProvider` is a single,
   purpose-built capability trait (defined via the engine's `#[capability]`
   proc macro, see
-  [Extension System Architecture](extension-system-architecture.md)) introduced
+  [Extension System Architecture](../../../../docs/extension-system-architecture.md)) introduced
   alongside this extension; this design adds no capability machinery beyond it.
 - General-purpose OAuth/OIDC support. This extension is Azure-specific.
 - Per-request, per-tenant token selection. One extension instance serves one
@@ -207,18 +207,33 @@ flowchart LR
 
 ### Internal state
 
+The cache, refresh loop, and capability implementation are not specific to
+Azure, so they live in the shared `crate::common::token_refresh` module and can be reused by other active bearer-token extensions (see [`oauth2_client_auth`](../oauth2_client_auth/design.md)). This extension is a type alias over that generic machinery:
+
 ```rust
-#[derive(Clone)]
-pub struct AzureIdentityAuthExtension {
-    inner: Arc<Inner>,
+pub type AzureIdentityAuthExtension = TokenProviderExtension<Auth, AzureIdentityAuthMetrics>;
+```
+
+```rust
+// Manual `Clone`: deriving would add `S: Clone, M: Clone` bounds, but the
+// state is shared through the `Arc` and is never cloned itself.
+pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
+    inner: Arc<Inner<S, M>>,
 }
 
-struct Inner {
-    auth: Auth,                                       // credential + scope
+struct Inner<S, M> {
+    source: S,                                        // credential + scope
+    expiry_buffer: Duration,                          // refresh skew
     tx: watch::Sender<Option<BearerToken>>,           // token cache + pub/sub
-    cap_err: CapabilityErrorSource<BearerTokenProvider>,
+    cap_err: CapabilityErrorSource<BearerTokenProviderCap>,
     fetch_lock: tokio::sync::Mutex<()>,               // coalesce slow-path fetches
-    metrics: std::sync::Mutex<AzureIdentityAuthMetricsTracker>,
+    failures: std::sync::Mutex<FailureState>,         // negative cache + retry backoff
+    metrics: std::sync::Mutex<TokenProviderMetricsTracker<M>>,
+}
+
+struct FailureState {
+    last_failure: Option<Instant>,
+    consecutive_failures: u32,
 }
 ```
 
@@ -226,6 +241,19 @@ All mutable state lives behind `Arc<Inner>` so the engine can clone the
 extension freely. The `fetch_lock` is an async `Mutex` (held across an
 `.await`); the metrics `Mutex` is a `std` `Mutex` whose critical sections are
 short and never held across an `.await`.
+
+Only two things are Azure-specific:
+
+- `Auth` implements `token_refresh::TokenSource`: `fetch_token()` calls the
+  `azure_identity` credential for the configured scope, and
+  `log_refresh_failure()` emits the `azure_identity_auth.token_refresh_failed`
+  event.
+- `AzureIdentityAuthMetrics` (metric set `extension.azure_identity_auth`)
+  implements `token_refresh::TokenProviderMetrics`, exposing its counters and
+  latency histogram to the generic tracker.
+
+The `expiry_buffer` is fixed at `TOKEN_EXPIRY_BUFFER_SECS` (299 s) for this
+extension; it is not user-configurable.
 
 ## Configuration
 
@@ -419,7 +447,7 @@ Metrics are recorded in both the background refresh loop and the slow-path
 
 1. The engine starts the extension before any consumer that binds it (extensions
    start first; see
-   [Extension System Architecture](extension-system-architecture.md#key-design-decisions)).
+   [Extension System Architecture](../../../../docs/extension-system-architecture.md#key-design-decisions)).
    At factory time `create()` has already built `Auth`, registered the metric
    set, and constructed the extension with an empty token cache.
 2. `SharedExtension::start()` runs the refresh loop. The first acquisition
@@ -501,7 +529,7 @@ pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
 };
 ```
 
-The URN follows the [URN format](urns.md): `urn:microsoft:extension:azure_identity_auth`
+The URN follows the [URN format](../../../../docs/urns.md): `urn:microsoft:extension:azure_identity_auth`
 (`microsoft` namespace, `extension` kind). The main binary links the crate with
 a side-effect import (`use otap_df_contrib_extensions as _;`) so the
 registration takes effect.
@@ -544,7 +572,7 @@ registration takes effect.
   rather than firing on a shared cadence. A future move to a broader scope
   (group/engine) would let a single instance be shared across cores without code
   changes (see
-  [Extension Scopes](extension-requirements.md#extension-scopes)).
+  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 - **Runtime discipline.** The refresh loop runs on the per-core async runtime;
   all I/O is async (`reqwest` via the Azure SDK), so it never blocks other
   futures on the core.
@@ -610,13 +638,13 @@ Additional scenario coverage:
 - **Broader extension scope.** Hoist the extension to group/engine scope (Phase
   2) for genuine cross-core token-cache sharing, so a single token cache and
   refresh loop serve every core (see
-  [Extension Scopes](extension-requirements.md#extension-scopes)).
+  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 
 ## References
 
-- [Extension System Proposal](extension-requirements.md)
-- [Extension System Architecture](extension-system-architecture.md)
-- [Design Principles and Constraints](design-principles.md)
-- [Architecture](architecture.md)
-- [URN Format](urns.md)
+- [Extension System Proposal](../../../../docs/extension-requirements.md)
+- [Extension System Architecture](../../../../docs/extension-system-architecture.md)
+- [Design Principles and Constraints](../../../../docs/design-principles.md)
+- [Architecture](../../../../docs/architecture.md)
+- [URN Format](../../../../docs/urns.md)
 - [PR #3337 - Workload Identity Federation for Azure Monitor exporter (merged)](https://github.com/open-telemetry/otel-arrow/pull/3337)

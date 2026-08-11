@@ -20,18 +20,18 @@ refreshes OAuth 2.0 access tokens using the **client-credentials** grant
 (RFC 6749 section 4.4, 2-legged) and the **JWT-bearer** grant (RFC 7523), and exposes
 them to data-path nodes through the `BearerTokenProvider` capability. It is the
 generic, provider-neutral counterpart to the Azure-specific
-[Azure Identity Auth extension](../crates/contrib-extensions/src/azure_identity_auth/design.md), modeled on the
+[Azure Identity Auth extension](../azure_identity_auth/design.md), modeled on the
 Go collector's
 [`oauth2clientauthextension`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/oauth2clientauthextension/README.md).
 
 It builds on the extension system foundations:
 
-- [Extension System Proposal](extension-requirements.md) - the *what* and *why*
+- [Extension System Proposal](../../../../docs/extension-requirements.md) - the *what* and *why*
   of the capability-based extension system.
-- [Extension System Architecture](extension-system-architecture.md) - the
+- [Extension System Architecture](../../../../docs/extension-system-architecture.md) - the
   Phase 1 *how* (capability proc macro, registry, Active/Passive lifecycle,
   local/shared execution models).
-- [Design Principles and Constraints](design-principles.md) - thread-per-core
+- [Design Principles and Constraints](../../../../docs/design-principles.md) - thread-per-core
   execution, minimal synchronization, security/privacy first.
 
 ## Problem
@@ -71,7 +71,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 
 - A new capability. This extension **reuses** the `BearerTokenProvider`
   capability introduced with the
-  [Azure Identity Auth extension](azure-identity-auth-extension.md#capability-bearertokenprovider);
+  [Azure Identity Auth extension](../azure_identity_auth/design.md#capability-bearertokenprovider);
   it adds no capability machinery.
 - Provider-specific identity flows (Managed Identity, Workload Identity). Those
   belong to the Azure extension.
@@ -97,7 +97,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 | Grant types (v1) | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523 section 2.1 authorization grant; the signed JWT is sent as the `assertion` parameter). |
 | Credential rotation | `client_id` / `client_secret` / signing key may be supplied inline or via `*_file` paths re-read on each acquisition; the file form takes precedence. |
 | Refresh tuning | `expiry_buffer` is user-configurable; the usability margin, min cadence, refresh jitter, and exponential-backoff-with-jitter retry are fixed constants. |
-| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS). `https://` recommended; `http://` allowed but warned. A `timeout` bounds each request. |
+| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS). `https://` recommended; `http://` allowed but warned. Finite request and connect timeouts bound every acquisition by default. |
 | Registration | `#[distributed_slice(OTAP_EXTENSION_FACTORIES)]` link-time discovery, same mechanism as nodes. |
 | Telemetry | `MetricSet`-backed counters + latency histogram, flushed via `ExtensionControlMsg::CollectTelemetry`. |
 
@@ -106,7 +106,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 The extension implements `BearerTokenProvider` unchanged - the same
 `get_token()` / `token_stream()` trait, `BearerToken` type, and `CapabilityError`
 semantics defined in the
-[Azure Identity Auth extension](azure-identity-auth-extension.md#capability-bearertokenprovider).
+[Azure Identity Auth extension](../azure_identity_auth/design.md#capability-bearertokenprovider).
 It is the engine's **outbound token provider**
 (`capability::auth::bearer_token_provider`), distinct from the inbound
 `BearerTokenAuthorizer` that admits tokens on incoming requests. A consumer binds
@@ -163,26 +163,53 @@ flowchart LR
 
 ### Internal state
 
+The cache, refresh loop, and capability implementation are not specific to
+OAuth 2.0, so they live in the shared `crate::common::token_refresh` module and are
+reused by every bearer-token extension (see
+[`azure_identity_auth`](../azure_identity_auth/design.md)). This extension is a
+type alias over that generic machinery:
+
 ```rust
-#[derive(Clone)]
-pub struct OAuth2ClientAuthExtension {
-    inner: Arc<Inner>,
+pub type OAuth2ClientAuthExtension = TokenProviderExtension<Auth, OAuth2ClientAuthMetrics>;
+```
+
+```rust
+// Manual `Clone`: deriving would add `S: Clone, M: Clone` bounds, but the
+// state is shared through the `Arc` and is never cloned itself.
+pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
+    inner: Arc<Inner<S, M>>,
 }
 
-struct Inner {
-    auth: Auth,                                       // oauth2 client + grant + scopes
+struct Inner<S, M> {
+    source: S,                                        // oauth2 client + grant + scopes
+    expiry_buffer: Duration,                          // refresh skew (configurable here)
     tx: watch::Sender<Option<BearerToken>>,           // token cache + pub/sub
-    cap_err: CapabilityErrorSource<BearerTokenProvider>,
+    cap_err: CapabilityErrorSource<BearerTokenProviderCap>,
     fetch_lock: tokio::sync::Mutex<()>,               // coalesce slow-path fetches
-    last_failure: std::sync::Mutex<Option<Instant>>,  // negative cache: throttle slow-path retries
-    metrics: std::sync::Mutex<OAuth2ClientAuthMetricsTracker>,
+    failures: std::sync::Mutex<FailureState>,         // negative cache: throttle slow-path retries
+    metrics: std::sync::Mutex<TokenProviderMetricsTracker<M>>,
+}
+
+struct FailureState {
+    last_failure: Option<Instant>,
+    consecutive_failures: u32,
 }
 ```
 
 All mutable state lives behind `Arc<Inner>` so the engine can clone the extension
 freely. The `fetch_lock` is an async `Mutex` (held across an `.await`); the
 metrics `Mutex` is a `std` `Mutex` whose critical sections are short and never
-held across an `.await`. Only the `auth` field differs from the Azure extension.
+held across an `.await`.
+
+Only two things are OAuth-specific:
+
+- `Auth` implements `token_refresh::TokenSource`: `fetch_token()` dispatches on
+  the configured grant type (client credentials or JWT bearer), and
+  `log_refresh_failure()` emits the `oauth2_client_auth.token_refresh_failed`
+  event.
+- `OAuth2ClientAuthMetrics` (metric set `extension.oauth2_client_auth`)
+  implements `token_refresh::TokenProviderMetrics`, exposing its counters and
+  latency histogram to the generic tracker.
 
 ## Configuration
 
@@ -232,7 +259,9 @@ groups:
 | `scopes` | `[string]` | `[]` | Requested scopes. |
 | `endpoint_params` | `map<string,string>` | `{}` | Extra parameters sent to the token endpoint (e.g. `audience`). |
 | `expiry_buffer` | duration | `5m` | Refresh this far ahead of `expires_on`. Must be non-zero. |
-| `timeout` | duration? | *none* (no timeout) | Per-request timeout on the token client. |
+| `default_token_lifetime` | duration | `24h` | Lifetime assumed when the token response omits `expires_in`. Must be non-zero and greater than `expiry_buffer`. See [Expiry handling](#expiry-handling). |
+| `timeout` | duration | `30s` | Per-request timeout on the token client. Must be non-zero. |
+| `connect_timeout` | duration | `10s` | Connection-establishment timeout on the token client. Must be non-zero. |
 | `tls` | object? | *none* | Client TLS for the token endpoint. The engine's shared `otap_df_config::tls::TlsClientConfig` (not extension-specific knobs). See [Token-endpoint TLS](#token-endpoint-tls). |
 | `startup_timeout` | duration | `30s` | How long the engine holds data-path startup waiting for the first token publish before aborting (see [Lifecycle](#lifecycle)). Must be non-zero. |
 
@@ -260,7 +289,9 @@ sent as the `scope` parameter.
 
 The config struct uses `#[serde(deny_unknown_fields)]` and is validated before
 the pipeline starts. Validation rejects an empty `token_url`, a zero
-`expiry_buffer`/`startup_timeout`, a missing client identifier, a missing
+`expiry_buffer`/`startup_timeout`/`timeout`/`connect_timeout`, a
+`default_token_lifetime` at or below `expiry_buffer`, a missing client
+identifier, a missing
 secret/signing key for the selected grant, and any grant-specific field that does
 not apply to the selected `grant_type`. Because these cross-field rules go beyond
 what serde deserialization can express, the factory wires a **custom**
@@ -289,13 +320,21 @@ configures the connection:
 
 The extension acquires tokens over a `reqwest`/`rustls` HTTP client built from
 `TlsClientConfig` exactly as the OTLP/HTTP exporter does, so its TLS surface
-matches that client. Two `TlsClientConfig` knobs therefore behave differently
+matches that client. Three `TlsClientConfig` knobs therefore behave differently
 from a fully general TLS stack:
 
 - **`server_name_override` (SNI override) is not supported** by the
   reqwest/rustls client. Like the OTLP/HTTP exporter, the extension rejects it at
   config validation rather than silently ignoring it, so a config that relies on
   it fails fast instead of connecting with the wrong SNI.
+- **`insecure` (disable TLS) is rejected when `token_url` is `https://`.** The
+  two are contradictory: the `https://` scheme mandates a TLS handshake, so no
+  client can honor a request for plaintext against it. `token_url` is an absolute
+  URI (RFC 6749 section 3.2), so its scheme already decides the transport and the
+  flag is redundant. Rather than accept the contradiction and connect with TLS
+  anyway, validation fails so an operator who believes they disabled TLS finds
+  out at startup. Use an `http://` `token_url` for a plaintext endpoint; setting
+  `insecure` alongside one is a consistent no-op and is accepted.
 - **`insecure_skip_verify`** (TLS enabled but certificate verification skipped) is
   honored - it maps to reqwest's `danger_accept_invalid_certs`. It is intended
   only for local development or testing against a self-signed endpoint; because it
@@ -307,9 +346,10 @@ TLS relies on the process-wide `rustls` crypto provider described under
 
 ## Refresh Loop
 
-`start()` runs a `select!` loop with two arms, identical in shape to the Azure
-extension's loop (control channel + refresh timer); only the acquisition call and
-the `expiry_buffer` source differ:
+`start()` runs a `select!` loop with two arms. The loop is the shared one in
+`crate::common::token_refresh`, so it is literally the same code the Azure extension
+runs (control channel + refresh timer); only the `TokenSource` acquisition call
+and the `expiry_buffer` value differ:
 
 1. **Control channel** (`ctrl.recv()`): `Shutdown` returns the final metric
    snapshot as the terminal state; `Config` is a no-op in v1; `CollectTelemetry`
@@ -326,14 +366,17 @@ the `expiry_buffer` source differ:
      acquire a new token. A merely still-valid token is not reused, so the
      planned early refresh is not deferred.
    - On success: publish with `send_replace` (updates the cache regardless of
-     subscriber count), reset the consecutive-failure count, clear the
-     `last_failure` negative cache, then compute `next_refresh` from `expires_on`
-     minus `expiry_buffer` (clamped to a minimum cadence) with a small negative
-     jitter so per-core extensions do not all refresh on the same tick.
-   - On failure: log, record the failure instant (so the slow path throttles its
-     own retries during the cooldown), and reschedule using bounded exponential
-     backoff with equal jitter - each delay is drawn from `[base/2, base]`, where
-     `base` doubles per consecutive failure from the base retry delay up to the
+     subscriber count), clear the shared `FailureState` (both the failure instant
+     and the consecutive-failure streak), then compute `next_refresh` from
+     `expires_on` minus `expiry_buffer` (clamped to a minimum cadence) with a
+     small negative jitter so per-core extensions do not all refresh on the same
+     tick.
+   - On failure: log, record the failure instant and increment the streak in the
+     shared `FailureState` (so the slow path throttles its own retries during a
+     cooldown that widens in step with this loop), and reschedule using bounded
+     exponential backoff with equal jitter - each delay is drawn from
+     `[base/2, base]`, where `base` doubles per consecutive failure from the base
+     retry delay up to the
      cap - tracking consecutive failures; keep retrying for the lifetime of the
      extension. The backoff spreads retries across cores so a token-endpoint
      outage is not stampeded on a fixed cadence.
@@ -356,14 +399,49 @@ absolute expiry (`now + expires_in`) and hands it to the engine's
 `capability::auth::BearerToken` constructor, which centralizes the
 absolute-to-monotonic `Instant` conversion (the same path the Azure extension
 uses via `BearerToken::from_absolute_expiry`). After that single conversion the
-schedule is immune to wall-clock jumps. A response without expiry pushes the next
-refresh far into the future; the loop is still woken by control messages.
+schedule is immune to wall-clock jumps.
+
+Both grants share one response parser, so they accept the same payloads: a
+`token_type` other than `Bearer` (case-insensitively; absent means `Bearer`) is
+rejected rather than handed to consumers, and `expires_in` is accepted as either
+a JSON number or a JSON string.
+
+#### When the response omits `expires_in`
+
+RFC 6749 section 5.1 makes `expires_in` only RECOMMENDED, and directs a server
+that omits it to "provide the expiration time via other means or document the
+default value". A missing `expires_in` therefore means *the endpoint did not
+tell us*, which is not the same as *this token never expires*. The extension
+does not conflate the two: such a token is given a finite assumed lifetime of
+`default_token_lifetime` (**`24h`** by default) rather than being cached as
+non-expiring, so it is still re-acquired on a predictable cadence instead of
+being served until exporters start seeing `401`s.
+
+The `24h` default is deliberately generous, because this path is a **backstop
+for a non-conforming endpoint, not a refresh policy**. An endpoint that reports
+`expires_in` never reaches it, so a shorter default would not make any
+well-behaved deployment safer - it would only add token traffic against
+endpoints that are already silent about their own expiry, and those are the
+least likely to be issuing short-lived tokens. Operators who know their endpoint
+issues shorter-lived tokens should set `default_token_lifetime` explicitly.
+
+Validation rejects a `default_token_lifetime` at or below `expiry_buffer`: the
+loop schedules a refresh at `expiry - expiry_buffer`, so a fallback inside the
+buffer would place every refresh in the past and collapse the cadence onto
+`MIN_TOKEN_REFRESH_INTERVAL_SECS`, hammering the token endpoint.
+
+This fallback is specific to the OAuth 2.0 grants, where a missing expiry is a
+gap in the response rather than a fact about the token. It is applied in this
+extension, not in the shared refresh machinery, so a future extension whose
+tokens genuinely have no expiry - a static or file-sourced bearer token, for
+example - can still publish one via `BearerToken::without_expiry` and keep that
+meaning intact.
 
 ## Consumer Integration
 
 A consumer binds `bearer_token_provider` to an `oauth2_client_auth` instance and
 resolves it once at factory time - exactly the mechanism described in the
-[Azure extension's Consumer Integration](azure-identity-auth-extension.md#consumer-integration).
+[Azure extension's Consumer Integration](../azure_identity_auth/design.md#consumer-integration).
 Nothing on the consumer side is OAuth-specific; a node cannot tell which provider
 backs the capability, and can consume it two ways: a cached fast-path read via
 `get_token()`, or a subscription to `token_stream()` that pushes each refreshed
@@ -398,7 +476,7 @@ Metrics are recorded in the background refresh loop and the slow-path
 
 1. The engine starts the extension before any consumer that binds it (extensions
    start first; see
-   [Extension System Architecture](extension-system-architecture.md#key-design-decisions)).
+   [Extension System Architecture](../../../../docs/extension-system-architecture.md#key-design-decisions)).
 2. `SharedExtension::start()` runs the refresh loop. The first successful token
    request publishes a token onto the `watch` channel, then calls
    `EffectHandler::signal_ready()`.
@@ -447,17 +525,17 @@ contrib-extensions = ["oauth2-client-auth-extension"]
 oauth2-client-auth-extension = [
     "dep:oauth2",
     "dep:reqwest",
+    "dep:http",
+    "dep:jsonwebtoken",
     "dep:humantime-serde",
     "dep:rand",
+    "dep:secrecy",
 ]
 
-[dependencies]
-oauth2 = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true, features = ["rustls-tls"] }
-# Human-readable durations for `expiry_buffer` / `timeout` / `startup_timeout`.
-humantime-serde = { workspace = true, optional = true }
-# Jitter for the refresh schedule and exponential-backoff retry.
-rand = { workspace = true, optional = true }
+# Assertion-signing backend, mirroring the workspace `crypto-*` selection.
+crypto-ring = ["dep:ring"]
+crypto-aws-lc = ["jsonwebtoken?/aws_lc_rs"]
+crypto-openssl = ["dep:openssl"]
 ```
 
 **Crypto provider prerequisite.** The `reqwest`/`rustls` HTTP client requires a
@@ -465,6 +543,36 @@ process-wide `rustls` crypto provider. `Auth::new()` calls
 `otap_df_otap::crypto::ensure_crypto_provider()` before constructing the client,
 and the deployed binary **must** enable exactly one `crypto-*` feature; otherwise
 token requests panic at runtime with "No provider set".
+
+#### Assertion-signing backend
+
+The JWT-bearer grant signs an assertion with `jsonwebtoken`, which is a second
+consumer of cryptography alongside TLS. `jsonwebtoken` 11 selects its algorithms
+through a pluggable `CryptoProvider` rather than linking `ring` unconditionally
+the way 9.x did, so the workspace enables no backend feature on the crate and
+supplies a provider instead. The same `crypto-*` feature that picks the rustls
+provider picks the signing backend, so a build links one cryptographic library
+rather than two - which matters where the choice of library is a compliance
+requirement rather than a preference.
+
+| Feature | Assertion-signing backend |
+| --- | --- |
+| `crypto-ring` | `ring` |
+| `crypto-aws-lc` | `aws-lc-rs`, through `jsonwebtoken`'s bundled provider |
+| `crypto-openssl` | `openssl` |
+| `crypto-symcrypt` | none |
+
+SymCrypt has no entry because its Rust bindings import an RSA key only as raw
+(modulus, exponent, prime) components, while `jsonwebtoken` hands a provider a
+PKCS#1 DER blob. A build with no signing backend - `crypto-symcrypt`, or no
+`crypto-*` feature at all - rejects the JWT-bearer grant when the extension is
+constructed, rather than panicking at the first signature. The
+client-credentials grant needs no signing and is unaffected.
+
+The providers implement only the RSA PKCS#1 v1.5 algorithms the grant accepts
+(RS256, RS384, RS512) and do not support JWKs. `jsonwebtoken` has no other
+consumer in the collector, so the narrower algorithm set is not observable
+elsewhere.
 
 ### Factory registration
 
@@ -484,7 +592,7 @@ pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
 };
 ```
 
-The URN follows the [URN format](urns.md): `urn:otel:extension:oauth2_client_auth`
+The URN follows the [URN format](../../../../docs/urns.md): `urn:otel:extension:oauth2_client_auth`
 uses the `otel` namespace (standard OAuth 2.0, not vendor-specific). The main
 binary links the crate with a side-effect import so the registration takes
 effect.
@@ -525,7 +633,7 @@ effect.
   [Refresh Loop](#refresh-loop)) keep those uncoordinated loops from realigning.
   A future move to group/engine scope would share one instance across cores
   without code changes (see
-  [Extension Scopes](extension-requirements.md#extension-scopes)).
+  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 - **Runtime discipline.** The refresh loop runs on the per-core async runtime;
   all token I/O is async (`reqwest` HTTP), so it never blocks other futures on
   the core. TLS handshakes and JWT signing for the `jwt-bearer` grant happen only
@@ -563,7 +671,7 @@ OAuth-specific coverage:
    serves one client + scope set; a node needing multiple audiences declares one
    instance per audience. Is a single multi-scope instance worth the added
    surface? (Shared with the Azure extension's
-   [Multi-resource tokens](azure-identity-auth-extension.md#open-questions)
+   [Multi-resource tokens](../azure_identity_auth/design.md#open-questions)
    question.)
 3. **Identity/scope hot-swap.** Should `ExtensionControlMsg::Config` rebuild
    `Auth` in place (new client / scopes) instead of requiring an extension
@@ -573,21 +681,18 @@ OAuth-specific coverage:
 
 - **Broader extension scope.** Hoist to group/engine scope (Phase 2) for genuine
   cross-core token-cache sharing (see
-  [Extension Scopes](extension-requirements.md#extension-scopes)).
-- **Shared token-source module.** Factor the `watch`-cache + refresh-loop +
-  `fetch_lock` machinery common to this and the Azure extension into a reusable
-  internal helper.
+  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 
 ## References
 
-- [Azure Identity Auth Extension](../crates/contrib-extensions/src/azure_identity_auth/design.md) - sibling
+- [Azure Identity Auth Extension](../azure_identity_auth/design.md) - sibling
   `BearerTokenProvider` provider; source of the capability, cache, and lifecycle
   design reused here.
-- [Extension System Proposal](extension-requirements.md)
-- [Extension System Architecture](extension-system-architecture.md)
-- [Design Principles and Constraints](design-principles.md)
-- [Architecture](architecture.md)
-- [URN Format](urns.md)
+- [Extension System Proposal](../../../../docs/extension-requirements.md)
+- [Extension System Architecture](../../../../docs/extension-system-architecture.md)
+- [Design Principles and Constraints](../../../../docs/design-principles.md)
+- [Architecture](../../../../docs/architecture.md)
+- [URN Format](../../../../docs/urns.md)
 - [Go collector `oauth2clientauthextension`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/oauth2clientauthextension/README.md)
 - [RFC 6749 section 4.4 - Client Credentials Grant](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)
 - [RFC 7523 - JSON Web Token (JWT) Profile for OAuth 2.0 Client Authentication and Authorization Grants](https://datatracker.ietf.org/doc/html/rfc7523) - section 2.1 (JWT authorization grant) is the flow used here.
