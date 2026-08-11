@@ -143,7 +143,7 @@ pub(crate) struct FastBroadcastRing<T: Send + Sync + 'static> {
 }
 
 impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
-    fn new(capacity: usize) -> Self {
+    pub(super) fn new(capacity: usize) -> Self {
         let cap = capacity.max(2).next_power_of_two();
         let mask = cap - 1;
         debug_assert!(cap.is_power_of_two());
@@ -194,9 +194,21 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
 
     /// Write the envelope into the slot reserved by [`FastBroadcastRing::reserve_seq`]
     /// and wake parked readers.
+    ///
+    /// A delayed publisher can reach this point after enough later reservations
+    /// have wrapped onto the same slot. In that case, keep the newer sequence:
+    /// the delayed message has already fallen outside the ring's retained range.
     pub(crate) fn commit_slot(&self, seq: u64, envelope: Envelope<T>) {
         let idx = ((seq - 1) as usize) & self.mask;
-        *self.slots[idx].lock() = Some((seq, envelope));
+        let mut slot = self.slots[idx].lock();
+        let can_commit = match &*slot {
+            Some((slot_seq, _)) => *slot_seq < seq,
+            None => true,
+        };
+        if can_commit {
+            *slot = Some((seq, envelope));
+        }
+        drop(slot);
         self.waker_set.wake_all();
     }
 

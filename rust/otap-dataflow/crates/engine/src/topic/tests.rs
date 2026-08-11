@@ -26,6 +26,7 @@
 use crate::error::Error;
 use crate::topic::backend::{InMemoryBackend, SubscriptionBackend};
 use crate::topic::subscription::{DeliveryBackend, DeliveryStorageKind};
+use crate::topic::topic::{BroadcastReadResult, FastBroadcastRing};
 use crate::topic::types::{
     AckFromResult, BroadcastSubscriberId, Envelope, NackFromResult, PublishOutcome, RecvItem,
     SubscriberOptions, SubscriptionMode, TopicOptions, TopicPublishOutcomeConfig,
@@ -3298,4 +3299,49 @@ async fn topic_set_len_and_is_empty() {
     _ = set.insert("output", handle);
     assert!(!set.is_empty());
     assert_eq!(set.len(), 1);
+}
+
+/// Scenario: A delayed publisher commits after later publishers wrap onto its ring slot.
+/// Guarantees: The stale commit cannot overwrite the newer sequence already in that slot.
+#[test]
+fn broadcast_ring_stale_commit_does_not_overwrite_newer_wrapped_sequence() {
+    let ring = FastBroadcastRing::new(2);
+    let stale_seq = ring.reserve_seq();
+
+    let next_seq = ring.reserve_seq();
+    ring.commit_slot(
+        next_seq,
+        Envelope {
+            id: next_seq,
+            tracked: false,
+            payload: Arc::new(next_seq),
+        },
+    );
+
+    let wrapped_seq = ring.reserve_seq();
+    ring.commit_slot(
+        wrapped_seq,
+        Envelope {
+            id: wrapped_seq,
+            tracked: false,
+            payload: Arc::new(wrapped_seq),
+        },
+    );
+
+    ring.commit_slot(
+        stale_seq,
+        Envelope {
+            id: stale_seq,
+            tracked: false,
+            payload: Arc::new(stale_seq),
+        },
+    );
+
+    match ring.try_read(wrapped_seq) {
+        BroadcastReadResult::Ready(envelope) => {
+            assert_eq!(envelope.id, wrapped_seq);
+            assert_eq!(*envelope.payload, wrapped_seq);
+        }
+        _ => panic!("wrapped sequence should remain readable"),
+    }
 }
