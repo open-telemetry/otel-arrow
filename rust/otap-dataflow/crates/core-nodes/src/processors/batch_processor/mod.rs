@@ -185,9 +185,11 @@ pub struct FormatConfig {
     /// emitted whole instead of split. All output batches are held in memory
     /// before any are sent, so a flush containing many large entries -- each
     /// within its own per-entry budgets -- could otherwise amplify into an
-    /// unbounded output allocation. This caps that allocation independently of
-    /// any downstream Ack/Nack slot accounting; over-limit entries are counted
-    /// in the `split_budget_fallbacks` metric. `None` means unbounded.
+    /// unbounded output allocation. This caps the *additional split fan-out*
+    /// independently of any downstream Ack/Nack slot accounting; it does not cap
+    /// the mandatory floor of one whole output batch per remaining top-level
+    /// entry. Over-limit entries are counted in the `split_budget_fallbacks`
+    /// metric. `None` means unbounded.
     #[serde(default = "default_max_split_fragments_per_flush")]
     pub max_split_fragments_per_flush: Option<NonZeroUsize>,
 }

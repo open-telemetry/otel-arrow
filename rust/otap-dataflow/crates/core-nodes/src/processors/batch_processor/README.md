@@ -98,11 +98,16 @@ Each format object contains:
   fan-out could still amplify into a very large allocation. Once a flush has
   produced this many output batches, any further oversize entry is emitted whole
   (best-effort, counted by `split.budget.fallbacks`) instead of split. This is a
-  simple greedy running threshold, not a strict total-output cap: the entry that
-  crosses the threshold may still add its full per-entry fan-out, so the
-  worst-case output is roughly this threshold plus one entry's `max_split_fragments`.
-  It does not look ahead over later entries and is independent of Ack/Nack
-  outbound-slot accounting (which governs *sending*, not up-front allocation).
+  simple greedy running threshold on *split fan-out*, not a strict total-output
+  cap. The total output can exceed the threshold in two ways. First, the entry
+  that crosses the threshold may still add its full per-entry fan-out, so split
+  amplification is bounded by roughly this threshold plus one entry's
+  `max_split_fragments`. Second, every remaining oversize or indivisible entry is
+  still emitted whole, and each such entry contributes at least one output batch;
+  the threshold bounds only the *additional* split fan-out, not this mandatory
+  output floor of (at least) one batch per remaining top-level entry. It does not
+  look ahead over later entries and is independent of Ack/Nack outbound-slot
+  accounting (which governs *sending*, not up-front allocation).
 
 ## Examples
 
