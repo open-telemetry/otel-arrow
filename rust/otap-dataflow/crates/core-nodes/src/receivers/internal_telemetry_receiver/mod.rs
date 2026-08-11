@@ -331,13 +331,10 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 .into_iter()
                 .map(MetricView::from)
                 .collect();
-            Some(
-                MetricsOtlpEncoder::new_with_views(&internal.resource_field_bytes, views).map_err(
-                    |error| Error::PdataConversionError {
-                        error: error.to_string(),
-                    },
-                )?,
-            )
+            Some(MetricsOtlpEncoder::new_with_views(
+                &internal.resource_field_bytes,
+                views,
+            ))
         } else {
             None
         };
@@ -798,8 +795,7 @@ mod tests {
                 0,
                 &[otap_df_telemetry::metrics::MetricValue::U64(9)],
             );
-            let encoder = MetricsOtlpEncoder::new(&ResourceLogs::default().encode_to_vec())
-                .expect("valid empty OTLP resource");
+            let encoder = MetricsOtlpEncoder::new(&ResourceLogs::default().encode_to_vec());
 
             let (output_tx, output_rx) = create_not_send_channel(1);
             drop(output_rx);
