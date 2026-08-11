@@ -236,7 +236,6 @@ impl OtapPayloadHelpers for OtapArrowRecords {
     }
 
     fn num_bytes(&self) -> Option<usize> {
-        // Arrow allocation size is not the canonical OTLP protobuf size.
         None
     }
 
@@ -286,7 +285,6 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
     }
 
     fn num_bytes(&self) -> Option<usize> {
-        // The payload already contains the canonical serialized OTLP bytes.
         Some(self.num_bytes())
     }
 
