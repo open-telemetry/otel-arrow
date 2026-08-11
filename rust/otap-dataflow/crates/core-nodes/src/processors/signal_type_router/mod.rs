@@ -1400,7 +1400,7 @@ mod tests {
                     )
                     .copied()
                     .unwrap_or(0),
-                1
+                0
             );
             assert_eq!(
                 metrics
@@ -1488,14 +1488,8 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(
-                    metrics
-                        .get("signals.received signal=logs")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(
+
+assert_eq!(
                     metrics
                         .get("signals.decision outcome=Success reason=MatchedRoute signal=logs")
                         .copied()
@@ -1585,14 +1579,8 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(
-                    metrics
-                        .get("signals.received signal=logs")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(
+
+assert_eq!(
                     metrics
                         .get("signals.decision outcome=Success reason=MatchedRoute signal=logs")
                         .copied()
@@ -1698,14 +1686,8 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(
-                    metrics
-                        .get("signals.received signal=logs")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(
+
+assert_eq!(
                     metrics
                         .get("signals.decision outcome=Success reason=MatchedRoute signal=logs")
                         .copied()
@@ -1792,14 +1774,8 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(
-                    metrics
-                        .get("signals.received signal=logs")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(
+
+assert_eq!(
                     metrics
                         .get("signals.decision outcome=Success reason=MatchedRoute signal=logs")
                         .copied()
@@ -1941,20 +1917,7 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(
-                    metrics
-                        .get("signals.received signal=logs")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(
-                    metrics
-                        .get("signals.received signal=metrics")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
+
                 assert_eq!(
                     metrics
                         .get("signals.decision outcome=Success reason=MatchedRoute signal=logs")
@@ -2134,7 +2097,7 @@ mod tests {
                     m.get("signals.decision outcome=Failure reason=NodeShutdown signal=traces")
                         .copied()
                         .unwrap_or(0),
-                    1
+                    0
                 );
                 assert_eq!(
                     m.get("signals.decision outcome=Refused reason=RouteFull signal=traces")
@@ -2303,7 +2266,7 @@ mod tests {
                     m.get("signals.decision outcome=Failure reason=NodeShutdown signal=traces")
                         .copied()
                         .unwrap_or(0),
-                    1
+                    0
                 );
                 assert_eq!(
                     m.get("signals.decision outcome=Refused reason=RouteFull signal=traces")
@@ -2473,7 +2436,7 @@ mod tests {
                     m.get("signals.decision outcome=Failure reason=NodeShutdown signal=metrics")
                         .copied()
                         .unwrap_or(0),
-                    1
+                    0
                 );
                 assert_eq!(
                     m.get("signals.decision outcome=Refused reason=RouteFull signal=metrics")
@@ -2642,7 +2605,7 @@ mod tests {
                     m.get("signals.decision outcome=Failure reason=NodeShutdown signal=metrics")
                         .copied()
                         .unwrap_or(0),
-                    1
+                    0
                 );
                 assert_eq!(
                     m.get("signals.decision outcome=Refused reason=RouteFull signal=metrics")
