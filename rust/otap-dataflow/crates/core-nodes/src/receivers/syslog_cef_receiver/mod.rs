@@ -165,10 +165,10 @@ enum BoundedReadResult {
 }
 
 /// Reads bytes from `reader` into `buf` until one of:
-/// - A newline (`\n`) is found → returns [`BoundedReadResult::Complete`]
-/// - `buf` reaches `max_size` bytes without a newline → returns
+/// - A newline (`\n`) is found -> returns [`BoundedReadResult::Complete`]
+/// - `buf` reaches `max_size` bytes without a newline -> returns
 ///   [`BoundedReadResult::Truncated`]
-/// - EOF is reached → returns [`BoundedReadResult::Eof`]
+/// - EOF is reached -> returns [`BoundedReadResult::Eof`]
 ///
 /// This prevents unbounded memory growth from malicious or misbehaving clients
 /// that send data without newline delimiters.

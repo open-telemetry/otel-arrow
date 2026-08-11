@@ -35,3 +35,19 @@ pub struct TemporalReaggregationMetrics {
     #[metric(name = "dropped.items", unit = "{item}")]
     pub dropped_items: Counter<u64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_telemetry::metrics::MetricsRegistry;
+
+    #[test]
+    fn test_temporal_reaggregation_metrics() {
+        let registry = MetricsRegistry::new();
+        let metrics = TemporalReaggregationMetrics::new(&registry);
+        
+        metrics.flushes_timer.add(1);
+        metrics.flushes_overflow.add(1);
+        metrics.dropped_items.add(1);
+    }
+}
