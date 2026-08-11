@@ -27,7 +27,7 @@ use std::collections::HashMap;
 
 use arrow_array::RecordBatch;
 use clickhouse::Client;
-use clickhouse_ext_arrow::ArrowClientExt;
+use clickhouse_ext_arrow::{ArrowClientExt, ArrowInsert};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use secrecy::ExposeSecret;
 
@@ -37,6 +37,7 @@ use crate::exporters::clickhouse_exporter::{
     tables::{build_payload_destination_table_map, init_table, validate_identifier},
 };
 
+#[derive(Clone)]
 pub struct ClickHouseWriter {
     client: Client,
     payload_destination_tables: HashMap<ArrowPayloadType, String>,
@@ -71,11 +72,7 @@ impl ClickHouseWriter {
         table_name: &str,
         batch: &RecordBatch,
     ) -> Result<(), ClickhouseExporterError> {
-        let mut insert = self.client.insert_arrow(table_name).map_err(|e| {
-            ClickhouseExporterError::InsertRequestError {
-                error: format!("{e}"),
-            }
-        })?;
+        let mut insert = self.start_insert(table_name)?;
         insert
             .write(batch)
             .await
@@ -98,6 +95,24 @@ impl ClickHouseWriter {
 
         Ok(())
     }
+
+    pub(super) fn destination_table(&self, payload_type: ArrowPayloadType) -> Option<&str> {
+        self.payload_destination_tables
+            .get(&payload_type)
+            .map(String::as_str)
+    }
+
+    pub(super) fn start_insert(
+        &self,
+        table_name: &str,
+    ) -> Result<ArrowInsert, ClickhouseExporterError> {
+        self.client.insert_arrow(table_name).map_err(|e| {
+            ClickhouseExporterError::InsertRequestError {
+                error: format!("{e}"),
+            }
+        })
+    }
+
     pub async fn write_batches(
         &self,
         write_batches: &HashMap<ArrowPayloadType, RecordBatch>,

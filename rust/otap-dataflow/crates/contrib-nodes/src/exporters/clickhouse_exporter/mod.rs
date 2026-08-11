@@ -33,7 +33,6 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 );
 
 use async_trait::async_trait;
-use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::validation::validate_typed_config;
@@ -60,18 +59,18 @@ use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttribut
 use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::exporters::clickhouse_exporter::config::{Config, ConfigPatch};
-use crate::exporters::clickhouse_exporter::in_flight::{CompletedWrite, InFlightWrites};
+use crate::exporters::clickhouse_exporter::in_flight::CompletedWrite;
 use crate::exporters::clickhouse_exporter::metrics::ClickhouseExporterMetrics;
 use crate::exporters::clickhouse_exporter::transform::logs_fast::{
     LogsFastTransform, LogsFastTransformer,
 };
 use crate::exporters::clickhouse_exporter::transform::logs_otlp::OtlpLogsTransformer;
 use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
+use crate::exporters::clickhouse_exporter::write_lanes::{DispatcherEvent, WriteDispatcher};
 use crate::exporters::clickhouse_exporter::writer::ClickHouseWriter;
 
 mod arrays;
@@ -86,6 +85,7 @@ mod metrics;
 mod schema;
 mod tables;
 mod transform;
+mod write_lanes;
 mod writer;
 
 /// The URN for the Clickhouse exporter
@@ -279,22 +279,27 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
             endpoint = self.config.endpoint,
             database = self.config.database,
             username = self.config.username,
-            max_in_flight = self.config.max_in_flight.get()
+            max_in_flight = self.config.max_in_flight.get(),
+            insert_batching_enabled = self.config.insert_batching.is_some(),
         );
 
         let mut batch_transformer = BatchTransformer::new();
         let mut logs_fast_transformer = LogsFastTransformer::default();
         let mut otlp_logs_transformer = OtlpLogsTransformer::default();
         let clickhouse_writer =
-            Rc::new(ClickHouseWriter::new(&self.config).await.map_err(|e| {
-                Error::ExporterError {
+            ClickHouseWriter::new(&self.config)
+                .await
+                .map_err(|e| Error::ExporterError {
                     exporter: exporter_id.clone(),
                     kind: ExporterErrorKind::Connect,
                     error: format!("clickhouse writer initialization error: {e}"),
                     source_detail: format_error_sources(&e),
-                }
-            })?);
-        let mut in_flight_writes = InFlightWrites::new(self.config.max_in_flight);
+                })?;
+        let mut write_dispatcher = WriteDispatcher::new(
+            clickhouse_writer,
+            self.config.max_in_flight,
+            self.config.insert_batching,
+        );
 
         // Start periodic telemetry collection (internal metrics)
         let telemetry_cancel_handle = effect_handler
@@ -303,12 +308,13 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
         // Message loop
         loop {
-            let accepting_pdata = !in_flight_writes.is_at_capacity();
+            let accepting_pdata = !write_dispatcher.is_at_capacity();
+            let has_pending_writes = write_dispatcher.has_pending();
             let message = tokio::select! {
                 biased;
 
-                completed = in_flight_writes.next_completion(), if !in_flight_writes.is_empty() => {
-                    if let Some(completed) = completed {
+                event = write_dispatcher.next_event(), if has_pending_writes => {
+                    if let Some(DispatcherEvent::Completed(completed)) = event {
                         self.finalize_write(completed, &effect_handler).await?;
                     }
                     continue;
@@ -323,14 +329,16 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         message = "Clickhouse exporter shutting down",
                     );
                     let shutdown_deadline = tokio::time::Instant::from_std(deadline);
+                    write_dispatcher.flush_pending();
                     let abandoned = loop {
-                        match in_flight_writes
-                            .next_completion_until(shutdown_deadline)
-                            .await
-                        {
-                            Ok(Some(completed)) => {
+                        if !write_dispatcher.has_pending() {
+                            break 0;
+                        }
+                        match write_dispatcher.next_event_until(shutdown_deadline).await {
+                            Ok(Some(DispatcherEvent::Completed(completed))) => {
                                 self.finalize_write(completed, &effect_handler).await?;
                             }
+                            Ok(Some(DispatcherEvent::CapacityAvailable)) => {}
                             Ok(None) => break 0,
                             Err(abandoned) => break abandoned,
                         }
@@ -512,16 +520,11 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             }
                         }
                     };
-                    let writer = Rc::clone(&clickhouse_writer);
-                    let write_future: LocalBoxFuture<'static, CompletedWrite> =
-                        Box::pin(async move {
-                            CompletedWrite {
-                                pdata,
-                                export_started_at,
-                                result: writer.write_batches(&write_batches).await,
-                            }
-                        });
-                    in_flight_writes.push(write_future);
+                    if let Some(completed) =
+                        write_dispatcher.submit(pdata, export_started_at, write_batches)
+                    {
+                        self.finalize_write(completed, &effect_handler).await?;
+                    }
                 }
                 _ => {
                     // Ignore other messages
