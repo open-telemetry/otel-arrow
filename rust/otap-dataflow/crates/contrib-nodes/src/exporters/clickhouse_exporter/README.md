@@ -83,6 +83,8 @@ At runtime the exporter does the following:
    generic transform pipeline as a fallback and for other inputs
 6. Returns only signal batches (`Logs`, `Spans`) from the transformer
 7. Inserts those batches into the destination tables
+8. Emits an ACK after a successful insert, or a NACK if conversion,
+   transformation, or insertion fails
 
 ## Supported Payloads
 
@@ -218,6 +220,8 @@ payloads remain internal to the transform process.
 - maps `Logs -> logs table` and `Spans -> traces table`
 - runs at most `max_in_flight` insert requests concurrently
 - drains accepted insert requests during shutdown
+- preserves each input batch until its insert completes so pipeline delivery
+  tracking reflects the ClickHouse result
 
 There is no longer any special write ordering for attribute tables because
 attribute tables do not exist.

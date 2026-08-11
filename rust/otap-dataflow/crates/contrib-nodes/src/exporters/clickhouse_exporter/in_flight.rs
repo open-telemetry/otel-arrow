@@ -6,7 +6,7 @@
 use futures::StreamExt;
 use futures::future::LocalBoxFuture;
 use futures::stream::FuturesUnordered;
-use otap_df_config::SignalType;
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use super::error::ClickhouseExporterError;
@@ -15,7 +15,7 @@ pub(super) type WrittenRows = Vec<(ArrowPayloadType, u64)>;
 
 /// Result of one fully transformed pdata message sent to ClickHouse.
 pub(super) struct CompletedWrite {
-    pub signal_type: SignalType,
+    pub pdata: OtapPdata,
     pub result: Result<WrittenRows, ClickhouseExporterError>,
 }
 
@@ -62,10 +62,18 @@ impl InFlightWrites {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+
+    fn logs_pdata() -> OtapPdata {
+        OtapPdata::new_todo_context(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+            Bytes::new(),
+        )))
+    }
 
     fn completed_write(rows: u64) -> CompletedWrite {
         CompletedWrite {
-            signal_type: SignalType::Logs,
+            pdata: logs_pdata(),
             result: Ok(vec![(ArrowPayloadType::Logs, rows)]),
         }
     }

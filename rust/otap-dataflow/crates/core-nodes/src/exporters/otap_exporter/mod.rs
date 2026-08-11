@@ -578,18 +578,40 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             "otap_exporter.shutdown",
                             message = "OTAP Exporter shutting down"
                         );
-                        _ = shutdown_tx.send_replace(true);
+                        // A normal shutdown reaches the exporter only after its
+                        // input has drained. Close every worker queue so each
+                        // request stream reaches EOF, then wait for the server to
+                        // respond to all correlated batches. Broadcasting the
+                        // cancellation signal here used to abandon valid queued
+                        // and in-flight pdata before the shutdown deadline.
+                        drop(logs_senders);
+                        drop(metrics_senders);
+                        drop(traces_senders);
                         drop(pdata_metrics_tx);
-                        self.await_stream_handles_and_drain_metrics(
-                            logs_handles
-                                .into_iter()
-                                .chain(metrics_handles)
-                                .chain(traces_handles)
-                                .collect(),
-                            &mut pdata_metrics_rx,
-                            &effect_handler,
-                        )
-                        .await?;
+                        {
+                            let graceful_drain = self.await_stream_handles_and_drain_metrics(
+                                logs_handles
+                                    .into_iter()
+                                    .chain(metrics_handles)
+                                    .chain(traces_handles)
+                                    .collect(),
+                                &mut pdata_metrics_rx,
+                                &effect_handler,
+                            );
+                            tokio::pin!(graceful_drain);
+                            tokio::select! {
+                                biased;
+                                result = &mut graceful_drain => result?,
+                                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                                    otel_warn!(
+                                        "otap_exporter.shutdown.deadline_reached",
+                                        message = "Forcing OTAP stream shutdown before all batches completed"
+                                    );
+                                    _ = shutdown_tx.send_replace(true);
+                                    graceful_drain.await?;
+                                }
+                            }
+                        }
                         self.export_latency_window
                             .report_into(&mut self.async_metrics);
                         return Ok(TerminalState::new(
@@ -2265,6 +2287,184 @@ mod tests {
                     .unwrap();
                 server_shutdown_tx.send(true).unwrap();
             })
+        });
+
+        tokio_rt
+            .block_on(server_handle)
+            .expect("server shutdown success");
+    }
+
+    /// gRPC service mock that delays a successful response until the test
+    /// releases it.
+    struct ArrowLogsServiceDelayedOkMock {
+        sender: tokio::sync::mpsc::Sender<()>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[tonic::async_trait]
+    impl otap_df_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsService
+        for ArrowLogsServiceDelayedOkMock
+    {
+        type ArrowLogsStream = std::pin::Pin<
+            Box<dyn tokio_stream::Stream<Item = Result<BatchStatus, Status>> + Send + 'static>,
+        >;
+
+        async fn arrow_logs(
+            &self,
+            request: tonic::Request<Streaming<BatchArrowRecords>>,
+        ) -> Result<Response<Self::ArrowLogsStream>, Status> {
+            let mut input_stream = request.into_inner();
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let notify = self.sender.clone();
+            let release = Arc::clone(&self.release);
+
+            _ = tokio::spawn(async move {
+                if let Ok(Some(batch)) = input_stream.message().await {
+                    let _ = notify.send(()).await;
+                    release.notified().await;
+                    let _ = tx
+                        .send(Ok(BatchStatus {
+                            batch_id: batch.batch_id,
+                            status_code: StatusCode::Ok as i32,
+                            status_message: "accepted".into(),
+                        }))
+                        .await;
+                }
+            });
+
+            Ok(Response::new(
+                Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Self::ArrowLogsStream,
+            ))
+        }
+    }
+
+    /// Scenario: the exporter input closes while an OTAP batch is waiting for a
+    /// delayed successful response and the shutdown deadline remains in the future.
+    /// Guarantees: graceful shutdown waits for the response and ACKs the batch
+    /// instead of canceling the stream and emitting a NACK.
+    #[test]
+    fn test_shutdown_drains_correlated_pdata_before_deadline() {
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let tokio_rt = Runtime::new().unwrap();
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut exporter = ExporterWrapper::local(
+            OTAPExporter::from_config(
+                pipeline_ctx,
+                &json!({
+                    "grpc_endpoint": grpc_endpoint,
+                    "compression_method": "none",
+                    "streams_per_signal": 1,
+                    "stream_queue_capacity": 4
+                }),
+            )
+            .unwrap(),
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(16);
+        let (pipeline_completion_msg_tx, mut pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(16);
+        exporter
+            .set_pdata_receiver(node_id, pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        let (batch_received_tx, mut batch_received_rx) = tokio::sync::mpsc::channel(1);
+        let release_response = Arc::new(tokio::sync::Notify::new());
+        let release_response_for_service = Arc::clone(&release_response);
+        let release_response_for_test = Arc::clone(&release_response);
+        let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
+        let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
+
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let server_handle = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let _ = server_ready_tx.send(());
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            let service = ArrowLogsServiceServer::new(ArrowLogsServiceDelayedOkMock {
+                sender: batch_received_tx,
+                release: release_response_for_service,
+            });
+
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("server failed");
+        });
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+
+        tokio_rt.block_on(async move {
+            let local_set = tokio::task::LocalSet::new();
+            let _exporter_handle = local_set.spawn_local(async move {
+                _ = exporter
+                    .start(
+                        runtime_ctrl_msg_tx,
+                        pipeline_completion_msg_tx,
+                        metrics_reporter,
+                        Interests::empty(),
+                    )
+                    .await
+                    .expect("exporter should shut down cleanly");
+            });
+
+            tokio::join!(local_set, async {
+                server_ready_rx
+                    .await
+                    .expect("server should bind before exporter traffic starts");
+
+                let pdata_id = 41_u64;
+                let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+                let pdata = OtapPdata::new_default(log_message.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    calldata_with_id(pdata_id),
+                    0,
+                );
+                pdata_tx.send(pdata).await.expect("send pdata");
+
+                _ = timeout(Duration::from_secs(5), batch_received_rx.recv())
+                    .await
+                    .expect("timed out waiting for server to receive batch");
+
+                // Closing the input starts the exporter's synthetic one-second
+                // graceful shutdown deadline. Keep the response pending long
+                // enough to distinguish draining from immediate cancellation.
+                drop(pdata_tx);
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                release_response_for_test.notify_waiters();
+
+                let completion = timeout(Duration::from_secs(1), pipeline_completion_msg_rx.recv())
+                    .await
+                    .expect("timed out waiting for completion")
+                    .expect("pipeline result channel closed");
+                match completion {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
+                        assert_eq!(calldata_id(&ack.accepted), pdata_id);
+                    }
+                    PipelineCompletionMsg::DeliverNack { .. } => {
+                        panic!("graceful shutdown must not NACK a completed batch");
+                    }
+                }
+
+                server_shutdown_tx.send(true).unwrap();
+            });
         });
 
         tokio_rt

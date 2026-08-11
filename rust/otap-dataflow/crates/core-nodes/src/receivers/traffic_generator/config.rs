@@ -248,6 +248,13 @@ impl Config {
         self
     }
 
+    /// Builder-style method to enable or disable Ack/Nack completion tracking.
+    #[must_use]
+    pub const fn with_ack_nack(mut self, enable_ack_nack: bool) -> Self {
+        self.enable_ack_nack = enable_ack_nack;
+        self
+    }
+
     /// Builder-style method to set transport headers.
     #[must_use]
     pub fn with_transport_headers(
