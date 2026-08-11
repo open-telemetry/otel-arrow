@@ -20,6 +20,8 @@ by `dashboard.py build` in order to generate the appropriate page stubs and
 The dashboard can then be hosted on some static site server like github pages,
 but can also be served locally using `dashboard.py serve`.
 
+The top-level page title and subtitle can be overridden with `variables.dashboard_title` and `variables.dashboard_subtitle` in the manifest.
+
 ## Concepts
 
 **Suites** define an orchestrator test to run. Each suite is scoped to a single
