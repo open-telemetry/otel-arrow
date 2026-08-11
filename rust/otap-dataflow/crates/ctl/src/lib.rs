@@ -162,6 +162,9 @@ pub async fn run_with_terminal_and_diagnostics(
         Command::Telemetry(args) => {
             commands::telemetry::run(&client, stdout, human_style, args).await
         }
+        Command::Components(args) => {
+            commands::components::run(&client, stdout, human_style, args).await
+        }
     }
 }
 

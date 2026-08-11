@@ -452,6 +452,7 @@ fn curated_examples(path: &[String]) -> Vec<String> {
         ["engine", "status"] => vec![command_example("engine status --output json")],
         ["engine", "livez"] => vec![command_example("engine livez")],
         ["engine", "readyz"] => vec![command_example("engine readyz")],
+        ["components"] => vec![command_example("components --output json")],
         ["groups", "status"] => vec![command_example("groups status")],
         ["groups", "describe"] => vec![command_example("groups describe")],
         ["groups", "events", "get"] => vec![command_example("groups events get --tail 20")],

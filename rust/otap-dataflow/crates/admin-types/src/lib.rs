@@ -3,6 +3,7 @@
 
 //! Shared admin request, response, query, and model types.
 
+pub mod components;
 pub mod engine;
 pub mod groups;
 pub mod operations;

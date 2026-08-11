@@ -5,7 +5,7 @@
 
 use crate::client::{AdminBackend, HttpAdminClientSettings};
 use crate::endpoint::{AdminAuth, AdminEndpoint, AdminScheme};
-use crate::{Error, config, engine, groups, operations, pipelines, telemetry};
+use crate::{Error, components, config, engine, groups, operations, pipelines, telemetry};
 use async_trait::async_trait;
 use reqwest::{Certificate, ClientBuilder, Identity, Method, Url};
 use serde::de::DeserializeOwned;
@@ -163,6 +163,12 @@ impl HttpBackend {
 
 #[async_trait]
 impl AdminBackend for HttpBackend {
+    async fn components(&self) -> Result<components::ComponentsResponse, Error> {
+        self.request_json(Method::GET, &["api", "v1", "components"], &[], &[200])
+            .await
+            .map(|(_, body)| body)
+    }
+
     async fn engine_status(&self) -> Result<engine::Status, Error> {
         self.request_json(Method::GET, &["api", "v1", "status"], &[], &[200])
             .await
@@ -829,7 +835,7 @@ fn ensure_crypto_provider() -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::config::tls::{TlsClientConfig, TlsConfig};
-    use crate::{AdminClient, engine, groups, operations, pipelines, telemetry};
+    use crate::{AdminClient, components, engine, groups, operations, pipelines, telemetry};
     use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
     use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
     use serde_json::json;
@@ -964,6 +970,40 @@ mod tests {
             .await
             .expect("status should decode");
         assert_eq!(response.generated_at, "2026-01-01T00:00:00Z");
+    }
+
+    /// Scenario: the SDK requests the component inventory and the engine returns
+    /// a components response with one factory entry.
+    /// Guarantees: the client GETs `/api/v1/components` and decodes the
+    /// `ComponentsResponse` (generated_at + entries) from the body.
+    #[tokio::test]
+    async fn components_list_decodes_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/components"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                components::ComponentsResponse {
+                    generated_at: "2026-01-01T00:00:00Z".to_string(),
+                    components: vec![components::ComponentEntry {
+                        id: "urn:otel:receiver:otlp".to_string(),
+                        category: "Receiver".to_string(),
+                        description: Some("OTLP receiver".to_string()),
+                        attributes: Default::default(),
+                    }],
+                },
+            ))
+            .mount(&server)
+            .await;
+
+        let response = client(&server)
+            .components()
+            .list()
+            .await
+            .expect("components should decode");
+        assert_eq!(response.generated_at, "2026-01-01T00:00:00Z");
+        assert_eq!(response.components.len(), 1);
+        assert_eq!(response.components[0].id, "urn:otel:receiver:otlp");
+        assert_eq!(response.components[0].category, "Receiver");
     }
 
     #[tokio::test]

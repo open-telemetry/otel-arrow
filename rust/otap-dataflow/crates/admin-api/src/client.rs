@@ -5,7 +5,7 @@
 
 use crate::endpoint::{AdminAuth, AdminEndpoint};
 use crate::http_backend::HttpBackend;
-use crate::{Error, config, engine, groups, operations, pipelines, telemetry};
+use crate::{Error, components, config, engine, groups, operations, pipelines, telemetry};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -225,6 +225,47 @@ impl AdminClient {
         TelemetryClient {
             backend: self.backend.as_ref(),
         }
+    }
+
+    /// Returns the component-inventory resource client (RFC 0001).
+    #[must_use]
+    pub fn components(&self) -> ComponentsClient<'_> {
+        ComponentsClient {
+            backend: self.backend.as_ref(),
+        }
+    }
+}
+
+/// Component-inventory admin client.
+#[derive(Clone, Copy)]
+pub struct ComponentsClient<'a> {
+    backend: &'a dyn AdminBackend,
+}
+
+impl ComponentsClient<'_> {
+    /// Returns the running engine's component inventory (RFC 0001).
+    ///
+    /// This reports exactly the components linked into the engine binary,
+    /// including feature- and platform-gated ones.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use otap_df_admin_api::{AdminClient, AdminEndpoint, HttpAdminClientSettings};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let client = AdminClient::builder()
+    /// #     .http(HttpAdminClientSettings::new(AdminEndpoint::http(
+    /// #         "engine-a.internal.example",
+    /// #         8080,
+    /// #     )))
+    /// #     .build()?;
+    /// let inventory = client.components().list().await?;
+    /// println!("components={}", inventory.components.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn list(&self) -> Result<components::ComponentsResponse, Error> {
+        self.backend.components().await
     }
 }
 
@@ -935,6 +976,7 @@ impl TelemetryClient<'_> {
 
 #[async_trait]
 pub(crate) trait AdminBackend: Send + Sync {
+    async fn components(&self) -> Result<components::ComponentsResponse, Error>;
     async fn engine_status(&self) -> Result<engine::Status, Error>;
     async fn engine_livez(&self) -> Result<engine::ProbeResponse, Error>;
     async fn engine_readyz(&self) -> Result<engine::ProbeResponse, Error>;

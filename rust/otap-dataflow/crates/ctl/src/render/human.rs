@@ -14,7 +14,7 @@ use crate::troubleshoot::{
     DiagnosisFinding, DiagnosisReport, GroupShutdownWatchSnapshot, GroupsDescribeReport,
     NormalizedEvent, PipelineDescribeReport,
 };
-use otap_df_admin_api::{engine, groups, pipelines, telemetry};
+use otap_df_admin_api::{components, engine, groups, pipelines, telemetry};
 use std::collections::BTreeMap;
 
 /// Renders engine status as human-readable fields and a pipeline table.
@@ -26,6 +26,39 @@ pub fn render_engine_status(style: &HumanStyle, status: &engine::Status) -> Stri
     if !status.pipelines.is_empty() {
         lines.push(String::new());
         lines.push(render_pipeline_summary_table(style, &status.pipelines));
+    }
+    lines.join("\n")
+}
+
+/// Renders the engine's component inventory as human-readable fields and a
+/// table sorted by category then id.
+pub fn render_components(style: &HumanStyle, response: &components::ComponentsResponse) -> String {
+    let mut lines = vec![
+        field(style, "generated_at", response.generated_at.to_string()),
+        field(style, "components", response.components.len().to_string()),
+    ];
+    if !response.components.is_empty() {
+        let mut sorted: Vec<&components::ComponentEntry> = response.components.iter().collect();
+        sorted.sort_by(|a, b| a.category.cmp(&b.category).then_with(|| a.id.cmp(&b.id)));
+        lines.push(String::new());
+        lines.push(render_table(
+            style,
+            &[
+                TableColumn::left("category"),
+                TableColumn::left("id"),
+                TableColumn::left("description"),
+            ],
+            sorted
+                .iter()
+                .map(|entry| {
+                    vec![
+                        terminal_safe(&entry.category),
+                        terminal_safe(&entry.id),
+                        terminal_safe(entry.description.as_deref().unwrap_or("")),
+                    ]
+                })
+                .collect(),
+        ));
     }
     lines.join("\n")
 }
