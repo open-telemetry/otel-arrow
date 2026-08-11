@@ -105,12 +105,12 @@ pub enum SignalTypeRouterReason {
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
 pub struct SignalTypeRouterAttributes {
-    /// The telemetry signal type.
-    pub signal: otap_df_config::SignalType,
     /// General outcome of the routing decision.
     pub outcome: Outcome,
     /// Specific reason for the outcome.
     pub reason: SignalTypeRouterReason,
+    /// The telemetry signal type.
+    pub signal: otap_df_config::SignalType,
 }
 
 /// Measurement metrics for the SignalTypeRouter processor.
@@ -1375,7 +1375,7 @@ mod tests {
                 metrics
                     .get(
                         format!(
-                            "signals.decision outcome=Success reason=MatchedRoute signal={signal}"
+                            "signals.decision outcome=success reason=matched_route signal={signal}"
                         )
                         .as_str()
                     )
@@ -1385,7 +1385,7 @@ mod tests {
             );
             assert_eq!(
                 metrics
-                    .get(format!("signals.decision outcome=Success reason=DefaultRouteNoMatch signal={signal}").as_str())
+                    .get(format!("signals.decision outcome=success reason=default_route_no_match signal={signal}").as_str())
                     .copied()
                     .unwrap_or(0),
                 0
@@ -1394,7 +1394,7 @@ mod tests {
                 metrics
                     .get(
                         format!(
-                            "signals.decision outcome=Failure reason=NodeShutdown signal={signal}"
+                            "signals.decision outcome=failure reason=node_shutdown signal={signal}"
                         )
                         .as_str()
                     )
@@ -1406,7 +1406,7 @@ mod tests {
                 metrics
                     .get(
                         format!(
-                            "signals.decision outcome=Refused reason=RouteFull signal={signal}"
+                            "signals.decision outcome=refused reason=route_full signal={signal}"
                         )
                         .as_str()
                     )
@@ -1418,7 +1418,7 @@ mod tests {
                 metrics
                     .get(
                         format!(
-                            "signals.decision outcome=Refused reason=RouteClosed signal={signal}"
+                            "signals.decision outcome=refused reason=route_closed signal={signal}"
                         )
                         .as_str()
                     )
@@ -1428,7 +1428,7 @@ mod tests {
             );
             assert_eq!(
                 metrics
-                    .get(format!("signals.decision outcome=Failure reason=NoMatchingRoute signal={signal}").as_str())
+                    .get(format!("signals.decision outcome=failure reason=no_matching_route signal={signal}").as_str())
                     .copied()
                     .unwrap_or(0),
                 0
@@ -1491,21 +1491,21 @@ mod tests {
 
 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Success reason=MatchedRoute signal=logs")
+                        .get("signals.decision outcome=success reason=matched_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Success reason=DefaultRouteNoMatch signal=logs")
+                        .get("signals.decision outcome=success reason=default_route_no_match signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Failure reason=NoMatchingRoute signal=logs")
+                        .get("signals.decision outcome=failure reason=no_matching_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -1582,42 +1582,42 @@ assert_eq!(
 
 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Success reason=MatchedRoute signal=logs")
+                        .get("signals.decision outcome=success reason=matched_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Success reason=DefaultRouteNoMatch signal=logs")
+                        .get("signals.decision outcome=success reason=default_route_no_match signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Failure reason=NodeShutdown signal=logs")
+                        .get("signals.decision outcome=failure reason=node_shutdown signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=refused reason=route_full signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=refused reason=route_closed signal=logs")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Refused reason=RouteFull signal=logs")
-                        .copied()
-                        .unwrap_or(0),
-                    0
-                );
-                assert_eq!(
-                    metrics
-                        .get("signals.decision outcome=Refused reason=RouteClosed signal=logs")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(
-                    metrics
-                        .get("signals.decision outcome=Failure reason=NoMatchingRoute signal=logs")
+                        .get("signals.decision outcome=failure reason=no_matching_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -1689,21 +1689,21 @@ assert_eq!(
 
 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Success reason=MatchedRoute signal=logs")
+                        .get("signals.decision outcome=success reason=matched_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Success reason=DefaultRouteNoMatch signal=logs")
+                        .get("signals.decision outcome=success reason=default_route_no_match signal=logs")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Failure reason=NoMatchingRoute signal=logs")
+                        .get("signals.decision outcome=failure reason=no_matching_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -1777,42 +1777,42 @@ assert_eq!(
 
 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Success reason=MatchedRoute signal=logs")
+                        .get("signals.decision outcome=success reason=matched_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Success reason=DefaultRouteNoMatch signal=logs")
+                        .get("signals.decision outcome=success reason=default_route_no_match signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Failure reason=NodeShutdown signal=logs")
+                        .get("signals.decision outcome=failure reason=node_shutdown signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=refused reason=route_full signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=refused reason=route_closed signal=logs")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Refused reason=RouteFull signal=logs")
-                        .copied()
-                        .unwrap_or(0),
-                    0
-                );
-                assert_eq!(
-                    metrics
-                        .get("signals.decision outcome=Refused reason=RouteClosed signal=logs")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(
-                    metrics
-                        .get("signals.decision outcome=Failure reason=NoMatchingRoute signal=logs")
+                        .get("signals.decision outcome=failure reason=no_matching_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -1920,35 +1920,35 @@ assert_eq!(
 
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Success reason=MatchedRoute signal=logs")
+                        .get("signals.decision outcome=success reason=matched_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Success reason=MatchedRoute signal=metrics")
+                        .get("signals.decision outcome=success reason=matched_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Failure reason=NodeShutdown signal=logs")
+                        .get("signals.decision outcome=failure reason=node_shutdown signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=refused reason=route_full signal=logs")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.decision outcome=Refused reason=RouteFull signal=logs")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(
-                    metrics
-                        .get("signals.decision outcome=Failure reason=NoMatchingRoute signal=logs")
+                        .get("signals.decision outcome=failure reason=no_matching_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -1956,7 +1956,7 @@ assert_eq!(
                 assert_eq!(
                     metrics
                         .get(
-                            "signals.decision outcome=Failure reason=NoMatchingRoute signal=metrics"
+                            "signals.decision outcome=failure reason=no_matching_route signal=metrics"
                         )
                         .copied()
                         .unwrap_or(0),
@@ -2010,21 +2010,21 @@ assert_eq!(
 
                 let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    m.get("signals.decision outcome=Success reason=MatchedRoute signal=traces")
+                    m.get("signals.decision outcome=success reason=matched_route signal=traces")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     m.get(
-                        "signals.decision outcome=Success reason=DefaultRouteNoMatch signal=traces"
+                        "signals.decision outcome=success reason=default_route_no_match signal=traces"
                     )
                     .copied()
                     .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NoMatchingRoute signal=traces")
+                    m.get("signals.decision outcome=failure reason=no_matching_route signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2080,39 +2080,39 @@ assert_eq!(
 
                 let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    m.get("signals.decision outcome=Success reason=MatchedRoute signal=traces")
+                    m.get("signals.decision outcome=success reason=matched_route signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     m.get(
-                        "signals.decision outcome=Success reason=DefaultRouteNoMatch signal=traces"
+                        "signals.decision outcome=success reason=default_route_no_match signal=traces"
                     )
                     .copied()
                     .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NodeShutdown signal=traces")
+                    m.get("signals.decision outcome=failure reason=node_shutdown signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Refused reason=RouteFull signal=traces")
+                    m.get("signals.decision outcome=refused reason=route_full signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Refused reason=RouteClosed signal=traces")
+                    m.get("signals.decision outcome=refused reason=route_closed signal=traces")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NoMatchingRoute signal=traces")
+                    m.get("signals.decision outcome=failure reason=no_matching_route signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2179,21 +2179,21 @@ assert_eq!(
 
                 let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    m.get("signals.decision outcome=Success reason=MatchedRoute signal=traces")
+                    m.get("signals.decision outcome=success reason=matched_route signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     m.get(
-                        "signals.decision outcome=Success reason=DefaultRouteNoMatch signal=traces"
+                        "signals.decision outcome=success reason=default_route_no_match signal=traces"
                     )
                     .copied()
                     .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NoMatchingRoute signal=traces")
+                    m.get("signals.decision outcome=failure reason=no_matching_route signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2249,39 +2249,39 @@ assert_eq!(
 
                 let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    m.get("signals.decision outcome=Success reason=MatchedRoute signal=traces")
+                    m.get("signals.decision outcome=success reason=matched_route signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     m.get(
-                        "signals.decision outcome=Success reason=DefaultRouteNoMatch signal=traces"
+                        "signals.decision outcome=success reason=default_route_no_match signal=traces"
                     )
                     .copied()
                     .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NodeShutdown signal=traces")
+                    m.get("signals.decision outcome=failure reason=node_shutdown signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Refused reason=RouteFull signal=traces")
+                    m.get("signals.decision outcome=refused reason=route_full signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Refused reason=RouteClosed signal=traces")
+                    m.get("signals.decision outcome=refused reason=route_closed signal=traces")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NoMatchingRoute signal=traces")
+                    m.get("signals.decision outcome=failure reason=no_matching_route signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2349,21 +2349,21 @@ assert_eq!(
 
                 let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    m.get("signals.decision outcome=Success reason=MatchedRoute signal=metrics")
+                    m.get("signals.decision outcome=success reason=matched_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     m.get(
-                        "signals.decision outcome=Success reason=DefaultRouteNoMatch signal=metrics"
+                        "signals.decision outcome=success reason=default_route_no_match signal=metrics"
                     )
                     .copied()
                     .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NoMatchingRoute signal=metrics")
+                    m.get("signals.decision outcome=failure reason=no_matching_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2419,39 +2419,39 @@ assert_eq!(
 
                 let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    m.get("signals.decision outcome=Success reason=MatchedRoute signal=metrics")
+                    m.get("signals.decision outcome=success reason=matched_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     m.get(
-                        "signals.decision outcome=Success reason=DefaultRouteNoMatch signal=metrics"
+                        "signals.decision outcome=success reason=default_route_no_match signal=metrics"
                     )
                     .copied()
                     .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NodeShutdown signal=metrics")
+                    m.get("signals.decision outcome=failure reason=node_shutdown signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Refused reason=RouteFull signal=metrics")
+                    m.get("signals.decision outcome=refused reason=route_full signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Refused reason=RouteClosed signal=metrics")
+                    m.get("signals.decision outcome=refused reason=route_closed signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NoMatchingRoute signal=metrics")
+                    m.get("signals.decision outcome=failure reason=no_matching_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2518,21 +2518,21 @@ assert_eq!(
 
                 let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    m.get("signals.decision outcome=Success reason=MatchedRoute signal=metrics")
+                    m.get("signals.decision outcome=success reason=matched_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     m.get(
-                        "signals.decision outcome=Success reason=DefaultRouteNoMatch signal=metrics"
+                        "signals.decision outcome=success reason=default_route_no_match signal=metrics"
                     )
                     .copied()
                     .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NoMatchingRoute signal=metrics")
+                    m.get("signals.decision outcome=failure reason=no_matching_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2588,39 +2588,39 @@ assert_eq!(
 
                 let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    m.get("signals.decision outcome=Success reason=MatchedRoute signal=metrics")
+                    m.get("signals.decision outcome=success reason=matched_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     m.get(
-                        "signals.decision outcome=Success reason=DefaultRouteNoMatch signal=metrics"
+                        "signals.decision outcome=success reason=default_route_no_match signal=metrics"
                     )
                     .copied()
                     .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NodeShutdown signal=metrics")
+                    m.get("signals.decision outcome=failure reason=node_shutdown signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Refused reason=RouteFull signal=metrics")
+                    m.get("signals.decision outcome=refused reason=route_full signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Refused reason=RouteClosed signal=metrics")
+                    m.get("signals.decision outcome=refused reason=route_closed signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    m.get("signals.decision outcome=Failure reason=NoMatchingRoute signal=metrics")
+                    m.get("signals.decision outcome=failure reason=no_matching_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
