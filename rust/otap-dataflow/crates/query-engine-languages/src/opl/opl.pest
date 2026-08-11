@@ -152,6 +152,11 @@ type_name = {
     "Log"
   | "Metric"
   | "Span"
+  | "Gauge"
+  | "Sum"
+  | "Histogram"
+  | "ExponentialHistogram"
+  | "Summary"
 }
 
 type_check_op = @{ "is" }
@@ -200,7 +205,7 @@ assignment_expression = {
     (member_expression | identifier_expression) ~ "=" ~ expression
 }
 
-rename_pair = {
+rename_pair = { 
     string_literal ~ "as" ~ string_literal
 }
 

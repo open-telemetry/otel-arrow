@@ -5,6 +5,7 @@
 //! into `ScopedExpr` execution trees.
 
 use std::borrow::Cow;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use arrow::datatypes::DataType;
@@ -31,6 +32,7 @@ use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
 use datafusion::prelude::{binary_expr, lit_timestamp_nano};
 use otap_df_config::SignalType;
+use otap_df_pdata::otlp::metrics::MetricType;
 use otap_df_pdata::schema::consts;
 
 #[cfg(feature = "sha1-hash")]
@@ -358,9 +360,14 @@ impl ExprPlanner {
                     expr_type: ExprLogicalType::Boolean,
                     requires_dict_downcast: false,
                 };
+
                 let combined_scope = try_combine_scopes(&left_planned, &right_planned);
                 let left = left_planned.expr;
                 let right = right_planned.expr;
+
+                println!("{left:?}");
+                println!("{right:?}");
+                println!("{combined_scope:?}");
                 if let Some(combined_scope) = combined_scope
                     && !matches!(combined_scope, DataScope::AttributesAll(_))
                 {
@@ -1586,6 +1593,34 @@ impl ExprPlanner {
                     "Log" => SignalType::Logs,
                     "Metric" => SignalType::Metrics,
                     "Span" => SignalType::Traces,
+                    other if let Ok(metric_type) = MetricType::from_str(other) => {
+                        // produce plan equivalent to "is Metric and type == <metric_type>"
+                        // where metric_type is the OTAP metric type determinant (e.g. 0 = Empty,
+                        // 1 = Gauge, etc. see OTAP spec for all values)
+                        return Ok(Some(ScopedExpr::JoinAndEval {
+                            children: vec![
+                                ScopedExpr::Eval {
+                                    scope: DataScope::Root,
+                                    eval: LeafEval::BatchPredicate(Box::new(
+                                        SignalTypePredicate::new(SignalType::Metrics),
+                                    )),
+                                },
+                                ScopedExpr::Eval {
+                                    scope: DataScope::Root,
+                                    eval: LeafEval::new_df_expr(
+                                        col(consts::METRIC_TYPE).eq(lit(metric_type as u8)),
+                                        false,
+                                    )?,
+                                },
+                            ],
+                            eval: LeafEval::new_df_expr(
+                                col(arg_column_name(0)).and(col(arg_column_name(1))),
+                                false,
+                            )?,
+                            align_children_to_root: false,
+                            default_null_children: false,
+                        }));
+                    }
                     _ => {
                         return Err(Error::InvalidPipelineError {
                             cause: format!("Unknown stream type name {type_name}"),

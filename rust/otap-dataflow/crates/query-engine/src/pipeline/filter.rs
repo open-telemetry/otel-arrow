@@ -423,19 +423,20 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
         Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
-        HistogramDataPoint, Metric, NumberDataPoint, Summary, SummaryDataPoint,
+        HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Sum, Summary, SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
     use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
     use otap_df_pdata::testing::round_trip::{
-        otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
-        to_traces_data,
+        otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_otap_logs, to_otap_metrics,
+        to_otap_traces, to_traces_data,
     };
     use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::test::{
-        exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,
+        exec_logs_pipeline, exec_metrics_pipeline, otap_to_logs_data, otap_to_metrics_data,
+        otap_to_traces_data,
     };
 
     async fn test_simple_filter<P: Parser, F: Fn(&str) -> String>(date_time_formatter: F) {
@@ -5697,6 +5698,42 @@ mod test {
         let traces_ouptut = pipeline.execute(traces_input.clone()).await.unwrap();
 
         assert_eq!(traces_input, traces_ouptut);
+    }
+
+    #[tokio::test]
+    async fn test_filter_check_metric_type() {
+        let gauge_metric = Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge {
+                data_points: vec![NumberDataPoint::build().finish()],
+            })
+            .finish();
+        let sum_metric = Metric::build()
+            .name("sum_metric")
+            .data_sum(Sum {
+                data_points: vec![NumberDataPoint::build().finish()],
+                ..Default::default()
+            })
+            .finish();
+
+        let assert_results = |result: MetricsData, expected| {
+            assert_eq!(result.resource_metrics.len(), 1);
+            assert_eq!(result.resource_metrics[0].scope_metrics.len(), 1);
+            assert_eq!(
+                result.resource_metrics[0].scope_metrics[0].metrics,
+                expected
+            );
+        };
+
+        let input = to_metrics_data(vec![gauge_metric.clone(), sum_metric.clone()]);
+
+        let query = "metrics | where is Gauge";
+        let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
+        assert_results(result, vec![gauge_metric.clone()]);
+
+        let query = "metrics | where is Sum";
+        let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
+        assert_results(result, vec![sum_metric.clone()]);
     }
 
     #[tokio::test]
