@@ -157,6 +157,22 @@ impl OtapPayload {
         }
     }
 
+    /// Returns the canonical uncompressed OTLP protobuf size.
+    ///
+    /// OTLP payloads already contain the canonical representation. OTAP
+    /// payloads are converted with the default unbounded conversion options.
+    /// Arrow retained-memory accounting from issue #3442 is not a valid
+    /// substitute because it measures allocation capacity, not protobuf size.
+    pub fn canonical_size(&self) -> Result<usize, Error> {
+        match self {
+            Self::OtlpBytes(value) => Ok(value.num_bytes()),
+            Self::OtapArrowRecords(value) => {
+                let otlp: OtlpProtoBytes = value.clone().try_into_with_default()?;
+                Ok(otlp.num_bytes())
+            }
+        }
+    }
+
     /// Returns the number of encoded bytes, if known.
     #[must_use]
     pub fn num_bytes(&self) -> Option<usize> {
@@ -220,6 +236,7 @@ impl OtapPayloadHelpers for OtapArrowRecords {
     }
 
     fn num_bytes(&self) -> Option<usize> {
+        // Arrow allocation size is not the canonical OTLP protobuf size.
         None
     }
 
@@ -250,6 +267,7 @@ impl OtapPayloadHelpers for OtapArrowRecords {
     }
 
     fn num_items(&self) -> usize {
+        // Arrow batches store row counts, so this does not scan individual items.
         match self {
             Self::Logs(records) => records.num_items(),
             Self::Traces(records) => records.num_items(),
@@ -268,6 +286,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
     }
 
     fn num_bytes(&self) -> Option<usize> {
+        // The payload already contains the canonical serialized OTLP bytes.
         Some(self.num_bytes())
     }
 
@@ -292,6 +311,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
     }
 
     fn num_items(&self) -> usize {
+        // Counting requires traversing the encoded protobuf record hierarchy.
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes.as_ref());
