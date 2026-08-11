@@ -18,9 +18,9 @@ use tokio::sync::watch;
 use super::auth::Auth;
 use super::config::{AuthMethod, Config};
 use super::error::Error;
-use super::extension::AzureIdentityAuthExtension;
-use super::metrics::{AzureIdentityAuthMetrics, AzureIdentityAuthMetricsTracker};
+use super::metrics::AzureIdentityAuthMetrics;
 use super::*;
+use crate::common::token_refresh::TokenProviderMetricsTracker;
 
 // -- Config tests -------------------------------------------
 
@@ -36,14 +36,14 @@ fn config_defaults_apply() {
     assert!(cfg.client_id.is_none());
     assert!(cfg.tenant_id.is_none());
     assert!(cfg.token_file_path.is_none());
-    assert_eq!(cfg.startup_timeout, std::time::Duration::from_secs(30));
+    assert_eq!(cfg.startup_timeout, Duration::from_secs(30));
 }
 
 #[test]
 fn startup_timeout_parses_and_rejects_zero() {
     let cfg = config_from_json(serde_json::json!({ "startup_timeout": "45s" }))
         .expect("human-readable duration parses");
-    assert_eq!(cfg.startup_timeout, std::time::Duration::from_secs(45));
+    assert_eq!(cfg.startup_timeout, Duration::from_secs(45));
 
     assert!(
         config_from_json(serde_json::json!({ "startup_timeout": "0s" })).is_err(),
@@ -134,6 +134,52 @@ fn factory_is_registered_with_capability() {
     assert!(
         capabilities.shared.contains(&"bearer_token_provider"),
         "BearerTokenProvider must be advertised as a shared capability"
+    );
+}
+
+/// Invokes the factory's `create` hook with `config` against a throwaway
+/// extension context, mirroring how the engine wires the extension.
+fn create_bundle(config: serde_json::Value) -> Result<ExtensionBundle, ConfigError> {
+    let (ext_ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
+    let name: otap_df_config::ExtensionId = "azure-identity-auth".into();
+    let user_config = Arc::new(ExtensionUserConfig::new(
+        AZURE_IDENTITY_AUTH_URN.into(),
+        config,
+    ));
+    let extension_config = ExtensionConfig::new(name.clone());
+    create(&ext_ctx, name, user_config, &extension_config)
+}
+
+// Scenario: The factory's `create` hook runs against a valid managed-identity config.
+// Guarantees: Wiring succeeds and yields a shared, active extension bundle usable by the engine.
+#[test]
+fn create_builds_a_shared_active_bundle() {
+    otap_df_otap::crypto::ensure_crypto_provider();
+    let bundle = create_bundle(serde_json::json!({ "method": "managed_identity" }))
+        .expect("a valid config wires successfully");
+    assert!(
+        bundle.local().is_none(),
+        "the Azure identity auth extension has no local variant"
+    );
+    let shared = bundle.shared().expect("a shared variant is produced");
+    assert_eq!(shared.variant(), ExtensionVariant::Shared);
+    assert!(
+        !shared.is_passive(),
+        "the extension must be active so its refresh loop runs"
+    );
+}
+
+// Scenario: The factory's `create` hook runs against a config that fails validation.
+// Guarantees: Wiring fails fast with InvalidUserConfig instead of building a broken extension.
+#[test]
+fn create_rejects_an_invalid_config() {
+    let Err(err) = create_bundle(serde_json::json!({ "method": "development", "client_id": "c" }))
+    else {
+        panic!("client_id is not valid for the development method");
+    };
+    assert!(
+        matches!(err, ConfigError::InvalidUserConfig { .. }),
+        "expected InvalidUserConfig, got {err:?}"
     );
 }
 
@@ -232,13 +278,19 @@ impl TokenCredential for FailingCredential {
 fn make_extension(credential: Arc<dyn TokenCredential>) -> AzureIdentityAuthExtension {
     let auth = Auth::from_credential(credential, "test_scope".to_string());
     let (tx, _rx) = watch::channel(None);
-    AzureIdentityAuthExtension::new("test-ext", auth, tx, make_tracker())
+    AzureIdentityAuthExtension::new(
+        "test-ext",
+        auth,
+        Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS),
+        tx,
+        make_tracker(),
+    )
 }
 
-fn make_tracker() -> AzureIdentityAuthMetricsTracker {
+fn make_tracker() -> TokenProviderMetricsTracker<AzureIdentityAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
     let metric_set = registry.register_metric_set::<AzureIdentityAuthMetrics>(EmptyAttributes());
-    AzureIdentityAuthMetricsTracker::new(metric_set)
+    TokenProviderMetricsTracker::new(metric_set)
 }
 
 #[tokio::test]
@@ -345,7 +397,7 @@ fn metrics_tracker_records_snapshots_and_reports() {
     let mut tracker = make_tracker();
 
     // Debug formatting is exercised for observability tooling.
-    assert!(format!("{tracker:?}").contains("AzureIdentityAuthMetricsTracker"));
+    assert!(format!("{tracker:?}").contains("TokenProviderMetricsTracker"));
 
     // A fresh tracker snapshots to all-zero values.
     let before = tracker.snapshot();
@@ -468,130 +520,4 @@ async fn token_stream_skips_initial_none() {
         .expect("stream yields after publish")
         .expect("stream is not closed");
     assert_eq!(published.expose_token(), "streamed");
-}
-
-// -- schedule_next timing tests --------------------------------
-
-/// Scenario: schedule the next refresh for a token expiring in ~1 hour.
-/// Guarantees: the refresh is scheduled TOKEN_EXPIRY_BUFFER_SECS before expiry
-/// (~3301s out), so refresh happens ahead of expiry with buffer to spare.
-#[tokio::test]
-async fn schedule_next_refreshes_before_expiry() {
-    use otap_df_engine::capability::auth::BearerToken;
-    use std::time::{Duration, Instant};
-
-    let token = BearerToken::with_expiry(
-        "t".to_owned(),
-        Some(Instant::now() + Duration::from_secs(3600)),
-    );
-    let refresh_at = extension::schedule_next(&token);
-    let secs = refresh_at
-        .saturating_duration_since(tokio::time::Instant::now())
-        .as_secs_f64();
-    // 3600 - TOKEN_EXPIRY_BUFFER_SECS (299) = 3301, allowing execution slack.
-    assert!((secs - 3301.0).abs() < 5.0, "expected ~3301s, got {secs}");
-}
-
-/// Scenario: schedule the next refresh for a token expiring in only 5s, where
-/// subtracting the expiry buffer would underflow past now.
-/// Guarantees: the schedule floors at MIN_TOKEN_REFRESH_INTERVAL_SECS (~10s)
-/// instead of scheduling in the past.
-#[tokio::test]
-async fn schedule_next_floors_near_expiry() {
-    use otap_df_engine::capability::auth::BearerToken;
-    use std::time::{Duration, Instant};
-
-    // Expires in 5s: the refresh target underflows past `now`, so the
-    // MIN_TOKEN_REFRESH_INTERVAL_SECS (10s) floor applies.
-    let token = BearerToken::with_expiry(
-        "t".to_owned(),
-        Some(Instant::now() + Duration::from_secs(5)),
-    );
-    let refresh_at = extension::schedule_next(&token);
-    let secs = refresh_at
-        .saturating_duration_since(tokio::time::Instant::now())
-        .as_secs_f64();
-    assert!((secs - 10.0).abs() < 2.0, "expected ~10s floor, got {secs}");
-}
-
-/// Scenario: schedule the next refresh for a non-expiring token.
-/// Guarantees: the refresh is pushed far into the future (~1 year), so a
-/// non-expiring token is not needlessly refreshed.
-#[tokio::test]
-async fn schedule_next_pushes_non_expiring_far_out() {
-    use otap_df_engine::capability::auth::BearerToken;
-
-    let token = BearerToken::without_expiry("t".to_owned());
-    let refresh_at = extension::schedule_next(&token);
-    let secs = refresh_at
-        .saturating_duration_since(tokio::time::Instant::now())
-        .as_secs();
-    // Non-expiring tokens push the refresh ~1 year out.
-    assert!(
-        secs > 300 * 24 * 60 * 60,
-        "expected far-future refresh, got {secs}s"
-    );
-}
-
-// -- retry backoff tests ---------------------------------------
-
-#[test]
-fn retry_backoff_grows_exponentially_and_caps() {
-    // Zero prior failures starts at the base retry interval (10s).
-    assert_eq!(extension::retry_backoff_secs(0), 10);
-    // Each consecutive failure doubles the base delay.
-    assert_eq!(extension::retry_backoff_secs(1), 20);
-    assert_eq!(extension::retry_backoff_secs(2), 40);
-    assert_eq!(extension::retry_backoff_secs(3), 80);
-    assert_eq!(extension::retry_backoff_secs(4), 160);
-    // Growth is clamped at the max (300s) and stays there.
-    assert_eq!(extension::retry_backoff_secs(5), 300);
-    assert_eq!(extension::retry_backoff_secs(6), 300);
-    // A very large failure count must not overflow the shift.
-    assert_eq!(extension::retry_backoff_secs(u32::MAX), 300);
-}
-
-// -- jitter_refresh tests --------------------------------------
-
-#[tokio::test]
-async fn jitter_refresh_preserves_min_interval_floor() {
-    use std::time::Duration;
-
-    // A target exactly at the 10s minimum-refresh floor has no slack to jitter,
-    // so it must be returned unchanged rather than pulled toward `now` (which
-    // would busy-loop the refresh task while the token is still fresh).
-    let target = tokio::time::Instant::now() + Duration::from_secs(10);
-    for _ in 0..1000 {
-        assert_eq!(
-            extension::jitter_refresh(target),
-            target,
-            "near-floor target must not be jittered earlier"
-        );
-    }
-}
-
-#[tokio::test]
-async fn jitter_refresh_stays_within_bounds() {
-    use std::time::Duration;
-
-    // A far-out target is jittered earlier by at most REFRESH_JITTER_SECS (60s)
-    // and never earlier than the 10s floor from `now`.
-    let now = tokio::time::Instant::now();
-    let target = now + Duration::from_secs(3600);
-    let floor = now + Duration::from_secs(10);
-    for _ in 0..1000 {
-        let jittered = extension::jitter_refresh(target);
-        assert!(
-            jittered <= target,
-            "jitter must only move the refresh earlier"
-        );
-        assert!(
-            jittered >= target - Duration::from_secs(60),
-            "jitter must not exceed REFRESH_JITTER_SECS"
-        );
-        assert!(
-            jittered >= floor,
-            "jitter must not precede the min-interval floor"
-        );
-    }
 }

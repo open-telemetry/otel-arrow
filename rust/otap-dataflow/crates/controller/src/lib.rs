@@ -96,8 +96,9 @@ use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter}
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
-    InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_error, otel_info,
-    otel_info_span, otel_warn, resource_detectors, self_tracing::LogContext,
+    InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup,
+    log_filter::RuntimeLogFilterHandle, otel_error, otel_info, otel_info_span, otel_warn,
+    resource_detectors, self_tracing::LogContext,
 };
 use smallvec::smallvec;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -1508,6 +1509,7 @@ impl<
             all_cores.clone(),
             topology,
             telemetry_system.engine_tracing_setup(),
+            telemetry_system.log_filter_handle(),
             telemetry_reporting_interval,
             memory_pressure_tx.clone(),
             engine_config.clone(),

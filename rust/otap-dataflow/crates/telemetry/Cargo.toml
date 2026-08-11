@@ -37,6 +37,7 @@ parking_lot = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }
+arc-swap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
 

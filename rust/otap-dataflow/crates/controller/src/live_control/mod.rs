@@ -83,6 +83,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     topology: NumaTopology,
     /// Tracing setup cloned into launched runtime threads.
     engine_tracing_setup: TracingSetup,
+    /// Applies reconciled log-level directives to every tracing setup.
+    log_filter_handle: RuntimeLogFilterHandle,
     /// Runtime telemetry reporting cadence.
     telemetry_reporting_interval: Duration,
     /// Memory-pressure signal fanout shared with pipeline runtimes.
@@ -131,6 +133,7 @@ impl<
         available_core_ids: Vec<CoreId>,
         topology: NumaTopology,
         engine_tracing_setup: TracingSetup,
+        log_filter_handle: RuntimeLogFilterHandle,
         telemetry_reporting_interval: Duration,
         memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
         live_config: OtelDataflowSpec,
@@ -146,6 +149,7 @@ impl<
             available_core_ids,
             topology,
             engine_tracing_setup,
+            log_filter_handle,
             telemetry_reporting_interval,
             memory_pressure_tx,
             controller_thread: thread::current(),

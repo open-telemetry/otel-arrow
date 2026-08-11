@@ -22,11 +22,24 @@ use otap_df_engine::topology::NumaTopology;
 use otap_df_engine::wiring_contract::WiringContract;
 use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
 use otap_df_state::pipeline_status::PipelineStatus;
-use otap_df_telemetry::TracingSetup;
 use otap_df_telemetry::event::EngineEvent;
+use otap_df_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
 use otap_df_telemetry::metrics::MetricSetSnapshot;
 use otap_df_telemetry::tracing_init::ProviderSetup;
+use otap_df_telemetry::{TracingSetup, otel_info};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
+use tracing::{Event, Subscriber};
+use tracing_subscriber::Registry;
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+struct CountingLayer(Arc<AtomicUsize>);
+
+impl<S: Subscriber> Layer<S> for CountingLayer {
+    fn on_event(&self, _event: &Event<'_>, _context: Context<'_, S>) {
+        _ = self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 fn available_core_ids() -> Vec<CoreId> {
     vec![
@@ -282,6 +295,29 @@ fn test_runtime_with_factory_and_topology(
     pipeline_factory: &'static PipelineFactory<()>,
     topology: NumaTopology,
 ) -> Arc<ControllerRuntime<()>> {
+    test_runtime_with_log_filter_and_topology(config, pipeline_factory, topology).0
+}
+
+fn test_runtime_with_log_filter(
+    config: &OtelDataflowSpec,
+    pipeline_factory: &'static PipelineFactory<()>,
+) -> (
+    Arc<ControllerRuntime<()>>,
+    RuntimeLogFilterHandle,
+    RuntimeLogFilter,
+) {
+    test_runtime_with_log_filter_and_topology(config, pipeline_factory, NumaTopology::unknown())
+}
+
+fn test_runtime_with_log_filter_and_topology(
+    config: &OtelDataflowSpec,
+    pipeline_factory: &'static PipelineFactory<()>,
+    topology: NumaTopology,
+) -> (
+    Arc<ControllerRuntime<()>>,
+    RuntimeLogFilterHandle,
+    RuntimeLogFilter,
+) {
     let registry = TelemetryRegistryHandle::new();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -292,22 +328,30 @@ fn test_runtime_with_factory_and_topology(
         Controller::<()>::declare_topics(config).expect("declared topics should be valid");
     let (memory_pressure_tx, _memory_pressure_rx) =
         tokio::sync::watch::channel(MemoryPressureChanged::initial());
+    let (log_filter, log_filter_handle) =
+        RuntimeLogFilter::new(&config.engine.telemetry.logs.level);
 
-    Arc::new(ControllerRuntime::new(
-        pipeline_factory,
-        ControllerContext::new(registry),
-        observed_state_store,
-        observed_state_handle,
-        engine_event_reporter,
-        metrics_reporter,
-        declared_topics,
-        available_core_ids(),
-        topology,
-        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
-        Duration::from_secs(1),
-        memory_pressure_tx,
-        config.clone(),
-    ))
+    (
+        Arc::new(ControllerRuntime::new(
+            pipeline_factory,
+            ControllerContext::new(registry),
+            observed_state_store,
+            observed_state_handle,
+            engine_event_reporter,
+            metrics_reporter,
+            declared_topics,
+            available_core_ids(),
+            topology,
+            TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context)
+                .with_log_filter(log_filter.clone()),
+            log_filter_handle.clone(),
+            Duration::from_secs(1),
+            memory_pressure_tx,
+            config.clone(),
+        )),
+        log_filter_handle,
+        log_filter,
+    )
 }
 
 struct ObservedStateRunner {
@@ -3855,6 +3899,48 @@ fn reconcile_engine_config_reports_noop_for_matching_live_config() {
     );
 }
 
+/// Scenario: successful full-config reconciliation changes the configured log level.
+/// Guarantees: the shared runtime filter follows warn -> info -> warn without restart.
+#[test]
+fn reconcile_engine_config_applies_runtime_log_level() {
+    let mut config = empty_engine_config();
+    config.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse");
+    let (runtime, log_filter_handle, log_filter) =
+        test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
+    let event_count = Arc::new(AtomicUsize::new(0));
+    let dispatch = tracing::Dispatch::new(
+        Registry::default()
+            .with(log_filter.layer())
+            .with(CountingLayer(Arc::clone(&event_count))),
+    );
+    let emit_info = || otel_info!("test.controller.runtime_filter");
+
+    tracing::dispatcher::with_default(&dispatch, emit_info);
+    assert_eq!(event_count.swap(0, Ordering::SeqCst), 0);
+
+    let mut desired = config.clone();
+    desired.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("info")).expect("info level should parse");
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect("info level should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(log_filter_handle.configured_level().as_str(), "info");
+    tracing::dispatcher::with_default(&dispatch, emit_info);
+    assert_eq!(event_count.swap(0, Ordering::SeqCst), 1);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(config, true))
+        .expect("warn level should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
+    tracing::dispatcher::with_default(&dispatch, emit_info);
+    assert_eq!(event_count.load(Ordering::SeqCst), 0);
+}
+
 /// Scenario: a full-config reconciliation request omits live stopped
 /// resources with `delete_missing` enabled.
 /// Guarantees: reconciliation deletes the omitted pipeline and then the
@@ -3923,12 +4009,15 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
 
 /// Scenario: full-config reconciliation is rejected after validation because a
 /// target pipeline already has an active rollout.
-/// Guarantees: desired engine-level scaffold fields are not committed when the
-/// reconcile request fails before applying all requested changes.
+/// Guarantees: desired engine-level fields and the active log filter remain
+/// unchanged when the request fails before applying all requested changes.
 #[test]
 fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
-    let config = engine_config_with_pipeline(simple_pipeline_yaml());
-    let runtime = test_runtime(&config);
+    let mut config = engine_config_with_pipeline(simple_pipeline_yaml());
+    config.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse");
+    let (runtime, log_filter_handle, _log_filter) =
+        test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
     let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
     {
         let mut state = runtime
@@ -3941,6 +4030,8 @@ fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
     }
 
     let mut desired = config.clone();
+    desired.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("info")).expect("info level should parse");
     _ = desired
         .engine
         .custom
@@ -3952,6 +4043,7 @@ fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
 
     assert_eq!(err, ControlPlaneError::RolloutConflict);
     assert!(runtime.engine_config_snapshot().engine.custom.is_empty());
+    assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
 }
 
 /// Scenario: full-config reconciliation would change an existing topic

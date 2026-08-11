@@ -16,7 +16,7 @@ primary representations:
 The intermediate representation between the OTLP records and OTAP
 stream forms, known as "OTAP records", exists here, however its design
 was not emphasized. Refer to the
-[Otel-Arrow-Rust](../rust/otel-arrow-rust/README.md) reference
+[OTel-Arrow Rust](../rust/README.md) reference
 implementation for more details about handling the OTAP records format
 in memory.
 
