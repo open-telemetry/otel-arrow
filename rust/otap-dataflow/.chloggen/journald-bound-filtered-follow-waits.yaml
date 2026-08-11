@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: pipeline
+note: "Bound journald filtered follow waits so unrelated journal activity cannot indefinitely delay batch flushes or shutdown."
+issues: [3399]
+subtext: "Adds behavior-level regression coverage for start_at: end follow startup, idle timeouts, non-matching wakeups, and systemd errors."
