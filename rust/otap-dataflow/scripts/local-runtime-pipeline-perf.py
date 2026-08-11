@@ -69,6 +69,7 @@ class RunCase:
     binary: Path
     source: str
     commit: str | None = None
+    traffic_data_source: str | None = None
     sut_env: dict[str, str] = field(default_factory=dict)
     sut_local_runtime_event_interval: int | None = None
     sut_local_runtime_max_io_events_per_tick: int | None = None
@@ -253,6 +254,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--admin-base-port", type=int, default=18080)
     parser.add_argument("--traffic-rate", type=int, default=100_000)
     parser.add_argument("--traffic-batch-size", type=int, default=1000)
+    parser.add_argument(
+        "--traffic-data-source",
+        choices=("static", "synthetic", "semantic_conventions"),
+        help=(
+            "Traffic generator data_source for every case. If omitted, historical "
+            "LocalRuntime comparison cases use static, and local-runtime-optimized "
+            "uses synthetic for the current traffic generator schema."
+        ),
+    )
     parser.add_argument("--warmup-seconds", type=float, default=20.0)
     parser.add_argument("--duration-seconds", type=float, default=60.0)
     parser.add_argument("--sample-interval", type=float, default=1.0)
@@ -286,6 +296,16 @@ def parse_args() -> argparse.Namespace:
         default=[],
         metavar="LABEL:KEY=VALUE",
         help="Environment variable to apply only to the SUT process for one case.",
+    )
+    parser.add_argument(
+        "--variant-traffic-data-source",
+        action="append",
+        default=[],
+        metavar="LABEL=DATA_SOURCE",
+        help=(
+            "Override traffic generator data_source for one case. Useful when "
+            "comparing binaries across the static -> synthetic schema rename."
+        ),
     )
     parser.add_argument(
         "--scheduler-sweep",
@@ -349,7 +369,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--with-strace",
         action="store_true",
-        help="Attach strace to the SUT to collect epoll wait durations. Intrusive.",
+        help="Run the SUT under strace to collect epoll wait durations. Intrusive.",
     )
     parser.add_argument(
         "--keep-going",
@@ -383,9 +403,17 @@ def main() -> int:
 
     global_sut_env = parse_env_entries(args.sut_env)
     variant_sut_env = parse_variant_env_entries(args.variant_env)
+    variant_traffic_data_source = parse_traffic_data_source_specs(
+        args.variant_traffic_data_source
+    )
     for case in cases:
         specific_env = variant_sut_env.get(case.label, {})
         case.sut_env = {**global_sut_env, **case.sut_env, **specific_env}
+        case.traffic_data_source = (
+            variant_traffic_data_source.get(case.label)
+            or args.traffic_data_source
+            or default_traffic_data_source(case)
+        )
         if args.sut_poll_time_histogram:
             case.sut_local_runtime_poll_time_histogram = True
 
@@ -415,6 +443,7 @@ def main() -> int:
                 "error": str(exc),
                 "binary": str(case.binary),
                 "commit": case.commit,
+                "traffic_data_source": case.traffic_data_source,
                 "sut_local_runtime_event_interval": case.sut_local_runtime_event_interval,
                 "sut_local_runtime_max_io_events_per_tick": (
                     case.sut_local_runtime_max_io_events_per_tick
@@ -584,6 +613,7 @@ def expand_scheduler_sweep(cases: list[RunCase]) -> list[RunCase]:
                 binary=base.binary,
                 source=f"{base.source}+scheduler-sweep:{suffix}",
                 commit=base.commit,
+                traffic_data_source=base.traffic_data_source,
                 sut_local_runtime_event_interval=event_interval,
                 sut_local_runtime_max_io_events_per_tick=base.sut_local_runtime_max_io_events_per_tick,
                 sut_local_runtime_poll_time_histogram=base.sut_local_runtime_poll_time_histogram,
@@ -608,6 +638,7 @@ def expand_io_events_sweep(cases: list[RunCase]) -> list[RunCase]:
                 binary=base.binary,
                 source=f"{base.source}+io-events-sweep:{suffix}",
                 commit=base.commit,
+                traffic_data_source=base.traffic_data_source,
                 sut_env=base.sut_env.copy(),
                 sut_local_runtime_event_interval=base.sut_local_runtime_event_interval,
                 sut_local_runtime_max_io_events_per_tick=max_io_events_per_tick,
@@ -631,6 +662,7 @@ def expand_repetitions(cases: list[RunCase], repeat: int) -> list[RunCase]:
                     label=f"{case.label}-r{index:0{width}d}",
                     source=f"{case.source}+repeat:{index}",
                     sut_env=case.sut_env.copy(),
+                    traffic_data_source=case.traffic_data_source,
                 )
             )
     return repeated
@@ -657,6 +689,24 @@ def parse_variant_env_entries(entries: list[str]) -> dict[str, dict[str, str]]:
         validate_label(label)
         result.setdefault(label, {}).update(parse_env_entries([env_entry]))
     return result
+
+
+def parse_traffic_data_source_specs(entries: list[str]) -> dict[str, str]:
+    specs = parse_label_specs(entries)
+    allowed = {"static", "synthetic", "semantic_conventions"}
+    for label, value in specs.items():
+        if value not in allowed:
+            raise ValueError(
+                f"invalid traffic data source {value!r} for {label}; "
+                f"expected one of {sorted(allowed)}"
+            )
+    return specs
+
+
+def default_traffic_data_source(case: RunCase) -> str:
+    if case.label.startswith("local-runtime-optimized"):
+        return "synthetic"
+    return "static"
 
 
 def run_case(
@@ -693,7 +743,14 @@ def run_case(
         wait_for_tcp("127.0.0.1", args.backend_port, args.startup_timeout, backend)
         wait_for_tcp("127.0.0.1", backend.admin_port, args.startup_timeout, backend)
 
-        start_engine(case, sut, logs_dir, use_taskset=not args.no_taskset, extra_env=case.sut_env)
+        start_engine(
+            case,
+            sut,
+            logs_dir,
+            use_taskset=not args.no_taskset,
+            extra_env=case.sut_env,
+            trace_epoll=args.with_strace,
+        )
         started.append(sut)
         wait_for_tcp("127.0.0.1", args.sut_port, args.startup_timeout, sut)
         wait_for_tcp("127.0.0.1", sut.admin_port, args.startup_timeout, sut)
@@ -799,7 +856,13 @@ def write_pipeline_configs(
     for index, core in enumerate(core_layout.traffic, start=1):
         path = configs_dir / f"traffic-gen-{index}.yaml"
         path.write_text(
-            render_traffic_config(args, index, core, args.admin_base_port + 2 + index),
+            render_traffic_config(
+                args,
+                index,
+                core,
+                args.admin_base_port + 2 + index,
+                traffic_data_source_for_case(args, case),
+            ),
             encoding="utf-8",
         )
         configs[f"traffic{index}"] = path
@@ -955,6 +1018,7 @@ def render_traffic_config(
     index: int,
     core: int,
     admin_port: int,
+    data_source: str,
 ) -> str:
     exporter_compression = render_exporter_compression(args)
     return (
@@ -963,7 +1027,7 @@ def render_traffic_config(
           receiver:
             type: receiver:traffic_generator
             config:
-              data_source: static
+              data_source: {data_source}
               generation_strategy: pre_generated
               traffic_config:
                 production_mode: smooth
@@ -982,6 +1046,12 @@ def render_traffic_config(
             to: exporter
 """
     )
+
+
+def traffic_data_source_for_case(args: argparse.Namespace, case: RunCase | None) -> str:
+    if case is not None and case.traffic_data_source:
+        return case.traffic_data_source
+    return args.traffic_data_source or "static"
 
 
 def validate_engine_config(case: RunCase, instance: EngineInstance, logs_dir: Path) -> None:
@@ -1018,6 +1088,7 @@ def start_engine(
     *,
     use_taskset: bool,
     extra_env: dict[str, str] | None = None,
+    trace_epoll: bool = False,
 ) -> None:
     env = os.environ.copy()
     if extra_env:
@@ -1031,6 +1102,19 @@ def start_engine(
         "--http-admin-bind",
         f"127.0.0.1:{instance.admin_port}",
     ]
+    if trace_epoll:
+        if not shutil.which("strace"):
+            raise RuntimeError("--with-strace requested but strace is not available")
+        cmd = [
+            "strace",
+            "-f",
+            "-ttT",
+            "-e",
+            "trace=epoll_wait,epoll_pwait,epoll_pwait2",
+            "-o",
+            str(logs_dir / "sut-strace-epoll.log"),
+            *cmd,
+        ]
     if use_taskset and shutil.which("taskset"):
         cmd = ["taskset", "-c", str(instance.core), *cmd]
 
@@ -1125,26 +1209,6 @@ def start_external_monitors(
                     "--",
                     "sleep",
                     str(args.duration_seconds),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-        )
-    if args.with_strace and shutil.which("strace"):
-        procs.append(
-            subprocess.Popen(
-                [
-                    "strace",
-                    "-f",
-                    "-ttT",
-                    "-e",
-                    "trace=epoll_wait,epoll_pwait,epoll_pwait2",
-                    "-p",
-                    str(sut_pid),
-                    "-o",
-                    str(logs_dir / "sut-strace-epoll.log"),
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -1312,6 +1376,7 @@ def summarize_case(
         "binary": str(case.binary),
         "source": case.source,
         "commit": case.commit,
+        "traffic_data_source": case.traffic_data_source,
         "sut_env": case.sut_env,
         "sut_local_runtime_event_interval": case.sut_local_runtime_event_interval,
         "sut_local_runtime_max_io_events_per_tick": case.sut_local_runtime_max_io_events_per_tick,
@@ -1440,6 +1505,7 @@ def write_matrix_metadata(
                 "binary": str(case.binary),
                 "source": case.source,
                 "commit": case.commit,
+                "traffic_data_source": case.traffic_data_source,
                 "sut_env": case.sut_env,
                 "sut_local_runtime_event_interval": case.sut_local_runtime_event_interval,
                 "sut_local_runtime_max_io_events_per_tick": (
@@ -1468,6 +1534,7 @@ def write_matrix_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> N
         "label",
         "status",
         "commit",
+        "traffic_data_source",
         "sut_local_runtime_event_interval",
         "sut_local_runtime_max_io_events_per_tick",
         "sut_local_runtime_poll_time_histogram",
@@ -1500,6 +1567,7 @@ def write_matrix_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> N
                     "label": summary.get("label"),
                     "status": summary.get("status"),
                     "commit": summary.get("commit"),
+                    "traffic_data_source": summary.get("traffic_data_source"),
                     "sut_local_runtime_event_interval": summary.get(
                         "sut_local_runtime_event_interval"
                     ),
