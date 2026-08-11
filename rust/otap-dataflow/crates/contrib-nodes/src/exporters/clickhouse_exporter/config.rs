@@ -28,7 +28,7 @@
 //! configuration fields.
 use secrecy::SecretString;
 use serde::Deserialize;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 const DEFAULT_MAX_IN_FLIGHT: usize = 10;
 
@@ -44,6 +44,9 @@ pub struct ConfigPatch {
 
     /// Maximum number of ClickHouse insert requests allowed to run concurrently.
     pub max_in_flight: Option<NonZeroUsize>,
+
+    /// Optional thresholds for grouping Arrow batches before assigning them to writer lanes.
+    pub insert_batching: Option<InsertBatchingConfig>,
 
     #[serde(default)]
     pub table_defaults: DefaultTableConfig,
@@ -67,6 +70,8 @@ pub struct Config {
     pub async_insert: bool,
     /// Maximum number of ClickHouse insert requests allowed to run concurrently.
     pub max_in_flight: usize,
+    /// Optional thresholds for grouping Arrow batches before assigning them to writer lanes.
+    pub insert_batching: Option<InsertBatchingConfig>,
     pub table_defaults: DefaultTableConfig,
     pub tables: TablesConfig,
 }
@@ -88,10 +93,26 @@ impl Config {
             password: p.password,
             async_insert,
             max_in_flight,
+            insert_batching: p.insert_batching,
             table_defaults: p.table_defaults,
             tables,
         }
     }
+}
+
+/// Thresholds that dispatch a coalesced group to a ClickHouse writer lane.
+///
+/// The first threshold reached closes the insertion. Requiring all three thresholds keeps both
+/// memory use and completion latency bounded whenever insertion batching is enabled.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InsertBatchingConfig {
+    /// Maximum number of rows accumulated in one insertion.
+    pub max_rows: NonZeroUsize,
+    /// Maximum estimated Arrow memory size accumulated in one insertion.
+    pub max_bytes: NonZeroUsize,
+    /// Maximum elapsed time after the first batch enters the coalescer.
+    pub max_delay_ms: NonZeroU64,
 }
 
 /// Configuration for a ClickHouse table engine
@@ -342,6 +363,76 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("nonzero usize"));
+    }
+
+    /// Scenario: insertion batching is omitted from the ClickHouse exporter configuration.
+    /// Guarantees: the runtime keeps the existing one-message-per-insertion behavior by default.
+    #[test]
+    fn insert_batching_is_disabled_by_default() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret"
+        }))
+        .unwrap();
+
+        assert!(Config::from_patch(patch).insert_batching.is_none());
+    }
+
+    /// Scenario: all persistent insertion thresholds are explicitly configured.
+    /// Guarantees: row, estimated byte, and elapsed-time limits reach the runtime unchanged.
+    #[test]
+    fn insert_batching_accepts_all_thresholds() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "insert_batching": {
+                "max_rows": 8192,
+                "max_bytes": 16777216,
+                "max_delay_ms": 100
+            }
+        }))
+        .unwrap();
+
+        let batching = Config::from_patch(patch).insert_batching.unwrap();
+        assert_eq!(batching.max_rows.get(), 8192);
+        assert_eq!(batching.max_bytes.get(), 16_777_216);
+        assert_eq!(batching.max_delay_ms.get(), 100);
+    }
+
+    /// Scenario: insertion batching includes a zero threshold or omits a required threshold.
+    /// Guarantees: unsafe or unbounded batching configurations are rejected during parsing.
+    #[test]
+    fn insert_batching_requires_three_nonzero_thresholds() {
+        let zero_error = serde_json::from_value::<ConfigPatch>(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "insert_batching": {
+                "max_rows": 0,
+                "max_bytes": 16777216,
+                "max_delay_ms": 100
+            }
+        }))
+        .unwrap_err();
+        assert!(zero_error.to_string().contains("nonzero usize"));
+
+        let missing_error = serde_json::from_value::<ConfigPatch>(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "insert_batching": {
+                "max_rows": 8192,
+                "max_bytes": 16777216
+            }
+        }))
+        .unwrap_err();
+        assert!(missing_error.to_string().contains("max_delay_ms"));
     }
 
     /// Scenario: all supported top-level and nested exporter fields are configured.

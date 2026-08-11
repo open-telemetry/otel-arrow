@@ -28,7 +28,6 @@
 //! ```
 
 use async_trait::async_trait;
-use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::validation::validate_typed_config;
@@ -56,13 +55,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::exporters::clickhouse_exporter::config::{Config, ConfigPatch};
-use crate::exporters::clickhouse_exporter::in_flight::{CompletedWrite, InFlightWrites};
+use crate::exporters::clickhouse_exporter::in_flight::CompletedWrite;
 use crate::exporters::clickhouse_exporter::metrics::ClickhouseExporterMetrics;
 use crate::exporters::clickhouse_exporter::transform::logs_fast::{
     LogsFastTransform, LogsFastTransformer,
 };
 use crate::exporters::clickhouse_exporter::transform::logs_otlp::OtlpLogsTransformer;
 use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
+use crate::exporters::clickhouse_exporter::write_lanes::{DispatcherEvent, WriteDispatcher};
 use crate::exporters::clickhouse_exporter::writer::ClickHouseWriter;
 
 mod arrays;
@@ -77,6 +77,7 @@ mod metrics;
 mod schema;
 mod tables;
 mod transform;
+mod write_lanes;
 mod writer;
 
 /// The URN for the Clickhouse exporter
@@ -244,7 +245,8 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
             endpoint = self.config.endpoint,
             database = self.config.database,
             username = self.config.username,
-            max_in_flight = self.config.max_in_flight
+            max_in_flight = self.config.max_in_flight,
+            insert_batching_enabled = self.config.insert_batching.is_some(),
         );
 
         let mut batch_transformer = BatchTransformer::new();
@@ -259,7 +261,11 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     error: format!("clickhouse writer initialization error: {e}"),
                     source_detail: format_error_sources(&e),
                 })?;
-        let mut in_flight_writes = InFlightWrites::new(self.config.max_in_flight);
+        let mut write_dispatcher = WriteDispatcher::new(
+            clickhouse_writer,
+            self.config.max_in_flight,
+            self.config.insert_batching,
+        );
 
         // Start periodic telemetry collection (internal metrics)
         let telemetry_cancel_handle = effect_handler
@@ -268,12 +274,13 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
         // Message loop
         loop {
-            let accepting_pdata = !in_flight_writes.is_at_capacity();
+            let accepting_pdata = !write_dispatcher.is_at_capacity();
+            let has_pending_writes = write_dispatcher.has_pending();
             let message = tokio::select! {
                 biased;
 
-                completed = in_flight_writes.next_completion(), if !in_flight_writes.is_empty() => {
-                    if let Some(completed) = completed {
+                event = write_dispatcher.next_event(), if has_pending_writes => {
+                    if let Some(DispatcherEvent::Completed(completed)) = event {
                         self.finalize_write(completed, &effect_handler).await?;
                     }
                     continue;
@@ -287,8 +294,15 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         "clickhouse.exporter.shutdown",
                         message = "Clickhouse exporter shutting down",
                     );
-                    while let Some(completed) = in_flight_writes.next_completion().await {
-                        self.finalize_write(completed, &effect_handler).await?;
+                    write_dispatcher.begin_shutdown().await;
+                    while write_dispatcher.has_pending() {
+                        match write_dispatcher.next_event().await {
+                            Some(DispatcherEvent::Completed(completed)) => {
+                                self.finalize_write(completed, &effect_handler).await?;
+                            }
+                            Some(DispatcherEvent::CapacityAvailable) => {}
+                            None => break,
+                        }
                     }
                     let _ = telemetry_cancel_handle.cancel().await;
                     return Ok(Self::terminal_state(
@@ -435,15 +449,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             }
                         }
                     };
-                    let writer = clickhouse_writer.clone();
-                    let write_future: LocalBoxFuture<'static, CompletedWrite> =
-                        Box::pin(async move {
-                            CompletedWrite {
-                                pdata,
-                                result: writer.write_batches(&write_batches).await,
-                            }
-                        });
-                    if let Some(completed) = in_flight_writes.push(write_future).await {
+                    if let Some(completed) = write_dispatcher.submit(pdata, write_batches).await {
                         self.finalize_write(completed, &effect_handler).await?;
                     }
                 }
