@@ -295,7 +295,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
-    println!(
+    // Emitted before the stdout claim is known, so it cannot use stdout: a
+    // record_json run must not find prose ahead of its first record.
+    eprintln!(
         "{}",
         startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name())
     );
