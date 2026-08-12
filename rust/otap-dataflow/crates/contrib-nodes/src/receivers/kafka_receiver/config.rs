@@ -529,7 +529,24 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
                 })?;
         }
 
-        // Fetch byte constraints
+        // Fetch byte constraints. These fields are signed (`i32`), so a negative
+        // value can arrive via deserialization; guard the absolute bounds before
+        // the relative `max >= min` check so an out-of-range value produces a
+        // field-specific error rather than a confusing "max < min" message.
+        if builder.min_fetch_bytes < 1 {
+            // librdkafka `fetch.min.bytes` has a minimum of 1.
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "min_fetch_bytes".to_string(),
+            });
+        }
+        if builder.max_fetch_bytes < 0 {
+            // librdkafka `fetch.max.bytes` permits 0 (valid range 0..2147483135),
+            // so reject only negatives here; the relative check below enforces
+            // max >= min.
+            return Err(KafkaReceiverError::ConfigNegativeValue {
+                field: "max_fetch_bytes".to_string(),
+            });
+        }
         if builder.max_fetch_bytes < builder.min_fetch_bytes {
             return Err(KafkaReceiverError::ConfigInvalidFetchBytes {
                 max: builder.max_fetch_bytes,
@@ -555,8 +572,11 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             });
         }
 
-        // Consumer-group timing must be strictly positive: a zero value maps to
-        // an invalid librdkafka setting rather than a sensible default.
+        // Consumer-group timing must be strictly positive: librdkafka rejects a
+        // zero `session.timeout.ms` / `heartbeat.interval.ms` (valid range starts
+        // at 1). Note `max_fetch_wait_ms` is intentionally NOT checked here: it
+        // maps to `fetch.wait.max.ms`, whose valid range is 0..300000, so 0 is a
+        // legitimate low-latency setting.
         if builder.session_timeout_ms == 0 {
             return Err(KafkaReceiverError::ConfigNonPositiveValue {
                 field: "session_timeout_ms".to_string(),
@@ -565,11 +585,6 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
         if builder.heartbeat_interval_ms == 0 {
             return Err(KafkaReceiverError::ConfigNonPositiveValue {
                 field: "heartbeat_interval_ms".to_string(),
-            });
-        }
-        if builder.max_fetch_wait_ms == 0 {
-            return Err(KafkaReceiverError::ConfigNonPositiveValue {
-                field: "max_fetch_wait_ms".to_string(),
             });
         }
 
@@ -1541,6 +1556,44 @@ mod tests {
         assert!(err.contains("max_fetch_bytes"));
     }
 
+    /// Scenario (construction and configuration): `max_fetch_bytes` is set to a
+    /// negative value (its `i32` type permits negatives from JSON).
+    /// Guarantees: validation fails with the >= 0 rule, so a negative fetch-max
+    /// (invalid to librdkafka) is rejected up front rather than forwarded.
+    #[test]
+    fn validate_negative_max_fetch_bytes_is_rejected() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_max_fetch_bytes(-1);
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("max_fetch_bytes") && err.contains(">= 0"),
+            "unexpected error: {err}",
+        );
+    }
+
+    /// Scenario (construction and configuration): `min_fetch_bytes` is set below
+    /// one (its `i32` type permits zero and negatives from JSON).
+    /// Guarantees: validation fails with the > 0 rule, so a `fetch.min.bytes`
+    /// below librdkafka's minimum of 1 is rejected up front.
+    #[test]
+    fn validate_min_fetch_bytes_below_one_is_rejected() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_min_fetch_bytes(0);
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("min_fetch_bytes") && err.contains("> 0"),
+            "unexpected error: {err}",
+        );
+    }
+
     /// Scenario (construction and configuration): max partition fetch bytes is set to zero.
     /// Guarantees: validation fails, so a zero per-partition fetch limit is rejected.
     #[test]
@@ -1668,9 +1721,11 @@ mod tests {
 
     /// Scenario (construction and configuration): `max_fetch_wait_ms` is set to
     /// zero.
-    /// Guarantees: validation fails, so a zero fetch-wait is rejected.
+    /// Guarantees: validation accepts it and maps it to `fetch.wait.max.ms=0`,
+    /// so the low-latency setting (valid librdkafka range 0..300000) is honored
+    /// rather than rejected.
     #[test]
-    fn validate_max_fetch_wait_zero_is_invalid() {
+    fn validate_max_fetch_wait_zero_is_accepted() {
         let json = json!({
             "brokers": "kafka:9092",
             "group_id": "g",
@@ -1678,13 +1733,10 @@ mod tests {
             "traces": {"topics": ["t"]},
             "max_fetch_wait_ms": 0,
         });
-        let err = serde_json::from_value::<KafkaReceiverConfig>(json)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("max_fetch_wait_ms") && err.contains("must be > 0"),
-            "unexpected error: {err}",
-        );
+        let cfg: KafkaReceiverConfig = serde_json::from_value(json)
+            .expect("max_fetch_wait_ms=0 should be a valid configuration");
+        let client_config = cfg.build_client_config();
+        assert_eq!(client_config.get("fetch.wait.max.ms"), Some("0"));
     }
 
     /// Scenario (construction and configuration): `heartbeat_interval_ms` is set

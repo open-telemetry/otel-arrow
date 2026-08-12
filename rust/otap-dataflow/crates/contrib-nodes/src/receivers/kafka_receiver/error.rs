@@ -158,6 +158,16 @@ pub enum KafkaReceiverError {
         field: String,
     },
 
+    /// A field that must not be negative was set to a negative value.
+    ///
+    /// Distinct from [`ConfigNonPositiveValue`](Self::ConfigNonPositiveValue):
+    /// this is used when zero is a valid setting but negatives are not.
+    #[error("invalid kafka receiver configuration: {field} must be >= 0")]
+    ConfigNegativeValue {
+        /// The name of the offending field.
+        field: String,
+    },
+
     /// `heartbeat_interval_ms` was not strictly less than `session_timeout_ms`.
     /// Kafka requires the heartbeat interval to be lower than the session
     /// timeout (typically no more than one third of it); librdkafka otherwise
@@ -291,6 +301,21 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "invalid kafka receiver configuration: max_partition_fetch_bytes must be > 0"
+        );
+    }
+
+    /// Scenario (construction and configuration): a field that allows zero but not
+    /// negatives is set to a negative value.
+    /// Guarantees: the Display string names the field and the >= 0 rule, keeping
+    /// it distinct from the strictly-positive (> 0) error.
+    #[test]
+    fn config_negative_value_message() {
+        let err = KafkaReceiverError::ConfigNegativeValue {
+            field: "max_fetch_bytes".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid kafka receiver configuration: max_fetch_bytes must be >= 0"
         );
     }
 
