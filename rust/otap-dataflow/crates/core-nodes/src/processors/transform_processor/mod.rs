@@ -179,7 +179,7 @@ impl TransformProcessor {
                     .map_err(map_parser_err)?
                     .pipeline;
                 let signal_scope = SignalScope::try_from_kql_query(
-                    &pipeline_expr.get_query_slice(pipeline_expr.get_query_location()),
+                    pipeline_expr.get_query_slice(pipeline_expr.get_query_location()),
                 )?;
                 (
                     vec![Transform {
@@ -194,7 +194,7 @@ impl TransformProcessor {
                     .map_err(map_parser_err)?
                     .pipeline;
                 let signal_scope = SignalScope::try_from_opl_query(
-                    &pipeline_expr.get_query_slice(pipeline_expr.get_query_location()),
+                    pipeline_expr.get_query_slice(pipeline_expr.get_query_location()),
                 )?;
                 (
                     vec![Transform {

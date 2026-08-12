@@ -260,8 +260,6 @@ impl Default for PipelineOptions {
     }
 }
 
-
-
 /// The main entrypoint for transform pipeline execution
 pub struct Pipeline {
     /// The expression tree (AST) defining this pipeline
@@ -544,8 +542,6 @@ mod test {
         assert_eq!(result2_logs, &input2_logs.slice(2, 1));
     }
 
-    // TODO should we have an equivalent test for this that also checks we don't process the signal
-    // for source != the signal type?
     #[tokio::test]
     async fn test_pipelines_selecting_concrete_metrics_type_skip_exec_only_on_selected_rows() {
         let logs_batch = vec![
@@ -555,7 +551,7 @@ mod test {
         let spans_batch = vec![Span::build().finish()];
 
         let gauge_metric = Metric::build()
-            .name("guage_matric")
+            .name("gauge_metric")
             .data_gauge(Gauge::default())
             .finish();
 

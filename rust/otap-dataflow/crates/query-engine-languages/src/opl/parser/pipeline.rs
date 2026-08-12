@@ -126,7 +126,7 @@ pub(crate) fn parse_pipeline(
                     continue;
                 };
                 let source_query_location = to_query_location(&source_rule);
-                
+
                 // try to determine the type of metrics selected by this pipeline.
                 // for example, if the caller supplies a query like: "gauges | ... "
                 // we should only execute on metrics batches and only on the rows
@@ -168,7 +168,7 @@ pub(crate) fn parse_pipeline(
 
     // if the source was some concrete metric type, create a single condition selecting the only
     // rows containing this metric type. Effectively, this transforms the query into something like:
-    // signals | if (is <metric type name>) { <... pipeline ...> } 
+    // signals | if (is <metric type name>) { <... pipeline ...> }
     if let Some((source_query_location, metric_type_name)) = metric_concrete_type_condition {
         let branch_expr = BranchDataExpression::new(pipeline_query_location.clone(), true)
             .with_branch(DataExpressionBranch::new(

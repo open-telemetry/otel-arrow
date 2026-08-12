@@ -187,7 +187,7 @@ metric_type_source = {
 }
 
 source = {
-  metric_type_source
+    metric_type_source
   | "logs"
   | "metrics"
   | "traces"

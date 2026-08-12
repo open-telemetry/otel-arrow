@@ -1591,8 +1591,8 @@ impl ExprPlanner {
                     "Span" => SignalType::Traces,
                     other if let Ok(metric_type) = MetricType::from_str(other) => {
                         // produce plan equivalent to "is Metric and type == <metric_type>"
-                        // where metric_type is the OTAP metric type determinant (e.g. 0 = Empty,
-                        // 1 = Gauge, etc. see OTAP spec for all values)
+                        // where metric_type is the OTAP metric type determinant (e.g.  1 = Gauge,
+                        // 2 = Sum, 3 = Histogram, etc.  see OTAP spec for all values)
                         return Ok(Some(ScopedExpr::JoinAndEval {
                             children: vec![
                                 ScopedExpr::Eval {
