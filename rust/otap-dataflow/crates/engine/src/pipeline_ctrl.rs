@@ -1408,6 +1408,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attributes::{ChannelImplementation, ChannelKind, ChannelMode, ChannelType};
     use crate::channel_metrics::{
         ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
     };
@@ -3258,34 +3259,34 @@ mod tests {
         let recv_out_key = pipeline_context.register_node_channel_entity(
             "recv:out".into(),
             "output".into(),
-            "pdata",
-            "local",
-            "mpsc",
-            "internal",
+            ChannelKind::Pdata,
+            ChannelMode::Local,
+            ChannelType::Mpsc,
+            ChannelImplementation::Internal,
         );
         let proc_in_key = pipeline_context.register_node_channel_entity(
             "proc:in".into(),
             "input".into(),
-            "pdata",
-            "local",
-            "mpsc",
-            "internal",
+            ChannelKind::Pdata,
+            ChannelMode::Local,
+            ChannelType::Mpsc,
+            ChannelImplementation::Internal,
         );
         let proc_out_key = pipeline_context.register_node_channel_entity(
             "proc:out".into(),
             "output".into(),
-            "pdata",
-            "local",
-            "mpsc",
-            "internal",
+            ChannelKind::Pdata,
+            ChannelMode::Local,
+            ChannelType::Mpsc,
+            ChannelImplementation::Internal,
         );
         let exp_in_key = pipeline_context.register_node_channel_entity(
             "exp:in".into(),
             "input".into(),
-            "pdata",
-            "local",
-            "mpsc",
-            "internal",
+            ChannelKind::Pdata,
+            ChannelMode::Local,
+            ChannelType::Mpsc,
+            ChannelImplementation::Internal,
         );
 
         let recv_produced: MeasurementMetricSet<ProducedMetrics> =
