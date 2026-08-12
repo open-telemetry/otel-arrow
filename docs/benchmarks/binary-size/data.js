@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786522004464,
+  "lastUpdate": 1786575694918,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -12068,6 +12068,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 113.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 100.41,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "60a459e40cfaa894ca4e54b62d43bdb76fe2a5ea",
+          "message": "feat(metrics): improve channel telemetry with enum attributes (#3734)\n\n# Change Summary\n\nRefactors internal channel telemetry while preserving the\n`channel.sender.messages` and `channel.receiver.messages` metric sets.\n\nThe change introduces enum-based `channel.kind`, `channel.mode`,\n`channel.type`, and `channel.impl` attributes, improves channel metric\nsemantics and lifecycle reporting, and updates the admin UI to consume\nthe revised telemetry.\n\n## What issue does this PR close?\n\n* Related #3530\n\n## How are these changes tested?\n\n* `cargo xtask check`\n* Admin UI JavaScript tests\n\n## Are there any user-facing changes?\n\nYes. The admin UI now presents the revised channel telemetry, and\nexported internal channel metrics use stable enum-based attribute\nvalues.\n\n### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-08-12T21:36:11Z",
+          "tree_id": "964218b2efcb35bcf5ea4ac3b92abba5b9b0412f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/60a459e40cfaa894ca4e54b62d43bdb76fe2a5ea"
+        },
+        "date": 1786575680078,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 81.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 68.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 113.08,
             "unit": "MB"
           },
           {
