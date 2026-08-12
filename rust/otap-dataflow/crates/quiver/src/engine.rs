@@ -1962,6 +1962,7 @@ mod tests {
     use crate::record_bundle::{
         BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
     };
+    use crate::segment_store::SegmentReadMode;
     use crate::subscriber::SubscriberId;
     use crate::wal::{CURSOR_SIDECAR_FILENAME, WalReader};
     use arrow_array::builder::Int64Builder;
@@ -4891,6 +4892,7 @@ mod tests {
             let config = QuiverConfig::builder()
                 .data_dir(dir.path())
                 .segment(segment_config.clone())
+                .read_mode(SegmentReadMode::Standard)
                 .build()
                 .expect("config");
             let engine = QuiverEngine::open(config, test_budget())
