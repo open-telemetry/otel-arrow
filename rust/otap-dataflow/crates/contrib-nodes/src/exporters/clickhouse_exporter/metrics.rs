@@ -24,7 +24,7 @@ pub struct ClickhouseExporterMetrics {
     #[metric(unit = "{batch}")]
     pub log_fast_path_batches: Counter<u64>,
 
-    /// Total number of OTAP log batches sent through the generic transform fallback.
+    /// Total number of log batches sent through the generic transform fallback.
     #[metric(unit = "{batch}")]
     pub log_transform_fallback_batches: Counter<u64>,
 }
@@ -44,7 +44,7 @@ impl ClickhouseExporterMetrics {
         self.log_fast_path_batches.inc();
     }
 
-    /// Records one log batch transformed by the generic fallback path.
+    /// Records one log batch sent through the generic fallback path.
     pub fn record_log_transform_fallback(&mut self) {
         self.log_transform_fallback_batches.inc();
     }

@@ -355,6 +355,9 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             Err(error) => Err(error),
                         }
                     } else {
+                        if signal_type == SignalType::Logs {
+                            self.ch_metrics.record_log_transform_fallback();
+                        }
                         batch_transformer.apply_plan(arrow_records)
                     };
 
