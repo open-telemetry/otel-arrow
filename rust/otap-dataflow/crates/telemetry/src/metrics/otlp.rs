@@ -257,6 +257,12 @@ pub struct MetricViewStream {
 }
 
 /// Reusable OTLP encoder holding the trusted pre-encoded process resource.
+///
+/// Constructor resource fragments must come from the internal telemetry
+/// resource encoder rather than external input.
+///
+/// TODO: Consider an opaque resource-fragment type if this API gains external
+/// producers that cannot uphold this invariant.
 #[derive(Debug, Clone)]
 pub struct MetricsOtlpEncoder {
     resource_fragment: Bytes,
