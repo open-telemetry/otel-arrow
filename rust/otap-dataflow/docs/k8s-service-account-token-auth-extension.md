@@ -1,10 +1,10 @@
-# Kubernetes SAT Authorizer Extension
+# Kubernetes Service Account Token Auth Extension
 
 <!-- markdownlint-disable MD013 -->
 
 **Status:** Draft
 
-**Extension URN:** `urn:otel:extension:k8s_sat_token_authorizer`
+**Extension URN:** `urn:otel:extension:k8s_service_account_token_auth`
 
 **Capability exposed:** `BearerTokenAuthorizer`
 
@@ -12,10 +12,11 @@
 
 **Target crate:** `crates/contrib-extensions`
 
-**Target module:** `crates/contrib-extensions/src/k8s_sat_token_authorizer/`
+**Target module:** `crates/contrib-extensions/src/k8s_service_account_token_auth/`
 
-This document describes the design of the **Kubernetes SAT authorizer
-extension** (`k8s_sat_token_authorizer`) for the OTAP dataflow engine. The
+This document describes the design of the **Kubernetes service-account-token
+auth extension** (`k8s_service_account_token_auth`) for the OTAP dataflow
+engine. The
 extension authenticates and admits inbound Kubernetes service-account tokens
 (SATs) presented on data-path requests -- authenticating via `TokenReview` and
 admitting via a service-account allow-list or an RBAC `SubjectAccessReview` --
@@ -80,13 +81,14 @@ its first production implementation.
 ### Capability and execution model
 
 The extension registers into `OTAP_EXTENSION_FACTORIES` via `linkme` when the
-`k8s-sat-token-authorizer-extension` feature is enabled, and advertises the
+`k8s-service-account-token-auth-extension` feature is enabled, and advertises the
 `bearer_token_authorizer` capability as a **dual variant** -- a `Send` shared
 variant and a `!Send` local variant -- sharing one common implementation:
 
 ```rust
 extension_capabilities!(
-    (shared: SharedK8sSatTokenAuthorizer, local: LocalK8sSatTokenAuthorizer)
+    (shared: SharedK8sServiceAccountTokenAuth,
+     local: LocalK8sServiceAccountTokenAuth)
         => [BearerTokenAuthorizer]
 )
 ```
@@ -95,12 +97,12 @@ It is a **Passive** extension: it exposes a capability and builds its Kubernetes
 client on demand. Both variants live side by side in `authorizer.rs` over common
 `core`, `config`, and `reviewer` logic, each holding its own cache:
 
-- **Shared variant** (`SharedK8sSatTokenAuthorizer`): state shared across clones
+- **Shared variant** (`SharedK8sServiceAccountTokenAuth`): state shared across clones
   lives behind an `Arc` (required by the shared instance factory's `Send` bound)
   and the decision cache is guarded by a `std::sync::Mutex`. Served to `Send`
   consumers, and to local consumers when no local variant exists (the
   `SharedAsLocal` fallback).
-- **Local variant** (`LocalK8sSatTokenAuthorizer`): state lives behind an `Rc`
+- **Local variant** (`LocalK8sServiceAccountTokenAuth`): state lives behind an `Rc`
   (the local instance factory has no `Send` bound) and the cache is a `RefCell`.
   Thread-per-core consumers therefore hit the cache lock-free, with no
   cross-core contention. Each core gets its own instance and hence its own
@@ -319,7 +321,7 @@ Multi-tenant example (allow-list and RBAC per audience):
 ```yaml
 extensions:
   k8s_authz:
-    type: "urn:otel:extension:k8s_sat_token_authorizer"
+    type: "urn:otel:extension:k8s_service_account_token_auth"
     config:
       audiences:
         - audience: https://tenant-a.observability.svc

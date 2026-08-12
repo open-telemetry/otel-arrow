@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Unit tests for the Kubernetes SAT authorizer extension.
+//! Unit tests for the Kubernetes service-account-token auth extension.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -19,7 +19,7 @@ use otap_df_engine::capability::auth::{
 use otap_df_engine::local::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as LocalBearerTokenAuthorizer;
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
 
-use super::authorizer::{LocalK8sSatTokenAuthorizer, SharedK8sSatTokenAuthorizer};
+use super::authorizer::{LocalK8sServiceAccountTokenAuth, SharedK8sServiceAccountTokenAuth};
 use super::cache::{Entries, LocalDecisionCache, SharedDecisionCache, SharedSlot, digest};
 use super::config::{AudienceConfig, Config, ResourceAttributesConfig, normalize_service_account};
 use super::core::Core;
@@ -327,10 +327,10 @@ fn allowed_set_canonicalizes_and_empty_is_none() {
 #[test]
 fn factory_is_registered_with_capability() {
     assert_eq!(
-        K8S_SAT_TOKEN_AUTHORIZER_EXTENSION.name,
-        K8S_SAT_TOKEN_AUTHORIZER_URN
+        K8S_SERVICE_ACCOUNT_TOKEN_AUTH_EXTENSION.name,
+        K8S_SERVICE_ACCOUNT_TOKEN_AUTH_URN
     );
-    let capabilities = K8S_SAT_TOKEN_AUTHORIZER_EXTENSION
+    let capabilities = K8S_SERVICE_ACCOUNT_TOKEN_AUTH_EXTENSION
         .capabilities
         .as_ref()
         .expect("extension advertises capabilities");
@@ -360,7 +360,7 @@ fn validate_config_hook_accepts_valid_and_rejects_invalid() {
 fn factory_create_builds_both_variants_without_a_cluster() {
     let (ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        K8S_SAT_TOKEN_AUTHORIZER_URN.into(),
+        K8S_SERVICE_ACCOUNT_TOKEN_AUTH_URN.into(),
         serde_json::json!({
             "audiences": [{ "audience": "my-service" }],
             "cache_ttl": "1m",
@@ -388,7 +388,7 @@ fn factory_create_builds_both_variants_without_a_cluster() {
 fn factory_create_rejects_an_invalid_config() {
     let (ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
     let user_config = Arc::new(ExtensionUserConfig::new(
-        K8S_SAT_TOKEN_AUTHORIZER_URN.into(),
+        K8S_SERVICE_ACCOUNT_TOKEN_AUTH_URN.into(),
         serde_json::json!({}),
     ));
     let extension_config = ExtensionConfig::new("k8s-authz");
@@ -796,7 +796,7 @@ fn admit_multi_audience_denies_when_any_fails() {
 /// server (the client is never initialized in this test).
 #[tokio::test]
 async fn authorize_empty_credential_is_missing_shared() {
-    let ext = SharedK8sSatTokenAuthorizer::new(
+    let ext = SharedK8sServiceAccountTokenAuth::new(
         "test-authorizer",
         vec![AudienceConfig {
             audience: "my-service".to_string(),
@@ -819,7 +819,7 @@ async fn authorize_empty_credential_is_missing_shared() {
 /// `MissingCredential` without contacting the API server.
 #[tokio::test]
 async fn authorize_empty_credential_is_missing_local() {
-    let ext = LocalK8sSatTokenAuthorizer::new(
+    let ext = LocalK8sServiceAccountTokenAuth::new(
         "test-authorizer",
         vec![AudienceConfig {
             audience: "my-service".to_string(),
@@ -1940,8 +1940,8 @@ async fn decide_lists_every_matched_audience_when_all_admit() {
 //   K8S_SAT_TOKEN="$(kubectl create token sat-tester -n sat-authz-test \
 //     --audience=https://sat-authz-test.example)" \
 //   cargo test -p otap-df-contrib-extensions \
-//     --features k8s-sat-token-authorizer-extension \
-//     k8s_sat_token_authorizer -- --ignored --nocapture
+//     --features k8s-service-account-token-auth-extension \
+//     k8s_service_account_token_auth -- --ignored --nocapture
 //
 // The cluster is expected to have the fixtures from the extension's test setup:
 // namespace `sat-authz-test`, service account `sat-tester`, and a Role granting
@@ -1988,8 +1988,8 @@ fn it_audience_entries(
 fn it_extension(
     allowed: Vec<String>,
     resource_attributes: Option<ResourceAttributesConfig>,
-) -> SharedK8sSatTokenAuthorizer {
-    SharedK8sSatTokenAuthorizer::new(
+) -> SharedK8sServiceAccountTokenAuth {
+    SharedK8sServiceAccountTokenAuth::new(
         "it-authorizer",
         it_audience_entries(allowed, resource_attributes),
         Duration::from_secs(300),
@@ -2046,7 +2046,7 @@ async fn it_local_variant_admits_valid_token() {
         eprintln!("skipping: set K8S_SAT_TOKEN to run this integration test");
         return;
     };
-    let ext = LocalK8sSatTokenAuthorizer::new(
+    let ext = LocalK8sServiceAccountTokenAuth::new(
         "it-local-authorizer",
         it_audience_entries(vec![], None),
         Duration::from_secs(300),
@@ -2202,7 +2202,7 @@ async fn it_multi_tenant_scopes_admission_to_matched_audience() {
     // Bind the token's audience (A) to an allow-list containing the SA, plus an
     // unrelated entry (B). The token is admitted through A and the identity
     // reports audience A.
-    let ext = SharedK8sSatTokenAuthorizer::new(
+    let ext = SharedK8sServiceAccountTokenAuth::new(
         "it-multitenant",
         vec![
             AudienceConfig {
@@ -2235,7 +2235,7 @@ async fn it_multi_tenant_scopes_admission_to_matched_audience() {
 
     // Now allow-list the SA only under audience B; the token (valid only for A)
     // must be denied, since admission uses A's entry, not B's.
-    let ext = SharedK8sSatTokenAuthorizer::new(
+    let ext = SharedK8sServiceAccountTokenAuth::new(
         "it-multitenant",
         vec![
             AudienceConfig {
@@ -2296,7 +2296,7 @@ async fn it_multi_audience_token_admitted_when_all_pass() {
 
     // Both audiences allow-list the SA, so admission (AND across all matched
     // audiences) admits, and the identity must carry both audiences.
-    let ext = SharedK8sSatTokenAuthorizer::new(
+    let ext = SharedK8sServiceAccountTokenAuth::new(
         "it-multi-audience",
         vec![
             AudienceConfig {
@@ -2355,7 +2355,7 @@ async fn it_multi_audience_token_denied_when_any_fails() {
     };
     let subject = it_subject();
 
-    let ext = SharedK8sSatTokenAuthorizer::new(
+    let ext = SharedK8sServiceAccountTokenAuth::new(
         "it-multi-audience-partial",
         vec![
             AudienceConfig {

@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Error types for the Kubernetes SAT authorizer extension.
+//! Error types for the Kubernetes service-account-token auth extension.
 
 use std::sync::Arc;
 use std::time::Duration;

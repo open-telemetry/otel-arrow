@@ -1,8 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Configuration for the Kubernetes SAT (service-account-token) authorizer
-//! extension.
+//! Configuration for the Kubernetes service-account-token auth extension.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -27,7 +26,7 @@ fn default_review_timeout() -> Duration {
     DEFAULT_REVIEW_TIMEOUT
 }
 
-/// Configuration for the Kubernetes SAT authorizer extension.
+/// Configuration for the Kubernetes service-account-token auth extension.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {

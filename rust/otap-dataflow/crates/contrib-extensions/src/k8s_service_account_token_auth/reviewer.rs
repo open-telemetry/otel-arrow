@@ -90,7 +90,7 @@ impl Reviewer {
         otap_df_otap::crypto::ensure_crypto_provider();
         let client = kube::Client::try_default().await.map_err(|source| {
             otel_warn!(
-                "k8s_sat_token_authorizer.client_init_failed",
+                "k8s_service_account_token_auth.client_init_failed",
                 error = %source,
                 message = "kubernetes client init failed; failing closed"
             );
@@ -125,7 +125,7 @@ impl Reviewer {
             Ok(Ok(response)) => response,
             Ok(Err(source)) => {
                 otel_warn!(
-                    "k8s_sat_token_authorizer.token_review_failed",
+                    "k8s_service_account_token_auth.token_review_failed",
                     error = %source,
                     message = "TokenReview request failed; failing closed"
                 );
@@ -135,7 +135,7 @@ impl Reviewer {
             }
             Err(_) => {
                 otel_warn!(
-                    "k8s_sat_token_authorizer.token_review_timeout",
+                    "k8s_service_account_token_auth.token_review_timeout",
                     timeout = ?self.request_timeout,
                     message = "TokenReview request timed out; failing closed"
                 );
@@ -147,7 +147,7 @@ impl Reviewer {
 
         let status = response.status.ok_or_else(|| {
             otel_warn!(
-                "k8s_sat_token_authorizer.token_review_no_status",
+                "k8s_service_account_token_auth.token_review_no_status",
                 message = "TokenReview response carried no status; failing closed"
             );
             Error::MissingStatus
@@ -180,7 +180,7 @@ impl Reviewer {
             Ok(Ok(response)) => response,
             Ok(Err(source)) => {
                 otel_warn!(
-                    "k8s_sat_token_authorizer.access_review_failed",
+                    "k8s_service_account_token_auth.access_review_failed",
                     error = %source,
                     message = "SubjectAccessReview request failed; failing closed"
                 );
@@ -190,7 +190,7 @@ impl Reviewer {
             }
             Err(_) => {
                 otel_warn!(
-                    "k8s_sat_token_authorizer.access_review_timeout",
+                    "k8s_service_account_token_auth.access_review_timeout",
                     timeout = ?self.request_timeout,
                     message = "SubjectAccessReview request timed out; failing closed"
                 );
@@ -202,7 +202,7 @@ impl Reviewer {
 
         let status = response.status.ok_or_else(|| {
             otel_warn!(
-                "k8s_sat_token_authorizer.access_review_no_status",
+                "k8s_service_account_token_auth.access_review_no_status",
                 message = "SubjectAccessReview response carried no status; failing closed"
             );
             Error::MissingStatus

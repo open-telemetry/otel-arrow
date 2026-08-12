@@ -1,13 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Kubernetes SAT (service-account-token) authorizer extension.
+//! Kubernetes service-account-token auth extension.
 //!
 //! Authenticates and admits inbound Kubernetes service-account tokens for
 //! data-path nodes through the `BearerTokenAuthorizer` capability. Each token is
 //! validated via the Kubernetes `TokenReview` API (authentication) and the
 //! resulting identity is admitted via an allow-list or an RBAC
-//! `SubjectAccessReview` check. See `docs/k8s-sat-token-authorizer-extension.md`
+//! `SubjectAccessReview` check. See
+//! `docs/k8s-service-account-token-auth-extension.md`
 //! for the design.
 //!
 //! The extension provides two capability variants over common `core`,
@@ -39,11 +40,12 @@ use otap_df_engine::extension::{ExtensionBundle, ExtensionWrapper};
 use otap_df_engine::extension_capabilities;
 use otap_df_otap::OTAP_EXTENSION_FACTORIES;
 
-use self::authorizer::{LocalK8sSatTokenAuthorizer, SharedK8sSatTokenAuthorizer};
+use self::authorizer::{LocalK8sServiceAccountTokenAuth, SharedK8sServiceAccountTokenAuth};
 use self::config::Config;
 
 /// URN under which this extension is registered.
-pub const K8S_SAT_TOKEN_AUTHORIZER_URN: &str = "urn:otel:extension:k8s_sat_token_authorizer";
+pub const K8S_SERVICE_ACCOUNT_TOKEN_AUTH_URN: &str =
+    "urn:otel:extension:k8s_service_account_token_auth";
 
 /// Deserializes and validates the extension's user configuration.
 fn parse_config(config: &serde_json::Value) -> Result<Config, ConfigError> {
@@ -75,14 +77,14 @@ fn create(
     // Build both capability variants from the same config. The shared variant is
     // `Arc`-backed (Send) and the local variant is `Rc`-backed (lock-free,
     // thread-per-core); each has its own cache and lazily-built client.
-    let shared = SharedK8sSatTokenAuthorizer::new_with_timeout(
+    let shared = SharedK8sServiceAccountTokenAuth::new_with_timeout(
         &name,
         config.audiences.clone(),
         config.cache_ttl,
         config.cache_max_entries,
         config.review_timeout,
     );
-    let local = LocalK8sSatTokenAuthorizer::new_with_timeout(
+    let local = LocalK8sServiceAccountTokenAuth::new_with_timeout(
         &name,
         config.audiences,
         config.cache_ttl,
@@ -95,24 +97,24 @@ fn create(
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .passive()
         .cloned()
-        .shared::<SharedK8sSatTokenAuthorizer>(shared)
-        .local::<LocalK8sSatTokenAuthorizer>(local)
+        .shared::<SharedK8sServiceAccountTokenAuth>(shared)
+        .local::<LocalK8sServiceAccountTokenAuth>(local)
         .build()
         .map_err(|e| ConfigError::InvalidUserConfig {
             error: e.to_string(),
         })
 }
 
-/// Factory registration for the Kubernetes SAT authorizer extension.
+/// Factory registration for the Kubernetes service-account-token auth extension.
 #[allow(unsafe_code)]
 #[otap_df_engine::component_inventory(category = Extension)]
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
-pub static K8S_SAT_TOKEN_AUTHORIZER_EXTENSION: ExtensionFactory = ExtensionFactory {
-    name: K8S_SAT_TOKEN_AUTHORIZER_URN,
+pub static K8S_SERVICE_ACCOUNT_TOKEN_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
+    name: K8S_SERVICE_ACCOUNT_TOKEN_AUTH_URN,
     description: "Passive extension exposing BearerTokenAuthorizer (shared + local variants) via Kubernetes TokenReview",
     documentation_url: "",
     capabilities: Some(extension_capabilities!(
-        (shared: SharedK8sSatTokenAuthorizer, local: LocalK8sSatTokenAuthorizer) => [BearerTokenAuthorizer]
+        (shared: SharedK8sServiceAccountTokenAuth, local: LocalK8sServiceAccountTokenAuth) => [BearerTokenAuthorizer]
     )),
     create,
     validate_config,

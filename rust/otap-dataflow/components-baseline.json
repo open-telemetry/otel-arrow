@@ -102,7 +102,7 @@
     "attributes": {}
   },
   {
-    "id": "urn:otel:extension:k8s_sat_token_authorizer",
+    "id": "urn:otel:extension:k8s_service_account_token_auth",
     "category": "Extension",
     "description": null,
     "attributes": {}

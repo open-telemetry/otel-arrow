@@ -1,10 +1,10 @@
-# Sample pipeline using the Kubernetes SAT authorizer extension.
+# Sample pipeline using the Kubernetes service-account-token auth extension.
 #
-# The `k8s_sat_token_authorizer` extension authenticates inbound Kubernetes
+# The `k8s_service_account_token_auth` extension authenticates inbound Kubernetes
 # service-account tokens via the TokenReview API and admits them per audience.
 # A receiver binds the `bearer_token_authorizer` capability to the extension.
 #
-# See docs/k8s-sat-token-authorizer-extension.md for the full configuration
+# See docs/k8s-service-account-token-auth-extension.md for the full configuration
 # reference and the collector RBAC the deployment needs.
 version: otel_dataflow/v1
 
@@ -25,7 +25,7 @@ groups:
         # their `capabilities:` map rather than configuring auth inline.
         extensions:
           k8s_authz:
-            type: "urn:otel:extension:k8s_sat_token_authorizer"
+            type: "urn:otel:extension:k8s_service_account_token_auth"
             config:
               # Per-audience (per-tenant) admission entries. A token is only
               # admitted through the entry for the audience TokenReview

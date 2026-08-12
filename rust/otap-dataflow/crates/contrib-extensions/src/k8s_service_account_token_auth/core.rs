@@ -138,7 +138,7 @@ impl Core {
         let decision = match outcome {
             ReviewOutcome::Unauthenticated { error } => {
                 otel_debug!(
-                    "k8s_sat_token_authorizer.token_unauthenticated",
+                    "k8s_service_account_token_auth.token_unauthenticated",
                     detail = ?error
                 );
                 match error {
@@ -156,7 +156,7 @@ impl Core {
                 // audience-only entry would otherwise admit.
                 if !Self::is_service_account(&user) {
                     otel_debug!(
-                        "k8s_sat_token_authorizer.not_service_account",
+                        "k8s_service_account_token_auth.not_service_account",
                         subject = ?user.username
                     );
                     return Ok(AuthzDecision::deny(DenyReason::InvalidCredential));
@@ -170,7 +170,7 @@ impl Core {
                     Ok(audiences) => audiences,
                     Err(deny) => {
                         otel_debug!(
-                            "k8s_sat_token_authorizer.audience_unbound",
+                            "k8s_service_account_token_auth.audience_unbound",
                             confirmed = ?user.audiences
                         );
                         return Ok(deny);
@@ -200,7 +200,7 @@ impl Core {
                     };
                     if let Err(deny) = result {
                         otel_debug!(
-                            "k8s_sat_token_authorizer.admission_denied",
+                            "k8s_service_account_token_auth.admission_denied",
                             audience = %audience,
                             subject = ?user.username
                         );
@@ -213,7 +213,7 @@ impl Core {
                     Some(deny) => deny,
                     None => {
                         otel_debug!(
-                            "k8s_sat_token_authorizer.authorized",
+                            "k8s_service_account_token_auth.authorized",
                             audiences = ?audiences,
                             subject = ?user.username
                         );

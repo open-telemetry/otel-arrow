@@ -1,13 +1,13 @@
 <!-- markdownlint-disable MD013 -->
 
-# Kubernetes SAT Authorizer Extension
+# Kubernetes Service Account Token Auth Extension
 
 **Status:** Draft
 
 | | |
 | --- | --- |
-| **URN** | `urn:otel:extension:k8s_sat_token_authorizer` |
-| **Feature gate** | `k8s-sat-token-authorizer-extension` |
+| **URN** | `urn:otel:extension:k8s_service_account_token_auth` |
+| **Feature gate** | `k8s-service-account-token-auth-extension` |
 | **Capability** | `bearer_token_authorizer` |
 | **Execution model** | Passive (Shared + Local variants) |
 
@@ -30,7 +30,7 @@ decision is undetermined and surfaced as an error so callers fail closed.
 
 For the full design -- problem, goals, lifecycle, configuration reference, and
 security considerations -- see
-[`docs/k8s-sat-token-authorizer-extension.md`](../../../../docs/k8s-sat-token-authorizer-extension.md).
+[`docs/k8s-service-account-token-auth-extension.md`](../../../../docs/k8s-service-account-token-auth-extension.md).
 
 ## Crypto provider requirement
 
@@ -39,6 +39,6 @@ The extension talks to the Kubernetes API server over TLS via `kube`'s
 to be installed. The deployed binary **must** enable exactly one `crypto-*`
 feature (`crypto-ring`, `crypto-aws-lc`, `crypto-openssl`, or `crypto-symcrypt`,
 forwarded to `otap-df-otap`); the workspace binary's default build includes
-`crypto-ring`. A build that enables `k8s-sat-token-authorizer-extension` without
+`crypto-ring`. A build that enables `k8s-service-account-token-auth-extension` without
 any `crypto-*` feature installs no provider, and the `TokenReview` call fails at
 runtime.

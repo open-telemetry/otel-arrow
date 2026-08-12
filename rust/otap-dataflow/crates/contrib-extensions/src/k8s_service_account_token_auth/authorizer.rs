@@ -1,11 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! The two capability variants of the Kubernetes SAT authorizer, side by side.
+//! The two capability variants of Kubernetes service-account-token auth.
 //!
-//! - [`SharedK8sSatTokenAuthorizer`]: `Send`, `Arc` handle over a
+//! - [`SharedK8sServiceAccountTokenAuth`]: `Send`, `Arc` handle over a
 //!   [`SharedDecisionCache`].
-//! - [`LocalK8sSatTokenAuthorizer`]: `!Send`, `Rc` handle over a
+//! - [`LocalK8sServiceAccountTokenAuth`]: `!Send`, `Rc` handle over a
 //!   [`LocalDecisionCache`], so thread-per-core consumers pay for neither a lock
 //!   nor atomic refcounts.
 //!
@@ -31,12 +31,12 @@ use super::core::Core;
 
 // -- Shared variant (Send; Arc + Mutex) -------------------------------------
 
-/// Shared, `Send` Kubernetes SAT authorizer.
+/// Shared, `Send` Kubernetes service-account-token auth provider.
 ///
 /// Every clone shares the same [`SharedInner`] via `Arc`, so they share one
 /// lazily-built Kubernetes client and one decision cache.
 #[derive(Clone)]
-pub(crate) struct SharedK8sSatTokenAuthorizer {
+pub(crate) struct SharedK8sServiceAccountTokenAuth {
     inner: Arc<SharedInner>,
 }
 
@@ -48,7 +48,7 @@ struct SharedInner {
     cache: SharedDecisionCache,
 }
 
-impl SharedK8sSatTokenAuthorizer {
+impl SharedK8sServiceAccountTokenAuth {
     /// Builds a new shared-variant instance.
     #[cfg(test)]
     pub(crate) fn new(
@@ -84,14 +84,14 @@ impl SharedK8sSatTokenAuthorizer {
 }
 
 #[async_trait]
-impl SharedBearerTokenAuthorizer for SharedK8sSatTokenAuthorizer {
+impl SharedBearerTokenAuthorizer for SharedK8sServiceAccountTokenAuth {
     async fn authorize(&self, credential: &BearerToken) -> Result<AuthzDecision, CapabilityError> {
         let token = credential.expose_token();
 
         // An empty credential is a missing credential (401); never hash it,
         // cache it, or round-trip it to the API server.
         if token.is_empty() {
-            otel_debug!("k8s_sat_token_authorizer.credential_missing");
+            otel_debug!("k8s_service_account_token_auth.credential_missing");
             return Ok(Core::missing());
         }
 
@@ -106,13 +106,13 @@ impl SharedBearerTokenAuthorizer for SharedK8sSatTokenAuthorizer {
 
 // -- Local variant (!Send; Rc + RefCell) ------------------------------------
 
-/// Local, `!Send` Kubernetes SAT authorizer.
+/// Local, `!Send` Kubernetes service-account-token auth provider.
 ///
 /// Every clone on a core shares the same [`LocalInner`] via `Rc`. Each core gets
 /// its own instance and hence its own cache, consistent with the engine's
 /// thread-per-core model.
 #[derive(Clone)]
-pub(crate) struct LocalK8sSatTokenAuthorizer {
+pub(crate) struct LocalK8sServiceAccountTokenAuth {
     inner: Rc<LocalInner>,
 }
 
@@ -124,7 +124,7 @@ struct LocalInner {
     cache: LocalDecisionCache,
 }
 
-impl LocalK8sSatTokenAuthorizer {
+impl LocalK8sServiceAccountTokenAuth {
     /// Builds a new local-variant instance.
     #[cfg(test)]
     pub(crate) fn new(
@@ -160,14 +160,14 @@ impl LocalK8sSatTokenAuthorizer {
 }
 
 #[async_trait(?Send)]
-impl LocalBearerTokenAuthorizer for LocalK8sSatTokenAuthorizer {
+impl LocalBearerTokenAuthorizer for LocalK8sServiceAccountTokenAuth {
     async fn authorize(&self, credential: &BearerToken) -> Result<AuthzDecision, CapabilityError> {
         let token = credential.expose_token();
 
         // An empty credential is a missing credential (401); never hash it,
         // cache it, or round-trip it to the API server.
         if token.is_empty() {
-            otel_debug!("k8s_sat_token_authorizer.credential_missing");
+            otel_debug!("k8s_service_account_token_auth.credential_missing");
             return Ok(Core::missing());
         }
 
