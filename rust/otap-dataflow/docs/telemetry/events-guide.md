@@ -207,21 +207,8 @@ ID in the target.
 
 #### Relationship to EventName
 
-Making the target more precise does not make EventName a target-local label.
-The target answers **who emitted the event**; EventName answers **what semantic
-event occurred**. EventName MUST remain meaningful when read without
-`InstrumentationScope.name` and MUST continue to follow the
-[event naming](#event-naming) rules.
-
-Do not shorten event names to ambiguous fragments such as `ready`, `fail`, or
-`shutdown.complete`. A component prefix MAY be removed from an EventName only
-when it merely duplicates emitter identity and the remaining name still
-identifies a stable event schema, for example `otelcol.node.shutdown.complete`
-or `tls.handshake.failed`.
-
-The component-target migration MUST NOT include a bulk EventName rename.
-EventName changes have separate schema-compatibility requirements and require an
-inventory of existing event semantics and attributes.
+EventName values are unchanged by this target migration. EventName naming and
+compatibility are outside the scope of this change.
 
 #### Compatibility and migration
 

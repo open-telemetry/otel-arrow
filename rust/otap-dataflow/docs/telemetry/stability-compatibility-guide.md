@@ -145,8 +145,9 @@ For stable events:
 ### Instrumentation scopes
 
 `InstrumentationScope.name` identifies the logical software unit that produced
-telemetry. In this project, a tracing target becomes the scope name when an
-event is exported through OTLP.
+telemetry. In this project, a
+[`tracing` target](https://docs.rs/tracing/latest/tracing/struct.Metadata.html#method.target)
+becomes the scope name when an event is exported through OTLP.
 
 For stable instrumentation scopes:
 
@@ -157,8 +158,6 @@ For stable instrumentation scopes:
   queries, allowlists, dashboards, and scope-based aggregation
 - preserving the old package name as a prefix MAY preserve prefix-based filter
   directives, but does not make an exact scope-name change backward compatible
-- EventName MUST remain an independently meaningful schema identifier and MUST
-  NOT become a local name whose meaning depends on the scope
 
 A scope-name migration MUST provide an old-to-new mapping and example query or
 filter updates. Duplicating every event under both scope names is generally not
