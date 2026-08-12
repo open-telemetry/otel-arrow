@@ -28,9 +28,11 @@ inline or via files that are re-read on each acquisition, so secrets can rotate
 without a restart.
 
 This README is the configuration reference for the extension. Nodes that consume
-the capability (for example the
-[OTLP HTTP exporter](../../../core-nodes/src/exporters/otlp_http_exporter/README.md))
-document only how they *use* a bearer token, not how to configure a provider.
+the capability -- for example the
+[OTLP HTTP exporter](../../../core-nodes/src/exporters/otlp_http_exporter/README.md)
+and the
+[OTLP gRPC exporter](../../../core-nodes/src/exporters/otlp_grpc_exporter/README.md)
+-- document only how they *use* a bearer token, not how to configure a provider.
 
 For the design -- lifecycle, refresh and retry behavior, and the rationale behind
 the defaults -- see [`design.md`](./design.md).
