@@ -402,52 +402,55 @@ impl MapValueMut for LogRecord {
         }
     }
 
-    fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback) {
+    fn retain(
+        &mut self,
+        item_callback: &mut dyn FnMut(&str, &mut (dyn AsStaticValueMut + 'static)) -> bool,
+    ) {
         if let Some(v) = &mut self.timestamp {
-            if !item_callback.next("time_unix_nano", v) {
+            if !(item_callback)("time_unix_nano", v) {
                 self.timestamp = None;
             }
         }
         if let Some(v) = &mut self.observed_timestamp {
-            if !item_callback.next("observed_time_unix_nano", v) {
+            if !(item_callback)("observed_time_unix_nano", v) {
                 self.observed_timestamp = None;
             }
         }
         if let Some(v) = &mut self.severity_number {
-            if !item_callback.next("severity_number", v) {
+            if !(item_callback)("severity_number", v) {
                 self.severity_number = None;
             }
         }
         if let Some(v) = &mut self.severity_text {
-            if !item_callback.next("severity_text", v) {
+            if !(item_callback)("severity_text", v) {
                 self.severity_text = None;
             }
         }
         if let Some(v) = &mut self.body {
-            if !item_callback.next("body", v) {
+            if !(item_callback)("body", v) {
                 self.body = None;
             }
         }
-        if !item_callback.next("attributes", &mut self.attributes) {
+        if !(item_callback)("attributes", &mut self.attributes) {
             self.attributes = MapValueStorage::new(HashMap::new());
         }
         if let Some(v) = &mut self.flags {
-            if !item_callback.next("flags", v) {
+            if !(item_callback)("flags", v) {
                 self.flags = None;
             }
         }
         if let Some(v) = &mut self.trace_id {
-            if !item_callback.next("trace_id", v) {
+            if !(item_callback)("trace_id", v) {
                 self.trace_id = None;
             }
         }
         if let Some(v) = &mut self.span_id {
-            if !item_callback.next("span_id", v) {
+            if !(item_callback)("span_id", v) {
                 self.span_id = None;
             }
         }
         if let Some(v) = &mut self.event_name {
-            if !item_callback.next("event_name", v) {
+            if !(item_callback)("event_name", v) {
                 self.event_name = None;
             }
         }
