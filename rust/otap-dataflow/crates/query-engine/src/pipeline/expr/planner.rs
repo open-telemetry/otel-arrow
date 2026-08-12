@@ -365,9 +365,6 @@ impl ExprPlanner {
                 let left = left_planned.expr;
                 let right = right_planned.expr;
 
-                println!("{left:?}");
-                println!("{right:?}");
-                println!("{combined_scope:?}");
                 if let Some(combined_scope) = combined_scope
                     && !matches!(combined_scope, DataScope::AttributesAll(_))
                 {
