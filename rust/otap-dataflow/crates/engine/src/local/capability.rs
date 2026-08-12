@@ -14,6 +14,10 @@
 
 /// Auth capabilities (local `!Send` trait variants).
 pub mod auth {
+    /// Local (!Send) trait variant of the agent-fed credential-provider capability.
+    pub mod agent_fed_credential_provider {
+        pub use crate::capability::auth::agent_fed_credential_provider::local::AgentFedCredentialProvider;
+    }
     /// Local (!Send) trait variant of the bearer-token-authorizer capability.
     pub mod bearer_token_authorizer {
         pub use crate::capability::auth::bearer_token_authorizer::local::BearerTokenAuthorizer;
@@ -22,4 +26,9 @@ pub mod auth {
     pub mod bearer_token_provider {
         pub use crate::capability::auth::bearer_token_provider::local::BearerTokenProvider;
     }
+}
+
+/// Local (!Send) trait variant of the vendor-bundle capability.
+pub mod vendor_bundle {
+    pub use crate::capability::vendor_bundle::local::VendorBundle;
 }

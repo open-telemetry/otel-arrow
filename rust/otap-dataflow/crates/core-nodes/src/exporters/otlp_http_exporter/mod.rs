@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use http::{HeaderMap, HeaderValue, StatusCode};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -27,6 +27,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error as EngineError, ExporterErrorKind};
 use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
@@ -64,6 +65,9 @@ use otap_df_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettin
 use otap_df_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use otap_df_otap::pdata::{Context, OtapPdata};
 
+use self::bearer_auth::BearerAuth;
+
+mod bearer_auth;
 mod config;
 
 /// The URN for the OTLP HTTP exporter
@@ -73,10 +77,16 @@ pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
 pub struct OtlpHttpExporter {
     config: Config,
     pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    /// Optional bearer token provider resolved from the
+    /// `bearer_token_provider` capability. When bound, a fresh
+    /// `Authorization: Bearer <token>` is injected on every outgoing
+    /// request; when absent, the exporter behaves exactly as before.
+    token_provider: Option<Box<dyn BearerTokenProvider>>,
 }
 
 /// Declare the OTLP HTTP Exporter as a local exporter factory
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_HTTP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_HTTP_EXPORTER_URN,
@@ -108,10 +118,18 @@ fn factory_create(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     exporter_config: &ExporterConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    capabilities: &otap_df_engine::capability::registry::Capabilities,
 ) -> Result<ExporterWrapper<OtapPdata>, ConfigError> {
+    // Optionally resolve a bound bearer token provider. Absent binding keeps the
+    // default (no-auth) behavior; a bound provider (e.g. the `azure_identity_auth`
+    // extension) supplies refreshed OAuth tokens.
+    let token_provider = capabilities
+        .optional_local::<otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider>()
+        .map_err(|e| ConfigError::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
     Ok(ExporterWrapper::local(
-        OtlpHttpExporter::from_config(pipeline, &node_config.config)?,
+        OtlpHttpExporter::from_config(pipeline, &node_config.config, token_provider)?,
         node,
         node_config,
         exporter_config,
@@ -123,6 +141,7 @@ impl OtlpHttpExporter {
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
+        token_provider: Option<Box<dyn BearerTokenProvider>>,
     ) -> Result<Self, ConfigError> {
         let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
 
@@ -199,6 +218,7 @@ impl OtlpHttpExporter {
         Ok(Self {
             config,
             pdata_metrics,
+            token_provider,
         })
     }
 }
@@ -209,6 +229,11 @@ struct CompletedExport {
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
+    /// Generation of the bearer token stamped on this request (`None` when no
+    /// provider is bound). Echoed back so a 401 invalidates exactly the token
+    /// that was used, not a newer one already cached (see
+    /// [`BearerAuth::invalidate`]).
+    token_generation: Option<u64>,
 }
 
 #[async_trait(?Send)]
@@ -275,50 +300,96 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         // we'll do some number of reallocs + copy to find the right final
         // buffer size.
         let mut compressed_buffer: Vec<u8> = Vec::new();
+
+        // Consumer-side bearer-token adapter, if a provider is bound. It owns
+        // the token subscription, the cached `Authorization` header, and token
+        // usability; the loop below stays auth-agnostic -- it only asks whether
+        // it may send and stamps the header the adapter hands back.
+        let mut auth = self.token_provider.take().map(BearerAuth::new);
+        // Constant for the whole run (the adapter is created once), so precompute
+        // it for the auth-aware retry decision in `finalize_completed_export`.
+        let auth_bound = auth.is_some();
+
         loop {
-            // Opportunistically drain completions before we park on a recv.
-            while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten()
-            {
-                finalize_completed_export(completed, &effect_handler, &mut self.pdata_metrics)
-                    .await;
-            }
+            // Admit pdata only when auth is ready (a usable token is cached, or no
+            // provider is bound) and we are below the in-flight cap. While a bound
+            // provider has no usable token we stop pulling pdata, so it
+            // back-pressures upstream instead of being accepted and NACK'd. A token
+            // is guaranteed to eventually arrive -- the extension's readiness probe
+            // holds data-path startup until the first publish, and its watch stream
+            // stays live while we hold the provider handle -- so waiting (not
+            // dropping) is always correct here.
+            let accepting_pdata = auth.as_ref().is_none_or(BearerAuth::is_ready)
+                && inflight_exports.len() < max_in_flight;
 
-            // Backpressure guard: when full and a message is parked, only drain completions.
-            if inflight_exports.len() >= max_in_flight {
-                if let Some(completed) = inflight_exports.next_completion().await {
-                    finalize_completed_export(completed, &effect_handler, &mut self.pdata_metrics)
-                        .await;
-                }
-                continue;
-            }
+            // Instant at which a currently-usable token crosses the usability
+            // margin. Used to wake the loop so `accepting_pdata` re-evaluates
+            // (and gates) before a near-expiry batch is admitted, since the recv
+            // arm below may already be parked when the margin is reached.
+            let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
 
-            // Prefer completions if any are ready, otherwise biased select between completion and recv.
-            let msg = if inflight_exports.is_empty() {
-                let msg = msg_chan.recv().await?;
-                otel_debug!("otlp.exporter.http.receive");
-                msg
-            } else {
-                let completion_fut = inflight_exports.next_completion().fuse();
-                let recv_fut = msg_chan.recv().fuse();
-                futures::pin_mut!(completion_fut, recv_fut);
+            let msg = tokio::select! {
+                biased;
 
-                futures::select_biased! {
-                    completed = completion_fut => {
-                        if let Some(completed) = completed {
-                            finalize_completed_export(
-                                completed,
-                                &effect_handler,
-                                &mut self.pdata_metrics,
-                            )
-                            .await;
+                // Wake when the cached token reaches its usability margin so the
+                // next loop iteration gates intake. The `async` block keeps this
+                // lazy; the `None` arm is unreachable while the guard holds.
+                () = async {
+                    match token_margin_deadline {
+                        Some(deadline) => {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await
                         }
-                        continue;
+                        None => std::future::pending().await,
                     }
-                    msg = recv_fut => {
-                        let msg = msg?;
-                        otel_debug!("otlp.exporter.http.receive");
-                        msg
-                    },
+                }, if token_margin_deadline.is_some() => {
+                    continue;
+                }
+
+                // Pick up token refreshes (initial + subsequent) even while pdata
+                // intake is gated, so a pending token can arrive and unblock us.
+                // The `async` block keeps this lazy: `select!` evaluates a branch
+                // expression even when its `if` guard is false, and `auth` is
+                // `None` when no provider is bound. The `None` arm is unreachable
+                // while the guard holds; it pends rather than panics.
+                () = async {
+                    match auth.as_mut() {
+                        Some(a) => a.poll_refresh().await,
+                        None => std::future::pending().await,
+                    }
+                }, if auth.as_ref().is_some_and(BearerAuth::is_active) => {
+                    // A refresh was drained (the adapter caches it and logs any
+                    // anomaly); loop to re-evaluate intake readiness.
+                    continue;
+                }
+
+                // Drain a finished export. Guarded because an empty in-flight set
+                // is immediately ready (`FuturesUnordered::next` yields `None`),
+                // which would otherwise busy-loop.
+                completed = inflight_exports.next_completion(), if !inflight_exports.is_empty() => {
+                    if let Some(completed) = completed {
+                        let rejected_generation = finalize_completed_export(
+                            completed,
+                            &effect_handler,
+                            &mut self.pdata_metrics,
+                            auth_bound,
+                        )
+                        .await;
+                        // Server rejected the token this request used (401); drop
+                        // exactly that generation so intake back-pressures until
+                        // `token_stream` delivers a fresh one, and the retry never
+                        // reuses the rejected token. A stale 401 (a newer token was
+                        // already cached) is ignored by the generation guard.
+                        apply_auth_rejection(&mut auth, rejected_generation);
+                    }
+                    continue;
+                }
+
+                // Inbound message. Control always flows; pdata is admitted only
+                // when `accepting_pdata` (and force-drained during shutdown).
+                msg = msg_chan.recv_when(accepting_pdata) => {
+                    let msg = msg?;
+                    otel_debug!("otlp.exporter.http.receive");
+                    msg
                 }
             };
 
@@ -327,12 +398,16 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     otel_info!("otlp.exporter.http.shutdown", reason = reason);
                     while !inflight_exports.is_empty() {
                         if let Some(completed) = inflight_exports.next_completion().await {
-                            finalize_completed_export(
+                            let rejected_generation = finalize_completed_export(
                                 completed,
                                 &effect_handler,
                                 &mut self.pdata_metrics,
+                                auth_bound,
                             )
                             .await;
+                            // Honor a 401 even while draining, so a later
+                            // force-drained request cannot reuse the rejected token.
+                            apply_auth_rejection(&mut auth, rejected_generation);
                         }
                     }
                     return Ok(TerminalState::new(
@@ -346,6 +421,41 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 Message::PData(pdata) => {
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
+
+                    // We normally only reach here with a usable token, since intake
+                    // is gated on `accepting_pdata`. The exception is shutdown, which
+                    // force-drains buffered pdata even while auth was pending: with no
+                    // usable token we cannot send, so NACK it as retryable -- a token
+                    // may yet arrive, so nothing is dropped.
+                    if let Some(a) = auth.as_ref() {
+                        if !a.is_ready() {
+                            let mut nack = NackMsg::new(
+                                a.not_ready_reason(),
+                                OtapPdata::new(context, payload),
+                            );
+                            nack.permanent = false;
+                            _ = effect_handler.notify_nack(nack).await;
+                            self.pdata_metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .messages
+                                .inc();
+                            continue;
+                        }
+                    }
+
+                    // The cached bearer header, together with the generation of the
+                    // token it was built from, cloned per request. It takes
+                    // precedence over any statically configured `authorization`; the
+                    // generation is echoed back on completion so a 401 can be matched
+                    // to the exact token used and a stale rejection ignored.
+                    let (auth_header, token_generation) =
+                        match auth.as_ref().and_then(BearerAuth::header) {
+                            Some((header, generation)) => (Some(header), Some(generation)),
+                            None => (None, None),
+                        };
 
                     // For the OtapArrowRecords path we keep the uncompressed bytes in
                     // `proto_buffer` rather than materializing them into a `Bytes` up front: when
@@ -455,9 +565,38 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                     let max_response_body_len = self.config.max_response_body_length;
 
+                    // Enforce the in-flight cap on the send path too. Normal
+                    // intake is gated by `accepting_pdata`, but shutdown
+                    // force-drains buffered pdata past that gate, so bound
+                    // concurrency here as well by draining a completion first.
+                    while inflight_exports.len() >= max_in_flight {
+                        match inflight_exports.next_completion().await {
+                            Some(completed) => {
+                                let rejected_generation = finalize_completed_export(
+                                    completed,
+                                    &effect_handler,
+                                    &mut self.pdata_metrics,
+                                    auth_bound,
+                                )
+                                .await;
+                                // Honor a 401 here too, so the next force-drained
+                                // request does not reuse the rejected token.
+                                apply_auth_rejection(&mut auth, rejected_generation);
+                            }
+                            None => break,
+                        }
+                    }
+
                     let client = client_pool.get_client();
                     inflight_exports.push(async move {
                         let mut req = client.post(endpoint.as_str()).body(body);
+                        if let Some(auth) = auth_header {
+                            // A per-request header takes precedence over the
+                            // client's default headers, so the refreshed bearer
+                            // token overrides any statically configured
+                            // `authorization` credential.
+                            req = req.header(http::header::AUTHORIZATION, auth);
+                        }
                         if let Some(method) = compression {
                             req = req.header(
                                 http::header::CONTENT_ENCODING,
@@ -476,6 +615,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             context,
                             saved_payload,
                             signal_type,
+                            token_generation,
                         }
                     })
                 }
@@ -606,6 +746,19 @@ impl ServiceRequestError {
             }
         }
     }
+
+    /// Whether this is an HTTP 401 Unauthorized response. When a bearer token
+    /// provider is bound this is treated as retryable, because it usually means
+    /// the cached token lapsed or a refresh raced; the batch can succeed once a
+    /// fresh token is in use. 403 Forbidden is intentionally excluded: it
+    /// signals a scope or permission problem that a token refresh will not fix.
+    fn is_auth_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::RequestError { err }
+                if err.status() == Some(StatusCode::UNAUTHORIZED)
+        )
+    }
 }
 
 fn format_source(e: &reqwest::Error) -> String {
@@ -670,20 +823,37 @@ async fn collect_body(response: Response, max_len: usize) -> Result<Bytes, Servi
     Ok(buf.freeze())
 }
 
+/// Applies a 401 rejection reported by [`finalize_completed_export`] to the
+/// bearer adapter: drops the rejected token generation so a retry waits for a
+/// fresh token instead of reusing the rejected one. A no-op when no provider is
+/// bound (`rejected_generation` is `None`) or the rejection is stale (a newer
+/// token was already cached), per [`BearerAuth::invalidate`]'s generation guard.
+fn apply_auth_rejection(auth: &mut Option<BearerAuth>, rejected_generation: Option<u64>) {
+    if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
+        adapter.invalidate(generation);
+    }
+}
+
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
     pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
-) {
+    auth_bound: bool,
+) -> Option<u64> {
     let CompletedExport {
         result,
         context,
         saved_payload,
         signal_type,
+        token_generation,
     } = completed;
 
     let pdata = OtapPdata::new(context, saved_payload);
 
+    // Set to the rejected token's generation when the server rejected the token
+    // this request used (401), so the caller can invalidate exactly that
+    // generation before the batch is retried.
+    let mut rejected_generation = None;
     let err = match result {
         Ok(service_resp) => service_resp.partial_success.and_then(|partial_success| {
             // As per OTLP HTTP spec, the server may use partial success to convey information
@@ -710,7 +880,18 @@ async fn finalize_completed_export(
                 ))
             }
         }),
-        Err(e) => Some((e.to_string(), e.is_retryable())),
+        Err(e) => {
+            // With a bearer token provider bound, a 401 usually means the cached
+            // token lapsed or a refresh raced, so retry rather than drop; record
+            // the rejected generation so the caller invalidates exactly the token
+            // that was used before the retry.
+            let auth_failure = auth_bound && e.is_auth_failure();
+            if auth_failure {
+                rejected_generation = token_generation;
+            }
+            let retryable = e.is_retryable() || auth_failure;
+            Some((e.to_string(), retryable))
+        }
     };
 
     let export_and_notify_success = match err {
@@ -740,6 +921,8 @@ async fn finalize_completed_export(
         })
         .messages
         .inc();
+
+    rejected_generation
 }
 
 /// A simple pool of HTTP clients to allow for concurrent exports.
@@ -938,6 +1121,7 @@ mod test {
                 Arc::new(Mutex::new(server_metrics)),
                 otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
                 None,
+                None,
                 server_cancellation_token,
             )
             .await
@@ -1124,6 +1308,192 @@ mod test {
         server_cancellation_token2
     }
 
+    /// Runs a server that answers every request with a fixed HTTP status and an
+    /// empty body. Used to drive the auth-failure (401/403) handling paths.
+    fn run_fixed_status_server(
+        tokio_rt: &Runtime,
+        endpoint_addr: &str,
+        status: u16,
+    ) -> CancellationToken {
+        let server_cancellation_token = CancellationToken::new();
+        let server_cancellation_token2 = server_cancellation_token.clone();
+        let endpoint_addr = endpoint_addr.to_string();
+        _ = tokio_rt.spawn(async move {
+            let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
+            let tracker = TaskTracker::new();
+            loop {
+                tokio::select! {
+                    _ = server_cancellation_token.cancelled() => break,
+                    accept_result = listener.accept() => {
+                        let (stream, _peer_addr) = accept_result.unwrap();
+                        let shutdown_token = server_cancellation_token.clone();
+                        drop(tracker.spawn(async move {
+                            let io = TokioIo::new(stream);
+                            let service = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| async move {
+                                Ok::<_, hyper::Error>(
+                                    Response::builder()
+                                        .status(status)
+                                        .body(Full::new(Bytes::from(Vec::new())))
+                                        .unwrap(),
+                                )
+                            });
+                            let conn = http1::Builder::new().serve_connection(io, service);
+                            let mut conn = std::pin::pin!(conn);
+                            tokio::select! {
+                                _ = shutdown_token.cancelled() => {
+                                    conn.as_mut().graceful_shutdown();
+                                    let _ = conn.await;
+                                },
+                                conn_result = &mut conn => {
+                                    let _ = conn_result;
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+            let _ = tracker.close();
+        });
+
+        server_cancellation_token2
+    }
+
+    #[test]
+    fn test_auth_failure_is_retryable_when_provider_bound() {
+        // With a bearer token provider bound, a 401 from the backend (e.g. the
+        // cached token lapsed) must be NACK'd as retryable, not permanently
+        // dropped, so the batch can succeed once a fresh token is in use.
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let cancel = run_fixed_status_server(&tokio_rt, &endpoint_addr, 401);
+        wait_for_port_ready(&endpoint_addr);
+
+        let config = default_test_config(endpoint);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        // A valid (non-expiring) token so the request is actually sent and the
+        // server's 401 drives the auth-failure path.
+        let exporter =
+            exporter_with_provider(&test_runtime, config, MockTokenProvider::new("token"));
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    let msg = pipeline_completion_rx
+                        .recv()
+                        .await
+                        .expect("expected a pipeline completion message");
+                    match msg {
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert!(
+                                !nack.permanent,
+                                "a 401 with a bound provider must be retryable, not dropped"
+                            );
+                        }
+                        PipelineCompletionMsg::DeliverAck { .. } => {
+                            panic!("a 401 response must not Ack")
+                        }
+                    }
+                })
+            });
+
+        cancel.cancel();
+    }
+
+    // Scenario: A bound bearer provider is present and the backend answers 403 Forbidden.
+    // Guarantees: 403 is NACK'd as permanent (not retryable), because a scope or
+    // permission problem is not fixed by refreshing the token.
+    #[test]
+    fn test_forbidden_is_permanent_even_when_provider_bound() {
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let cancel = run_fixed_status_server(&tokio_rt, &endpoint_addr, 403);
+        wait_for_port_ready(&endpoint_addr);
+
+        let config = default_test_config(endpoint);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter =
+            exporter_with_provider(&test_runtime, config, MockTokenProvider::new("token"));
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    let msg = pipeline_completion_rx
+                        .recv()
+                        .await
+                        .expect("expected a pipeline completion message");
+                    match msg {
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert!(
+                                nack.permanent,
+                                "a 403 must be permanent even with a bound provider"
+                            );
+                        }
+                        PipelineCompletionMsg::DeliverAck { .. } => {
+                            panic!("a 403 response must not Ack")
+                        }
+                    }
+                })
+            });
+
+        cancel.cancel();
+    }
+
     #[test]
     fn test_configured_headers_sent_on_wire() {
         use std::collections::HashMap;
@@ -1179,6 +1549,482 @@ mod test {
                 .to_str()
                 .unwrap(),
             PROTOBUF_CONTENT_TYPE
+        );
+    }
+
+    /// Test double for the `BearerTokenProvider` capability with configurable
+    /// stream behavior. `tokens` are published on the stream in order; when
+    /// `keep_open` is true the stream stays pending after draining them (never
+    /// ends), and when false it ends once they are drained (simulating a
+    /// provider that closes its stream).
+    struct MockTokenProvider {
+        tokens: Vec<String>,
+        keep_open: bool,
+        /// Expiry applied to every published token (`None` = non-expiring).
+        expires_on: Option<Instant>,
+    }
+
+    impl MockTokenProvider {
+        /// A provider that publishes a single non-expiring token and keeps its
+        /// stream open.
+        fn new(token: &str) -> Self {
+            Self {
+                tokens: vec![token.to_string()],
+                keep_open: true,
+                expires_on: None,
+            }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl BearerTokenProvider for MockTokenProvider {
+        async fn get_token(
+            &self,
+        ) -> Result<
+            otap_df_engine::capability::auth::BearerToken,
+            otap_df_engine::capability::CapabilityError,
+        > {
+            // Not exercised by the exporter (it consumes `token_stream`); return
+            // the first configured token for completeness.
+            Ok(otap_df_engine::capability::auth::BearerToken::with_expiry(
+                self.tokens.first().cloned().unwrap_or_default(),
+                None,
+            ))
+        }
+
+        fn token_stream(
+            &self,
+        ) -> otap_df_engine::capability::auth::bearer_token_provider::TokenStream {
+            let expires_on = self.expires_on;
+            let published = futures::stream::iter(self.tokens.clone().into_iter().map(move |t| {
+                otap_df_engine::capability::auth::BearerToken::with_expiry(t, expires_on)
+            }));
+            if self.keep_open {
+                published.chain(futures::stream::pending()).boxed()
+            } else {
+                published.boxed()
+            }
+        }
+    }
+
+    /// Build an `OtlpHttpExporter` wrapped for the test runtime with a bound
+    /// bearer token provider.
+    fn exporter_with_provider(
+        test_runtime: &TestRuntime<OtapPdata>,
+        config: Config,
+        provider: MockTokenProvider,
+    ) -> ExporterWrapper<OtapPdata> {
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
+        let telemetry_registry_handle = test_runtime.metrics_registry();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx = controller_ctx.pipeline_context_with(
+            "test_group".into(),
+            "test_pipeline".into(),
+            0,
+            1,
+            0,
+        );
+        ExporterWrapper::local(
+            OtlpHttpExporter {
+                config,
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                token_provider: Some(Box::new(provider)),
+            },
+            node_id,
+            node_config,
+            test_runtime.config(),
+        )
+    }
+
+    #[test]
+    fn test_bearer_token_injected_on_wire() {
+        // End-to-end proof that a bound `bearer_token_provider` injects a fresh
+        // `authorization` bearer token on the outbound request, and that the
+        // token takes precedence over a statically configured `authorization`
+        // header.
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        // Static authorization header the bearer token must override.
+        let mut headers = HashMap::new();
+        _ = headers.insert("authorization".to_string(), "Basic static".into());
+        let config = Config {
+            http: HttpClientSettings {
+                headers,
+                ..Default::default()
+            },
+            ..default_test_config(endpoint)
+        };
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter = exporter_with_provider(
+            &test_runtime,
+            config,
+            MockTokenProvider::new("provider-token"),
+        );
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                })
+            });
+
+        cancel.cancel();
+
+        let headers = captured
+            .lock()
+            .clone()
+            .expect("server did not capture any request headers");
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer provider-token",
+            "the bearer token must reach the HTTP server and override the static header"
+        );
+    }
+
+    #[test]
+    fn test_bearer_token_unavailable_nacks_and_sends_nothing() {
+        // Provider is bound but never publishes a token: batches must be NACK'd
+        // as retryable and no request may reach the server.
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        let config = default_test_config(endpoint);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        // Stream stays open but never yields a token.
+        let exporter = exporter_with_provider(
+            &test_runtime,
+            config,
+            MockTokenProvider {
+                tokens: vec![],
+                keep_open: true,
+                expires_on: None,
+            },
+        );
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    // The single batch must be NACK'd (retryable), never Ack'd.
+                    let msg = pipeline_completion_rx
+                        .recv()
+                        .await
+                        .expect("expected a pipeline completion message");
+                    match msg {
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert!(!nack.permanent, "unavailable-token NACK must be retryable");
+                            assert!(
+                                nack.reason.contains("bearer token unavailable"),
+                                "unexpected NACK reason: {}",
+                                nack.reason
+                            );
+                        }
+                        PipelineCompletionMsg::DeliverAck { .. } => {
+                            panic!("unexpected Ack: no request should have been sent")
+                        }
+                    }
+                })
+            });
+
+        cancel.cancel();
+        assert!(
+            captured.lock().is_none(),
+            "no request must reach the server when no token is available"
+        );
+    }
+
+    #[test]
+    fn test_expired_bearer_token_nacks_retryable_while_stream_open() {
+        // The provider publishes a token already within the usability margin of
+        // expiry and keeps its stream open. The exporter must refuse to send it (a
+        // request could outlive the token), NACK retryably (a refresh may still
+        // arrive), and send nothing to the server.
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        let config = default_test_config(endpoint);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        // Token already expired (expiry in the past, so within the usability margin).
+        let exporter = exporter_with_provider(
+            &test_runtime,
+            config,
+            MockTokenProvider {
+                tokens: vec!["stale-token".to_string()],
+                keep_open: true,
+                expires_on: Some(Instant::now()),
+            },
+        );
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    let msg = pipeline_completion_rx
+                        .recv()
+                        .await
+                        .expect("expected a pipeline completion message");
+                    match msg {
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert!(
+                                !nack.permanent,
+                                "expired-token NACK must be retryable while the stream is open"
+                            );
+                            assert!(
+                                nack.reason.contains("expiry"),
+                                "unexpected NACK reason: {}",
+                                nack.reason
+                            );
+                        }
+                        PipelineCompletionMsg::DeliverAck { .. } => {
+                            panic!("unexpected Ack: an expired token must not be sent")
+                        }
+                    }
+                })
+            });
+
+        cancel.cancel();
+        assert!(
+            captured.lock().is_none(),
+            "no request must reach the server when the only token is expired"
+        );
+    }
+
+    #[test]
+    fn test_invalid_bearer_token_is_skipped_and_valid_used() {
+        // A malformed token (header-invalid bytes) is dropped via the error arm
+        // (incrementing `auth_token_errors`); the subsequent valid token is what
+        // reaches the wire.
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        let config = default_test_config(endpoint);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        // First token is header-invalid (embedded newline), second is valid.
+        let exporter = exporter_with_provider(
+            &test_runtime,
+            config,
+            MockTokenProvider {
+                tokens: vec!["bad\ntoken".to_string(), "good-token".to_string()],
+                keep_open: true,
+                expires_on: None,
+            },
+        );
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                })
+            });
+
+        cancel.cancel();
+        let headers = captured
+            .lock()
+            .clone()
+            .expect("server did not capture any request headers");
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer good-token",
+            "the malformed token must be skipped and the valid token used"
+        );
+    }
+
+    #[test]
+    fn test_last_token_reused_after_stream_closes() {
+        // The provider publishes one token then closes its stream; subsequent
+        // batches must keep using the cached token.
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        let config = default_test_config(endpoint);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        // One token, then the stream ends.
+        let exporter = exporter_with_provider(
+            &test_runtime,
+            config,
+            MockTokenProvider {
+                tokens: vec!["provider-token".to_string()],
+                keep_open: false,
+                expires_on: None,
+            },
+        );
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        // Two batches: the first caches the token and observes the stream close;
+        // the second must reuse the cached token.
+        let pdatas = subscribe_pdatas(
+            vec![
+                OtapPdata::new_default(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+                    Bytes::from(bytes.clone()),
+                ))),
+                OtapPdata::new_default(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+                    Bytes::from(bytes),
+                ))),
+            ],
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                })
+            });
+
+        cancel.cancel();
+        let headers = captured
+            .lock()
+            .clone()
+            .expect("server did not capture any request headers");
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer provider-token",
+            "the cached token must keep being used after the provider closes its stream"
         );
     }
 
@@ -1266,6 +2112,7 @@ mod test {
                 Arc::new(Mutex::new(server_metrics)),
                 otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
                 None,
+                None,
                 server_cancellation_token,
             )
             .await;
@@ -1301,6 +2148,7 @@ mod test {
             OtlpHttpExporter {
                 config,
                 pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                token_provider: None,
             },
             node_id.clone(),
             node_config,
@@ -1390,7 +2238,7 @@ mod test {
             0,
         );
 
-        let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config);
+        let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config, None);
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
@@ -1440,7 +2288,7 @@ mod test {
                 0,
             );
 
-            let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config);
+            let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config, None);
             assert!(result.is_err());
             let err = result.err().unwrap();
             assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
@@ -1686,12 +2534,14 @@ mod test {
             context: Context::default(),
             saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
             signal_type: SignalType::Logs,
+            token_generation: None,
         };
 
-        Runtime::new().unwrap().block_on(finalize_completed_export(
+        let _ = Runtime::new().unwrap().block_on(finalize_completed_export(
             completed,
             &effect_handler,
             &mut metrics,
+            false,
         ));
 
         assert_eq!(
@@ -2600,7 +3450,7 @@ mod test {
             0,
         );
 
-        let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config);
+        let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config, None);
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));

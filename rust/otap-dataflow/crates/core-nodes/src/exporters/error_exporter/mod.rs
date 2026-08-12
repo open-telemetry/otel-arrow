@@ -37,6 +37,7 @@ struct ErrorExporterConfig {
 
 /// Declare the Error Exporter as a local exporter factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static ERROR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: ERROR_EXPORTER_URN,

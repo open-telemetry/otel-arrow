@@ -29,7 +29,7 @@ use otap_df_pdata_views::views::metrics::{
 };
 use otap_df_pdata_views::{SpanId, TraceId};
 
-/* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
+/* ----------------------------- VIEW WRAPPERS (zero-alloc) -------------- */
 
 /// A wrapper for references to `ResourceMetrics`.
 pub type ObjResourceMetrics<'a> = GenericObj<'a, ResourceMetrics>;
@@ -79,7 +79,7 @@ pub type ObjBuckets<'a> = GenericObj<'a, Buckets>;
 /// A wrapper for references to `ValueAtQuantile`.
 pub type ObjValueAtQuantile<'a> = GenericObj<'a, ValueAtQuantile>;
 
-/* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
+/* ----------------------------- ADAPTER ITERATORS ----------------------- */
 
 /// An iterator for `ObjResourceMetrics`; it consumes a slice iterator of `ResourceMetrics`.
 pub type ResourceMetricsIter<'a> = GenericIterator<'a, ResourceMetrics, ObjResourceMetrics<'a>>;
@@ -111,7 +111,7 @@ pub type ExponentialHistogramDataPointIter<'a> =
 /// An iterator for `ObjValueAtQuantile`; it consumes a slice iterator of `ValueAtQuantile`.
 pub type ValueAtQuantileIter<'a> = GenericIterator<'a, ValueAtQuantile, ObjValueAtQuantile<'a>>;
 
-/* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
+/* ----------------------------- TRAIT IMPLEMENTATIONS ------------------- */
 
 impl MetricsView for MetricsData {
     type ResourceMetrics<'res>
@@ -705,7 +705,7 @@ impl SummaryDataPointView for ObjSummaryDataPoint<'_> {
     }
 }
 
-/* ────────────── Proto → pdata-views enum conversions ────────────── */
+/* -------------- Proto -> pdata-views enum conversions -------------- */
 
 use crate::proto::opentelemetry::metrics::v1 as metrics_proto;
 

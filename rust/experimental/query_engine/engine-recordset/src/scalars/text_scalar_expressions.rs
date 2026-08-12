@@ -47,17 +47,8 @@ where
                             Value::String(v) => s.push_str(v.get_value()),
                             Value::Null => {
                                 // Note: Null becomes empty string
-                            },
-                            v => {
-                                let mut result = None;
-                                v.convert_to_string(&mut |v| {
-                                    s.push_str(v);
-                                    result = Some(true)
-                                });
-                                result.expect(
-                                    "Encountered a Value which does not correctly implement convert_to_string",
-                                );
                             }
+                            v => s.push_str(v.convert_to_string().as_ref()),
                         }
                     })?;
 
@@ -75,22 +66,11 @@ where
             }
         }
         TextScalarExpression::Join(j) => {
-            let mut separator_as_string = String::new();
             let separator_scalar =
                 execute_scalar_expression(execution_context, j.get_separator_expression())?;
             let separator = match separator_scalar.to_value() {
-                Value::String(s) => s.get_value(),
-                v => {
-                    let mut result = None;
-                    v.convert_to_string(&mut |s| {
-                        separator_as_string.push_str(s);
-                        result = Some(true);
-                    });
-                    result.expect(
-                        "Encountered a Value which does not correctly implement convert_to_string",
-                    );
-                    separator_as_string.as_str()
-                }
+                Value::String(s) => ValueString::Ref(s.get_value()),
+                v => v.convert_to_string(),
             };
 
             match execute_scalar_expression(execution_context, j.get_values_expression())?
@@ -100,31 +80,26 @@ where
                     let mut s = String::new();
                     let mut len = 0;
 
-                    a.take((..).into(), |_, r| Ok(r), &mut |r: ResolvedValue<'_>| {
-                        match r.to_value() {
+                    a.take(
+                        (..).into(),
+                        |_, r| Ok(r),
+                        &mut |r: ResolvedValue<'_>| match r.to_value() {
                             Value::String(v) => {
                                 len += 1;
                                 if len > 1 {
-                                    s.push_str(separator);
+                                    s.push_str(separator.as_ref());
                                 }
                                 s.push_str(v.get_value())
-                            },
-                            v => {
-                                let mut result = None;
-                                v.convert_to_string(&mut |v| {
-                                    len += 1;
-                                    if len > 1 {
-                                        s.push_str(separator);
-                                    }
-                                    s.push_str(v);
-                                    result = Some(true)
-                                });
-                                result.expect(
-                                    "Encountered a Value which does not correctly implement convert_to_string",
-                                );
                             }
-                        }
-                    })?;
+                            v => {
+                                len += 1;
+                                if len > 1 {
+                                    s.push_str(separator.as_ref());
+                                }
+                                s.push_str(v.convert_to_string().as_ref());
+                            }
+                        },
+                    )?;
 
                     ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(s)))
                 }

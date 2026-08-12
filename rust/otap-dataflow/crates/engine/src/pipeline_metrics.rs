@@ -853,7 +853,7 @@ mod jemalloc_tests {
     }
 }
 
-#[cfg(all(test, not(feature = "jemalloc-testing")))]
+#[cfg(all(test, any(windows, not(feature = "jemalloc"))))]
 mod non_jemalloc_tests {
     use super::*;
     use crate::context::ControllerContext;
@@ -861,6 +861,8 @@ mod non_jemalloc_tests {
     use std::hint::black_box;
     use std::time::{Duration, Instant};
 
+    /// Scenario: Pipeline metrics are sampled when jemalloc accounting is unavailable.
+    /// Guarantees: CPU and OS metrics update while all allocator metrics remain zero.
     #[test]
     fn pipeline_metrics_monitor_does_not_update_memory_without_jemalloc() {
         let telemetry_registry = TelemetryRegistryHandle::new();

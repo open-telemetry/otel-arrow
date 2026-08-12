@@ -28,6 +28,10 @@
 //! configuration fields.
 use secrecy::SecretString;
 use serde::Deserialize;
+use std::num::NonZeroUsize;
+
+const DEFAULT_MAX_IN_FLIGHT: NonZeroUsize =
+    NonZeroUsize::new(10).expect("default max_in_flight must be non-zero");
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -38,6 +42,9 @@ pub struct ConfigPatch {
     pub password: SecretString,
 
     pub async_insert: Option<bool>,
+
+    /// Maximum number of ClickHouse insert requests allowed to run concurrently.
+    pub max_in_flight: Option<NonZeroUsize>,
 
     #[serde(default)]
     pub table_defaults: DefaultTableConfig,
@@ -59,6 +66,8 @@ pub struct Config {
     pub password: SecretString,
     /// Use async insert
     pub async_insert: bool,
+    /// Maximum number of ClickHouse insert requests allowed to run concurrently.
+    pub max_in_flight: NonZeroUsize,
     pub table_defaults: DefaultTableConfig,
     pub tables: TablesConfig,
 }
@@ -66,6 +75,7 @@ pub struct Config {
 impl Config {
     pub fn from_patch(p: ConfigPatch) -> Self {
         let async_insert = p.async_insert.unwrap_or(true);
+        let max_in_flight = p.max_in_flight.unwrap_or(DEFAULT_MAX_IN_FLIGHT);
 
         let tables = TablesConfig::from_patch(p.tables);
 
@@ -75,6 +85,7 @@ impl Config {
             username: p.username,
             password: p.password,
             async_insert,
+            max_in_flight,
             table_defaults: p.table_defaults,
             tables,
         }
@@ -284,6 +295,55 @@ mod tests {
     use super::*;
     use secrecy::ExposeSecret;
 
+    /// Scenario: a ClickHouse exporter config omits the concurrency setting.
+    /// Guarantees: the runtime configuration permits ten concurrent inserts by default.
+    #[test]
+    fn max_in_flight_defaults_to_ten() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret"
+        }))
+        .unwrap();
+
+        assert_eq!(Config::from_patch(patch).max_in_flight.get(), 10);
+    }
+
+    /// Scenario: a ClickHouse exporter config requests OTC-equivalent concurrency.
+    /// Guarantees: the configured maximum is preserved in the runtime configuration.
+    #[test]
+    fn max_in_flight_accepts_configured_value() {
+        let patch: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "max_in_flight": 10
+        }))
+        .unwrap();
+
+        assert_eq!(Config::from_patch(patch).max_in_flight.get(), 10);
+    }
+
+    /// Scenario: a ClickHouse exporter config sets the concurrency limit to zero.
+    /// Guarantees: invalid zero-capacity configurations are rejected during deserialization.
+    #[test]
+    fn max_in_flight_rejects_zero() {
+        let error = serde_json::from_value::<ConfigPatch>(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "max_in_flight": 0
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("nonzero usize"));
+    }
+
+    /// Scenario: all supported top-level and nested exporter fields are configured.
+    /// Guarantees: explicit values are retained and unspecified table values use defaults.
     #[test]
     fn test_config_deserialization() {
         let json = serde_json::json!({
@@ -343,6 +403,8 @@ mod tests {
         assert_eq!(config.tables.metrics.sum.name, "otel_metrics_sum");
     }
 
+    /// Scenario: a ClickHouse exporter config contains an unsupported top-level field.
+    /// Guarantees: deserialization rejects the typo instead of silently ignoring it.
     #[test]
     fn test_config_patch_rejects_unknown_fields() {
         let json = serde_json::json!({
@@ -357,6 +419,8 @@ mod tests {
         assert!(err.to_string().contains("unknown field `unknown_field`"));
     }
 
+    /// Scenario: only the required connection fields are configured.
+    /// Guarantees: runtime table names and table settings match the documented defaults.
     #[test]
     fn test_config_defaults_match_spec() {
         let json = serde_json::json!({

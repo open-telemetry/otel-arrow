@@ -270,6 +270,25 @@ impl MetricsReporter {
         Ok(())
     }
 
+    /// Reliably reports every touched measurement bucket before `deadline`.
+    pub async fn report_measurement_reliably_until<M: MeasurementMetricSetHandler>(
+        &self,
+        metrics: &mut MeasurementMetricSet<M>,
+        deadline: Instant,
+    ) -> Result<ReportOutcome, Error> {
+        for snapshot in metrics.pending_snapshots() {
+            let bucket = snapshot.bucket();
+            match self
+                .report_snapshot_reliably_until(snapshot, deadline)
+                .await?
+            {
+                ReportOutcome::Sent => metrics.clear_bucket(bucket),
+                ReportOutcome::Deferred => return Ok(ReportOutcome::Deferred),
+            }
+        }
+        Ok(ReportOutcome::Sent)
+    }
+
     /// Report an already materialized snapshot.
     pub fn try_report_snapshot(&self, snapshot: MetricSetSnapshot) -> Result<(), Error> {
         let _ = self.try_report_snapshot_with_outcome(snapshot)?;
