@@ -322,8 +322,20 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // arm below may already be parked when the margin is reached.
             let token_margin_deadline = auth.as_ref().and_then(GrpcBearerAuth::refresh_deadline);
 
+            // A batch parked for in-flight capacity is un-parked only once auth is
+            // ready again. Taking it while `accepting_pdata` is false would NACK it
+            // below -- exactly the outcome the gate exists to avoid -- so instead it
+            // stays parked and the loop keeps servicing token refreshes and
+            // completions until a usable token arrives. Shutdown is the escape
+            // hatch: it force-drains, and its arm NACKs whatever is still parked.
+            let parked_msg = if accepting_pdata {
+                pending_msg.take()
+            } else {
+                None
+            };
+
             // Prefer token events, then completions, then the next message.
-            let msg = if let Some(msg) = pending_msg.take() {
+            let msg = if let Some(msg) = parked_msg {
                 msg
             } else {
                 tokio::select! {
@@ -397,10 +409,31 @@ impl Exporter<OtapPdata> for OTLPExporter {
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     otel_info!("otlp.exporter.grpc.shutdown");
-                    debug_assert!(
-                        pending_msg.is_none(),
-                        "pending message should have been drained before shutdown"
-                    );
+                    // A batch can only still be parked here because the auth gate
+                    // was shut when it last came up for dispatch: un-parking is
+                    // gated on `accepting_pdata`, and every other `select!` arm
+                    // loops rather than falling through to this match, so reaching
+                    // Shutdown with a parked batch implies a provider is bound and
+                    // its token is still unusable. Shutdown cannot wait for a
+                    // refresh, so NACK it as retryable -- the same policy the
+                    // force-drained batches get below. Without this the parked batch
+                    // would be dropped silently.
+                    if let Some(Message::PData(pdata)) = pending_msg.take() {
+                        debug_assert!(
+                            auth.as_ref().is_some_and(|a| !a.is_ready()),
+                            "a batch stays parked only while a bound token is unusable"
+                        );
+                        let reason = auth
+                            .as_ref()
+                            .map_or("no usable bearer token", GrpcBearerAuth::not_ready_reason);
+                        nack_without_usable_token(
+                            pdata,
+                            reason,
+                            &effect_handler,
+                            &mut self.pdata_metrics,
+                        )
+                        .await;
+                    }
                     while !inflight_exports.is_empty() {
                         if let Some(completed) = inflight_exports.next_completion().await {
                             let (client, rejected_generation) = finalize_completed_export(
@@ -428,36 +461,39 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 }
                 Message::PData(pdata) => {
                     if inflight_exports.len() >= max_in_flight {
+                        // The guard at the top of the loop stops receiving while a
+                        // batch is parked and the budget is full, so parking here
+                        // can never overwrite (and lose) an earlier batch.
+                        debug_assert!(
+                            pending_msg.is_none(),
+                            "a parked batch must be dispatched before another is parked"
+                        );
                         pending_msg = Some(Message::PData(pdata));
                         continue;
                     }
 
-                    let signal_type = pdata.signal_type();
-                    let (context, payload) = pdata.into_parts();
-
-                    // We normally only reach here with a usable token, since intake
-                    // is gated on `accepting_pdata`. The exception is shutdown, which
-                    // force-drains buffered pdata even while auth was pending: with no
+                    // We only reach here with a usable token: intake is gated on
+                    // `accepting_pdata`, and a parked batch is un-parked only while
+                    // that gate is open. The exception is shutdown, which
+                    // force-drains buffered pdata even while auth is pending: with no
                     // usable token we cannot send, so NACK it as retryable -- a token
                     // may yet arrive, so nothing is dropped.
                     if let Some(a) = auth.as_ref() {
                         if !a.is_ready() {
-                            let mut nack = NackMsg::new(
-                                a.not_ready_reason(),
-                                OtapPdata::new(context, payload),
-                            );
-                            nack.permanent = false;
-                            _ = effect_handler.notify_nack(nack).await;
-                            self.pdata_metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .messages
-                                .inc();
+                            let reason = a.not_ready_reason();
+                            nack_without_usable_token(
+                                pdata,
+                                reason,
+                                &effect_handler,
+                                &mut self.pdata_metrics,
+                            )
+                            .await;
                             continue;
                         }
                     }
+
+                    let signal_type = pdata.signal_type();
+                    let (context, payload) = pdata.into_parts();
 
                     // The cached bearer header, together with the generation of the
                     // token it was built from. The generation is echoed back on
@@ -927,6 +963,34 @@ fn apply_auth_rejection(auth: &mut Option<GrpcBearerAuth>, rejected_generation: 
     if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
         adapter.invalidate(generation);
     }
+}
+
+/// NACKs `pdata` because no usable bearer token is available, and records the
+/// failure.
+///
+/// Only for the paths that cannot wait for a token: shutdown force-draining
+/// buffered pdata, and a batch left parked for in-flight capacity when the
+/// cached token went unusable. Everywhere else the exporter back-pressures
+/// instead. The NACK is retryable ([`NackMsg::new`] is non-permanent by default)
+/// because a refreshed token may still arrive, so the batch is deferred rather
+/// than dropped.
+async fn nack_without_usable_token(
+    pdata: OtapPdata,
+    reason: &'static str,
+    effect_handler: &EffectHandler<OtapPdata>,
+    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
+) {
+    let signal_type = pdata.signal_type();
+    _ = effect_handler
+        .notify_nack(NackMsg::new(reason, pdata))
+        .await;
+    pdata_metrics
+        .with(SignalOutcomeAttributes {
+            signal: signal_type,
+            outcome: Outcome::Failure,
+        })
+        .messages
+        .inc();
 }
 
 /// Applies the Ack/Nack side effects for a completed gRPC export and returns the
