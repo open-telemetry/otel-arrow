@@ -116,10 +116,11 @@ parts of the code.
 
 All modes use a [`tracing_subscriber::EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html).
 The `engine.telemetry.logs.level` field accepts either a severity such as
-`warn` or a complete target directive string. Successful full-engine
-reconciliation applies changes to this field to existing tracing subscribers,
-so an OpAMP or admin control plane can temporarily increase verbosity without
-restarting the engine. Failed reconciliation preserves the active filter.
+`warn` or a complete target directive string. After full-config validation and
+preflight succeed, reconciliation applies the requested level before pipeline
+rewiring starts. This lets an OpAMP or admin control plane observe pipeline
+startup, readiness, draining, and cutover without restarting the engine. If the
+pipeline work fails, reconciliation restores the previous filter.
 
 `EnvFilter` target directives use prefix matching. A directive for
 `<namespace>.<kind>.<name>` also matches another component whose target begins
@@ -135,10 +136,9 @@ warn,otel.receiver.otlp=debug,otap-df-otap=debug
 ```
 
 At startup, a valid `RUST_LOG` environment variable takes precedence over
-`logs.level`. After startup, a successful full-engine reconciliation makes the
-reconciled `logs.level` authoritative and replaces the environment-derived
-filter. This lets an OpAMP or admin control plane reliably change verbosity
-even when the process was launched with `RUST_LOG`.
+`logs.level`. A preflighted reconciliation temporarily replaces that startup
+filter while applying pipeline changes. Success makes the reconciled
+`logs.level` authoritative; failure restores the environment-derived filter.
 
 ### Limitation: active span state is not reconstructed
 

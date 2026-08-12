@@ -3,7 +3,7 @@
 
 //! Runtime-reloadable filtering for internal telemetry logs.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use arc_swap::ArcSwap;
@@ -20,8 +20,15 @@ struct SharedState {
     configured_level: ArcSwap<LogLevel>,
     // The first reconciliation must replace RUST_LOG even when logs.level is unchanged.
     startup_override_active: AtomicBool,
+    revision: AtomicU64,
     template: ArcSwap<EnvFilter>,
     layers: Mutex<Vec<Weak<ArcSwap<EnvFilter>>>>,
+}
+
+struct FilterSnapshot {
+    configured_level: LogLevel,
+    startup_override_active: bool,
+    filter: EnvFilter,
 }
 
 /// One dispatcher-local layer managed by a [`RuntimeLogFilter`].
@@ -62,6 +69,13 @@ pub struct RuntimeLogFilterHandle {
     shared: Arc<SharedState>,
 }
 
+/// Restores the previous filter state unless the candidate update is committed.
+pub struct RuntimeLogFilterUpdateGuard {
+    shared: Arc<SharedState>,
+    previous: Option<FilterSnapshot>,
+    applied_revision: u64,
+}
+
 impl RuntimeLogFilter {
     /// Creates a filter and its update handle from the configured log level.
     #[must_use]
@@ -89,6 +103,7 @@ impl RuntimeLogFilter {
         let shared = Arc::new(SharedState {
             configured_level: ArcSwap::from_pointee(level.clone()),
             startup_override_active: AtomicBool::new(startup_override_active),
+            revision: AtomicU64::new(0),
             template: ArcSwap::from_pointee(filter),
             layers: Mutex::new(Vec::new()),
         });
@@ -106,6 +121,7 @@ impl RuntimeLogFilter {
             shared: Arc::new(SharedState {
                 configured_level: ArcSwap::from_pointee(level),
                 startup_override_active: AtomicBool::new(false),
+                revision: AtomicU64::new(0),
                 template: ArcSwap::from_pointee(filter),
                 layers: Mutex::new(Vec::new()),
             }),
@@ -139,31 +155,17 @@ impl RuntimeLogFilter {
 }
 
 impl RuntimeLogFilterHandle {
-    /// Replaces the active level/target directives and refreshes all callsites.
-    ///
-    /// Severity and target directives take effect immediately. Span-scoped
-    /// directives such as `[pipeline_thread]=debug` do not apply to spans that
-    /// were entered before this call: the replacement `EnvFilter` never
-    /// observed their `on_new_span`/`on_enter` callbacks, so its scope stack
-    /// stays empty for them. Such directives still work when supplied at
-    /// startup. See the crate README for operator-facing details.
-    pub fn apply(&self, level: &LogLevel) {
-        if self.shared.configured_level.load().as_ref() == level
-            && !self.shared.startup_override_active.load(Ordering::Acquire)
-        {
-            return;
-        }
-        let filter =
-            EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use");
-        let mut layers = self
-            .shared
-            .layers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.shared.configured_level.store(Arc::new(level.clone()));
+    fn publish(
+        &self,
+        layers: &mut Vec<Weak<ArcSwap<EnvFilter>>>,
+        level: LogLevel,
+        startup_override_active: bool,
+        filter: EnvFilter,
+    ) {
+        self.shared.configured_level.store(Arc::new(level));
         self.shared
             .startup_override_active
-            .store(false, Ordering::Release);
+            .store(startup_override_active, Ordering::Release);
         self.shared.template.store(Arc::new(filter.clone()));
         layers.retain(|layer| {
             if let Some(layer) = layer.upgrade() {
@@ -173,8 +175,68 @@ impl RuntimeLogFilterHandle {
                 false
             }
         });
+    }
+
+    /// Replaces the active level/target directives and refreshes all callsites.
+    ///
+    /// Severity and target directives take effect immediately. Span-scoped
+    /// directives such as `[pipeline_thread]=debug` do not apply to spans that
+    /// were entered before this call: the replacement `EnvFilter` never
+    /// observed their `on_new_span`/`on_enter` callbacks, so its scope stack
+    /// stays empty for them. Such directives still work when supplied at
+    /// startup. See the crate README for operator-facing details.
+    pub fn apply(&self, level: &LogLevel) {
+        let filter =
+            EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use");
+        let mut layers = self
+            .shared
+            .layers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.shared.configured_level.load().as_ref() == level
+            && !self.shared.startup_override_active.load(Ordering::Acquire)
+        {
+            return;
+        }
+        self.publish(&mut layers, level.clone(), false, filter);
+        _ = self.shared.revision.fetch_add(1, Ordering::AcqRel);
         drop(layers);
         tracing::callsite::rebuild_interest_cache();
+    }
+
+    /// Applies a candidate level that is rolled back unless the returned guard is committed.
+    #[must_use]
+    pub fn apply_transactionally(&self, level: &LogLevel) -> RuntimeLogFilterUpdateGuard {
+        let filter =
+            EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use");
+        let mut layers = self
+            .shared
+            .layers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.shared.configured_level.load().as_ref() == level
+            && !self.shared.startup_override_active.load(Ordering::Acquire)
+        {
+            return RuntimeLogFilterUpdateGuard {
+                shared: Arc::clone(&self.shared),
+                previous: None,
+                applied_revision: self.shared.revision.load(Ordering::Acquire),
+            };
+        }
+        let previous = FilterSnapshot {
+            configured_level: self.shared.configured_level.load().as_ref().clone(),
+            startup_override_active: self.shared.startup_override_active.load(Ordering::Acquire),
+            filter: self.shared.template.load().as_ref().clone(),
+        };
+        self.publish(&mut layers, level.clone(), false, filter);
+        let applied_revision = self.shared.revision.fetch_add(1, Ordering::AcqRel) + 1;
+        drop(layers);
+        tracing::callsite::rebuild_interest_cache();
+        RuntimeLogFilterUpdateGuard {
+            shared: Arc::clone(&self.shared),
+            previous: Some(previous),
+            applied_revision,
+        }
     }
 
     /// Returns the desired configuration value.
@@ -184,6 +246,41 @@ impl RuntimeLogFilterHandle {
     #[must_use]
     pub fn configured_level(&self) -> LogLevel {
         self.shared.configured_level.load().as_ref().clone()
+    }
+}
+
+impl RuntimeLogFilterUpdateGuard {
+    /// Keeps the candidate filter as the new configured state.
+    pub fn commit(mut self) {
+        self.previous = None;
+    }
+}
+
+impl Drop for RuntimeLogFilterUpdateGuard {
+    fn drop(&mut self) {
+        let Some(previous) = self.previous.take() else {
+            return;
+        };
+        let handle = RuntimeLogFilterHandle {
+            shared: Arc::clone(&self.shared),
+        };
+        let mut layers = self
+            .shared
+            .layers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.shared.revision.load(Ordering::Acquire) != self.applied_revision {
+            return;
+        }
+        handle.publish(
+            &mut layers,
+            previous.configured_level,
+            previous.startup_override_active,
+            previous.filter,
+        );
+        _ = self.shared.revision.fetch_add(1, Ordering::AcqRel);
+        drop(layers);
+        tracing::callsite::rebuild_interest_cache();
     }
 }
 
@@ -410,6 +507,67 @@ mod tests {
             });
 
             assert_eq!(handle.configured_level().as_str(), "info");
+        });
+    }
+
+    /// Scenario: a candidate reconciliation level temporarily replaces startup RUST_LOG and then fails.
+    /// Guarantees: dropping the update guard restores the exact environment-derived filter and configured level.
+    #[test]
+    fn transactional_update_rolls_back_rust_log_startup_filter() {
+        crate::with_rust_log(Some("error"), || {
+            let count = Arc::new(AtomicUsize::new(0));
+            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let subscriber = Registry::default()
+                .with(filter.layer())
+                .with(CountingLayer(Arc::clone(&count)));
+
+            tracing::subscriber::with_default(subscriber, || {
+                let update = handle.apply_transactionally(&level("info"));
+                tracing::info!("candidate level permits this event");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 1);
+
+                drop(update);
+                tracing::warn!("restored RUST_LOG blocks this event");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 0);
+            });
+
+            assert_eq!(handle.configured_level().as_str(), "warn");
+        });
+    }
+
+    /// Scenario: a candidate reconciliation level succeeds.
+    /// Guarantees: committing the update guard keeps the candidate filter active.
+    #[test]
+    fn transactional_update_commit_keeps_candidate_filter() {
+        crate::with_cleared_rust_log(|| {
+            let count = Arc::new(AtomicUsize::new(0));
+            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let subscriber = Registry::default()
+                .with(filter.layer())
+                .with(CountingLayer(Arc::clone(&count)));
+
+            handle.apply_transactionally(&level("info")).commit();
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!("committed candidate permits this event");
+            });
+
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            assert_eq!(handle.configured_level().as_str(), "info");
+        });
+    }
+
+    /// Scenario: another update supersedes an uncommitted candidate level.
+    /// Guarantees: dropping the stale guard does not overwrite the newer filter.
+    #[test]
+    fn transactional_update_does_not_roll_back_newer_update() {
+        crate::with_cleared_rust_log(|| {
+            let (_filter, handle) = RuntimeLogFilter::new(&level("warn"));
+
+            let update = handle.apply_transactionally(&level("info"));
+            handle.apply(&level("debug"));
+            drop(update);
+
+            assert_eq!(handle.configured_level().as_str(), "debug");
         });
     }
 
