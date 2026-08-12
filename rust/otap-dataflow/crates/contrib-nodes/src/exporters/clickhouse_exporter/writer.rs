@@ -37,7 +37,6 @@ use crate::exporters::clickhouse_exporter::{
     tables::{build_payload_destination_table_map, init_table, validate_identifier},
 };
 
-#[derive(Clone)]
 pub struct ClickHouseWriter {
     client: Client,
     payload_destination_tables: HashMap<ArrowPayloadType, String>,

@@ -207,7 +207,10 @@ payloads remain internal to the transform process.
 - writes only signal payloads
 - maps `Logs -> logs table` and `Spans -> traces table`
 - runs at most `max_in_flight` insert requests concurrently
-- drains accepted insert requests during shutdown
+- drains accepted insert requests until the shutdown deadline
+
+If the shutdown deadline expires, the exporter stops waiting for active
+inserts and drops queued inserts that have not started.
 
 There is no longer any special write ordering for attribute tables because
 attribute tables do not exist.

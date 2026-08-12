@@ -30,7 +30,8 @@ use secrecy::SecretString;
 use serde::Deserialize;
 use std::num::NonZeroUsize;
 
-const DEFAULT_MAX_IN_FLIGHT: usize = 10;
+const DEFAULT_MAX_IN_FLIGHT: NonZeroUsize =
+    NonZeroUsize::new(10).expect("default max_in_flight must be non-zero");
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -66,7 +67,7 @@ pub struct Config {
     /// Use async insert
     pub async_insert: bool,
     /// Maximum number of ClickHouse insert requests allowed to run concurrently.
-    pub max_in_flight: usize,
+    pub max_in_flight: NonZeroUsize,
     pub table_defaults: DefaultTableConfig,
     pub tables: TablesConfig,
 }
@@ -74,10 +75,7 @@ pub struct Config {
 impl Config {
     pub fn from_patch(p: ConfigPatch) -> Self {
         let async_insert = p.async_insert.unwrap_or(true);
-        let max_in_flight = p
-            .max_in_flight
-            .map(NonZeroUsize::get)
-            .unwrap_or(DEFAULT_MAX_IN_FLIGHT);
+        let max_in_flight = p.max_in_flight.unwrap_or(DEFAULT_MAX_IN_FLIGHT);
 
         let tables = TablesConfig::from_patch(p.tables);
 
@@ -309,7 +307,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(Config::from_patch(patch).max_in_flight, 10);
+        assert_eq!(Config::from_patch(patch).max_in_flight.get(), 10);
     }
 
     /// Scenario: a ClickHouse exporter config requests OTC-equivalent concurrency.
@@ -325,7 +323,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(Config::from_patch(patch).max_in_flight, 10);
+        assert_eq!(Config::from_patch(patch).max_in_flight.get(), 10);
     }
 
     /// Scenario: a ClickHouse exporter config sets the concurrency limit to zero.
