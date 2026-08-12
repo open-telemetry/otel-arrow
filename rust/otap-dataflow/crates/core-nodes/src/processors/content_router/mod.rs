@@ -84,7 +84,7 @@ use otap_df_engine::{
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::OtapPayload;
+use otap_df_pdata::PayloadData;
 use otap_df_pdata::TryFromWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
@@ -560,8 +560,8 @@ impl ContentRouter {
     fn resolve_route(&self, pdata: &OtapPdata) -> RouteResolution {
         let signal_type = pdata.signal_type();
 
-        match pdata.payload_ref() {
-            OtapPayload::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
+        match pdata.payload_ref().data() {
+            PayloadData::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
                 (SignalType::Logs, OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                     let data = RawLogsData::new(bytes.as_ref());
                     self.resolve_logs_route(&data)
@@ -578,7 +578,7 @@ impl ContentRouter {
                 // since signal_type() is derived from the OtlpProtoBytes variant itself.
                 _ => RouteResolution::ConversionError,
             },
-            OtapPayload::OtapArrowRecords(arrow_records) => {
+            PayloadData::OtapArrowRecords(arrow_records) => {
                 match signal_type {
                     // Use native OTAP Arrow view for logs (avoids clone + OTLP round-trip)
                     SignalType::Logs => self.resolve_arrow_logs_route(arrow_records),

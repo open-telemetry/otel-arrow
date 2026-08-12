@@ -38,7 +38,7 @@ use otap_df_otap::{
 };
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
-    OtapArrowRecords, OtapPayload, otap::transform::sanitize::sanitize_otap_batch,
+    OtapArrowRecords, OtapPayload, PayloadData, otap::transform::sanitize::sanitize_otap_batch,
 };
 use otap_df_query_engine::{
     parser::default_parser_options,
@@ -367,7 +367,7 @@ impl TransformProcessor {
             }
 
             // setup the pdata with the new outbound context
-            let payload = OtapPayload::OtapArrowRecords(otap_batch);
+            let payload = OtapPayload::from(otap_batch);
             let mut pdata = OtapPdata::new(outbound_context.clone(), payload);
             let outbound_key = self
                 .contexts
@@ -591,7 +591,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                     match result {
                         Ok(next_result) => {
                             // initialize payload for the next loop iteration
-                            payload = Some(OtapPayload::OtapArrowRecords(next_result));
+                            payload = Some(OtapPayload::from(next_result));
                         }
                         Err(e) => {
                             transform_error = Some(e);
@@ -606,8 +606,12 @@ impl Processor<OtapPdata> for TransformProcessor {
                         None => {
                             // safety: since error is `None`, we know payload must be `Some` based
                             // on the logic in the loop above, so it is safe to expect here
-                            match payload.take().expect("payload option initialized") {
-                                OtapPayload::OtapArrowRecords(otap_batch) => Ok(otap_batch),
+                            match payload
+                                .take()
+                                .expect("payload option initialized")
+                                .into_data()
+                            {
+                                PayloadData::OtapArrowRecords(otap_batch) => Ok(otap_batch),
                                 _ => {
                                     // safety: if any transform applied then we'll have converted
                                     // the payload the OTAP, so we know here that it must be this
@@ -1555,8 +1559,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         assert_eq!(result, input)
                     }
                     _ => panic!("unexpected payload type"),
@@ -1755,8 +1759,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         // ensure the routed record was "sanitized"
                         let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
                         let severity_text_col = logs_batch
@@ -1783,8 +1787,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         assert_logs_records_equal(result, info_log_record);
                     }
                     _ => panic!("unexpected payload type"),
@@ -2806,8 +2810,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         // check sanitization was skipped on routed record
                         let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
                         let severity_text_col = logs_batch

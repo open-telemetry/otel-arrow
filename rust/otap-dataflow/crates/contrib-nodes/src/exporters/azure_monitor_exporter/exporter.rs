@@ -16,7 +16,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+use otap_df_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
 
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
@@ -458,8 +458,8 @@ impl AzureMonitorExporter {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
 
-                let log_entries = match &payload {
-                    OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
+                let log_entries = match payload.data() {
+                    PayloadData::OtapArrowRecords(otap_records) => match otap_records {
                         OtapArrowRecords::Logs(_) => {
                             let logs_view = OtapLogsView::try_from(otap_records).map_err(|e| {
                                 let error = Error::LogsViewCreationFailed { source: e };
@@ -478,7 +478,7 @@ impl AzureMonitorExporter {
                             None
                         }
                     },
-                    OtapPayload::OtlpBytes(otlp_bytes) => match otlp_bytes {
+                    PayloadData::OtlpBytes(otlp_bytes) => match otlp_bytes {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
                             let logs_view = RawLogsData::new(bytes.as_ref());
                             Some(self.transformer.convert_to_log_analytics(&logs_view))
@@ -791,8 +791,7 @@ mod tests {
         let batch_id = 1;
         let msg_id = 100;
         let context = Context::default();
-        let payload =
-            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
+        let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
         exporter
             .state
@@ -837,8 +836,7 @@ mod tests {
         let batch_id = 1;
         let msg_id = 100;
         let context = Context::default();
-        let payload =
-            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
+        let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
         exporter
             .state
@@ -880,7 +878,7 @@ mod tests {
         pdata_tx
             .send_async(OtapPdata::new(
                 Context::default(),
-                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new())),
+                OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::new())),
             ))
             .await
             .unwrap();

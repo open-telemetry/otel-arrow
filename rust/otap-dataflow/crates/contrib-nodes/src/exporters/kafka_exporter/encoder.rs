@@ -85,7 +85,7 @@ mod tests {
         // Basic smoke test: OtlpProtoBytes should pass through unchanged
         let bytes = vec![1, 2, 3, 4, 5];
         let otlp_bytes = OtlpProtoBytes::ExportTracesRequest(bytes.clone().into());
-        let payload = OtapPayload::OtlpBytes(otlp_bytes);
+        let payload = OtapPayload::from(otlp_bytes);
 
         let result = encode_to_otlp_bytes(payload).expect("encoding should succeed");
         assert_eq!(result, bytes);

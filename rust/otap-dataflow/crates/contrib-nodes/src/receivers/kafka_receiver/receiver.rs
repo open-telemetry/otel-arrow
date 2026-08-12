@@ -1578,7 +1578,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-    use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+    use otap_df_pdata::{OtapArrowRecords, OtapPayload, PayloadData, TryIntoWithOptions};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message;
     use rdkafka::ClientConfig;
@@ -1893,8 +1893,8 @@ mod tests {
         let payload: OtapPayload = pdata.take_payload();
         assert!(
             matches!(
-                payload,
-                OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                payload.data(),
+                PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
             ),
             "expected OtapArrowRecords::Traces"
         );
@@ -1910,8 +1910,8 @@ mod tests {
         let payload: OtapPayload = pdata.take_payload();
         assert!(
             matches!(
-                payload,
-                OtapPayload::OtapArrowRecords(OtapArrowRecords::Metrics(_))
+                payload.data(),
+                PayloadData::OtapArrowRecords(OtapArrowRecords::Metrics(_))
             ),
             "expected OtapArrowRecords::Metrics"
         );
@@ -1927,8 +1927,8 @@ mod tests {
         let payload: OtapPayload = pdata.take_payload();
         assert!(
             matches!(
-                payload,
-                OtapPayload::OtapArrowRecords(OtapArrowRecords::Logs(_))
+                payload.data(),
+                PayloadData::OtapArrowRecords(OtapArrowRecords::Logs(_))
             ),
             "expected OtapArrowRecords::Logs"
         );
@@ -3355,8 +3355,8 @@ mod tests {
                     let payload: OtapPayload = pdata.take_payload();
                     assert!(
                         matches!(
-                            payload,
-                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                            payload.data(),
+                            PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
                         ),
                         "Expected OtapArrowRecords::Traces for message {i}"
                     );
@@ -3404,7 +3404,7 @@ mod tests {
                 for i in 0..3 {
                     let mut pdata = receiver.recv_pdata().await;
                     let payload: OtapPayload = pdata.take_payload();
-                    if let OtapPayload::OtapArrowRecords(arrow_records) = payload {
+                    if let PayloadData::OtapArrowRecords(arrow_records) = payload.into_data() {
                         let expected = OtapArrowRecords::Metrics(Metrics::default());
                         assert_eq!(expected, arrow_records);
                     } else {
@@ -3454,7 +3454,7 @@ mod tests {
                 for i in 0..3 {
                     let mut pdata = receiver.recv_pdata().await;
                     let payload: OtapPayload = pdata.take_payload();
-                    if let OtapPayload::OtapArrowRecords(arrow_records) = payload {
+                    if let PayloadData::OtapArrowRecords(arrow_records) = payload.into_data() {
                         let expected = OtapArrowRecords::Logs(Logs::default());
                         assert_eq!(expected, arrow_records);
                     } else {

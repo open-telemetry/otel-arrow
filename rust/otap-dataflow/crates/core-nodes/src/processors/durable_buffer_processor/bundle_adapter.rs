@@ -530,7 +530,7 @@ pub fn convert_bundle_to_pdata(
     // First, check if this is an OTLP opaque bundle
     if let Some((signal_type, batch)) = find_otlp_slot(payloads) {
         let otlp_bytes = extract_otlp_bytes(signal_type, batch)?;
-        let payload = OtapPayload::OtlpBytes(otlp_bytes);
+        let payload = OtapPayload::from(otlp_bytes);
         return Ok(OtapPdata::new(Context::default(), payload));
     }
 
@@ -545,7 +545,7 @@ pub fn convert_bundle_to_pdata(
     };
 
     // Wrap in OtapPayload and OtapPdata
-    let payload = OtapPayload::OtapArrowRecords(records);
+    let payload = OtapPayload::from(records);
     Ok(OtapPdata::new(Context::default(), payload))
 }
 

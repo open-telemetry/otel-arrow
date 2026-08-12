@@ -15,7 +15,6 @@
 
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
-use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use otap_df_config::PortName;
@@ -569,49 +568,16 @@ impl OtapPdata {
     }
 }
 
-/// Measurements shared by every unchanged clone of a payload version.
-///
-/// Fields are named for the logical measurement rather than a payload
-/// representation so future representations can reuse them. Each accessor
-/// decides whether caching is worthwhile for the active representation.
-#[derive(Debug, Default)]
-struct PayloadMeasurements {
-    item_count: OnceLock<usize>,
-    canonical_size: OnceLock<Result<usize, Arc<otap_df_pdata::error::Error>>>,
-}
-
 /// Context + container for telemetry data
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OtapPdata {
     context: Context,
     payload: OtapPayload,
-    measurements: OnceLock<Arc<PayloadMeasurements>>,
-}
-
-impl Clone for OtapPdata {
-    fn clone(&self) -> Self {
-        Self {
-            context: self.context.clone(),
-            payload: self.payload.clone(),
-            measurements: OnceLock::from(self.shared_measurements()),
-        }
-    }
 }
 
 /* -------- Signal type -------- */
 
 impl OtapPdata {
-    fn shared_measurements(&self) -> Arc<PayloadMeasurements> {
-        self.measurements
-            .get_or_init(|| Arc::new(PayloadMeasurements::default()))
-            .clone()
-    }
-
-    fn payload_measurements(&self) -> &PayloadMeasurements {
-        self.measurements
-            .get_or_init(|| Arc::new(PayloadMeasurements::default()))
-    }
-
     /// Construct new OtapData with payload using default context.
     /// This is a test-only form.
     #[must_use]
@@ -620,7 +586,6 @@ impl OtapPdata {
         Self {
             context: Context::default(),
             payload,
-            measurements: OnceLock::new(),
         }
     }
 
@@ -631,18 +596,13 @@ impl OtapPdata {
         Self {
             context: Context::default(),
             payload,
-            measurements: OnceLock::new(),
         }
     }
 
     /// Construct new OtapData with context and payload
     #[must_use]
     pub const fn new(context: Context, payload: OtapPayload) -> Self {
-        Self {
-            context,
-            payload,
-            measurements: OnceLock::new(),
-        }
+        Self { context, payload }
     }
 
     /// Returns the type of signal represented by this `OtapPdata` instance.
@@ -674,11 +634,14 @@ impl OtapPdata {
     }
 
     /// Take the payload
+    ///
+    /// The measurement cache stays with whichever `OtapPayload` value it
+    /// belongs to: the returned payload keeps this payload's cache intact,
+    /// while `self` is left holding a freshly emptied payload with its own
+    /// fresh cache.
     #[must_use]
     pub fn take_payload(&mut self) -> OtapPayload {
-        let payload = self.payload.take_payload();
-        self.measurements = OnceLock::new();
-        payload
+        self.payload.take_payload()
     }
 
     /// Borrow the payload.
@@ -701,7 +664,6 @@ impl OtapPdata {
         Self {
             context: self.context.clone_detached(),
             payload: self.payload.clone(),
-            measurements: OnceLock::from(self.shared_measurements()),
         }
     }
 
@@ -719,30 +681,16 @@ impl OtapPdata {
     /// Returns the number of items of the primary signal (spans, data
     /// points, log records).
     #[must_use]
-    pub fn num_items(&self) -> usize {
-        match &self.payload {
-            // Cache OTLP counts because counting traverses protobuf records.
-            OtapPayload::OtlpBytes(_) => *self
-                .payload_measurements()
-                .item_count
-                .get_or_init(|| self.payload.num_items()),
-            // Bypass the cache for OTAP because Arrow batches store row counts.
-            OtapPayload::OtapArrowRecords(_) => self.payload.num_items(),
-        }
+    pub fn num_items(&mut self) -> usize {
+        self.payload.num_items()
     }
 
-    /// Returns the canonical uncompressed OTLP protobuf size.
-    pub fn canonical_size(&self) -> Result<usize, Arc<otap_df_pdata::error::Error>> {
-        match &self.payload {
-            // Bypass the cache for OTLP because it owns the canonical bytes.
-            OtapPayload::OtlpBytes(value) => Ok(value.num_bytes()),
-            // Cache OTAP size because it requires conversion to canonical OTLP.
-            OtapPayload::OtapArrowRecords(_) => self
-                .payload_measurements()
-                .canonical_size
-                .get_or_init(|| self.payload.canonical_size().map_err(Arc::new))
-                .clone(),
-        }
+    /// Returns the normalized uncompressed OTLP protobuf size.
+    ///
+    /// Both representations require normalization, so the result is computed
+    /// once per payload value. Clones copy measurements computed before cloning.
+    pub fn normalized_otlp_size(&mut self) -> Result<u64, otap_df_pdata::error::Error> {
+        self.payload.normalized_otlp_size()
     }
 
     /// Enable testing Ack/Nack without an effect handler. Consumes,
@@ -1908,7 +1856,7 @@ mod test {
         let (test_data, pdata) = create_test();
 
         // Subscribe WITHOUT RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(Interests::ACKS, test_data.clone().into(), 1234);
+        let mut pdata = pdata.test_subscribe_to(Interests::ACKS, test_data.clone().into(), 1234);
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
@@ -1919,7 +1867,7 @@ mod test {
         let result = next_ack(ack);
         assert!(result.is_some());
 
-        let (node_id, ack_msg) = result.unwrap();
+        let (node_id, mut ack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
@@ -1935,7 +1883,7 @@ mod test {
         let (test_data, pdata) = create_test();
 
         // Subscribe WITH RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(
+        let mut pdata = pdata.test_subscribe_to(
             Interests::ACKS | Interests::RETURN_DATA,
             test_data.clone().into(),
             1234,
@@ -1950,7 +1898,7 @@ mod test {
         let result = next_ack(ack);
         assert!(result.is_some());
 
-        let (node_id, ack_msg) = result.expect("has");
+        let (node_id, mut ack_msg) = result.expect("has");
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
@@ -1966,7 +1914,7 @@ mod test {
         let (test_data, pdata) = create_test();
 
         // Subscribe WITHOUT RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(Interests::NACKS, test_data.clone().into(), 1234);
+        let mut pdata = pdata.test_subscribe_to(Interests::NACKS, test_data.clone().into(), 1234);
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
@@ -1976,7 +1924,7 @@ mod test {
         let result = next_nack(nack);
         assert!(result.is_some());
 
-        let (node_id, nack_msg) = result.unwrap();
+        let (node_id, mut nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = nack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
@@ -1992,7 +1940,7 @@ mod test {
         let (test_data, pdata) = create_test();
 
         // Subscribe WITH RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(
+        let mut pdata = pdata.test_subscribe_to(
             Interests::NACKS | Interests::RETURN_DATA,
             test_data.clone().into(),
             1234,
@@ -2007,7 +1955,7 @@ mod test {
         let result = next_nack(nack);
         assert!(result.is_some());
 
-        let (node_id, nack_msg) = result.unwrap();
+        let (node_id, mut nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = nack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
@@ -2045,7 +1993,7 @@ mod test {
 
         let result = next_ack(ack_msg);
         assert!(result.is_some());
-        let (node_id, ack_msg) = result.unwrap();
+        let (node_id, mut ack_msg) = result.unwrap();
         assert_eq!(node_id, 2);
 
         // Payload should be preserved because node 1 has RETURN_DATA
@@ -2168,7 +2116,7 @@ mod test {
 
         // Ack path: next_ack finds node 3 first
         let ack = AckMsg::new(pdata);
-        let (node_id, ack_msg) = next_ack(ack).expect("should find node 3");
+        let (node_id, mut ack_msg) = next_ack(ack).expect("should find node 3");
         assert_eq!(node_id, 3);
 
         // The payload must be preserved -- node 1 needs it for retry.
@@ -2180,7 +2128,7 @@ mod test {
         assert!(!ack_msg.accepted.is_empty());
 
         // Continue to node 1
-        let (node_id, ack_msg) = next_ack(ack_msg).expect("should find node 1");
+        let (node_id, mut ack_msg) = next_ack(ack_msg).expect("should find node 1");
         assert_eq!(node_id, 1);
         let recv: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv, test_data);
@@ -2820,81 +2768,124 @@ mod test {
         assert_eq!(m.finish(), None);
     }
 
-    /// Scenario: item count is requested repeatedly from unchanged OTLP PData and its clones.
-    /// Guarantees: OTLP count is cached once and unchanged clones share the same cache.
+    /// Scenario: OTLP PData is cloned before and after its item count is measured.
+    /// Guarantees: clones copy existing cached values but do not share later cache updates.
     #[test]
-    fn otlp_item_count_is_cached_and_shared_across_clones() {
-        let pdata = create_test_pdata();
-        assert!(pdata.measurements.get().is_none());
+    fn otlp_item_count_cache_is_copied_across_clones() {
+        let mut pdata = create_test_pdata();
+        assert!(!pdata.payload_ref().test_has_cached_item_count());
+        let mut cloned_before_measurement = pdata.clone();
+        let expected_items = pdata.num_items();
+        assert!(pdata.payload_ref().test_has_cached_item_count());
+        assert!(
+            !cloned_before_measurement
+                .payload_ref()
+                .test_has_cached_item_count()
+        );
 
-        let expected_items = pdata.payload.num_items();
-        let cloned = pdata.clone();
-        let detached = pdata.clone_without_context();
-        assert!(Arc::ptr_eq(
-            pdata.measurements.get().expect("measurements"),
-            cloned.measurements.get().expect("measurements")
-        ));
-        assert!(Arc::ptr_eq(
-            pdata.measurements.get().expect("measurements"),
-            detached.measurements.get().expect("measurements")
-        ));
+        assert_eq!(cloned_before_measurement.num_items(), expected_items);
+        assert!(
+            cloned_before_measurement
+                .payload_ref()
+                .test_has_cached_item_count()
+        );
 
-        assert_eq!(pdata.num_items(), expected_items);
-        assert_eq!(cloned.num_items(), expected_items);
-        let measurements = pdata.measurements.get().expect("measurements");
-        assert_eq!(measurements.item_count.get(), Some(&expected_items));
-        assert!(measurements.canonical_size.get().is_none());
+        let detached_after_measurement = pdata.clone_without_context();
+        assert!(
+            detached_after_measurement
+                .payload_ref()
+                .test_has_cached_item_count()
+        );
+        assert!(!pdata.payload_ref().test_has_cached_normalized_size());
     }
 
-    /// Scenario: canonical size is requested for OTAP Arrow records.
-    /// Guarantees: the cached size equals an unbounded conversion to canonical OTLP protobuf bytes.
+    /// Scenario: normalized size is requested for OTAP Arrow records.
+    /// Guarantees: the size is cached after conversion into the normalized OTLP message model.
     #[test]
-    fn canonical_size_converts_otap_records() {
-        use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes, TryIntoWithOptions};
+    fn normalized_otlp_size_converts_otap_records() {
+        use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
 
         let payload = create_test_pdata().into_parts().1;
         let records: OtapArrowRecords = payload.try_into_with_default().expect("OTAP conversion");
-        let expected: OtlpProtoBytes = records
+        let expected = OtapPayload::from_otap(records.clone())
+            .size()
+            .expect("normalized OTLP size");
+        let mut pdata = OtapPdata::new_default(records.into());
+
+        assert_eq!(
+            pdata.normalized_otlp_size().expect("normalized OTLP size"),
+            expected
+        );
+        assert!(pdata.payload_ref().test_has_cached_normalized_size());
+    }
+
+    /// Scenario: equivalent OTLP and OTAP payloads use different physical encodings.
+    /// Guarantees: normalized OTLP size is representation-independent and ignores extra wire bytes.
+    #[test]
+    fn normalized_otlp_size_matches_across_representations() {
+        use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes, PayloadData, TryIntoWithOptions};
+
+        let payload = create_test_pdata().into_parts().1;
+        let otlp = match payload.into_data() {
+            PayloadData::OtlpBytes(otlp) => otlp,
+            PayloadData::OtapArrowRecords(_) => panic!("expected OTLP test payload"),
+        };
+        let mut bytes = bytes::BytesMut::from(otlp.as_bytes());
+        // Unknown field 100 with value 1 changes wire size but not decoded telemetry.
+        bytes.extend_from_slice(&[0xa0, 0x06, 0x01]);
+        let otlp = match otlp {
+            OtlpProtoBytes::ExportLogsRequest(_) => {
+                OtlpProtoBytes::ExportLogsRequest(bytes.freeze())
+            }
+            OtlpProtoBytes::ExportMetricsRequest(_) => {
+                OtlpProtoBytes::ExportMetricsRequest(bytes.freeze())
+            }
+            OtlpProtoBytes::ExportTracesRequest(_) => {
+                OtlpProtoBytes::ExportTracesRequest(bytes.freeze())
+            }
+        };
+        let wire_size = otlp.num_bytes() as u64;
+        let records: OtapArrowRecords = otlp
             .clone()
             .try_into_with_default()
-            .expect("OTLP conversion");
-        let pdata = OtapPdata::new_default(records.into());
+            .expect("OTAP conversion");
+        let mut otlp = OtapPdata::new_default(otlp.into());
+        let mut otap = OtapPdata::new_default(records.into());
 
-        assert_eq!(
-            pdata.canonical_size().expect("canonical size"),
-            expected.num_bytes()
-        );
-        assert!(
-            pdata
-                .measurements
-                .get()
-                .expect("measurements")
-                .canonical_size
-                .get()
-                .is_some()
-        );
+        let otlp_size = otlp.normalized_otlp_size().expect("normalized OTLP size");
+        let otap_size = otap.normalized_otlp_size().expect("normalized OTLP size");
+        assert_eq!(otlp_size, otap_size);
+        assert!(otlp_size < wire_size);
     }
 
-    /// Scenario: OTLP size and OTAP item count are requested without any expensive conversion.
-    /// Guarantees: direct O(1) measurements bypass allocation of the shared measurement cache.
+    /// Scenario: normalized sizing fails while decoding invalid OTLP bytes.
+    /// Guarantees: failures are returned directly and do not populate the plain size cache.
     #[test]
-    fn direct_payload_measurements_bypass_cache() {
-        use otap_df_pdata::{OtapArrowRecords, TryIntoWithOptions};
+    fn normalized_otlp_size_does_not_cache_failures() {
+        use otap_df_pdata::OtlpProtoBytes;
 
-        let otlp = create_test_pdata();
-        let expected_size = otlp.payload.num_bytes().expect("OTLP size");
-        assert_eq!(
-            otlp.canonical_size().expect("canonical size"),
-            expected_size
-        );
-        assert!(otlp.measurements.get().is_none());
+        let invalid = OtlpProtoBytes::ExportLogsRequest(bytes::Bytes::from_static(&[0xff]));
+        let mut pdata = OtapPdata::new_default(OtapPayload::from_otlp(invalid));
+
+        assert!(pdata.normalized_otlp_size().is_err());
+        assert!(!pdata.payload_ref().test_has_cached_normalized_size());
+        assert!(pdata.normalized_otlp_size().is_err());
+        assert!(!pdata.payload_ref().test_has_cached_normalized_size());
+    }
+
+    /// Scenario: OTAP item count is requested without traversing individual records.
+    /// Guarantees: the direct Arrow row count bypasses allocation of the measurement cache.
+    #[test]
+    fn otap_item_count_bypasses_cache() {
+        use otap_df_pdata::{OtapArrowRecords, TryIntoWithOptions};
 
         let payload = create_test_pdata().into_parts().1;
         let records: OtapArrowRecords = payload.try_into_with_default().expect("OTAP conversion");
-        let otap = OtapPdata::new_default(records.into());
+        let mut otap = OtapPdata::new_default(records.into());
         let expected_items = otap.payload.num_items();
         assert_eq!(otap.num_items(), expected_items);
-        assert!(otap.measurements.get().is_none());
+        assert!(!otap.payload_ref().test_has_cached_item_count());
+        assert!(!otap.payload_ref().test_has_cached_normalized_size());
     }
 
     /// Scenario: cached measurements exist before the payload is taken from PData.
@@ -2903,18 +2894,54 @@ mod test {
     fn take_payload_invalidates_cached_measurements() {
         let mut pdata = create_test_pdata();
         assert!(pdata.num_items() > 0);
-        assert!(pdata.canonical_size().expect("canonical size") > 0);
-        let original_measurements = pdata.measurements.get().expect("measurements").clone();
-
+        assert!(pdata.normalized_otlp_size().expect("normalized OTLP size") > 0);
         let payload = pdata.take_payload();
 
         assert!(!payload.is_empty());
-        assert!(pdata.measurements.get().is_none());
+        assert!(payload.test_has_cached_item_count());
+        assert!(payload.test_has_cached_normalized_size());
+        assert!(!pdata.payload_ref().test_has_cached_item_count());
+        assert!(!pdata.payload_ref().test_has_cached_normalized_size());
         assert_eq!(pdata.num_items(), 0);
-        assert_eq!(pdata.canonical_size().expect("empty canonical size"), 0);
-        assert!(!Arc::ptr_eq(
-            &original_measurements,
-            pdata.measurements.get().expect("measurements")
-        ));
+        assert_eq!(
+            pdata
+                .normalized_otlp_size()
+                .expect("empty normalized OTLP size"),
+            0
+        );
+        assert!(pdata.payload_ref().test_has_cached_item_count());
+        assert!(pdata.payload_ref().test_has_cached_normalized_size());
+    }
+
+    /// Scenario: an unchanged payload's cache is queried, split via `into_parts`, and the
+    /// resulting payload is used to rebuild a new `OtapPdata`.
+    /// Guarantees: cached values are preserved end-to-end across `into_parts()`
+    /// and reconstruction via `OtapPdata::new`.
+    #[test]
+    fn measurements_survive_into_parts_and_reconstruction() {
+        let mut pdata = create_test_pdata();
+        let expected_items = pdata.num_items();
+
+        let (context, payload) = pdata.into_parts();
+        assert!(payload.test_has_cached_item_count());
+
+        let mut rebuilt = OtapPdata::new(context, payload);
+        assert!(rebuilt.payload_ref().test_has_cached_item_count());
+        assert_eq!(rebuilt.num_items(), expected_items);
+    }
+
+    /// Scenario: a brand new `OtapPayload` is constructed from raw representation data,
+    /// distinct from any previously measured payload.
+    /// Guarantees: constructing a new logical payload always starts with an
+    /// uninitialized measurement cache, never reusing another payload's cache.
+    #[test]
+    fn new_payload_construction_has_fresh_measurements() {
+        let mut measured = create_test_pdata();
+        assert!(measured.num_items() > 0);
+        assert!(measured.payload_ref().test_has_cached_item_count());
+
+        let (_, payload) = create_test_pdata().into_parts();
+        assert!(!payload.test_has_cached_item_count());
+        assert!(!payload.test_has_cached_normalized_size());
     }
 }

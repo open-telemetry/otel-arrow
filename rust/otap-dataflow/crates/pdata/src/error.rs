@@ -143,6 +143,9 @@ pub enum Error {
     #[error("Invalid protobuf wire format")]
     InvalidProtobufWireFormat,
 
+    #[error("Failed to decode OTLP protobuf for normalized sizing")]
+    DecodeOtlpForSizing { source: prost::DecodeError },
+
     #[error("Log record not found")]
     LogRecordNotFound,
 

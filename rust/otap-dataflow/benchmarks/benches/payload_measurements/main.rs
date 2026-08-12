@@ -10,6 +10,8 @@ use std::hint::black_box;
 
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::OtapPayload;
+use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::proto::opentelemetry::common::v1::*;
 use otap_df_pdata::proto::opentelemetry::logs::v1::*;
@@ -78,90 +80,99 @@ fn measure_payloads(c: &mut Criterion) {
 
     for record_count in [10, 100, 1_000] {
         let message = OtlpProtoMessage::Logs(create_logs_data(record_count));
-        let otlp_payload: OtapPayload = otlp_message_to_bytes(&message).into();
-        let otap_payload: OtapPayload = otlp_to_otap(&message).into();
+        // Keep the raw, uncached representations. `OtapPayload` owns the
+        // measurement cache, so wrapping one of these in a fresh `OtapPayload`
+        // (via `.into()`) is the only way to get a genuinely cold cache: an
+        // `OtapPayload` clone shares its source's cache handle, so reusing a
+        // previously wrapped/cloned `OtapPayload` across "cold" iterations
+        // would silently turn every iteration after the first into a "warm"
+        // measurement.
+        let otlp_bytes: OtlpProtoBytes = otlp_message_to_bytes(&message);
+        let otap_records: OtapArrowRecords = otlp_to_otap(&message);
 
-        for (format, payload) in [("OTLP", otlp_payload), ("OTAP", otap_payload)] {
-            let disabled = OtapPdata::new(Context::default(), payload.clone());
+        for format in ["OTLP", "OTAP"] {
+            let fresh_payload = |format: &str| -> OtapPayload {
+                match format {
+                    "OTLP" => otlp_bytes.clone().into(),
+                    _ => otap_records.clone().into(),
+                }
+            };
+
+            let disabled = OtapPdata::new(Context::default(), fresh_payload(format));
             _ = group.bench_with_input(
                 BenchmarkId::new(format!("{format}/baseline/disabled"), record_count),
                 &disabled,
                 |b, pdata| b.iter(|| black_box(pdata.signal_type())),
             );
-            _ = group.bench_with_input(
+            _ = group.bench_function(
                 BenchmarkId::new(format!("{format}/clone/cold"), record_count),
-                &payload,
-                |b, payload| {
-                    b.iter_batched(
-                        || OtapPdata::new(Context::default(), black_box(payload.clone())),
-                        |pdata| black_box(pdata.clone()),
-                        BatchSize::SmallInput,
-                    )
+                |b| {
+                    let pdata =
+                        OtapPdata::new(Context::default(), black_box(fresh_payload(format)));
+                    b.iter(|| black_box(pdata.clone()))
                 },
             );
 
-            let clone_cached = OtapPdata::new(Context::default(), payload.clone());
-            _ = black_box(clone_cached.clone());
+            let mut clone_cached = OtapPdata::new(Context::default(), fresh_payload(format));
+            _ = black_box(clone_cached.num_items());
+            _ = black_box(clone_cached.normalized_otlp_size());
             _ = group.bench_with_input(
                 BenchmarkId::new(format!("{format}/clone/cached"), record_count),
                 &clone_cached,
                 |b, pdata| b.iter(|| black_box(pdata.clone())),
             );
             if format == "OTLP" {
-                _ = group.bench_with_input(
+                _ = group.bench_function(
                     BenchmarkId::new(format!("{format}/count/cold"), record_count),
-                    &payload,
-                    |b, payload| {
+                    |b| {
                         b.iter_batched_ref(
-                            || OtapPdata::new(Context::default(), black_box(payload.clone())),
+                            || OtapPdata::new(Context::default(), black_box(fresh_payload(format))),
                             |pdata| black_box(pdata.num_items()),
                             BatchSize::SmallInput,
                         )
                     },
                 );
-                let item_count_cached = OtapPdata::new(Context::default(), payload.clone());
+                let mut item_count_cached =
+                    OtapPdata::new(Context::default(), fresh_payload(format));
                 _ = black_box(item_count_cached.num_items());
-                _ = group.bench_with_input(
+                _ = group.bench_function(
                     BenchmarkId::new(format!("{format}/count/cached"), record_count),
-                    &item_count_cached,
-                    |b, pdata| b.iter(|| black_box(pdata.num_items())),
+                    |b| {
+                        let mut pdata = item_count_cached.clone();
+                        b.iter(|| black_box(pdata.num_items()))
+                    },
                 );
             } else {
-                let item_count_direct = OtapPdata::new(Context::default(), payload.clone());
-                _ = group.bench_with_input(
+                let item_count_direct = OtapPdata::new(Context::default(), fresh_payload(format));
+                _ = group.bench_function(
                     BenchmarkId::new(format!("{format}/count/direct"), record_count),
-                    &item_count_direct,
-                    |b, pdata| b.iter(|| black_box(pdata.num_items())),
+                    |b| {
+                        let mut pdata = item_count_direct.clone();
+                        b.iter(|| black_box(pdata.num_items()))
+                    },
                 );
             }
 
-            if format == "OTAP" {
-                _ = group.bench_with_input(
-                    BenchmarkId::new(format!("{format}/size/cold"), record_count),
-                    &payload,
-                    |b, payload| {
-                        b.iter_batched_ref(
-                            || OtapPdata::new(Context::default(), black_box(payload.clone())),
-                            |pdata| black_box(pdata.canonical_size()),
-                            BatchSize::SmallInput,
-                        )
-                    },
-                );
-                let canonical_size_cached = OtapPdata::new(Context::default(), payload.clone());
-                _ = black_box(canonical_size_cached.canonical_size());
-                _ = group.bench_with_input(
-                    BenchmarkId::new(format!("{format}/size/cached"), record_count),
-                    &canonical_size_cached,
-                    |b, pdata| b.iter(|| black_box(pdata.canonical_size())),
-                );
-            } else {
-                let canonical_size_direct = OtapPdata::new(Context::default(), payload.clone());
-                _ = group.bench_with_input(
-                    BenchmarkId::new(format!("{format}/size/direct"), record_count),
-                    &canonical_size_direct,
-                    |b, pdata| b.iter(|| black_box(pdata.canonical_size())),
-                );
-            }
+            _ = group.bench_function(
+                BenchmarkId::new(format!("{format}/size/cold"), record_count),
+                |b| {
+                    b.iter_batched_ref(
+                        || OtapPdata::new(Context::default(), black_box(fresh_payload(format))),
+                        |pdata| black_box(pdata.normalized_otlp_size()),
+                        BatchSize::SmallInput,
+                    )
+                },
+            );
+            let mut normalized_size_cached =
+                OtapPdata::new(Context::default(), fresh_payload(format));
+            _ = black_box(normalized_size_cached.normalized_otlp_size());
+            _ = group.bench_function(
+                BenchmarkId::new(format!("{format}/size/cached"), record_count),
+                |b| {
+                    let mut pdata = normalized_size_cached.clone();
+                    b.iter(|| black_box(pdata.normalized_otlp_size()))
+                },
+            );
         }
     }
 

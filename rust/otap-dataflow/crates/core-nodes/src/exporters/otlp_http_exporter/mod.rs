@@ -49,7 +49,7 @@ use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::{
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
     ExportTracePartialSuccess, ExportTraceServiceResponse,
 };
-use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
+use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
@@ -470,8 +470,8 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                     // proto encode the payload into the request body, while keeping a copy of the
                     // original payload if the context allows it to be returned.
-                    let (uncompressed, saved_payload) = match payload {
-                        OtapPayload::OtlpBytes(mut otlp_bytes) => {
+                    let (uncompressed, saved_payload) = match payload.into_data() {
+                        PayloadData::OtlpBytes(mut otlp_bytes) => {
                             if context.may_return_payload() {
                                 // use cheap clone of bytes as the request body
                                 let body = otlp_bytes.clone_bytes();
@@ -482,7 +482,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 (Uncompressed::Bytes(body), otlp_bytes.into())
                             }
                         }
-                        OtapPayload::OtapArrowRecords(mut otap_batch) => {
+                        PayloadData::OtapArrowRecords(mut otap_batch) => {
                             // encode the OTAP batch as protobuf request body
                             proto_buffer.clear();
                             let encode_result =
@@ -1383,7 +1383,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1450,7 +1450,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1677,7 +1677,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1746,7 +1746,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1831,7 +1831,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1917,7 +1917,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1988,10 +1988,10 @@ mod test {
         // the second must reuse the cached token.
         let pdatas = subscribe_pdatas(
             vec![
-                OtapPdata::new_default(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+                OtapPdata::new_default(OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(
                     Bytes::from(bytes.clone()),
                 ))),
-                OtapPdata::new_default(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+                OtapPdata::new_default(OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(
                     Bytes::from(bytes),
                 ))),
             ],
@@ -2319,19 +2319,19 @@ mod test {
 
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
         )));
 
         let mut bytes = Vec::new();
         metrics_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)),
         )));
 
         let mut bytes = Vec::new();
         traces_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes)),
         )));
 
@@ -2438,9 +2438,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -2581,9 +2581,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -2662,19 +2662,19 @@ mod test {
         let mut pdatas = vec![];
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
         )));
 
         let mut bytes = Vec::new();
         metrics_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)),
         )));
 
         let mut bytes = Vec::new();
         traces_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes)),
         )));
 
@@ -2762,7 +2762,7 @@ mod test {
         let mut pdatas = vec![];
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
         )));
 
@@ -2867,9 +2867,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
 
         let pdatas = subscribe_pdatas(pdatas, true);
 
@@ -2906,8 +2906,8 @@ mod test {
                             PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
-                                match nack.refused.payload() {
-                                    OtapPayload::OtapArrowRecords(otap_batch) => {
+                                match nack.refused.payload().into_data() {
+                                    PayloadData::OtapArrowRecords(otap_batch) => {
                                         let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
                                         assert!(
                                             logs_batch.num_rows() > 0,
@@ -2954,7 +2954,7 @@ mod test {
         let mut pdatas = vec![];
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
         )));
 
@@ -2993,8 +2993,8 @@ mod test {
                             PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
-                                match nack.refused.payload() {
-                                    OtapPayload::OtlpBytes(proto_bytes) => {
+                                match nack.refused.payload().into_data() {
+                                    PayloadData::OtlpBytes(proto_bytes) => {
                                         assert!(
                                             !proto_bytes.as_bytes().is_empty(),
                                             "expected payload bytes to be returned in Nack, but it was empty"
@@ -3039,15 +3039,15 @@ mod test {
         let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
 
         let pdatas = vec![
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Logs(logs_batch.clone()),
-            ))),
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Metrics(metrics_batch.clone()),
-            ))),
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Traces(traces_batch.clone()),
-            ))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Logs(
+                logs_batch.clone(),
+            )))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Metrics(
+                metrics_batch.clone(),
+            )))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Traces(
+                traces_batch.clone(),
+            )))),
         ];
         let pdatas = subscribe_pdatas(pdatas, false);
 
@@ -3172,15 +3172,15 @@ mod test {
         let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
 
         let pdatas = vec![
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Logs(logs_batch.clone()),
-            ))),
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Metrics(metrics_batch.clone()),
-            ))),
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Traces(traces_batch.clone()),
-            ))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Logs(
+                logs_batch.clone(),
+            )))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Metrics(
+                metrics_batch.clone(),
+            )))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Traces(
+                traces_batch.clone(),
+            )))),
         ];
 
         test_runtime
@@ -3261,9 +3261,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -3365,9 +3365,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -4141,9 +4141,9 @@ mod test {
         wait_for_port_ready(&endpoint_addr);
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime

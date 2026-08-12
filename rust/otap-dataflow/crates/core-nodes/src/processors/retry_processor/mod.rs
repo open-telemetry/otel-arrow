@@ -1306,7 +1306,7 @@ mod test {
                 // Verify the processor forwarded the data downstream
                 let mut output = ctx.drain_pdata().await;
                 assert_eq!(output.len(), 1);
-                let first_attempt = output.remove(0);
+                let mut first_attempt = output.remove(0);
                 assert_eq!(first_attempt.num_items(), 1);
 
                 // Simulate downstream failures and retry
@@ -1387,7 +1387,7 @@ mod test {
 
                 match have_pmsg.expect("retry replied") {
                     PipelineCompletionMsg::DeliverAck { ack } => {
-                        let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
+                        let (node_id, mut ack) = next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
                             "expecting Nack {outcome_failure:?}, got Ack"
@@ -1402,7 +1402,8 @@ mod test {
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
                     PipelineCompletionMsg::DeliverNack { nack } => {
-                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                        let (node_id, mut nack) =
+                            next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason
                                 .contains(outcome_failure.as_deref().expect("expecting nack"))

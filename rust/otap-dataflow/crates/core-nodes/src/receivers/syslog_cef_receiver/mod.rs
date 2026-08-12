@@ -1102,7 +1102,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_pdata::OtapPayload;
+    use otap_df_pdata::PayloadData;
 
     // Test-only constructor, not compiled in production
     impl SyslogCefReceiver {
@@ -1312,7 +1312,8 @@ mod tests {
                     .payload();
 
                 // Extract arrow_records for further validation
-                let OtapPayload::OtapArrowRecords(arrow_records) = message1_received else {
+                let PayloadData::OtapArrowRecords(arrow_records) = message1_received.into_data()
+                else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -1382,7 +1383,8 @@ mod tests {
                     .payload();
 
                 // Extract arrow_records for further validation
-                let OtapPayload::OtapArrowRecords(arrow_records) = message1_received else {
+                let PayloadData::OtapArrowRecords(arrow_records) = message1_received.into_data()
+                else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -1452,7 +1454,8 @@ mod tests {
                 while total_records < 2 {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let OtapPayload::OtapArrowRecords(arrow_records) = message.payload()
+                            let PayloadData::OtapArrowRecords(arrow_records) =
+                                message.payload().into_data()
                             else {
                                 panic!("Expected OtapArrowRecords variant")
                             };
@@ -1664,7 +1667,8 @@ mod tests {
                 loop {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let OtapPayload::OtapArrowRecords(arrow_records) = message.payload()
+                            let PayloadData::OtapArrowRecords(arrow_records) =
+                                message.payload().into_data()
                             else {
                                 panic!("Expected OtapArrowRecords variant");
                             };
