@@ -939,7 +939,7 @@ mod tests {
     #[test]
     pub fn test_fork_operator_call() {
         let query = r#"
-               logs | 
+               logs |
                fork
                {
                    extend attributes["triggers_alarm"] = "true"

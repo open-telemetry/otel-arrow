@@ -788,8 +788,8 @@ mod tests {
     /// Guarantees: the drained metric values are restored for a later delivery attempt.
     #[test]
     fn failed_downstream_send_restores_drained_metric_batch() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let registry = TelemetryRegistryHandle::new();
             let metric_set: otap_df_telemetry::metrics::MetricSet<TestMetrics> =
                 registry.register_metric_set(EmptyAttributes());
@@ -829,15 +829,15 @@ mod tests {
                 retry.metric_sets[0].values,
                 vec![otap_df_telemetry::metrics::MetricValue::U64(9)]
             );
-        }));
+        });
     }
 
     /// Scenario: the receiver consumes registry metrics while metric emission is disabled.
     /// Guarantees: the export accumulator is committed without downstream output or admin loss.
     #[test]
     fn disabled_metrics_are_drained_without_emission() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let registry = TelemetryRegistryHandle::new();
             let metric_set: otap_df_telemetry::metrics::MetricSet<TestMetrics> =
                 registry.register_metric_set(EmptyAttributes());
@@ -878,15 +878,15 @@ mod tests {
                 vec![otap_df_telemetry::metrics::MetricValue::U64(9)],
                 "discarding an ITS export must not consume the admin accumulator"
             );
-        }));
+        });
     }
 
     /// Scenario: a periodic metric export is blocked when shutdown begins.
     /// Guarantees: shutdown cancels the blocked attempt and bounds the terminal retry.
     #[test]
     fn shutdown_interrupts_periodic_metric_export_blocked_by_downstream_backpressure() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let registry = TelemetryRegistryHandle::new();
             let metric_set: otap_df_telemetry::metrics::MetricSet<TestMetrics> =
                 registry.register_metric_set(EmptyAttributes());
@@ -963,15 +963,15 @@ mod tests {
 
             drop(output_rx);
             drop(logs_sender);
-        }));
+        });
     }
 
     /// Scenario: real metric sets cross collection intervals and receiver ingress drain.
     /// Guarantees: terminal metrics flow once and the receiver reports that ingress is drained.
     #[test]
     fn metric_set_flows_through_collector_across_intervals_and_drain_ingress() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let engine_reporting_interval = Duration::from_secs(60);
             let receiver_interval = Duration::from_millis(25);
             let registry = TelemetryRegistryHandle::new();
@@ -1122,6 +1122,6 @@ mod tests {
                 .expect("collector task should join")
                 .expect("collector should stop cleanly");
             drop(telemetry);
-        }));
+        });
     }
 }

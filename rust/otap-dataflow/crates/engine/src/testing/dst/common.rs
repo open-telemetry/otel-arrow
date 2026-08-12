@@ -213,6 +213,6 @@ where
     msgs
 }
 
-pub(super) fn setup_dst_runtime() -> (tokio::runtime::Runtime, tokio::task::LocalSet) {
+pub(super) fn setup_dst_runtime() -> tokio::runtime::LocalRuntime {
     setup_test_runtime()
 }

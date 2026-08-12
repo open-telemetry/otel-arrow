@@ -260,8 +260,8 @@ fn test_control_msg_is_shutdown() {
 
 #[test]
 fn test_shared_start_shutdown() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let ctr = CtrlMsgCounters::new();
         let (n, u, c) = ext_config("ss");
         let w = ExtensionWrapper::builder(n, u, &c)
@@ -286,13 +286,13 @@ fn test_shared_start_shutdown() {
         .unwrap();
         assert!(h.await.unwrap().is_ok());
         ctr.assert(0, 0, 1, 1);
-    }));
+    });
 }
 
 #[test]
 fn test_local_start_shutdown() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let ctr = CtrlMsgCounters::new();
         let (n, u, c) = ext_config("ls");
         let w = ExtensionWrapper::builder(n, u, &c)
@@ -312,7 +312,7 @@ fn test_local_start_shutdown() {
         .unwrap();
         assert!(h.await.unwrap().is_ok());
         ctr.assert(0, 0, 0, 0);
-    }));
+    });
 }
 
 #[tokio::test]
@@ -481,8 +481,8 @@ fn test_passive_ctrl_metrics_noop() {
 
 #[test]
 fn test_start_with_telemetry() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let ctr = CtrlMsgCounters::new();
         let (n, u, c) = ext_config("st");
         let w = ExtensionWrapper::builder(n, u, &c)
@@ -512,7 +512,7 @@ fn test_start_with_telemetry() {
         .unwrap();
         assert!(h.await.unwrap().is_ok());
         ctr.assert(0, 0, 1, 1);
-    }));
+    });
 }
 
 #[test]
@@ -920,8 +920,8 @@ impl crate::local::extension::Extension for TelemetryReportingLocalExt {
 fn active_extension_reports_internal_metrics_on_collect_telemetry() {
     use otap_df_telemetry::reporter::MetricsReporter;
 
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let (ctx, _registry) = crate::testing::test_extension_ctx();
 
         // Pre-register the extension's internal metric set through the
@@ -962,8 +962,8 @@ fn active_extension_reports_internal_metrics_on_collect_telemetry() {
             .await
             .unwrap();
 
-        // Wait for the snapshot via async recv (works on a LocalSet
-        // because the channel is flume which exposes recv_async).
+        // Wait for the snapshot via async recv; the channel is flume,
+        // which exposes recv_async.
         let snapshot =
             tokio::time::timeout(std::time::Duration::from_secs(2), snapshot_rx.recv_async())
                 .await
@@ -996,7 +996,7 @@ fn active_extension_reports_internal_metrics_on_collect_telemetry() {
             .await
             .unwrap();
         assert!(h.await.unwrap().is_ok());
-    }));
+    });
 }
 
 #[test]
@@ -1005,8 +1005,8 @@ fn two_active_extensions_report_isolated_internal_metrics() {
     // under distinct `MetricSetKey`s with no value bleed.
     use otap_df_telemetry::reporter::MetricsReporter;
 
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let (ctx, _registry) = crate::testing::test_extension_ctx();
 
         // Each extension gets its own entity AND its own MetricSet,
@@ -1091,7 +1091,7 @@ fn two_active_extensions_report_isolated_internal_metrics() {
 
         // Collect snapshots until we have one with `key_a` and one with
         // `key_b`. Bounded loop guards against hangs while tolerating
-        // arbitrary interleaving from the LocalSet scheduler.
+        // arbitrary interleaving from the LocalRuntime scheduler.
         let mut sum_by_key: std::collections::HashMap<_, u64> = std::collections::HashMap::new();
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
         while (!sum_by_key.contains_key(&key_a) || !sum_by_key.contains_key(&key_b))
@@ -1150,7 +1150,7 @@ fn two_active_extensions_report_isolated_internal_metrics() {
             .unwrap();
         assert!(h_a.await.unwrap().is_ok());
         assert!(h_b.await.unwrap().is_ok());
-    }));
+    });
 }
 
 fn pipeline_ctx_in_controller(
@@ -1373,8 +1373,8 @@ fn two_pipelines_publish_isolated_internal_metrics_through_shared_reporter() {
     use crate::extension::wrapper::ExtensionVariant;
     use otap_df_telemetry::reporter::MetricsReporter;
 
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
         let controller = crate::context::ControllerContext::new(registry.clone());
 
@@ -1513,7 +1513,7 @@ fn two_pipelines_publish_isolated_internal_metrics_through_shared_reporter() {
             .unwrap();
         assert!(h_a.await.unwrap().is_ok());
         assert!(h_b.await.unwrap().is_ok());
-    }));
+    });
 }
 
 #[test]
@@ -1524,8 +1524,8 @@ fn panicking_collect_telemetry_handler_does_not_contaminate_neighbour() {
     use crate::extension::wrapper::ExtensionVariant;
     use otap_df_telemetry::reporter::MetricsReporter;
 
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let (ctx, _registry) = crate::testing::test_extension_ctx();
 
         let entity_good = ctx.register_extension_entity("good".into(), ExtensionVariant::Local);
@@ -1652,7 +1652,7 @@ fn panicking_collect_telemetry_handler_does_not_contaminate_neighbour() {
             .await
             .unwrap();
         assert!(h_good.await.unwrap().is_ok());
-    }));
+    });
 }
 
 #[test]
@@ -1664,8 +1664,8 @@ fn snapshot_consumed_after_extension_drop_retains_identity() {
     use crate::extension::wrapper::ExtensionVariant;
     use otap_df_telemetry::reporter::MetricsReporter;
 
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let (ctx, registry) = crate::testing::test_extension_ctx();
 
         let entity = ctx.register_extension_entity("ephemeral".into(), ExtensionVariant::Local);
@@ -1729,7 +1729,7 @@ fn snapshot_consumed_after_extension_drop_retains_identity() {
             "snapshot recorded value must survive extension drop, got: {:?}",
             snap.get_metrics()
         );
-    }));
+    });
 }
 
 #[test]
@@ -1928,8 +1928,8 @@ fn active_with_readiness_probe_local_then_shared_plumbs_two_pairs() {
 
 #[test]
 fn active_dual_variant_probes_are_independent() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let (n, u, c) = ext_config("active_probe_independent");
         let mut bundle = ExtensionWrapper::builder(n, u, &c)
             .active()
@@ -1969,7 +1969,7 @@ fn active_dual_variant_probes_are_independent() {
         }
 
         drop(local);
-    }));
+    });
 }
 
 #[test]
@@ -2365,8 +2365,8 @@ impl crate::local::extension::Extension for ReadyOnStartLocalExt {
 
 #[test]
 fn shared_active_start_fires_engine_probe_via_eh_signal_ready() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let (n, u, c) = ext_config("shared_start_ready");
         let mut w = ExtensionWrapper::builder(n, u, &c)
             .active()
@@ -2393,13 +2393,13 @@ fn shared_active_start_fires_engine_probe_via_eh_signal_ready() {
         .await
         .unwrap();
         let _ = h.await.unwrap().unwrap();
-    }));
+    });
 }
 
 #[test]
 fn local_active_start_fires_engine_probe_via_eh_signal_ready() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let (n, u, c) = ext_config("local_start_ready");
         let mut w = ExtensionWrapper::builder(n, u, &c)
             .active()
@@ -2426,13 +2426,13 @@ fn local_active_start_fires_engine_probe_via_eh_signal_ready() {
         .await
         .unwrap();
         let _ = h.await.unwrap().unwrap();
-    }));
+    });
 }
 
 #[test]
 fn shared_active_start_without_ready_resolves_probe_with_signaller_dropped() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let (n, u, c) = ext_config("shared_start_no_ready");
         let mut w = ExtensionWrapper::builder(n, u, &c)
             .active()
@@ -2458,13 +2458,13 @@ fn shared_active_start_without_ready_resolves_probe_with_signaller_dropped() {
             .await
             .unwrap();
         assert_eq!(res, Err(ReadinessProbeError::SignallerDropped));
-    }));
+    });
 }
 
 #[test]
 fn shared_active_start_without_opt_in_eh_signal_ready_is_silent_noop() {
-    let (rt, ls) = crate::testing::setup_test_runtime();
-    rt.block_on(ls.run_until(async {
+    let rt = crate::testing::setup_test_runtime();
+    rt.block_on(async {
         let (n, u, c) = ext_config("shared_start_no_optin");
         let mut w = ExtensionWrapper::builder(n, u, &c)
             .active()
@@ -2483,5 +2483,5 @@ fn shared_active_start_without_opt_in_eh_signal_ready_is_silent_noop() {
         .await
         .unwrap();
         let _ = h.await.unwrap().unwrap();
-    }));
+    });
 }

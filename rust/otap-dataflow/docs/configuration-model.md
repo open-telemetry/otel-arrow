@@ -346,6 +346,7 @@ Important behavior:
 - `topics`
 - `http_admin`
 - `telemetry`
+- `runtime`
 - `observed_state`
 - `observability`
 - `controller/extensions`
@@ -361,6 +362,36 @@ Engine-wide topic runtime defaults are declared at `engine.topics`.
     mixed implementation
 
 Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
+
+### Engine Runtime Settings
+
+Engine-wide runtime tuning is declared at `engine.runtime`.
+
+- `engine.runtime.local_runtime.event_interval` (optional): number of Tokio
+  scheduler ticks before each pipeline `LocalRuntime` polls timers and I/O
+  events. When omitted, Tokio's built-in default is used.
+- `engine.runtime.local_runtime.max_io_events_per_tick` (optional): maximum
+  number of I/O readiness events processed by Tokio per scheduler tick. When
+  omitted, Tokio's built-in default is used.
+- `engine.runtime.local_runtime.poll_time_histogram` (optional, default
+  `false`): enables Tokio task poll-time histograms for diagnostics. This
+  requires a binary built with `RUSTFLAGS="--cfg tokio_unstable"`.
+
+Example:
+
+```yaml
+engine:
+  runtime:
+    local_runtime:
+      event_interval: 127
+      max_io_events_per_tick: 512
+```
+
+Use this only after workload-specific validation. Higher values can reduce
+scheduler and I/O polling overhead for hot pipelines, but may increase timer and
+I/O readiness latency under sustained ready-task load. Larger
+`max_io_events_per_tick` values can improve I/O burst draining, but may also
+increase time spent in the I/O driver before ready tasks are polled.
 
 ### Engine Telemetry
 

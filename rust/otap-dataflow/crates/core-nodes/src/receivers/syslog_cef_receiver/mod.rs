@@ -2235,8 +2235,8 @@ mod telemetry_tests {
 
     #[test]
     fn udp_telemetry_success_and_failure_and_total() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             // Build pipeline context to register metrics on the receiver
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2332,14 +2332,14 @@ mod telemetry_tests {
             assert_eq!(m[4].to_u64_lossy(), 2, "total == 2");
             assert_eq!(m[0].to_u64_lossy(), 1, "forwarded == 1");
             assert_eq!(m[1].to_u64_lossy(), 1, "invalid == 1");
-        }));
+        });
     }
 
     #[test]
     fn udp_telemetry_refused_when_downstream_closed() {
         use otap_df_engine::testing::setup_test_runtime;
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             // Build pipeline context
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2426,13 +2426,13 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             let m = snap.get_metrics();
             assert_eq!(m[3].to_u64_lossy(), 1, "forward_failed == 1");
-        }));
+        });
     }
 
     #[test]
     fn udp_sheds_ingress_under_hard_memory_pressure() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
             let pipeline = controller.pipeline_context_with(
@@ -2525,12 +2525,12 @@ mod telemetry_tests {
                 0,
                 "tcp connection rejects == 0 for UDP"
             );
-        }));
+        });
     }
 
     fn run_udp_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
             let pipeline = controller.pipeline_context_with(
@@ -2610,7 +2610,7 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             assert_eq!(metric_value(&snap, "received_logs_total"), 1);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
-        }));
+        });
     }
 
     /// Scenario: a UDP syslog receiver in enforce mode remains below its rate limit.
@@ -2628,8 +2628,8 @@ mod telemetry_tests {
     }
 
     fn run_tcp_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
             let pipeline = controller.pipeline_context_with(
@@ -2712,7 +2712,7 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             assert_eq!(metric_value(&snap, "received_logs_total"), 1);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
-        }));
+        });
     }
 
     /// Scenario: a TCP syslog receiver in enforce mode remains below its rate limit.
@@ -2733,8 +2733,8 @@ mod telemetry_tests {
     /// Guarantees: over-limit datagrams are dropped before parsing and counted as rate refusals.
     #[test]
     fn udp_refuses_messages_over_rate_limit_under_soft_pressure() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
             let pipeline = controller.pipeline_context_with(
@@ -2815,15 +2815,15 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             assert_eq!(metric_value(&snap, "received_logs_total"), 2);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
-        }));
+        });
     }
 
     /// Scenario: a TCP syslog receiver exceeds its message-rate bucket under soft pressure.
     /// Guarantees: over-limit framed lines are dropped without closing the active connection.
     #[test]
     fn tcp_refuses_messages_over_rate_limit_without_closing_connection() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
             let pipeline = controller.pipeline_context_with(
@@ -2912,15 +2912,15 @@ mod telemetry_tests {
                 metric_value(&snap, "tcp_connections_rejected_memory_pressure"),
                 0
             );
-        }));
+        });
     }
 
     /// Scenario: an oversized TCP syslog line is split into bounded-read fragments under a message-rate limit.
     /// Guarantees: each emitted fragment is rate checked while preserving tail-fragment parsing.
     #[test]
     fn tcp_oversized_line_charges_rate_limit_per_fragment() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
             let pipeline = controller.pipeline_context_with(
@@ -3006,15 +3006,15 @@ mod telemetry_tests {
             assert_eq!(metric_value(&snap, "received_logs_total"), 3);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
             assert_eq!(metric_value(&snap, "received_logs_truncated"), 1);
-        }));
+        });
     }
 
     /// Scenario: a rejected TCP syslog line continues across three bounded fragments through newline.
     /// Guarantees: all continuation fragments are uncounted and the next complete message is admitted.
     #[test]
     fn tcp_rate_rejected_three_fragment_line_discards_all_continuations() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let telemetry_registry = TelemetryRegistryHandle::new();
             let controller = ControllerContext::new(telemetry_registry.clone());
             let pipeline = controller.pipeline_context_with(
@@ -3129,6 +3129,6 @@ mod telemetry_tests {
             assert_eq!(metric_value(&snap, "received_logs_total"), 3);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 2);
             assert_eq!(metric_value(&snap, "received_logs_truncated"), 1);
-        }));
+        });
     }
 }

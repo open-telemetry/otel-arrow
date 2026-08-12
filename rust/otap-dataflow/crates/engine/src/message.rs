@@ -94,7 +94,7 @@ impl<Data> Message<Data> {
 /// A generic channel Sender supporting both local and shared semantic (i.e. !Send and Send).
 ///
 /// Rationale:
-/// - Local nodes run on a single-threaded `LocalSet`, so it is safe for them to hold either a
+/// - Local nodes run on a single-threaded `LocalRuntime`, so it is safe for them to hold either a
 ///   local sender or a shared sender. This lets the engine select shared channels when any edge
 ///   requires `Send` (e.g. mixed local/shared fan-in) without extra wiring paths.
 /// - Shared nodes keep `SharedSender` directly because their effect handlers must be `Send` to run

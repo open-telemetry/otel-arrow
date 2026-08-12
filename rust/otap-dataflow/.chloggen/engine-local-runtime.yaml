@@ -1,0 +1,5 @@
+change_type: enhancement
+component: engine
+note: Migrate single-threaded engine pipelines from Tokio Runtime plus LocalSet to the stable LocalRuntime.
+issues: [2374]
+subtext: Preserve Tokio defaults while allowing optional LocalRuntime scheduler tuning under `engine.runtime.local_runtime`.

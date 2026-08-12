@@ -1,5 +1,7 @@
 # Kafka Test Suite
 
+<!-- markdownlint-disable MD013 -->
+
 An in-process Kafka test suite built on
 [`rdkafka::mocking::MockCluster`](https://docs.rs/rdkafka/latest/rdkafka/mocking/struct.MockCluster.html)
 (librdkafka's built-in mock broker). It lets a test stand up a mock broker,
@@ -43,11 +45,11 @@ should stay in plain unit tests.
 
 `KafkaTestCluster` wraps a `!Send` `MockCluster` that holds a raw pointer, must
 live on its creation thread for the broker's whole lifetime, and tears the broker
-down when dropped. Always drive it from a current-thread `LocalSet` using
-[`with_cluster`](#cluster-and-topics) or `run_on_local_set`, which own the
-`LocalSet`, build the cluster, and keep the mock alive for the duration of the
-supplied closure. Clients and node harnesses spawned with `spawn_local` share the
-cluster through an `Rc`.
+down when dropped. Run the test with Tokio's `local` test flavor, then use
+[`with_cluster`](#cluster-and-topics) or `run_on_local_runtime` to build the
+cluster and keep the mock alive for the duration of the supplied closure.
+Clients and node harnesses spawned with `spawn_local` share the cluster through
+an `Rc`.
 
 ## Quick start
 
@@ -57,7 +59,7 @@ Produce and consume a record directly (no node involved):
 use crate::common::kafka::test::cluster::KafkaTestCluster;
 use crate::common::kafka::test::with_cluster;
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn round_trips_a_record() {
     with_cluster(
         KafkaTestCluster::builder().topic("it-logs"),
@@ -76,7 +78,7 @@ async fn round_trips_a_record() {
 }
 ```
 
-`run_on_local_set(f)` is a shorthand for `with_cluster` with a default
+`run_on_local_runtime(f)` is a shorthand for `with_cluster` with a default
 single-broker cluster and no pre-created topics.
 
 ## Cluster and topics
@@ -184,7 +186,7 @@ consume application data.
 To model 2+ node replicas with the same `group_id` against a multi-partition
 topic (the in-process analogue of scaling replicas up and down), start two
 `KafkaReceiverHarness` instances with configs that share a `group_id` on the
-same `LocalSet`. Each harness builds its own `KafkaReceiver`, so together they
+same `LocalRuntime`. Each harness builds its own `KafkaReceiver`, so together they
 form a real dynamic consumer group that librdkafka rebalances. Use manual commit
 (`CommitMode::Manual`) so the receiver's rebalance-aware commit path is active
 and acks drive the committed offsets.
@@ -328,8 +330,8 @@ must drive `recv()` or query the broker between attempts.
 
 `super::node_harness` wraps the Kafka exporter/receiver so a test can drive a
 fully-wired node against the mock broker. Each harness takes `&KafkaTestCluster`,
-sets `bootstrap.servers` from it, owns the engine wiring plus `LocalSet` spawn and
-lifecycle, and exposes intention-revealing handles. `KafkaTopics::logs(topic,
+sets `bootstrap.servers` from it, owns the engine wiring plus the spawned local
+task lifecycle, and exposes intention-revealing handles. `KafkaTopics::logs(topic,
 fmt)` / `KafkaTopics::traces(topic, fmt)` describe a per-signal topic layout for
 the `start_for` variants.
 
@@ -337,7 +339,7 @@ the `start_for` variants.
 
 | Method | Purpose |
 | --- | --- |
-| `start(cluster, cfg)` / `start_for(cluster, topics)` | Start the exporter on the current `LocalSet`. |
+| `start(cluster, cfg)` / `start_for(cluster, topics)` | Start the exporter on the current `LocalRuntime`. |
 | `send_pdata(pdata)` | Send a pdata batch to the exporter. |
 | `shutdown(deadline)` | Request a graceful shutdown. |
 | `await_stopped()` | Await task completion; **panics if the node returned an error or the task panicked**. |
@@ -347,7 +349,7 @@ the `start_for` variants.
 
 | Method | Purpose |
 | --- | --- |
-| `start(cluster, cfg)` / `start_with_capture(cluster, cfg, policy)` / `start_for(cluster, topics)` | Start the receiver on the current `LocalSet`. |
+| `start(cluster, cfg)` / `start_with_capture(cluster, cfg, policy)` / `start_for(cluster, topics)` | Start the receiver on the current `LocalRuntime`. |
 | `recv_pdata()` / `try_recv_pdata(timeout)` | Read one decoded pdata batch. |
 | `try_recv_runtime(timeout)` | Read one runtime-control message (e.g. `ReceiverDrained`). |
 | `ack(pdata)` | Acknowledge consumed pdata so manual-commit offsets advance. |
@@ -356,7 +358,7 @@ the `start_for` variants.
 | `await_stopped()` / `await_terminal_state()` | Await task completion (optionally returning final metric snapshots); **panics if the node returned an error or the task panicked**. |
 
 Call `await_stopped()` (or `await_terminal_state()`) after `shutdown()` so the
-graceful-shutdown path runs to completion on the `LocalSet` instead of being
+graceful-shutdown path runs to completion on the `LocalRuntime` instead of being
 cancelled when the test body returns, and so a node error or task panic during
 shutdown is surfaced (rather than silently reported as a clean stop).
 

@@ -32,7 +32,6 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// A context object that holds transmitters for use in test tasks.
@@ -164,9 +163,7 @@ pub struct TestRuntime<PData> {
     config: ExporterConfig,
 
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
@@ -179,9 +176,7 @@ pub struct TestRuntime<PData> {
 /// Data and operations for the test phase of an exporter.
 pub struct TestPhase<PData> {
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     counters: CtrlMsgCounters,
 
@@ -198,9 +193,7 @@ pub struct TestPhase<PData> {
 /// Data and operations for the validation phase of an exporter.
 pub struct ValidationPhase<PData> {
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     context: TestContext<PData>,
 
@@ -214,13 +207,12 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let metrics_system = InternalTelemetrySystem::default();
         let config = ExporterConfig::new("test_exporter");
-        let (rt, local_tasks) = setup_test_runtime();
+        let rt = setup_test_runtime();
         let counter = CtrlMsgCounters::new();
 
         Self {
             config,
             rt,
-            local_tasks,
             counter,
             metrics_system,
             _pd: PhantomData,
@@ -278,7 +270,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let metrics_reporter_start = self.metrics_reporter();
         let metrics_reporter_terminal = self.metrics_reporter();
         let metrics_collector = self.metrics_system.collector();
-        let run_exporter_handle = self.local_tasks.spawn_local(async move {
+        let run_exporter_handle = self.rt.spawn_local(async move {
             exporter
                 .start(
                     runtime_ctrl_msg_tx,
@@ -296,7 +288,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         });
         TestPhase {
             rt: self.rt,
-            local_tasks: self.local_tasks,
             counters: self.counter.clone(),
             control_sender,
             pdata_sender: pdata_tx,
@@ -322,14 +313,13 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     {
         let mut context = self.create_context();
         let ctx_test = context.clone();
-        _ = self.local_tasks.spawn_local(f(ctx_test));
+        _ = self.rt.spawn_local(f(ctx_test));
 
         context.runtime_ctrl_msg_receiver = Some(self.runtime_ctrl_msg_receiver);
         context.pipeline_completion_msg_receiver = Some(self.pipeline_completion_msg_receiver);
 
         ValidationPhase {
             rt: self.rt,
-            local_tasks: self.local_tasks,
             context,
             run_exporter_handle: self.run_exporter_handle,
         }
@@ -365,7 +355,6 @@ impl<PData> ValidationPhase<PData> {
     {
         let ValidationPhase {
             rt,
-            local_tasks,
             mut context,
             run_exporter_handle,
         } = self;
@@ -374,9 +363,6 @@ impl<PData> ValidationPhase<PData> {
         // clone before waiting for exporter shutdown so tests do not keep the
         // exporter input channel artificially open after the scenario finishes.
         let _ = context.pdata_tx.take();
-
-        // First run all the spawned tasks to completion
-        rt.block_on(local_tasks);
 
         let result = rt
             .block_on(run_exporter_handle)

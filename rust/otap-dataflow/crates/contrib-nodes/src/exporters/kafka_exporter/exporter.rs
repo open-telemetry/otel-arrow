@@ -787,7 +787,7 @@ pub mod test_support {
 
         /// Tests that payload is properly cloned for both OTLP and OTAP serialization formats.
         /// This ensures no borrow-after-move errors occur when the encoder consumes the payload.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn test_export_otlp_format_payload_handling() {
             let pipeline_ctx = pipeline_context();
             let config = kafka_test_config("localhost:9092");
@@ -806,7 +806,7 @@ pub mod test_support {
         }
 
         /// Tests that payload is properly cloned for OTAP serialization format.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn test_export_otap_format_payload_handling() {
             let pipeline_ctx = pipeline_context();
             let config: KafkaExporterConfig =
@@ -975,7 +975,7 @@ pub mod test_support {
 
         // ---- RecordingReporter ----
 
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn recording_reporter_tracks_acks_and_nacks() {
             let reporter = RecordingReporter::new();
             let pdata = sample_pdata(SignalType::Traces);
@@ -998,7 +998,7 @@ pub mod test_support {
             assert_eq!(permanent_reasons[0], "permanent-error");
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn test_export_unconfigured_signal_type_is_nacked() {
             let pipeline_ctx = pipeline_context();
             // Only logs configured -- no traces, no metrics
@@ -1038,7 +1038,7 @@ pub mod test_support {
             );
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn test_export_invalid_dynamic_topic_is_permanently_nacked() {
             let pipeline_ctx = pipeline_context();
             // Logs configured to resolve their topic from a transport header.
@@ -1089,7 +1089,7 @@ pub mod test_support {
         // mock broker, so the tests run with no Docker/external broker and run by
         // default in CI. Each test drives a fully-wired `KafkaExporter` through
         // the `KafkaExporterHarness` wrapper (which owns the engine wiring,
-        // `LocalSet` spawn, and lifecycle), then consumes the produced records
+        // `LocalRuntime` spawn, and lifecycle), then consumes the produced records
         // back from the mock broker via a test-suite consumer to assert on the
         // topic, payload bytes, message-format header, and partition key.
 
@@ -1192,7 +1192,7 @@ pub mod test_support {
         /// from the mock broker.
         /// Guarantees: the record lands on the configured topic with the exact
         /// payload bytes and an OTLP message-format header.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_otlp_to_mock_broker() {
             let topic = "it-logs-otlp";
             with_cluster(
@@ -1228,7 +1228,7 @@ pub mod test_support {
         /// Scenario: export an OTLP traces batch to the mock broker.
         /// Guarantees: the traces record lands on the configured topic with the
         /// exact payload bytes and an OTLP message-format header.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_traces_otlp_to_mock_broker() {
             let topic = "it-traces-otlp";
             with_cluster(
@@ -1262,7 +1262,7 @@ pub mod test_support {
         /// Scenario: export an OTLP metrics batch to the mock broker.
         /// Guarantees: the metrics record lands on the configured topic with the
         /// exact payload bytes and an OTLP message-format header.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_metrics_otlp_to_mock_broker() {
             let topic = "it-metrics-otlp";
             with_cluster(
@@ -1297,7 +1297,7 @@ pub mod test_support {
         /// Scenario: export a logs batch configured for OTAP encoding.
         /// Guarantees: the record carries the OTAP message-format header and its
         /// payload decodes as a `BatchArrowRecords` protobuf message.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_otap_sets_otap_format_header() {
             use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 
@@ -1339,7 +1339,7 @@ pub mod test_support {
         /// a different static topic is configured.
         /// Guarantees: the record is produced to the header-specified dynamic
         /// topic (the consumer only subscribes to that topic).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn routes_to_topic_from_transport_header() {
             let static_topic = "it-static-topic";
             let dynamic_topic = "it-dynamic-topic";
@@ -1378,7 +1378,7 @@ pub mod test_support {
         /// a Murmur2Random partitioner.
         /// Guarantees: the produced record's key matches the key computed by
         /// `partition_key_from_transport_headers` for the same headers.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn sets_partition_key_from_transport_headers() {
             let topic = "it-partition-key";
             with_cluster(
@@ -1423,7 +1423,7 @@ pub mod test_support {
         /// with a generous deadline.
         /// Guarantees: all buffered records are flushed and remain consumable
         /// after shutdown (no data loss on graceful stop).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_flushes_buffered_records() {
             let topic = "it-shutdown-flush";
             with_cluster(

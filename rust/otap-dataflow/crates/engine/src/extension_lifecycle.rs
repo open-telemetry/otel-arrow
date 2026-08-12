@@ -9,7 +9,7 @@
 //!
 //! TODO: on internal node/extension failure the orderly drain
 //! protocol is skipped; remaining data-path tasks are force-cancelled
-//! by `LocalSet` drop, so the stop-last guarantee currently applies
+//! by `LocalRuntime` drop, so the stop-last guarantee currently applies
 //! only to the normal drain path. Fix in a follow-up PR by making
 //! pipeline shutdown orchestrated.
 
@@ -28,8 +28,9 @@ use otap_df_telemetry::registry::EntityKey;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+use tokio::runtime::LocalRuntime;
 use tokio::sync::mpsc;
-use tokio::task::{self, JoinError, JoinHandle, LocalSet};
+use tokio::task::{self, JoinError, JoinHandle};
 use tokio::time::Instant as TokioInstant;
 
 /// Cleanup window granted to extensions after the data path has drained.
@@ -71,7 +72,7 @@ impl ExtensionLifecycle {
     /// non-passive wrapper with `monitor`.
     pub fn spawn(
         extensions: Vec<(ExtensionWrapper, EntityKey)>,
-        local_tasks: &LocalSet,
+        local_runtime: &LocalRuntime,
         metrics_reporter: MetricsReporter,
         terminal_metrics_deadline: TerminalMetricsDeadline,
         ext_ctx: &ExtensionContext,
@@ -144,7 +145,7 @@ impl ExtensionLifecycle {
                 drop(control_sender);
                 (task_key, res)
             };
-            let handle = local_tasks.spawn_local(fut);
+            let handle = local_runtime.spawn_local(fut);
             let _ = task_id_to_key.insert(handle.id(), key.clone());
             futures.push(handle);
             let _ = pending_starts.insert(key);
@@ -585,15 +586,16 @@ mod tests {
 
     #[test]
     fn drain_until_deadline_is_bounded_for_stuck_extension() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let key = ExtensionKey::new("stuck".into(), ExtensionVariant::Local);
             let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
                 FuturesUnordered::new();
-            let handle = local_tasks.spawn_local({
+            let handle = rt.spawn_local({
                 let key = key.clone();
                 async move {
+                    // Misbehaving extension that ignores `Shutdown` and never returns.
                     std::future::pending::<()>().await;
                     (key, Ok(()))
                 }
@@ -635,15 +637,15 @@ mod tests {
                 !lifecycle.futures.is_empty(),
                 "stuck extension should still be present after the bounded drain timed out",
             );
-        }));
+        });
     }
 
     /// A panicking extension task must surface as a terminal `Failed`
     /// state and bump the `completed_panic` counter.
     #[test]
     fn panicking_extension_task_reports_failed_terminal_state() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let key = ExtensionKey::new("boom".into(), ExtensionVariant::Local);
             let entity_key =
@@ -658,7 +660,7 @@ mod tests {
 
             let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
                 FuturesUnordered::new();
-            let handle = local_tasks.spawn_local({
+            let handle = rt.spawn_local({
                 let task_key = key.clone();
                 async move {
                     task::yield_now().await;
@@ -719,15 +721,15 @@ mod tests {
                 Some(1),
                 "completed_panic counter must increment exactly once",
             );
-        }));
+        });
     }
 
     /// `initiate_shutdown` is single-shot: a second call must be a no-op and
     /// leave the phase in `ShuttingDown`.
     #[test]
     fn initiate_shutdown_is_single_shot() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
             let (key_a, channel_a, mut rx_a) = make_shutdown_channel("a");
@@ -766,7 +768,7 @@ mod tests {
                 .try_recv()
                 .expect("b must receive exactly one Shutdown");
             assert_eq!(payload_b.reason, "first");
-        }));
+        });
     }
 
     /// Passive extensions never spawn a task and must not consume a
@@ -775,8 +777,8 @@ mod tests {
     fn passive_extensions_are_not_registered_in_monitor() {
         use crate::extension::ExtensionWrapper;
 
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
             let passive_cfg = crate::config::ExtensionConfig::new("passive_ext");
@@ -833,7 +835,7 @@ mod tests {
             let reporter = MetricsReporter::new(tx);
             let lifecycle = ExtensionLifecycle::spawn(
                 vec![(passive_w, passive_entity), (active_w, active_entity)],
-                &local_tasks,
+                &rt,
                 reporter,
                 TerminalMetricsDeadline::default(),
                 &ext_ctx,
@@ -852,15 +854,15 @@ mod tests {
             );
 
             drop(lifecycle);
-        }));
+        });
     }
 
     /// Two scopes (today: pipelines) each own a distinct `ExtensionLifecycle`;
     /// a shutdown in one must not reach the other's extensions.
     #[test]
     fn initiate_shutdown_in_one_scope_does_not_reach_another_scope() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ctx_a, _reg_a) = crate::testing::test_extension_ctx();
             let (ctx_b, _reg_b) = crate::testing::test_extension_ctx();
 
@@ -904,7 +906,7 @@ mod tests {
                 !life_b.shutdown_initiated(),
                 "scope B's phase must remain Running"
             );
-        }));
+        });
     }
 
     /// `CollectTelemetry` fanout from one scope's monitor must not reach
@@ -914,8 +916,8 @@ mod tests {
         use crate::message::Sender;
         use otap_df_channel::mpsc;
 
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ctx_a, _reg_a) = crate::testing::test_extension_ctx();
             let (ctx_b, _reg_b) = crate::testing::test_extension_ctx();
 
@@ -959,7 +961,7 @@ mod tests {
                 rx_b.try_recv().is_err(),
                 "scope B's extension must NOT receive scope A's CollectTelemetry"
             );
-        }));
+        });
     }
 
     /// On task completion, the extension must be pruned from
@@ -967,8 +969,8 @@ mod tests {
     /// a dropped oneshot receiver.
     #[test]
     fn completed_extensions_are_pruned_from_shutdown_channels() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
             let (key_a, channel_a, _rx_a) = make_shutdown_channel("a");
@@ -976,7 +978,7 @@ mod tests {
 
             let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
                 FuturesUnordered::new();
-            let handle = local_tasks.spawn_local({
+            let handle = rt.spawn_local({
                 let key = key_a.clone();
                 async move { (key, Ok(())) }
             });
@@ -1021,15 +1023,15 @@ mod tests {
                 lifecycle.shutdown_channels.iter().any(|(k, _)| k == &key_b),
                 "non-completed extension B must remain in `shutdown_channels`"
             );
-        }));
+        });
     }
 
     /// After a completion is routed, `initiate_shutdown` must not signal the
     /// completed extension's oneshot -- even if its receiver is still alive.
     #[test]
     fn initiate_shutdown_skips_already_completed_extension() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
             let (key_a, channel_a, mut rx_a) = make_shutdown_channel("a");
@@ -1037,7 +1039,7 @@ mod tests {
 
             let futures: FuturesUnordered<JoinHandle<(ExtensionKey, Result<(), Error>)>> =
                 FuturesUnordered::new();
-            let handle = local_tasks.spawn_local({
+            let handle = rt.spawn_local({
                 let key = key_a.clone();
                 async move { (key, Ok(())) }
             });
@@ -1069,13 +1071,13 @@ mod tests {
                 rx_b.try_recv().is_ok(),
                 "initiate_shutdown must still reach non-completed extension B"
             );
-        }));
+        });
     }
 
     #[test]
     fn wait_all_spawned_returns_after_extensions_signal_spawned() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
             let (started_tx, started_rx) = mpsc::unbounded_channel::<ExtensionKey>();
@@ -1088,7 +1090,7 @@ mod tests {
                 let key = ExtensionKey::local(name);
                 let started_tx = started_tx.clone();
                 let task_key = key.clone();
-                let handle = local_tasks.spawn_local(async move {
+                let handle = rt.spawn_local(async move {
                     let _ = started_tx.send(task_key.clone());
                     std::future::pending::<()>().await;
                     (task_key, Ok::<(), Error>(()))
@@ -1118,7 +1120,7 @@ mod tests {
             assert!(outcome.is_ok(), "wait_all_spawned must not hang");
             assert!(outcome.unwrap().is_ok());
             assert!(lifecycle.pending_starts.is_empty());
-        }));
+        });
     }
 
     #[test]
@@ -1128,8 +1130,8 @@ mod tests {
         // barrier must surface that error rather than returning Ok just
         // because pending_starts emptied. Otherwise the caller starts node
         // tasks against an already-dead extension.
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
             let (started_tx, started_rx) = mpsc::unbounded_channel::<ExtensionKey>();
@@ -1143,7 +1145,7 @@ mod tests {
             {
                 let started_tx = started_tx.clone();
                 let task_key = a_key.clone();
-                let handle = local_tasks.spawn_local(async move {
+                let handle = rt.spawn_local(async move {
                     let _ = started_tx.send(task_key.clone());
                     (
                         task_key,
@@ -1162,7 +1164,7 @@ mod tests {
             {
                 let started_tx = started_tx.clone();
                 let task_key = b_key.clone();
-                let handle = local_tasks.spawn_local(async move {
+                let handle = rt.spawn_local(async move {
                     let _ = started_tx.send(task_key.clone());
                     std::future::pending::<()>().await;
                     (task_key, Ok::<(), Error>(()))
@@ -1196,13 +1198,13 @@ mod tests {
                 res.is_err(),
                 "barrier must surface a completed-with-error task even when all signals have already been consumed; got Ok",
             );
-        }));
+        });
     }
 
     #[test]
     fn wait_all_spawned_surfaces_panic_before_signal() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
             let (_started_tx, started_rx) = mpsc::unbounded_channel::<ExtensionKey>();
@@ -1211,7 +1213,7 @@ mod tests {
             let mut task_id_to_key = HashMap::new();
 
             let key = ExtensionKey::local("paniker");
-            let handle = local_tasks.spawn_local(async {
+            let handle = rt.spawn_local(async {
                 panic!("synthetic first-poll panic");
                 #[allow(unreachable_code)]
                 (ExtensionKey::local("paniker"), Ok::<(), Error>(()))
@@ -1246,7 +1248,7 @@ mod tests {
                 other => panic!("expected JoinTaskError(is_panic), got {other:?}"),
             }
             assert!(lifecycle.pending_starts.is_empty());
-        }));
+        });
     }
 
     use crate::channel_metrics::ChannelMetricsRegistry;
@@ -1286,8 +1288,8 @@ mod tests {
 
     #[test]
     fn extension_control_channel_stays_open_with_pipeline_metrics_disabled() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
             let observed_close = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -1318,7 +1320,7 @@ mod tests {
 
             let mut lifecycle = ExtensionLifecycle::spawn(
                 vec![(wrapper, entity_key)],
-                &local_tasks,
+                &rt,
                 reporter,
                 TerminalMetricsDeadline::default(),
                 &ext_ctx,
@@ -1348,13 +1350,13 @@ mod tests {
                 !observed_close.get(),
                 "extension must not have seen RecvError::Closed before Shutdown"
             );
-        }));
+        });
     }
 
     #[test]
     fn extension_telemetry_guard_held_for_full_extension_lifetime() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, registry) = crate::testing::test_extension_ctx();
 
             let observed_close = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -1398,7 +1400,7 @@ mod tests {
 
             let mut lifecycle = ExtensionLifecycle::spawn(
                 vec![(wrapper, entity_key)],
-                &local_tasks,
+                &rt,
                 reporter,
                 TerminalMetricsDeadline::default(),
                 &ext_ctx,
@@ -1431,7 +1433,7 @@ mod tests {
                 registry.visit_entity(entity_key, |_| ()).is_none(),
                 "EntityTelemetryGuard must unregister the entity after start() returns",
             );
-        }));
+        });
     }
 
     // wait_all_ready tests: exercise the readiness gate in isolation
@@ -1455,21 +1457,21 @@ mod tests {
 
     #[test]
     fn wait_all_ready_is_zero_cost_noop_when_no_extension_opted_in() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
 
             let outcome =
                 tokio::time::timeout(Duration::from_millis(50), lifecycle.wait_all_ready()).await;
             assert!(matches!(outcome, Ok(Ok(()))));
-        }));
+        });
     }
 
     #[test]
     fn wait_all_ready_resolves_when_signaller_fires() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
 
@@ -1488,13 +1490,13 @@ mod tests {
             let outcome =
                 tokio::time::timeout(Duration::from_secs(1), lifecycle.wait_all_ready()).await;
             assert!(matches!(outcome, Ok(Ok(()))), "got {outcome:?}");
-        }));
+        });
     }
 
     #[test]
     fn wait_all_ready_surfaces_signaller_dropped_with_named_extension() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
 
@@ -1514,13 +1516,13 @@ mod tests {
                 }
                 other => panic!("expected ExtensionReadinessSignallerDropped; got {other:?}"),
             }
-        }));
+        });
     }
 
     #[test]
     fn wait_all_ready_surfaces_timeout_with_named_extension() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
 
@@ -1548,13 +1550,13 @@ mod tests {
                 }
                 other => panic!("expected ExtensionReadinessTimeout; got {other:?}"),
             }
-        }));
+        });
     }
 
     #[test]
     fn wait_all_ready_max_wait_is_bounded_by_longest_timeout_not_sum() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             // Virtual time: the gate's wait is exact, so the assertion can use
             // a tight margin regardless of how far the serial sum exceeds the
             // longest timeout.
@@ -1610,13 +1612,13 @@ mod tests {
                 "gate waited {elapsed:?}, exceeding longest timeout + margin {bound:?} \
                  (serial sum would be {serial_sum:?})",
             );
-        }));
+        });
     }
 
     #[test]
     fn wait_all_ready_fails_fast_at_shortest_timeout_not_longest() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             // Virtual time: the fail-fast instant is exact, so the assertion
             // can use a tight margin even with a far longer probe present.
             tokio::time::pause();
@@ -1666,13 +1668,13 @@ mod tests {
                 "gate took {elapsed:?} to fail, exceeding shortest timeout + margin {bound:?} \
                  (longest timeout was {longest:?})",
             );
-        }));
+        });
     }
 
     #[test]
     fn wait_all_ready_surfaces_extension_task_failure_while_probe_pending() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
 
@@ -1702,13 +1704,13 @@ mod tests {
                 }
                 other => panic!("expected task failure surfaced by the gate; got {other:?}"),
             }
-        }));
+        });
     }
 
     #[test]
     fn wait_all_ready_is_idempotent_after_drain() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
 
@@ -1727,13 +1729,13 @@ mod tests {
             let second =
                 tokio::time::timeout(Duration::from_millis(50), lifecycle.wait_all_ready()).await;
             assert!(matches!(second, Ok(Ok(()))), "got {second:?}");
-        }));
+        });
     }
 
     #[test]
     fn wait_all_ready_partial_signal_in_dual_variant_lifecycle_names_laggard() {
-        let (rt, local_tasks) = crate::testing::setup_test_runtime();
-        rt.block_on(local_tasks.run_until(async {
+        let rt = crate::testing::setup_test_runtime();
+        rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
 
@@ -1782,6 +1784,6 @@ mod tests {
                 elapsed < local_timeout * 10,
                 "elapsed {elapsed:?} suggests serial wait or wrong timeout"
             );
-        }));
+        });
     }
 }

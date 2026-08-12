@@ -347,7 +347,7 @@ struct LocalReceiverAdmissionStateInner {
     mode: MemoryLimiterMode,
 }
 
-/// Receiver-local admission state for LocalSet-only receivers that do not cross task boundaries.
+/// Receiver-local admission state for local-runtime receivers that do not cross task boundaries.
 #[derive(Clone, Debug)]
 pub struct LocalReceiverAdmissionState {
     inner: Rc<LocalReceiverAdmissionStateInner>,

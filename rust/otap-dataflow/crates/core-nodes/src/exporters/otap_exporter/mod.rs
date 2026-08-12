@@ -1209,7 +1209,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::net::TcpListener;
-    use tokio::runtime::Runtime;
+    use tokio::runtime::{Builder, LocalOptions, Runtime};
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
@@ -1229,6 +1229,14 @@ mod tests {
             .expect("test pdata should retain route calldata")
             .calldata[0]
             .into()
+    }
+
+    fn local_runtime(name: &'static str) -> tokio::runtime::LocalRuntime {
+        Builder::new_current_thread()
+            .enable_all()
+            .name(name)
+            .build_local(LocalOptions::default())
+            .expect("failed to create local runtime")
     }
 
     #[test]
@@ -1707,7 +1715,7 @@ mod tests {
         let grpc_addr = "127.0.0.1";
         let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-receiver-not-ready-test");
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
@@ -1891,7 +1899,7 @@ mod tests {
                 .expect("uh oh server failed");
         }
 
-        let server_handle = tokio_rt.spawn(async move {
+        let server_handle = tokio_rt.spawn_local(async move {
             let listening_addr = format!("{grpc_addr}:{grpc_port}");
 
             // wait for signal to start the server
@@ -1906,10 +1914,9 @@ mod tests {
         });
         let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(3);
 
-        let _ = tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
+        tokio_rt.block_on(async move {
             let metrics_reporter_start_exporter = metrics_reporter.clone();
-            let _fut = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 start_exporter(
                     exporter,
                     runtime_ctrl_msg_tx,
@@ -1918,20 +1925,22 @@ mod tests {
                 )
                 .await
             });
-            tokio::join!(
-                local_set,
-                drive_test(
-                    server_startup_sender,
-                    server_start_ack_receiver,
-                    server_shutdown_sender,
-                    pdata_tx,
-                    control_sender,
-                    req_receiver,
-                    metrics_rx,
-                    metrics_reporter,
-                    pipeline_completion_msg_rx,
-                )
+            drive_test(
+                server_startup_sender,
+                server_start_ack_receiver,
+                server_shutdown_sender,
+                pdata_tx,
+                control_sender,
+                req_receiver,
+                metrics_rx,
+                metrics_reporter,
+                pipeline_completion_msg_rx,
             )
+            .await;
+            exporter_handle
+                .await
+                .expect("exporter task should join")
+                .expect("exporter should shut down cleanly");
         });
 
         tokio_rt
@@ -2022,7 +2031,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    /// Scenario: stream creation repeatedly fails while the exporter is in reconnect backoff.
+    /// Guarantees: a shutdown signal interrupts backoff and joins the local worker promptly.
+    #[tokio::test(flavor = "local")]
     async fn test_stream_arrow_batches_shutdown_interrupts_retry_backoff() {
         use super::{PDataMetricsUpdate, stream_arrow_batches};
 
@@ -2040,38 +2051,34 @@ mod tests {
                 .unwrap();
         }
 
-        // Production drives `stream_arrow_batches` via `spawn_local` (the exporter
-        // runs on a thread-local set), so the worker future is `!Send`. Mirror that
-        // here with a `LocalSet` rather than `tokio::spawn`, which would require
-        // `Send` and does not reflect how the exporter actually runs.
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async move {
-                let handle = tokio::task::spawn_local(stream_arrow_batches(
-                    MockAlwaysFail,
-                    SignalType::Logs,
-                    None,
-                    batches_rx,
-                    metrics_tx,
-                    shutdown_rx,
-                    None,
-                ));
+        // Production drives `stream_arrow_batches` via `spawn_local` on a
+        // `LocalRuntime`, so the worker future is intentionally `!Send`.
+        async move {
+            let handle = tokio::task::spawn_local(stream_arrow_batches(
+                MockAlwaysFail,
+                SignalType::Logs,
+                None,
+                batches_rx,
+                metrics_tx,
+                shutdown_rx,
+                None,
+            ));
 
-                for attempt in 0..4 {
-                    let update = metrics_rx.recv().await.expect("metrics channel closed");
-                    assert!(
-                        matches!(update, PDataMetricsUpdate::IncFailed(SignalType::Logs, ..)),
-                        "expected IncFailed update for failed stream attempt #{attempt}"
-                    );
-                }
+            for attempt in 0..4 {
+                let update = metrics_rx.recv().await.expect("metrics channel closed");
+                assert!(
+                    matches!(update, PDataMetricsUpdate::IncFailed(SignalType::Logs, ..)),
+                    "expected IncFailed update for failed stream attempt #{attempt}"
+                );
+            }
 
-                _ = shutdown_tx.send_replace(true);
-                timeout(Duration::from_millis(40), handle)
-                    .await
-                    .expect("shutdown should interrupt reconnect backoff promptly")
-                    .unwrap();
-            })
-            .await;
+            _ = shutdown_tx.send_replace(true);
+            timeout(Duration::from_millis(40), handle)
+                .await
+                .expect("shutdown should interrupt reconnect backoff promptly")
+                .unwrap();
+        }
+        .await;
     }
 
     /// gRPC service mock that returns statuses out of request order.
@@ -2136,7 +2143,7 @@ mod tests {
         let grpc_addr = "127.0.0.1";
         let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-out-of-order-status-test");
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
@@ -2177,7 +2184,7 @@ mod tests {
         let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
 
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
-        let server_handle = tokio_rt.spawn(async move {
+        let server_handle = tokio_rt.spawn_local(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
             let _ = server_ready_tx.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
@@ -2194,10 +2201,9 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
-        let _ = tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
+        tokio_rt.block_on(async move {
             let mr = metrics_reporter.clone();
-            let _exporter_fut = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 let _ = exporter
                     .start(
                         runtime_ctrl_msg_tx,
@@ -2208,7 +2214,7 @@ mod tests {
                     .await;
             });
 
-            tokio::join!(local_set, async {
+            async {
                 server_ready_rx
                     .await
                     .expect("server should bind before exporter traffic starts");
@@ -2264,7 +2270,9 @@ mod tests {
                     .await
                     .unwrap();
                 server_shutdown_tx.send(true).unwrap();
-            })
+            }
+            .await;
+            exporter_handle.await.expect("exporter task should join");
         });
 
         tokio_rt
@@ -2317,7 +2325,7 @@ mod tests {
         let grpc_addr = "127.0.0.1";
         let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-shutdown-nacks-test");
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
@@ -2362,7 +2370,7 @@ mod tests {
         let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
 
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
-        let server_handle = tokio_rt.spawn(async move {
+        let server_handle = tokio_rt.spawn_local(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
             let _ = server_ready_tx.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
@@ -2382,10 +2390,9 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
-        let _ = tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
+        tokio_rt.block_on(async move {
             let mr = metrics_reporter.clone();
-            let _exporter_fut = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 let _ = exporter
                     .start(
                         runtime_ctrl_msg_tx,
@@ -2396,7 +2403,7 @@ mod tests {
                     .await;
             });
 
-            tokio::join!(local_set, async {
+            async {
                 server_ready_rx
                     .await
                     .expect("server should bind before exporter traffic starts");
@@ -2440,7 +2447,9 @@ mod tests {
 
                 release_response_for_test.notify_waiters();
                 server_shutdown_tx.send(true).unwrap();
-            })
+            }
+            .await;
+            exporter_handle.await.expect("exporter task should join");
         });
 
         tokio_rt
@@ -2496,7 +2505,7 @@ mod tests {
         let grpc_addr = "127.0.0.1";
         let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-grpc-error-test");
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
@@ -2537,7 +2546,7 @@ mod tests {
 
         // Start gRPC server that returns errors
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
-        let server_handle = tokio_rt.spawn(async move {
+        let server_handle = tokio_rt.spawn_local(async move {
             let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
             let _ = server_ready_tx.send(());
             let tcp_stream = TcpListenerStream::new(tcp_listener);
@@ -2556,10 +2565,9 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
-        let _ = tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
+        tokio_rt.block_on(async move {
             let mr = metrics_reporter.clone();
-            let _exporter_fut = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 let _ = exporter
                     .start(
                         runtime_ctrl_msg_tx,
@@ -2570,7 +2578,7 @@ mod tests {
                     .await;
             });
 
-            tokio::join!(local_set, async {
+            async {
                 server_ready_rx
                     .await
                     .expect("server should bind before exporter traffic starts");
@@ -2611,7 +2619,9 @@ mod tests {
                     .await
                     .unwrap();
                 server_shutdown_tx.send(true).unwrap();
-            })
+            }
+            .await;
+            exporter_handle.await.expect("exporter task should join");
         });
 
         tokio_rt
@@ -3033,13 +3043,14 @@ mod tests {
         }
     }
 
+    /// Scenario: the configured OTAP endpoint refuses the initial connection attempt.
+    /// Guarantees: shutdown interrupts connection-failure backoff and the exporter exits cleanly.
     #[test]
     fn test_otap_exporter_connection_failure_backoff() {
         use std::ops::Add;
-        use tokio::runtime::Runtime;
         use tokio::time::timeout;
 
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-connection-failure-test");
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -3077,8 +3088,7 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
         tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
-            let exporter_handle = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 exporter
                     .start(
                         runtime_ctrl_msg_tx,
@@ -3089,38 +3099,38 @@ mod tests {
                     .await
             });
 
-            local_set
-                .run_until(async move {
-                    let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
-                    let pdata1 = OtapPdata::new_default(log_message.into());
-                    pdata_tx.send(pdata1).await.unwrap();
+            async move {
+                let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+                let pdata1 = OtapPdata::new_default(log_message.into());
+                pdata_tx.send(pdata1).await.unwrap();
 
-                    // Wait enough time for handle_req_stream to fail with connection refused
-                    // and enter the Err(e) branch which sleeps for 50ms (INITIAL_BACKOFF).
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                // Wait enough time for handle_req_stream to fail with connection refused
+                // and enter the Err(e) branch which sleeps for 50ms (INITIAL_BACKOFF).
+                tokio::time::sleep(Duration::from_millis(200)).await;
 
-                    control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: Instant::now().add(Duration::from_millis(500)),
-                            reason: "shutdown test".into(),
-                        })
-                        .await
-                        .unwrap();
+                control_sender
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: Instant::now().add(Duration::from_millis(500)),
+                        reason: "shutdown test".into(),
+                    })
+                    .await
+                    .unwrap();
 
-                    let shutdown_result = timeout(Duration::from_secs(1), exporter_handle).await;
-                    assert!(shutdown_result.is_ok(), "Expected clean shutdown");
-                })
-                .await;
+                let shutdown_result = timeout(Duration::from_secs(1), exporter_handle).await;
+                assert!(shutdown_result.is_ok(), "Expected clean shutdown");
+            }
+            .await;
         });
     }
 
+    /// Scenario: the OTAP stream queue is full while downstream remains unreachable.
+    /// Guarantees: shutdown completes within its bound instead of deadlocking on queue backpressure.
     #[test]
     fn test_otap_exporter_deadlock_on_full_queue_shutdown() {
         use std::ops::Add;
-        use tokio::runtime::Runtime;
         use tokio::time::timeout;
 
-        let tokio_rt = Runtime::new().unwrap();
+        let tokio_rt = local_runtime("otap-exporter-full-queue-shutdown-test");
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
@@ -3159,8 +3169,7 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
 
         tokio_rt.block_on(async move {
-            let local_set = tokio::task::LocalSet::new();
-            let exporter_handle = local_set.spawn_local(async move {
+            let exporter_handle = tokio::task::spawn_local(async move {
                 exporter
                     .start(
                         runtime_ctrl_msg_tx,
@@ -3171,55 +3180,53 @@ mod tests {
                     .await
             });
 
-            local_set
-                .run_until(async move {
-                    // Send first batch -- exporter forwards it to a stream worker.
-                    let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
-                    let pdata1 = OtapPdata::new_default(log_message.into());
-                    pdata_tx.send(pdata1).await.unwrap();
+            async move {
+                // Send first batch -- exporter forwards it to a stream worker.
+                let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+                let pdata1 = OtapPdata::new_default(log_message.into());
+                pdata_tx.send(pdata1).await.unwrap();
 
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
 
-                    // Send second batch -- fills the stream queue (capacity=1).
-                    let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
-                    let pdata2 = OtapPdata::new_default(log_message.into());
-                    pdata_tx.send(pdata2).await.unwrap();
+                // Send second batch -- fills the stream queue (capacity=1).
+                let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
+                let pdata2 = OtapPdata::new_default(log_message.into());
+                pdata_tx.send(pdata2).await.unwrap();
 
-                    // Send third batch in a background task -- this will block inside
-                    // enqueue_stream_batch waiting for queue space, simulating full
-                    // backpressure with an unreachable downstream.
-                    let log_message = create_otap_batch(LOG_BATCH_ID + 2, ArrowPayloadType::Logs);
-                    let pdata3 = OtapPdata::new_default(log_message.into());
-                    let pdata_tx_clone = pdata_tx.clone();
-                    let send_handle = tokio::task::spawn_local(async move {
-                        _ = pdata_tx_clone.send(pdata3).await;
-                    });
+                // Send third batch in a background task -- this will block inside
+                // enqueue_stream_batch waiting for queue space, simulating full
+                // backpressure with an unreachable downstream.
+                let log_message = create_otap_batch(LOG_BATCH_ID + 2, ArrowPayloadType::Logs);
+                let pdata3 = OtapPdata::new_default(log_message.into());
+                let pdata_tx_clone = pdata_tx.clone();
+                let send_handle = tokio::task::spawn_local(async move {
+                    _ = pdata_tx_clone.send(pdata3).await;
+                });
 
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
 
-                    // Request shutdown -- before the fix, the exporter would deadlock
-                    // because the main loop was blocked in enqueue_stream_batch and
-                    // could never process this Shutdown control message.
-                    control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: Instant::now().add(Duration::from_millis(10)),
-                            reason: "shutdown test".into(),
-                        })
-                        .await
-                        .unwrap();
+                // Request shutdown -- before the fix, the exporter would deadlock
+                // because the main loop was blocked in enqueue_stream_batch and
+                // could never process this Shutdown control message.
+                control_sender
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: Instant::now().add(Duration::from_millis(10)),
+                        reason: "shutdown test".into(),
+                    })
+                    .await
+                    .unwrap();
 
-                    // The exporter must shut down within 200ms, not hang forever.
-                    let shutdown_result =
-                        timeout(Duration::from_millis(200), exporter_handle).await;
-                    assert!(
-                        shutdown_result.is_ok(),
-                        "Expected exporter to shut down successfully and not deadlock"
-                    );
+                // The exporter must shut down within 200ms, not hang forever.
+                let shutdown_result = timeout(Duration::from_millis(200), exporter_handle).await;
+                assert!(
+                    shutdown_result.is_ok(),
+                    "Expected exporter to shut down successfully and not deadlock"
+                );
 
-                    send_handle.abort();
-                    drop(pdata_tx);
-                })
-                .await;
+                send_handle.abort();
+                drop(pdata_tx);
+            }
+            .await;
         });
     }
 }

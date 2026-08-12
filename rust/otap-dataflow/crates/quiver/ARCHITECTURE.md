@@ -205,7 +205,7 @@ WAL entries belonging to:
       u16 version = 1;                // bump if layout changes
       u16 size = 24;                  // total encoded size (enables variable-width)
       u64 wal_position;               // position in the WAL stream
-      u32 crc32;                      // covers magic..wal_position (everything except CRC)
+      u32 crc32;                      // covers magic..wal_position
   }
   ```
 
@@ -273,22 +273,22 @@ The binary format is designed for forward and backward compatibility:
 
 ```text
 Header (fixed size for v1 = 32 bytes):
-+----------+---------+-------------+----------+-----------------------+-------------+----------+
-| magic    | version | header_size | flags    | oldest_incomplete_seg | entry_count | reserved |
-| (8B)     | (2B LE) | (2B LE)     | (2B LE)  | (8B LE)               | (4B LE)     | (6B)     |
-+----------+---------+-------------+----------+-----------------------+-------------+----------+
+- magic: 8B
+- version: 2B LE
+- header_size: 2B LE
+- flags: 2B LE
+- oldest_incomplete_seg: 8B LE
+- entry_count: 4B LE
+- reserved: 6B
 
 Body (entry_count segment entries):
-+------------+--------------+---------------+-----------------+
-| seg_seq    | bundle_count | bitmap_words  | acked_bitmap    |
-| (8B LE)    | (4B LE)      | (2B LE)       | (bitmap_words * 8B) |
-+------------+--------------+---------------+-----------------+
+- seg_seq: 8B LE
+- bundle_count: 4B LE
+- bitmap_words: 2B LE
+- acked_bitmap: bitmap_words * 8B
 
 Footer:
-+----------+
-| crc32    |
-| (4B LE)  |
-+----------+
+- crc32: 4B LE
 ```
 
 Field descriptions:
@@ -423,8 +423,8 @@ past the segment to be deleted.
 Quiver is a standalone persistence library with no knowledge of the embedding
 pipeline's control flow semantics. Responsibilities are split as follows:
 
-| Concern | Quiver (Library) | Embedding Layer (e.g., durable_buffer_processor) |
-| ------- | ---------------- | --------------------------------------------- |
+| Concern | Quiver | Embedding Layer |
+| ------- | ------ | --------------- |
 | WAL + Segment storage | Yes | |
 | Per-subscriber progress files | Yes | |
 | Subscriber state (per-segment tracking) | Yes | |
@@ -497,10 +497,10 @@ Protects processed data; smaller footprint, buffers during downstream outages
 
 Quiver supports two durability modes, configured via `QuiverConfig::durability`:
 
-| Mode           | Throughput | Data Loss on Crash    | Use Case                       |
-| -------------- | ---------- | --------------------- | ------------------------------ |
-| `Wal` (default)| Baseline   | Since last WAL fsync  | Production, critical data      |
-| `SegmentOnly`  | ~3x higher | Entire open segment   | High-throughput, loss-tolerant |
+| Mode | Throughput | Crash Loss | Use |
+| ---- | ---------- | ---------- | --- |
+| `Wal` (default) | Baseline | Since last WAL fsync | Critical data |
+| `SegmentOnly` | ~3x higher | Entire open segment | Loss-tolerant |
 
 #### `DurabilityMode::Wal` (Default)
 
@@ -922,15 +922,18 @@ type synchronization between the Rust newtypes (`SlotId`, `StreamId`,
 
 Segment files are designed to be safely detectable as corrupt or incomplete:
 
-| Error Condition | Detection Mechanism | Recovery Action |
-| --------------- | ------------------- | --------------- |
-| Truncated file | File too short for trailer (< 16 bytes) | `SegmentError::Truncated` - skip file |
-| Invalid magic | Trailer magic bytes mismatch | `SegmentError::InvalidFormat` - skip file |
-| CRC mismatch | Computed CRC != stored CRC | `SegmentError::ChecksumMismatch` - skip file |
-| Partial write | CRC mismatch (write interrupted) | `SegmentError::ChecksumMismatch` - skip file |
-| Invalid IPC | Arrow decoder failure | `SegmentError::Arrow` - skip file |
-| Missing stream | Stream ID not in directory | `SegmentError::StreamNotFound` |
-| Missing slot | Slot not in manifest entry | `SegmentError::SlotNotInBundle` |
+- Truncated file: file too short for trailer (< 16 bytes);
+  `SegmentError::Truncated` skips the file.
+- Invalid magic: trailer magic bytes mismatch;
+  `SegmentError::InvalidFormat` skips the file.
+- CRC mismatch: computed CRC differs from stored CRC;
+  `SegmentError::ChecksumMismatch` skips the file.
+- Partial write: interrupted write detected by CRC mismatch;
+  `SegmentError::ChecksumMismatch` skips the file.
+- Invalid IPC: Arrow decoder failure; `SegmentError::Arrow` skips the file.
+- Missing stream: stream ID not in directory;
+  `SegmentError::StreamNotFound`.
+- Missing slot: slot not in manifest entry; `SegmentError::SlotNotInBundle`.
 
 **Partial write safety**: The CRC32 at the end of the file is written last.
 If a write is interrupted (crash, power loss), one of three outcomes occurs:
@@ -1026,14 +1029,14 @@ dictionary keys.  A future enhancement will make this configurable via
 
 **Supported nesting patterns:**
 
-| Column type | Dictionary unification | Status |
-| --- | --- | --- |
-| Top-level `Dictionary(K, V)` | Yes | Fully supported |
-| `Struct` -> `Dictionary(K, V)` | Yes (one level) | Fully supported; covers all OTAP schemas |
-| `List` / `LargeList` -> `Dictionary` | No | Not needed by OTAP; will error on IPC write |
-| `Map` -> `Dictionary` | No | Not needed by OTAP; will error on IPC write |
-| `Struct` -> `Struct` -> `Dictionary` | No | Not present in current OTAP schemas |
-| `Union` -> `Dictionary` | No | Not used by OTAP |
+- Top-level `Dictionary(K, V)`: supported.
+- `Struct` -> `Dictionary(K, V)`: supported for one level, covering all
+  current OTAP schemas.
+- `List` / `LargeList` -> `Dictionary`: not needed by OTAP; errors on IPC
+  write.
+- `Map` -> `Dictionary`: not needed by OTAP; errors on IPC write.
+- `Struct` -> `Struct` -> `Dictionary`: not present in current OTAP schemas.
+- `Union` -> `Dictionary`: not used by OTAP.
 
 OTAP schemas use only the first two patterns. If future schemas introduce
 dictionary-encoded fields inside `List`, `Map`, or `Union`
@@ -1306,7 +1309,7 @@ as the primary interface.
 
 otap-dataflow uses a **thread-per-core** architecture where:
 
-- Each CPU core runs a **single-threaded tokio runtime** (`new_current_thread()`)
+- Each CPU core runs a **single-threaded tokio LocalRuntime**
 - Processors use `async_trait(?Send)` allowing `!Send` futures
 - No work-stealing occurs between cores
 - Each core has its own pipeline instance with its own Quiver engine
@@ -1431,7 +1434,14 @@ let shutdown_clone = shutdown.clone();
 // Consumer task
 let consumer = tokio::spawn(async move {
     loop {
-        match engine.next_bundle(&sub_id, Some(Duration::from_secs(5)), Some(&shutdown_clone)).await {
+        match engine
+            .next_bundle(
+                &sub_id,
+                Some(Duration::from_secs(5)),
+                Some(&shutdown_clone),
+            )
+            .await
+        {
             Ok(Some(handle)) => {
                 // Process bundle...
                 handle.ack();
@@ -1498,14 +1508,13 @@ and avoids the complexity of maintaining both sync and async code paths.
 
 #### API Summary
 
-| Operation | API |
-| --------- | --- |
-| Ingest | `ingest().await` - returns after WAL fsync (safe to ACK) |
-| Consume | `next_bundle(timeout, cancel).await` - waits for data with optional cancellation |
-| Poll | `poll_next_bundle()` - non-blocking check for data |
-| Claim | `claim_bundle()` - sync (memory lookup) |
-| Maintenance | `maintain().await` - async |
-| Flush | `flush().await` - async |
+- Ingest: `ingest().await` returns after WAL fsync and is safe to ACK.
+- Consume: `next_bundle(timeout, cancel).await` waits for data with optional
+  cancellation.
+- Poll: `poll_next_bundle()` is a non-blocking check for data.
+- Claim: `claim_bundle()` is synchronous and uses memory lookup.
+- Maintenance: `maintain().await` is async.
+- Flush: `flush().await` is async.
 
 #### Durable Buffer Processor Integration Pattern
 
@@ -1536,7 +1545,11 @@ impl DurableBuffer {
         loop {
             // Wait for bundle with cancellation support
             let handle = match self.engine
-                .next_bundle(&self.subscriber_id, Some(Duration::from_secs(5)), Some(&self.shutdown))
+                .next_bundle(
+                    &self.subscriber_id,
+                    Some(Duration::from_secs(5)),
+                    Some(&self.shutdown),
+                )
                 .await
             {
                 Ok(Some(h)) => h,

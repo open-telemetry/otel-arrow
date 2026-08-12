@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Utilities to run a non-Send async task on a dedicated OS thread with a
-//! single-threaded Tokio runtime and LocalSet, plus a shutdown signal.
+//! Tokio local runtime, plus a shutdown signal.
 
 use std::future::Future;
 use std::thread;
-use tokio::{runtime::Builder as RtBuilder, task::LocalSet};
+use tokio::runtime::{Builder as RtBuilder, LocalOptions};
 use tokio_util::sync::CancellationToken;
 
 use otap_df_telemetry::TracingSetup;
@@ -84,8 +84,8 @@ impl<T, E> Drop for ThreadLocalTaskHandle<T, E> {
     }
 }
 
-/// Spawn a non-Send async task on a dedicated OS thread running a single-threaded
-/// Tokio runtime with a LocalSet. Returns a handle to signal shutdown and join.
+/// Spawn a non-Send async task on a dedicated OS thread running a Tokio local
+/// runtime. Returns a handle to signal shutdown and join.
 ///
 /// Note creates an OS thread and a single-threaded async runtime,
 /// without thread pinning, dedicated to things like internal metrics
@@ -113,6 +113,7 @@ where
 {
     let name = thread_name.into();
     let name_for_thread = name.clone();
+    let name_for_runtime = name.clone();
     let token = CancellationToken::new();
     let token_for_task = token.clone();
 
@@ -122,14 +123,14 @@ where
             tracing_setup.with_subscriber(|| {
                 let rt = RtBuilder::new_current_thread()
                     .enable_all()
-                    .build()
-                    .expect("Failed to create runtime");
-                let local = LocalSet::new();
+                    .name(name_for_runtime)
+                    .build_local(LocalOptions::default())
+                    .expect("Failed to create local runtime");
 
                 // Build the task future using the provided factory, passing the cancellation token.
                 let fut = task_factory(token_for_task);
-                // Run the future to completion on the LocalSet and return its result to the caller.
-                rt.block_on(local.run_until(fut))
+                // Run the future to completion on the local runtime and return its result to the caller.
+                rt.block_on(fut)
             })
         })
         .map_err(|e| crate::error::Error::ThreadSpawnError {

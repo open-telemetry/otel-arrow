@@ -12,7 +12,10 @@ use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
 use otap_df_query_engine::pipeline::Pipeline;
-use tokio::runtime::Runtime;
+use tokio::runtime::LocalRuntime;
+
+#[path = "support/local_runtime.rs"]
+mod local_runtime;
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -28,7 +31,7 @@ fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
 
 fn bench_log_pipeline(
     c: &mut Criterion,
-    rt: &Runtime,
+    rt: &LocalRuntime,
     batch_sizes: &[usize],
     bench_group_name: &str,
     bench_pipeline_kql: &str,
@@ -60,10 +63,7 @@ fn bench_log_pipeline(
 }
 
 fn bench_assign_attribute_pipelines(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("can build tokio single threaded runtime");
+    let rt = local_runtime::build_local_runtime("query-assign-attributes-bench");
 
     let batch_sizes = [128, 1536, 8192];
 

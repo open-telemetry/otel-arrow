@@ -62,7 +62,7 @@ mod receiver_wrapper_deps {
 /// them all back.
 /// Guarantees: multi-partition topics created via the builder distribute
 /// produced records across all partitions and every record round-trips.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_multi_partition_produce_consume() {
     with_cluster(
         KafkaTestCluster::builder().topic_with("demo-multi", 3, 1),
@@ -90,7 +90,7 @@ async fn demo_multi_partition_produce_consume() {
 /// Scenario: two consumers join one group on a 3-partition topic.
 /// Guarantees: `wait_for_assignment` drives the rebalance and partitions are
 /// split across the two members (each gets at least one).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_multiple_consumers_rebalance() {
     with_cluster(
         KafkaTestCluster::builder().topic_with("demo-rebalance", 3, 1),
@@ -123,7 +123,7 @@ async fn demo_multiple_consumers_rebalance() {
 /// committed offset.
 /// Guarantees: `inspect_group().committed_offset` observes committed progress
 /// once the consumer has consumed and committed.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_committed_offset_advancement() {
     with_cluster(
         KafkaTestCluster::builder().topic("demo-commit"),
@@ -155,7 +155,7 @@ async fn demo_committed_offset_advancement() {
 /// Scenario: inspect topology and watermarks after producing records.
 /// Guarantees: `partitions().len()` reflects the created partition count and
 /// `message_count` reflects produced records per partition.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_topology_and_watermark_inspection() {
     with_cluster(
         KafkaTestCluster::builder().topic_with("demo-inspect", 2, 1),
@@ -179,7 +179,7 @@ async fn demo_topology_and_watermark_inspection() {
 /// Scenario: produce a record to a specific partition.
 /// Guarantees: `send_to_partition` places the record on the requested
 /// partition, observed via the consumed message's partition field.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_produce_to_specific_partition() {
     with_cluster(
         KafkaTestCluster::builder().topic_with("demo-partition", 3, 1),
@@ -202,7 +202,7 @@ async fn demo_produce_to_specific_partition() {
 /// Scenario: two independent producers write to the same topic.
 /// Guarantees: multiple `TestProducer` instances coexist and all their records
 /// are consumed.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_multiple_producers() {
     with_cluster(
         KafkaTestCluster::builder().topic("demo-producers"),
@@ -225,7 +225,7 @@ async fn demo_multiple_producers() {
 /// Scenario: take all brokers down, then bring them back up.
 /// Guarantees: a produce that fails while brokers are down succeeds once they
 /// are back up (fault injection + recovery works).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_broker_down_up_recovery() {
     with_cluster(
         KafkaTestCluster::builder().topic("demo-recovery"),
@@ -263,7 +263,7 @@ async fn demo_broker_down_up_recovery() {
 /// Scenario: inject per-broker round-trip latency.
 /// Guarantees: with an extended message timeout, a produce still succeeds under
 /// injected latency (the rtt knob is wired correctly).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_round_trip_time_latency() {
     with_cluster(
         KafkaTestCluster::builder().topic("demo-rtt"),
@@ -289,7 +289,7 @@ async fn demo_round_trip_time_latency() {
 /// Guarantees: error injection is observable (produces fail while the fault is
 /// queued) and reversible (produces succeed once cleared), so the test would
 /// fail if `inject_request_errors` were a no-op.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_request_error_injection() {
     const TOPIC: &str = "demo-errinject";
     with_cluster(
@@ -356,7 +356,7 @@ async fn demo_request_error_injection() {
 
 /// Scenario: exercise the standalone `committed_offset` probe helper.
 /// Guarantees: a group with no committed offsets reports `None`.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_committed_offset_probe_none_when_unconsumed() {
     with_cluster(
         KafkaTestCluster::builder().topic("demo-probe"),
@@ -386,7 +386,7 @@ async fn demo_committed_offset_probe_none_when_unconsumed() {
 /// Guarantees: the exporter wrapper wires up, accepts pdata, produces to the
 /// configured topic with the OTLP format header, and shuts down cleanly.
 #[cfg(feature = "kafka-exporter")]
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_wrapper_exporter_smoke() {
     with_cluster(
         KafkaTestCluster::builder().topic("wrap-exp-logs"),
@@ -435,7 +435,7 @@ async fn demo_wrapper_exporter_smoke() {
 /// Guarantees: the receiver wrapper wires up, consumes broker records, decodes
 /// them to OtapPdata, supports ack, and shuts down cleanly.
 #[cfg(feature = "kafka-receiver")]
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn demo_wrapper_receiver_smoke() {
     with_cluster(
         KafkaTestCluster::builder().topic("wrap-rcv-traces"),

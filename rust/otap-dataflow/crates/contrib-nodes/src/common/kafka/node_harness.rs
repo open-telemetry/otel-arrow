@@ -6,7 +6,7 @@
 //!
 //! The wrappers *consume* the test suite ([`super::test::cluster::KafkaTestCluster`]):
 //! they take `&KafkaTestCluster`, auto-set `bootstrap.servers` from it, own all
-//! engine wiring + `LocalSet` spawn + lifecycle, keep channel receiver-ends
+//! engine wiring + `LocalRuntime` spawn + lifecycle, keep channel receiver-ends
 //! alive internally, and expose intention-revealing handles. The test suite core
 //! stays broker-only and node-agnostic; only these wrappers reference node
 //! types.
@@ -173,7 +173,7 @@ mod exporter_harness {
 
     impl KafkaExporterHarness {
         /// Starts the exporter with an explicit `cfg` (its `bootstrap.servers`
-        /// must already point at `cluster`). Spawns onto the current `LocalSet`.
+        /// must already point at `cluster`). Spawns onto the current `LocalRuntime`.
         pub(crate) fn start(_cluster: &KafkaTestCluster, cfg: KafkaExporterConfig) -> Self {
             let pipeline_ctx = test_pipeline_context();
             let node_config = Arc::new(NodeUserConfig::new_exporter_config(KAFKA_EXPORTER_URN));
@@ -287,7 +287,7 @@ mod exporter_harness {
         /// Panics if the task panicked or the exporter node returned an error,
         /// so a test cannot report a clean shutdown after a failure. Call this
         /// after [`Self::shutdown`] so the graceful-shutdown path runs to
-        /// completion instead of being cancelled when the `LocalSet` stops.
+        /// completion instead of being cancelled when the `LocalRuntime` stops.
         pub(crate) async fn await_stopped(self) {
             match self.join.await {
                 Ok(Ok(_terminal_state)) => {}
@@ -379,7 +379,7 @@ mod receiver_harness {
         /// Starts the receiver with an explicit `cfg` (its `bootstrap.servers`
         /// must already point at `cluster`). An optional `capture_policy` is
         /// installed on the effect handler before start. Spawns onto the
-        /// current `LocalSet`.
+        /// current `LocalRuntime`.
         pub(crate) fn start_with_capture(
             _cluster: &KafkaTestCluster,
             cfg: KafkaReceiverConfig,
@@ -544,7 +544,7 @@ mod receiver_harness {
         /// Panics if the task panicked or the receiver node returned an error,
         /// so a test cannot report a clean shutdown after a failure. Call this
         /// after [`Self::shutdown`] so the graceful-shutdown path runs to
-        /// completion instead of being cancelled when the `LocalSet` stops.
+        /// completion instead of being cancelled when the `LocalRuntime` stops.
         pub(crate) async fn await_stopped(self) {
             match self.join.await {
                 Ok(Ok(_terminal_state)) => {}

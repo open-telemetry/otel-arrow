@@ -1441,8 +1441,8 @@ mod tests {
 
         #[test]
         fn test_metrics_named_logs_success() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 // Telemetry setup (telemetry registry + collector + reporter)
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
@@ -1512,7 +1512,7 @@ mod tests {
 
                 // shutdown collector
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the signal-type-specific `logs` route is wired, selected,
@@ -1521,8 +1521,8 @@ mod tests {
         /// route-closed telemetry for logs, and does not fall back.
         #[test]
         fn test_metrics_named_logs_failure() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -1614,7 +1614,7 @@ mod tests {
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the signal-type-specific `logs` route is wired, selected,
@@ -1623,19 +1623,19 @@ mod tests {
         /// route-full telemetry for logs, and does not fall back.
         #[test]
         fn test_metrics_named_logs_full() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(assert_full_rejection_for_route(
+            let rt = setup_test_runtime();
+            rt.block_on(assert_full_rejection_for_route(
                 otap_df_config::SignalType::Logs,
                 signal_named_port(otap_df_config::SignalType::Logs),
                 "signal_router_named_logs_full",
                 83,
-            )));
+            ));
         }
 
         #[test]
         fn test_metrics_default_logs_success() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -1697,7 +1697,7 @@ mod tests {
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the `logs` named route is absent, the default route is
@@ -1706,8 +1706,8 @@ mod tests {
         /// route-local NACK contract as named-route admission.
         #[test]
         fn test_metrics_default_logs_failure() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -1797,7 +1797,7 @@ mod tests {
                 assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the `logs` named route is absent, the default route is
@@ -1806,13 +1806,13 @@ mod tests {
         /// route-local NACK contract as named-route admission.
         #[test]
         fn test_metrics_default_logs_full() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(assert_full_rejection_for_route(
+            let rt = setup_test_runtime();
+            rt.block_on(assert_full_rejection_for_route(
                 otap_df_config::SignalType::Logs,
                 "out",
                 "signal_router_default_logs_full",
                 84,
-            )));
+            ));
         }
 
         /// Scenario: the selected `logs` route is full while the selected
@@ -1821,8 +1821,8 @@ mod tests {
         /// traffic, and the router stays live for other signal types.
         #[test]
         fn test_full_named_logs_route_does_not_block_healthy_named_metrics_route() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -1935,14 +1935,14 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         // -------- Traces (spans) tests --------
         #[test]
         fn test_metrics_named_traces_success() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -1992,7 +1992,7 @@ mod tests {
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the signal-type-specific `traces` route is wired,
@@ -2001,8 +2001,8 @@ mod tests {
         /// route-closed telemetry for traces, and does not fall back.
         #[test]
         fn test_metrics_named_traces_failure() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2065,7 +2065,7 @@ mod tests {
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the signal-type-specific `traces` route is wired,
@@ -2074,19 +2074,19 @@ mod tests {
         /// route-full telemetry for traces, and does not fall back.
         #[test]
         fn test_metrics_named_traces_full() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(assert_full_rejection_for_route(
+            let rt = setup_test_runtime();
+            rt.block_on(assert_full_rejection_for_route(
                 otap_df_config::SignalType::Traces,
                 signal_named_port(otap_df_config::SignalType::Traces),
                 "signal_router_named_traces_full",
                 86,
-            )));
+            ));
         }
 
         #[test]
         fn test_metrics_default_traces_success() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2136,7 +2136,7 @@ mod tests {
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the `traces` named route is absent, the default route is
@@ -2145,8 +2145,8 @@ mod tests {
         /// route-local NACK contract as named-route admission.
         #[test]
         fn test_metrics_default_traces_failure() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2209,7 +2209,7 @@ mod tests {
                 assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the `traces` named route is absent, the default route is
@@ -2218,20 +2218,20 @@ mod tests {
         /// route-local NACK contract as named-route admission.
         #[test]
         fn test_metrics_default_traces_full() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(assert_full_rejection_for_route(
+            let rt = setup_test_runtime();
+            rt.block_on(assert_full_rejection_for_route(
                 otap_df_config::SignalType::Traces,
                 "out",
                 "signal_router_default_traces_full",
                 87,
-            )));
+            ));
         }
 
         // -------- Metrics tests --------
         #[test]
         fn test_metrics_named_metrics_success() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2283,7 +2283,7 @@ mod tests {
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the signal-type-specific `metrics` route is wired,
@@ -2292,8 +2292,8 @@ mod tests {
         /// route-closed telemetry for metrics, and does not fall back.
         #[test]
         fn test_metrics_named_metrics_failure() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2358,7 +2358,7 @@ mod tests {
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the signal-type-specific `metrics` route is wired,
@@ -2367,19 +2367,19 @@ mod tests {
         /// route-full telemetry for metrics, and does not fall back.
         #[test]
         fn test_metrics_named_metrics_full() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(assert_full_rejection_for_route(
+            let rt = setup_test_runtime();
+            rt.block_on(assert_full_rejection_for_route(
                 otap_df_config::SignalType::Metrics,
                 signal_named_port(otap_df_config::SignalType::Metrics),
                 "signal_router_named_metrics_full",
                 88,
-            )));
+            ));
         }
 
         #[test]
         fn test_metrics_default_metrics_success() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2431,7 +2431,7 @@ mod tests {
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the `metrics` named route is absent, the default route is
@@ -2440,8 +2440,8 @@ mod tests {
         /// route-local NACK contract as named-route admission.
         #[test]
         fn test_metrics_default_metrics_failure() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2506,7 +2506,7 @@ mod tests {
                 assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: the `metrics` named route is absent, the default route is
@@ -2515,13 +2515,13 @@ mod tests {
         /// route-local NACK contract as named-route admission.
         #[test]
         fn test_metrics_default_metrics_full() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(assert_full_rejection_for_route(
+            let rt = setup_test_runtime();
+            rt.block_on(assert_full_rejection_for_route(
                 otap_df_config::SignalType::Metrics,
                 "out",
                 "signal_router_default_metrics_full",
                 89,
-            )));
+            ));
         }
     }
 }

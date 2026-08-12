@@ -1421,7 +1421,9 @@ mod tests {
         assert!(metrics_rx.try_recv().is_err());
     }
 
-    #[tokio::test]
+    /// Scenario: A local processor forwards a message without explicitly timing its work.
+    /// Guarantees: Flow consumed-item, duration, and produced-item metrics are emitted automatically.
+    #[tokio::test(flavor = "local")]
     async fn flow_metric_auto_measures_process_without_timed() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let attrs = FlowAttributeSet {
@@ -1474,89 +1476,84 @@ mod tests {
         let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
         let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(1);
 
-        let local_tasks = tokio::task::LocalSet::new();
-        local_tasks
-            .run_until(async move {
-                let processor_task = tokio::task::spawn_local(async move {
-                    processor
-                        .start_with_completion_metrics(
-                            runtime_ctrl_tx,
-                            completion_tx,
-                            metrics_reporter,
-                            crate::Interests::PROCESS_DURATION,
-                            None,
-                            true,
-                            true,
-                            Some(start_metric_set),
-                            Some(duration_metric_set),
-                            Some(outgoing_metric_set),
-                            None,
-                            true,
-                            true,
-                            crate::terminal_state::TerminalMetricsDeadline::default(),
-                        )
-                        .await
-                });
-
-                input_tx
-                    .send(FlowMetricTestPData::default())
-                    .expect("test input should enqueue");
-                let _ = output_rx
-                    .recv()
+        async move {
+            let processor_task = tokio::task::spawn_local(async move {
+                processor
+                    .start_with_completion_metrics(
+                        runtime_ctrl_tx,
+                        completion_tx,
+                        metrics_reporter,
+                        crate::Interests::PROCESS_DURATION,
+                        None,
+                        true,
+                        true,
+                        Some(start_metric_set),
+                        Some(duration_metric_set),
+                        Some(outgoing_metric_set),
+                        None,
+                        true,
+                        true,
+                        crate::terminal_state::TerminalMetricsDeadline::default(),
+                    )
                     .await
-                    .expect("processor should forward the test message");
-                control_sender
-                    .send(NodeControlMsg::CollectTelemetry {
-                        metrics_reporter: collect_metrics_reporter,
-                    })
-                    .await
-                    .expect("collect telemetry should enqueue");
+            });
 
-                let snapshot =
-                    tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
-                        .await
-                        .expect("flow_metric metric should be reported")
-                        .expect("metrics channel should remain open");
-                processor_task.abort();
-                let _ = processor_task.await;
+            input_tx
+                .send(FlowMetricTestPData::default())
+                .expect("test input should enqueue");
+            let _ = output_rx
+                .recv()
+                .await
+                .expect("processor should forward the test message");
+            control_sender
+                .send(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter: collect_metrics_reporter,
+                })
+                .await
+                .expect("collect telemetry should enqueue");
 
-                let [MetricValue::U64(consumed_items)] = snapshot.get_metrics() else {
-                    panic!("expected one start flow consumed-item metric");
-                };
-                assert_eq!(*consumed_items, 1);
+            let snapshot = tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
+                .await
+                .expect("flow_metric metric should be reported")
+                .expect("metrics channel should remain open");
+            processor_task.abort();
+            let _ = processor_task.await;
 
-                let snapshot =
-                    tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
-                        .await
-                        .expect("flow_metric stop metric should be reported")
-                        .expect("metrics channel should remain open");
-                let [
-                    MetricValue::Distribution(
-                        otap_df_telemetry::instrument::DistributionValue::Basic(compute_duration),
-                    ),
-                ] = snapshot.get_metrics()
-                else {
-                    panic!("expected flow duration MMSC metric");
-                };
-                assert!(
-                    compute_duration.count >= 1,
-                    "flow_metric compute duration should have at least one observation"
-                );
-                assert!(
-                    compute_duration.sum > 0.0,
-                    "flow_metric compute duration sum should be non-zero"
-                );
-                let snapshot =
-                    tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
-                        .await
-                        .expect("flow produced-item metric should be reported")
-                        .expect("metrics channel should remain open");
-                let [MetricValue::U64(produced_items)] = snapshot.get_metrics() else {
-                    panic!("expected flow produced-item metric");
-                };
-                assert_eq!(*produced_items, 1);
-            })
-            .await;
+            let [MetricValue::U64(consumed_items)] = snapshot.get_metrics() else {
+                panic!("expected one start flow consumed-item metric");
+            };
+            assert_eq!(*consumed_items, 1);
+
+            let snapshot = tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
+                .await
+                .expect("flow_metric stop metric should be reported")
+                .expect("metrics channel should remain open");
+            let [
+                MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
+                    compute_duration,
+                )),
+            ] = snapshot.get_metrics()
+            else {
+                panic!("expected flow duration MMSC metric");
+            };
+            assert!(
+                compute_duration.count >= 1,
+                "flow_metric compute duration should have at least one observation"
+            );
+            assert!(
+                compute_duration.sum > 0.0,
+                "flow_metric compute duration sum should be non-zero"
+            );
+            let snapshot = tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
+                .await
+                .expect("flow produced-item metric should be reported")
+                .expect("metrics channel should remain open");
+            let [MetricValue::U64(produced_items)] = snapshot.get_metrics() else {
+                panic!("expected flow produced-item metric");
+            };
+            assert_eq!(*produced_items, 1);
+        }
+        .await;
     }
 
     /// A processor that returns a deliberate error on every PData message and
@@ -1725,7 +1722,7 @@ mod tests {
     /// Guarantees: (1) the original processing error is returned; (2) the pending
     /// flow consumed-items snapshot arrives on metrics_rx; (3) the processor-local
     /// snapshot from final CollectTelemetry also arrives on metrics_rx.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn local_processor_error_flushes_flow_and_local_metrics() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let entity_key = pipeline_ctx
@@ -1798,7 +1795,7 @@ mod tests {
     /// Guarantees: (1) the original processing error is returned; (2) the pending
     /// flow consumed-items snapshot arrives on metrics_rx; (3) the processor-local
     /// snapshot from final CollectTelemetry also arrives on metrics_rx.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn shared_processor_error_flushes_flow_and_local_metrics() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let entity_key = pipeline_ctx
@@ -1865,7 +1862,7 @@ mod tests {
     /// also returns an error.
     /// Guarantees: the original processing error is returned, not the secondary
     /// CollectTelemetry error.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn local_processor_error_takes_precedence_over_collect_telemetry_error() {
         struct ErrorOnPDataAndCollectProcessor;
 

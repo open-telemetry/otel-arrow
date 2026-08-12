@@ -1233,9 +1233,9 @@ mod test {
             .set_pdata_receiver(node, Receiver::Local(LocalReceiver::mpsc(input_rx)))
             .expect("set input receiver");
 
-        let (runtime, local_tasks) = setup_test_runtime();
+        let runtime = setup_test_runtime();
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(16);
-        runtime.block_on(local_tasks.run_until(async move {
+        runtime.block_on(async move {
             let processor_runtime = processor
                 .prepare_runtime(metrics_reporter, Interests::empty())
                 .await
@@ -1257,7 +1257,7 @@ mod test {
                     ..RetryMetricSummary::default()
                 }
             );
-        }));
+        });
     }
 
     fn test_retry_processor(

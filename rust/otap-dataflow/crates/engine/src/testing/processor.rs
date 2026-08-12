@@ -24,7 +24,7 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
-use tokio::task::{JoinHandle, LocalSet};
+use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
 /// Context used during the test phase of a test.
@@ -237,9 +237,7 @@ pub struct TestRuntime<PData> {
     config: ProcessorConfig,
 
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
@@ -251,8 +249,7 @@ pub struct TestRuntime<PData> {
 
 /// Data and operations for the test phase of a processor.
 pub struct TestPhase<PData> {
-    rt: tokio::runtime::Runtime,
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
     processor: ProcessorWrapper<PData>,
     counters: CtrlMsgCounters,
     output_receiver: Option<Receiver<PData>>,
@@ -261,8 +258,7 @@ pub struct TestPhase<PData> {
 
 /// Data and operations for the validation phase of a processor.
 pub struct ValidationPhase {
-    rt: tokio::runtime::Runtime,
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
     counters: CtrlMsgCounters,
     metrics_collection_handle: JoinHandle<Result<(), otap_df_telemetry::error::Error>>,
 }
@@ -279,12 +275,11 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let metrics_system = InternalTelemetrySystem::default();
         let config = ProcessorConfig::new("test_processor");
-        let (rt, local_tasks) = setup_test_runtime();
+        let rt = setup_test_runtime();
 
         Self {
             config,
             rt,
-            local_tasks,
             counter: CtrlMsgCounters::new(),
             metrics_system,
             _pd: PhantomData,
@@ -303,12 +298,11 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             control_channel_capacity,
             pdata_channel_capacity,
         );
-        let (rt, local_tasks) = setup_test_runtime();
+        let rt = setup_test_runtime();
 
         Self {
             config,
             rt,
-            local_tasks,
             counter: CtrlMsgCounters::new(),
             metrics_system,
             _pd: PhantomData,
@@ -378,7 +372,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
 
         TestPhase {
             rt: self.rt,
-            local_tasks: self.local_tasks,
             processor,
             counters: self.counter,
             output_receiver: Some(pdata_receiver),
@@ -397,7 +390,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let metrics_reporter = self.metrics_system.reporter();
         // Spawn metrics collection loop
         let collector = self.metrics_system.collector();
-        let metrics_collection_handle = self.rt.spawn(collector.run_collection_loop());
+        let metrics_collection_handle = self.rt.spawn_local(collector.run_collection_loop());
 
         // The entire scenario is run to completion before the validation phase
         self.rt.block_on(async move {
@@ -434,7 +427,6 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         // Prepare for next phase
         ValidationPhase {
             rt: self.rt,
-            local_tasks: self.local_tasks,
             counters: self.counters,
             metrics_collection_handle,
         }
@@ -463,10 +455,6 @@ impl ValidationPhase {
             counters: self.counters,
         };
 
-        // First run all the spawned tasks to completion
-        self.rt.block_on(self.local_tasks);
-
-        // Then run the validation future with the test context
         let result = self.rt.block_on(future_fn(context));
         // Finally, ensure the metrics collection loop is properly shut down
         self.metrics_collection_handle.abort();

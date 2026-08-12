@@ -33,9 +33,11 @@ use crate::pipeline_ctrl::{
     snapshot_node_metrics_with_handles,
 };
 use crate::processor::FlowMetricHook;
+use crate::runtime::build_local_runtime;
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
+use otap_df_config::engine::LocalRuntimeSettings;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
@@ -46,9 +48,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::Duration;
-use tokio::runtime::Builder;
 use tokio::sync::watch;
-use tokio::task::LocalSet;
 
 /// Cadence at which the per-pipeline extension monitor reports its
 /// lifecycle and aggregate metric sets.
@@ -190,6 +190,8 @@ pub struct RuntimePipeline<PData: Debug> {
     admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
+    /// Settings applied when creating this pipeline's Tokio `LocalRuntime`.
+    local_runtime_settings: LocalRuntimeSettings,
 }
 
 async fn flush_metrics_reporter(
@@ -332,7 +334,13 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             channel_metrics: Default::default(),
             admission_metrics: Default::default(),
             telemetry_policy,
+            local_runtime_settings: LocalRuntimeSettings::default(),
         }
+    }
+
+    /// Overrides the settings used when this pipeline creates its Tokio `LocalRuntime`.
+    pub fn set_local_runtime_settings(&mut self, settings: LocalRuntimeSettings) {
+        self.local_runtime_settings = settings;
     }
 
     pub(crate) fn set_channel_metrics(&mut self, channel_metrics: Vec<ChannelMetricsHandle>) {
@@ -389,6 +397,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             channel_metrics,
             admission_metrics,
             telemetry_policy,
+            local_runtime_settings,
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
@@ -406,12 +415,20 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             .map(|(node_id, _)| node_id.as_ref())
             .collect();
 
-        // Single-threaded runtime so we can drive !Send node tasks on the core thread.
-        let rt = Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        let local_tasks = LocalSet::new();
+        // Local runtime so we can drive !Send node tasks on the core thread.
+        let rt = build_local_runtime(
+            format!(
+                "pipeline:{}:{}:core{}:gen{}",
+                pipeline_key.pipeline_group_id,
+                pipeline_key.pipeline_id,
+                pipeline_key.core_id,
+                pipeline_key.deployment_generation
+            ),
+            &local_runtime_settings,
+        )
+        .map_err(|err| Error::InternalError {
+            message: format!("failed to create local runtime: {err}"),
+        })?;
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
 
@@ -452,18 +469,16 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let terminal_metrics_deadline = TerminalMetricsDeadline::default();
         let mut extension_lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
             extensions,
-            &local_tasks,
+            &rt,
             metrics_reporter.clone(),
             terminal_metrics_deadline.clone(),
             &ext_ctx,
             ext_monitor,
         );
 
-        if let Err(barrier_err) =
-            rt.block_on(local_tasks.run_until(extension_lifecycle.wait_all_spawned()))
-        {
+        if let Err(barrier_err) = rt.block_on(extension_lifecycle.wait_all_spawned()) {
             extension_lifecycle.initiate_shutdown(Some("spawn barrier failed"));
-            rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
+            rt.block_on(extension_lifecycle.drain_until_deadline());
             return Err(barrier_err);
         }
 
@@ -474,11 +489,9 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // times out. With a long timeout override this can delay an operator
         // stop. Plumbing the runtime control receiver into this wait is a
         // follow-up; today the per-probe timeout bounds the worst-case wait.
-        if let Err(readiness_err) =
-            rt.block_on(local_tasks.run_until(extension_lifecycle.wait_all_ready()))
-        {
+        if let Err(readiness_err) = rt.block_on(extension_lifecycle.wait_all_ready()) {
             extension_lifecycle.initiate_shutdown(Some("extension readiness gate failed"));
-            rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
+            rt.block_on(extension_lifecycle.drain_until_deadline());
             return Err(readiness_err);
         }
 
@@ -589,12 +602,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
                     NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
-                futures.push(local_tasks.spawn_local(fut));
+                futures.push(rt.spawn_local(fut));
             }
         }
         for processor in processors {
@@ -702,12 +715,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
                     NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
-                futures.push(local_tasks.spawn_local(fut));
+                futures.push(rt.spawn_local(fut));
             }
         }
         for receiver in receivers {
@@ -779,12 +792,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
                     NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
-                futures.push(local_tasks.spawn_local(fut));
+                futures.push(rt.spawn_local(fut));
             }
         }
 
@@ -823,7 +836,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let dispatcher_metrics_reporter = metrics_reporter.clone();
         let dispatcher_telemetry_policy = telemetry_policy.clone();
         let dispatcher_terminal_metrics_deadline = terminal_metrics_deadline.clone();
-        futures.push(local_tasks.spawn_local(async move {
+        futures.push(rt.spawn_local(async move {
             let manager = RuntimeCtrlMsgManager::new(
                 pipeline_key,
                 manager_pipeline_context,
@@ -842,7 +855,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             manager.run().await
         }));
 
-        futures.push(local_tasks.spawn_local(async move {
+        futures.push(rt.spawn_local(async move {
             let dispatcher = PipelineCompletionMsgDispatcher::new(
                 dispatcher_pipeline_context,
                 pipeline_completion_msg_rx,
@@ -863,16 +876,27 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // guarantee applies to the normal drain path only; see the
         // `extension_lifecycle` module docs.
         let result = rt.block_on(async {
-            local_tasks
-                .run_until(async {
-                    let loop_result: Result<Vec<_>, Error> = async {
-                        let mut task_results = Vec::new();
-                        loop {
-                            tokio::select! {
-                                biased;
-                                Some(result) = futures.next(), if !futures.is_empty() => {
+            let loop_result: Result<Vec<_>, Error> = async {
+                let mut task_results = Vec::new();
+                loop {
+                    tokio::select! {
+                        biased;
+                        Some(result) = futures.next(), if !futures.is_empty() => {
+                            match result {
+                                Ok(Ok(res)) => task_results.push(res),
+                                Ok(Err(e)) => return Err(e),
+                                Err(e) => return Err(Error::JoinTaskError {
+                                    is_canceled: e.is_cancelled(),
+                                    is_panic: e.is_panic(),
+                                    error: e.to_string(),
+                                }),
+                            }
+                        }
+                        event = extension_lifecycle.next_event() => {
+                            match event {
+                                crate::extension_lifecycle::LifecycleEvent::Completion(result) => {
                                     match result {
-                                        Ok(Ok(res)) => task_results.push(res),
+                                        Ok(Ok(())) => {}
                                         Ok(Err(e)) => return Err(e),
                                         Err(e) => return Err(Error::JoinTaskError {
                                             is_canceled: e.is_cancelled(),
@@ -881,90 +905,71 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                                         }),
                                     }
                                 }
-                                event = extension_lifecycle.next_event() => {
-                                    match event {
-                                        crate::extension_lifecycle::LifecycleEvent::Completion(result) => {
-                                            match result {
-                                                Ok(Ok(())) => {}
-                                                Ok(Err(e)) => return Err(e),
-                                                Err(e) => return Err(Error::JoinTaskError {
-                                                    is_canceled: e.is_cancelled(),
-                                                    is_panic: e.is_panic(),
-                                                    error: e.to_string(),
-                                                }),
-                                            }
-                                        }
-                                        crate::extension_lifecycle::LifecycleEvent::MonitorTick(now) => {
-                                            let mut reporter = metrics_reporter.clone();
-                                            extension_lifecycle.monitor_tick(now, &mut reporter);
-                                        }
-                                    }
+                                crate::extension_lifecycle::LifecycleEvent::MonitorTick(now) => {
+                                    let mut reporter = metrics_reporter.clone();
+                                    extension_lifecycle.monitor_tick(now, &mut reporter);
                                 }
-                                else => break,
-                            }
-
-                            // Data path drained: hand off the bounded wait
-                            // for remaining extension tasks to
-                            // `drain_until_deadline` below.
-                            if futures.is_empty() {
-                                extension_lifecycle
-                                    .initiate_shutdown(Some("pipeline data-path drained"));
-                                break;
                             }
                         }
-                        Ok(task_results)
-                    }
-                    .await;
-
-                    // Unconditional cleanup. `initiate_shutdown` is
-                    // idempotent (no-op on the happy path).
-                    extension_lifecycle
-                        .initiate_shutdown(Some("pipeline data-path drained"));
-                    extension_lifecycle.drain_until_deadline().await;
-                    // Final monitor flush so per-extension counters reflect
-                    // any terminal `ShutdownTimeout` entries on the way out.
-                    let mut final_monitor_reporter = metrics_reporter.clone();
-                    extension_lifecycle
-                        .monitor_tick(std::time::Instant::now(), &mut final_monitor_reporter);
-                    if let Err(err) = extension_lifecycle
-                        .finish_metrics_reporting_until(
-                            &final_monitor_reporter,
-                            terminal_metrics_deadline.get(),
-                        )
-                        .await
-                    {
-                        otap_df_telemetry::otel_warn!(
-                            "extension.lifecycle.metrics.final_reporting.fail",
-                            error = err.to_string()
-                        );
+                        else => break,
                     }
 
-                    let final_snapshots = snapshot_node_metrics_with_handles(
-                        &final_node_metric_handles,
-                    )
-                    .into_iter()
-                    .chain(
-                        final_channel_metrics
-                            .iter()
-                            .filter_map(ChannelMetricsHandle::snapshot),
-                    )
-                    .chain(
-                        final_admission_metrics
-                            .iter()
-                            .flat_map(|metrics| metrics.terminal_snapshots()),
-                    );
-                    report_metric_snapshots(
-                        &final_metrics_reporter,
-                        final_snapshots,
-                        "pipeline_final",
-                        terminal_metrics_deadline.get(),
-                    )
-                    .await;
+                    // Data path drained: hand off the bounded wait for
+                    // remaining extension tasks to `drain_until_deadline`
+                    // below.
+                    if futures.is_empty() {
+                        extension_lifecycle.initiate_shutdown(Some("pipeline data-path drained"));
+                        break;
+                    }
+                }
+                Ok(task_results)
+            }
+            .await;
 
-                    let task_results = loop_result?;
-                    Ok(task_results)
-                })
+            // Unconditional cleanup. `initiate_shutdown` is idempotent.
+            extension_lifecycle.initiate_shutdown(Some("pipeline data-path drained"));
+            extension_lifecycle.drain_until_deadline().await;
+
+            // Final monitor flush so per-extension counters reflect any
+            // terminal `ShutdownTimeout` entries on the way out.
+            let mut final_monitor_reporter = metrics_reporter.clone();
+            extension_lifecycle
+                .monitor_tick(std::time::Instant::now(), &mut final_monitor_reporter);
+            if let Err(err) = extension_lifecycle
+                .finish_metrics_reporting_until(
+                    &final_monitor_reporter,
+                    terminal_metrics_deadline.get(),
+                )
                 .await
+            {
+                otap_df_telemetry::otel_warn!(
+                    "extension.lifecycle.metrics.final_reporting.fail",
+                    error = err.to_string()
+                );
+            }
+
+            let final_snapshots = snapshot_node_metrics_with_handles(&final_node_metric_handles)
+                .into_iter()
+                .chain(
+                    final_channel_metrics
+                        .iter()
+                        .filter_map(ChannelMetricsHandle::snapshot),
+                )
+                .chain(
+                    final_admission_metrics
+                        .iter()
+                        .flat_map(|metrics| metrics.terminal_snapshots()),
+                );
+            report_metric_snapshots(
+                &final_metrics_reporter,
+                final_snapshots,
+                "pipeline_final",
+                terminal_metrics_deadline.get(),
+            )
+            .await;
+
+            let task_results = loop_result?;
+            Ok(task_results)
         });
         drop(node_telemetry_guards);
         result

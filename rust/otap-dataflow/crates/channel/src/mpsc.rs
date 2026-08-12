@@ -432,19 +432,18 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     // Helper function to create a test runtime
-    fn create_test_runtime() -> tokio::runtime::Runtime {
+    fn create_test_runtime() -> tokio::runtime::LocalRuntime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
+            .build_local(tokio::runtime::LocalOptions::default())
             .unwrap()
     }
 
     #[test]
     fn test_basic_channel_operations() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(2);
 
             // Test send and receive
@@ -459,17 +458,14 @@ mod tests {
             // Test empty channel
             assert!(matches!(rx.try_recv(), Err(RecvError::Empty)));
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
     fn test_channel_capacity() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, _rx) = Channel::new(1);
 
             // First send should succeed
@@ -482,17 +478,14 @@ mod tests {
                 _ => panic!("Expected Full error"),
             }
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
     fn test_multiple_producers() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx1, rx) = Channel::new(4);
             let tx2 = tx1.clone();
 
@@ -506,17 +499,14 @@ mod tests {
             assert_eq!(rx.try_recv().unwrap(), 1);
             assert_eq!(rx.try_recv().unwrap(), 2);
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
     fn test_async_send_receive() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             let received = Rc::new(RefCell::new(vec![]));
             let received_clone = received.clone();
@@ -540,17 +530,14 @@ mod tests {
             consumer.await.unwrap();
             assert_eq!(*received.borrow(), vec![1, 2]);
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
     fn test_channel_closing() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
 
             // Send a value
@@ -572,17 +559,14 @@ mod tests {
                 _ => panic!("Expected Closed error"),
             }
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
     fn test_sender_drop() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
 
             let result = tx.send(1);
@@ -595,17 +579,14 @@ mod tests {
             // Next receive should indicate closed
             assert!(matches!(rx.recv().await, Err(RecvError::Closed)));
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
     fn test_backpressure() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             let send_completed = Rc::new(RefCell::new(false));
             let send_completed_clone = send_completed.clone();
@@ -636,17 +617,14 @@ mod tests {
             assert!(*send_completed.borrow());
             assert_eq!(rx.recv().await.unwrap(), 2);
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
     fn test_fairness_in_waking_senders() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             let received = Rc::new(RefCell::new(vec![]));
             let received_clone = received.clone();
@@ -687,17 +665,14 @@ mod tests {
             consumer.await.unwrap();
             assert_eq!(*received.borrow(), vec![1, 2, 3]); // Wake the sender in FIFO order. We should receive 1 -> 2 -> 3 and not 1 -> 3 -> 2
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
     fn test_canceled_send_does_not_block_waiting_sender() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             tx.send(0).expect("initial send must succeed");
 
@@ -731,8 +706,6 @@ mod tests {
 
             assert_eq!(rx.recv().await.expect("must receive second value"), 2);
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 }

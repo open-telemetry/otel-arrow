@@ -2467,7 +2467,7 @@ mod tests {
     /// and the task returns `Some(0.0)` -- the documented empty-assignment
     /// sentinel -- so the caller resets the `consumer_lag` gauge to 0 rather than
     /// leaving a stale value.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn spawn_consumer_lag_refresh_resets_to_zero_when_unassigned() {
         const TOPIC: &str = "lag-empty";
         with_cluster(
@@ -2503,7 +2503,7 @@ mod tests {
     /// Scenario: auto-commit receiver requests a lag refresh.
     /// Guarantees: `spawn_consumer_lag_refresh` returns `None` (no task, no
     /// broker work) because offset management is owned by librdkafka.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn spawn_consumer_lag_refresh_none_under_auto_commit() {
         const TOPIC: &str = "lag-auto";
         with_cluster(
@@ -2564,7 +2564,7 @@ mod tests {
     /// (`None`) instead of computing a mean from a subset, so the caller retains
     /// the previous `consumer_lag` value rather than publishing a partial or
     /// zeroed measurement.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn compute_consumer_lag_none_when_all_offsets_invalid() {
         const TOPIC: &str = "lag-all-invalid";
         with_cluster(
@@ -2603,7 +2603,7 @@ mod tests {
     /// refresh (`None`) at its next cancellation check instead of continuing to
     /// issue broker calls -- the observable behavior that lets the loop drop the
     /// wedged worker and resume future refreshes without blocking.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn compute_consumer_lag_none_when_cancelled() {
         const TOPIC: &str = "lag-cancelled";
         with_cluster(
@@ -2644,7 +2644,7 @@ mod tests {
     /// Guarantees: `compute_consumer_lag` aborts (`None`) because the mean must
     /// cover every owned partition -- it never silently drops the uncommitted
     /// partition and averages only the committed one.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn compute_consumer_lag_none_when_offsets_mixed_valid_invalid() {
         const TOPIC: &str = "lag-mixed";
         let group = "lag-mixed-group";
@@ -2701,7 +2701,7 @@ mod tests {
     /// Guarantees: the worker self-terminates with `None` (incomplete) at its
     /// first between-partition/broker-call deadline check rather than issuing
     /// broker calls, so an overrunning refresh bounds itself.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn compute_consumer_lag_none_when_deadline_already_passed() {
         const TOPIC: &str = "lag-deadline";
         with_cluster(
@@ -2737,7 +2737,7 @@ mod tests {
     /// Guarantees: the apply branch publishes the value to the `consumer_lag`
     /// gauge and clears the in-flight slot so the next tick may start a fresh
     /// refresh.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn lag_apply_publishes_and_clears_on_completion() {
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
         let ctx = make_pipeline_ctx();
@@ -2781,7 +2781,7 @@ mod tests {
     /// Guarantees: the apply branch keeps the in-flight slot set so the trigger
     /// branch cannot start a second worker -- proving at most one worker runs at
     /// a time -- and does not disturb the previous gauge value.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test(flavor = "local", start_paused = true)]
     async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
         let ctx = make_pipeline_ctx();
@@ -2843,7 +2843,7 @@ mod tests {
     /// value and clears the in-flight slot even though it was polled past the
     /// deadline -- i.e. a completed refresh is never lost to starvation, and the
     /// deadline is absolute (not reset by re-polling).
-    #[tokio::test(start_paused = true)]
+    #[tokio::test(flavor = "local", start_paused = true)]
     async fn lag_apply_processes_completion_after_deadline() {
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
         let ctx = make_pipeline_ctx();
@@ -2905,7 +2905,7 @@ mod tests {
     // a recently-started refresh cannot delay shutdown -- and because the worker
     // observes the cancellation token it actually finishes rather than being
     // abandoned, so it cannot outlive the receiver.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test(flavor = "local", start_paused = true)]
     async fn shutdown_lag_drain_is_bounded_by_shutdown_deadline_and_cancels_worker() {
         let start = tokio::time::Instant::now();
         // Worker deadline is far out (15s); shutdown deadline is near (1s).
@@ -2952,7 +2952,7 @@ mod tests {
     // Guarantees: the drain bound is the tighter (lag) deadline, so `min` selects
     // the lag deadline and the drain still cannot run to the later shutdown
     // deadline.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test(flavor = "local", start_paused = true)]
     async fn shutdown_lag_drain_bound_selects_the_earlier_lag_deadline() {
         let start = tokio::time::Instant::now();
         // Worker deadline is near (2s); shutdown deadline is far (30s).
@@ -3170,7 +3170,7 @@ mod tests {
     /// by an auto-commit receiver.
     /// Guarantees: each delivered pdata decodes to an `ExportTracesRequest` whose
     /// bytes are byte-for-byte identical to what was produced (lossless round-trip).
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_traces() {
         const TOPIC: &str = "test-traces-proto";
         with_cluster(
@@ -3221,7 +3221,7 @@ mod tests {
     /// by an auto-commit receiver.
     /// Guarantees: each delivered pdata decodes to an `ExportLogsRequest` whose
     /// bytes are byte-for-byte identical to what was produced.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_logs() {
         const TOPIC: &str = "test-logs-proto";
         with_cluster(
@@ -3272,7 +3272,7 @@ mod tests {
     /// by an auto-commit receiver.
     /// Guarantees: each delivered pdata decodes to an `ExportMetricsRequest` whose
     /// bytes are byte-for-byte identical to what was produced.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_metrics() {
         const TOPIC: &str = "test-metrics-proto";
         with_cluster(
@@ -3322,7 +3322,7 @@ mod tests {
     /// Scenario: OTAP-Arrow trace records produced to a Kafka topic are consumed
     /// by an auto-commit receiver configured for the OTAP format.
     /// Guarantees: each delivered pdata is an `OtapArrowRecords::Traces` payload.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_traces_otap() {
         const TOPIC: &str = "test-traces-otap";
         with_cluster(
@@ -3373,7 +3373,7 @@ mod tests {
     /// by an auto-commit receiver configured for the OTAP format.
     /// Guarantees: each delivered pdata is an `OtapArrowRecords::Metrics` payload
     /// equal to the produced default metrics records.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_metrics_otap() {
         const TOPIC: &str = "test-metrics-otap";
         with_cluster(
@@ -3423,7 +3423,7 @@ mod tests {
     /// by an auto-commit receiver configured for the OTAP format.
     /// Guarantees: each delivered pdata is an `OtapArrowRecords::Logs` payload
     /// equal to the produced default logs records.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_logs_otap() {
         const TOPIC: &str = "test-logs-otap";
         with_cluster(
@@ -3476,7 +3476,7 @@ mod tests {
     /// attribute `tenant.id`.
     /// Guarantees: every resource gains a `tenant.id` string attribute equal to
     /// the header value, and no span-level `tenant.id` attribute is added.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_traces_header_extraction() {
         const TOPIC: &str = "test-traces-headers";
         with_cluster(
@@ -3585,7 +3585,7 @@ mod tests {
     /// Guarantees: after decoding the OTAP payload back to OTLP, every resource
     /// gains a `tenant.id` string attribute equal to the header value, and no
     /// span-level `tenant.id` attribute is added.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_traces_header_extraction_otap() {
         const TOPIC: &str = "test-traces-headers-otap";
         with_cluster(
@@ -3913,7 +3913,7 @@ mod tests {
     /// Guarantees: exactly the two matching Kafka headers are captured into the
     /// OtapPdata transport headers with their configured store-names and
     /// preserved wire names, and the unmatched header is dropped.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_capture_policy_captures_headers() {
         const TOPIC: &str = "test-capture-policy";
         with_cluster(
@@ -4021,7 +4021,7 @@ mod tests {
     /// without any capture policy.
     /// Guarantees: transport headers are left unset on the OtapPdata context
     /// (existing behavior is preserved when capture is not configured).
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
         const TOPIC: &str = "test-no-capture-policy";
         with_cluster(
@@ -4074,7 +4074,7 @@ mod tests {
     /// and resource-attribute-from-header extraction are configured.
     /// Guarantees: the transport header and the injected resource attribute are
     /// produced independently and simultaneously from the same record.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_headers() {
         const TOPIC: &str = "test-capture-and-extract";
         with_cluster(
@@ -4181,7 +4181,7 @@ mod tests {
     /// Guarantees: the matching `X-Tenant-Id` header is captured as a transport
     /// header even for OTAP payloads, while the `MessageFormat` control header is
     /// not captured.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn test_kafka_receiver_capture_policy_otap_format() {
         const TOPIC: &str = "test-capture-policy-otap";
         with_cluster(
@@ -4259,7 +4259,7 @@ mod tests {
     /// then shut down (which commits tracked offsets).
     /// Guarantees: each partition ends with a committed offset that accounts for
     /// all records produced to it (offset >= records-per-partition).
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn rebalance_single_consumer_assigns_and_commits() {
         const TOPIC: &str = "rebalance-assign-traces";
         let group = "rebalance-assign-group";
@@ -4337,7 +4337,7 @@ mod tests {
     /// Guarantees: after the forced rebalance, both partitions retain a committed
     /// offset that accounts for all produced records, so no progress was lost and
     /// the new owner will not re-consume from an earlier offset.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn rebalance_revoke_commits_before_reassign() {
         const TOPIC: &str = "rebalance-revoke-traces";
         let group = "rebalance-revoke-group";
@@ -4423,7 +4423,7 @@ mod tests {
     /// Guarantees: the retained partition keeps committing (its post-rebalance
     /// record reaches committed offset >= 2), proving retained-partition ACKs
     /// are not dropped as revoked under the cooperative protocol.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn rebalance_cooperative_sticky_retains_owned_partitions() {
         const TOPIC: &str = "rebalance-coop-traces";
         let group = "rebalance-coop-group";
@@ -4557,7 +4557,7 @@ mod tests {
     /// Guarantees: at least one reassigned partition commits its
     /// post-reassignment record (offset >= 2), proving the fresh state was not
     /// purged and its ack was not dropped after reassignment.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn rebalance_revoke_then_reassign_preserves_new_records() {
         const TOPIC: &str = "rebalance-reassign-traces";
         let group = "rebalance-reassign-group";
@@ -4660,7 +4660,7 @@ mod tests {
     /// forwarding new records (no pdata arrives post-drain), commits the
     /// pre-drain offsets (committed offset >= INITIAL), and still terminates when
     /// later sent `Shutdown` (via `await_stopped` returning).
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn drain_ingress_stops_polling_and_notifies_drained() {
         use otap_df_engine::control::RuntimeControlMsg;
 
@@ -4807,7 +4807,7 @@ mod tests {
     /// record retention plus a bounded committed offset per partition (not by an
     /// exact delivered-record count, which duplicates can inflate during a
     /// rebalance).
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double_commit() {
         use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
 

@@ -93,6 +93,7 @@ pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod process_duration;
 mod route_admission;
+pub(crate) mod runtime;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod terminal_state;

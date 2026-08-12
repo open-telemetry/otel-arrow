@@ -2181,6 +2181,7 @@ impl<
         let run_key = pipeline_key.clone();
         let runtime_key = pipeline_key.clone();
         let runtime_thread_name = thread_name.clone();
+        let local_runtime_settings = config.engine.runtime.local_runtime.clone();
         let _handle = thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || {
@@ -2205,6 +2206,7 @@ impl<
                         pipeline_completion_msg_rx,
                         memory_pressure_rx,
                         tracing_setup,
+                        local_runtime_settings,
                         internal_telemetry,
                     )
                 })) {
@@ -2342,6 +2344,7 @@ impl<
         pipeline_completion_msg_rx: PipelineCompletionMsgReceiver<PData>,
         memory_pressure_rx: tokio::sync::watch::Receiver<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
+        local_runtime_settings: otap_df_config::engine::LocalRuntimeSettings,
         internal_telemetry: Option<(
             InternalTelemetrySettings,
             std_mpsc::SyncSender<Result<(), EngineError>>,
@@ -2382,7 +2385,7 @@ impl<
                 .as_ref()
                 .map(|(settings, _)| settings)
                 .cloned();
-            let runtime_pipeline = pipeline_factory
+            let mut runtime_pipeline = pipeline_factory
                 .build(
                     pipeline_context.clone(),
                     pipeline_config.clone(),
@@ -2411,6 +2414,7 @@ impl<
                         source: Box::new(e),
                     }
                 })?;
+            runtime_pipeline.set_local_runtime_settings(local_runtime_settings);
 
             obs_evt_reporter.report(EngineEvent::ready(
                 pipeline_key.clone(),
