@@ -1034,7 +1034,6 @@ fn encode_exponential_histogram_view<const N: usize>(
 ) -> Result<(), Error> {
     let stats = view.stats();
     let positive = view.positive();
-    let zero_count = view.scan_buckets(|_| {}).zero_count;
     encode_datapoint_attributes(buffer, point, EXP_HISTOGRAM_DP_ATTRIBUTES)?;
     encode_fixed64_if_nonzero(
         buffer,
@@ -1050,9 +1049,7 @@ fn encode_exponential_histogram_view<const N: usize>(
         buffer.encode_field_tag(EXP_HISTOGRAM_DP_SCALE, wire_types::VARINT)?;
         buffer.encode_sint32(view.scale())?;
     }
-    if zero_count != 0 {
-        encode_fixed64(buffer, EXP_HISTOGRAM_DP_ZERO_COUNT, zero_count)?;
-    }
+    let mut positive_total = 0_u64;
     if !positive.is_empty() {
         buffer.encode_len_delimited(EXP_HISTOGRAM_DP_POSITIVE, |buffer| {
             if positive.offset() != 0 {
@@ -1061,11 +1058,16 @@ fn encode_exponential_histogram_view<const N: usize>(
             }
             buffer.encode_len_delimited(EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, |buffer| {
                 for count in positive.iter() {
+                    positive_total = positive_total.saturating_add(count);
                     buffer.encode_varint(count)?;
                 }
                 Ok::<(), Error>(())
             })
         })?;
+    }
+    let zero_count = stats.count.saturating_sub(positive_total);
+    if zero_count != 0 {
+        encode_fixed64(buffer, EXP_HISTOGRAM_DP_ZERO_COUNT, zero_count)?;
     }
     encode_double(buffer, EXP_HISTOGRAM_DP_MIN, stats.min)?;
     encode_double(buffer, EXP_HISTOGRAM_DP_MAX, stats.max)
@@ -2104,8 +2106,8 @@ mod tests {
 
     /// Scenario: A direct-encoded exponential histogram uses zero timestamps,
     /// packed buckets, a negative integer attribute, and a nested map.
-    /// Guarantees: Scalar defaults are absent, recursive values decode, and
-    /// bucket counts use one packed length-delimited field.
+    /// Guarantees: Scalar defaults are absent, recursive values decode, bucket
+    /// counts use one packed field, and zero plus positive counts equal count.
     #[test]
     fn direct_wire_encoding_omits_defaults_and_packs_buckets() {
         let nested = BTreeMap::from([(
@@ -2188,6 +2190,11 @@ mod tests {
             .as_ref()
             .expect("positive buckets");
         assert!(!positive.bucket_counts.is_empty());
+        assert_eq!(histogram.data_points[0].zero_count, 1);
+        assert_eq!(
+            histogram.data_points[0].count,
+            histogram.data_points[0].zero_count + positive.bucket_counts.iter().sum::<u64>()
+        );
 
         let resource_metrics = message_field(&direct_bytes, METRICS_DATA_RESOURCE_METRICS);
         let scope_metrics = message_field(resource_metrics, RESOURCE_METRICS_SCOPE_METRICS);
