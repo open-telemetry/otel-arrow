@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786575694918,
+  "lastUpdate": 1786578022903,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -12217,6 +12217,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 100.41,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "61a49da96b360549755f026cd22fe75791923b6d",
+          "message": "chore(engine/topic): engine wiring of `all` ack mode (PR 2/3) (#3352)\n\n# Change Summary\n\nNext PR in sequence for #2252.\n\n#3323 introduced primitives for this implementation. This PR connects\nthose primitives throughout the rest of the `topic` implementation. This\nfeature is still not wired through to end user config, that is the final\nPR.\n\n### Outcome\n\nAn `all`-mode broadcast tracked publish now:\n\n```text\nall eligible subscribers Ack ------> Ack\nany required Nack/disconnect/lag --> Nack\n```\n\n`first` mode keeps the existing path without a subscriber registry.\n\n### Included\n\n- Snapshot eligible subscribers and reserve the ring sequence under the\nregistry lock.\n- Feed subscriber Acks and Nacks into per-message consensus.\n- Nack only messages a disconnecting or lagging subscriber still owes.\n- Remove or barrier the subscriber under the registry lock, then scan\npending entries after releasing it.\n- Prevent delayed publishers from overwriting newer wrapped ring slots;\nstale tracked commits resolve immediately as Nack.\n\nLock order:\n\n```text\nsubscriber registry -> tracker state -> tracked entry -> permit\n```\n\nAck bookkeeping for unrelated messages remains outside the tracker-wide\nlock.\n\n### Benchmarks\nAdded on to the existing `topic` benchmarks to compare `first` and `all`\nack mode performance.\n\n#### Steady-state tracked publish\n\nIdentical workload: 10k messages, every subscriber receives and Acks\nevery message, averaged across 32/256/4096-byte payloads.\n\n| subscribers | `first` us/msg | `all` us/msg | ratio |\n| --- | ---: | ---: | ---: |\n| 1 | 0.80-0.84 | 1.02 | 1.22x-1.27x |\n| 2 | 1.20-1.24 | 1.57-1.61 | 1.30x-1.31x |\n| 4 | 2.43-2.48 | 3.04-3.05 | 1.23x-1.25x |\n| 8 | 5.29-5.40 | 6.36-6.37 | 1.18x-1.20x |\n\nRanges are from two consecutive runs of the final scan-after-unlock\ndesign.\n\n#### Cleanup\n\nSetup is excluded. The measurement covers resolving all outstanding\nmessages for one subscriber. The tracker scan runs after releasing the\nsubscriber registry lock.\n\n| pending | disconnect total | `DropOldest` lag total |\n| --- | ---: | ---: |\n| 1 | 2.34-2.36 us | 2.41-2.44 us |\n| 64 | 18.66-19.88 us | 18.09-20.13 us |\n| 1024 | 261.70-277.42 us | 259.52-265.68 us |\n\nAt 1024 pending messages, cleanup is about 0.25 us per entry. It scans\nthe tracker, but does not block subscriber registration or tracked\npublishing.\n\n## What issue does this PR close?\n\nPart of #2252 \n\n## How are these changes tested?\n\nUnit tests\n\n## Are there any user-facing changes?\n\nNo\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).",
+          "timestamp": "2026-08-12T22:29:44Z",
+          "tree_id": "8e6d00b592f7a710dd1bae541c965c3cd3560d47",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/61a49da96b360549755f026cd22fe75791923b6d"
+        },
+        "date": 1786578009459,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 81.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 68.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 113.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 100.48,
             "unit": "MB"
           }
         ]
