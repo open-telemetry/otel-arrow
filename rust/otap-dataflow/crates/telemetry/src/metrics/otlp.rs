@@ -122,7 +122,7 @@ use bytes::Bytes;
 use otap_df_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
 use otap_df_expohisto::HistogramView;
 use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::otlp::common::{BoundedBuf, Dropped, ProtoBuffer};
+use otap_df_pdata::otlp::common::{BoundedBuf, Dropped, MAX_OTLP_SIZE_LIMIT, ProtoBuffer};
 use otap_df_pdata::proto::consts::field_num::common::{
     ANY_VALUE_BOOL_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE,
     ANY_VALUE_STRING_VALUE, INSTRUMENTATION_SCOPE_ATTRIBUTES, INSTRUMENTATION_SCOPE_NAME,
@@ -201,13 +201,18 @@ pub enum Error {
     },
 
     /// The encoded request exceeded the protobuf buffer limit.
-    #[error("internal telemetry metrics request exceeded the OTLP size limit")]
-    RequestTooLarge,
+    #[error("internal telemetry metrics request exceeded the OTLP size limit of {limit} bytes")]
+    RequestTooLarge {
+        /// Maximum encoded request size accepted by the protobuf buffer.
+        limit: usize,
+    },
 }
 
 impl From<Dropped> for Error {
     fn from(_: Dropped) -> Self {
-        Self::RequestTooLarge
+        Self::RequestTooLarge {
+            limit: MAX_OTLP_SIZE_LIMIT,
+        }
     }
 }
 
@@ -1259,6 +1264,19 @@ mod tests {
     const DELTA_START: u64 = 10;
     const CUMULATIVE_START: u64 = 5;
     const COLLECTION_TIME: u64 = 20;
+
+    /// Scenario: Direct protobuf encoding reports that its buffer limit was exceeded.
+    /// Guarantees: The diagnostic includes the exact maximum accepted OTLP request size.
+    #[test]
+    fn request_too_large_error_reports_the_buffer_limit() {
+        assert_eq!(
+            Error::from(Dropped).to_string(),
+            format!(
+                "internal telemetry metrics request exceeded the OTLP size limit of \
+                 {MAX_OTLP_SIZE_LIMIT} bytes"
+            )
+        );
+    }
 
     /// Builds a basic-tier distribution value from raw Mmsc fields.
     fn mmsc_value(min: f64, max: f64, sum: f64, count: u64) -> MetricValue {
