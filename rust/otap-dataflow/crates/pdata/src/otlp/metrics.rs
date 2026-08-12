@@ -70,6 +70,7 @@ impl FromStr for MetricType {
             "Sum" => Ok(Self::Sum),
             "Histogram" => Ok(Self::Histogram),
             "ExponentialHistogram" => Ok(Self::ExponentialHistogram),
+            "Summary" => Ok(Self::Summary),
             other => Err(Error::UnrecognizedMetricTypeName {
                 metric_type_name: other.to_string(),
             }),

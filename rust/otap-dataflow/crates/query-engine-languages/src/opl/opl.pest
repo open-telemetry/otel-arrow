@@ -153,10 +153,10 @@ type_name = {
   | "Metric"
   | "Span"
   | "Gauge"
+  | "Summary"
   | "Sum"
   | "Histogram"
   | "ExponentialHistogram"
-  | "Summary"
 }
 
 type_check_op = @{ "is" }

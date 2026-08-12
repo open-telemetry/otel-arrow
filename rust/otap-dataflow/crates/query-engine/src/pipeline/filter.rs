@@ -420,10 +420,12 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
+
     use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
-        Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
-        HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Sum, Summary, SummaryDataPoint,
+        AggregationTemporality, Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint,
+        Gauge, Histogram, HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Sum, Summary,
+        SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
@@ -5715,17 +5717,49 @@ mod test {
                 ..Default::default()
             })
             .finish();
+        let histogram_metric = Metric::build()
+            .name("histogram_metric")
+            .data_histogram(Histogram {
+                data_points: vec![HistogramDataPoint::build().finish()],
+                aggregation_temporality: AggregationTemporality::Unspecified as i32,
+            })
+            .finish();
+        let exp_histogram_metric = Metric::build()
+            .name("exp_histogram_metric")
+            .data_exponential_histogram(ExponentialHistogram {
+                data_points: vec![
+                    ExponentialHistogramDataPoint::build()
+                        .positive(Buckets::default())
+                        .negative(Buckets::default())
+                        .finish(),
+                ],
+                aggregation_temporality: AggregationTemporality::Unspecified as i32,
+            })
+            .finish();
+        let summary_metric = Metric::build()
+            .name("summary_metric")
+            .data_summary(Summary {
+                data_points: vec![SummaryDataPoint::build().finish()],
+            })
+            .finish();
 
+        let input = to_metrics_data(vec![
+            gauge_metric.clone(),
+            sum_metric.clone(),
+            histogram_metric.clone(),
+            exp_histogram_metric.clone(),
+            summary_metric.clone(),
+        ]);
+
+        // helper to assert on which metrics were present after filtering
         let assert_results = |result: MetricsData, expected| {
             assert_eq!(result.resource_metrics.len(), 1);
             assert_eq!(result.resource_metrics[0].scope_metrics.len(), 1);
-            assert_eq!(
+            pretty_assertions::assert_eq!(
                 result.resource_metrics[0].scope_metrics[0].metrics,
                 expected
             );
         };
-
-        let input = to_metrics_data(vec![gauge_metric.clone(), sum_metric.clone()]);
 
         let query = "metrics | where is Gauge";
         let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
@@ -5734,6 +5768,18 @@ mod test {
         let query = "metrics | where is Sum";
         let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
         assert_results(result, vec![sum_metric.clone()]);
+
+        let query = "metrics | where is Histogram";
+        let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
+        assert_results(result, vec![histogram_metric.clone()]);
+
+        let query = "metrics | where is ExponentialHistogram";
+        let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
+        assert_results(result, vec![exp_histogram_metric.clone()]);
+
+        let query = "metrics | where is Summary";
+        let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
+        assert_results(result, vec![summary_metric.clone()]);
     }
 
     #[tokio::test]
