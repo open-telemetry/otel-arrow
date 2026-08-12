@@ -52,10 +52,10 @@ config:
 | `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. Enables the `consumer_lag` gauge (consumer-group lag against broker-committed offsets; see [Metric Sets](#metric-sets)). Manual commit mode only; runs off the receive loop so it never blocks processing. Off by default; recommended `60000` (60s), higher under large partition fan-out; must be > 0 when set. |
 | `session_timeout_ms` | integer | `10000` | Session timeout in milliseconds. Must be > 0. |
 | `heartbeat_interval_ms` | integer | `3000` | Heartbeat interval in milliseconds. Must be > 0 and strictly less than `session_timeout_ms`. |
-| `min_fetch_bytes` | integer | `1` | Minimum number of bytes to fetch. |
-| `max_fetch_bytes` | integer | `1048576` | Maximum number of bytes to fetch (1 MB). |
-| `max_fetch_wait_ms` | integer | `250` | Maximum time to wait for a fetch response in milliseconds. Must be > 0. |
-| `max_partition_fetch_bytes` | integer | `1048576` | Maximum bytes per partition per fetch (1 MB). |
+| `min_fetch_bytes` | integer | `1` | Minimum number of bytes to fetch. Must be > 0 (zero is rejected). |
+| `max_fetch_bytes` | integer | `1048576` | Maximum number of bytes to fetch (1 MB). Must be >= 0 (negative is rejected; zero is allowed) and >= `min_fetch_bytes`. |
+| `max_fetch_wait_ms` | integer | `250` | Maximum time to wait for a fetch response in milliseconds. `0` is allowed (maps to `fetch.wait.max.ms`, valid range 0..300000). |
+| `max_partition_fetch_bytes` | integer | `1048576` | Maximum bytes per partition per fetch (1 MB). Must be > 0 (zero is rejected). |
 | `isolation_level` | string | `read_uncommitted` | Consumer transaction isolation level. |
 | `resource_attrs_from_headers` | map | `{}` | Rules for extracting Kafka message headers into resource attributes. |
 | `enable_idempotency` | bool | `false` | Skip duplicate messages by offset (manual commit mode only). |
@@ -617,14 +617,25 @@ The receiver validates the configuration at startup:
 5. Regex patterns (topics starting with `^`) must compile.
 6. `exclude_topics` only allowed when at least one topic in the same signal is a regex pattern.
 7. `exclude_topics` entries must be valid regex and non-empty.
-8. `max_fetch_bytes` >= `min_fetch_bytes`.
-9. `max_partition_fetch_bytes` > 0.
-10. `commit.interval_ms`, when set, must be > 0.
-11. `message_format_header` must be non-empty.
-12. `resource_attrs_from_headers` keys and their `key` fields must be non-empty.
-13. `lag_refresh_interval_ms`, when set, must be > 0.
-14. `session_timeout_ms`, `heartbeat_interval_ms`, and `max_fetch_wait_ms` must be > 0.
-15. `heartbeat_interval_ms` must be strictly less than `session_timeout_ms`.
+8. `min_fetch_bytes` must be > 0 (librdkafka minimum is 1).
+9. `max_fetch_bytes` must be >= 0 and >= `min_fetch_bytes`.
+10. `max_partition_fetch_bytes` must be > 0.
+11. `commit.interval_ms`, when set, must be > 0.
+12. `message_format_header` must be non-empty.
+13. `resource_attrs_from_headers` keys and their `key` fields must be non-empty.
+14. `lag_refresh_interval_ms`, when set, must be > 0.
+15. `session_timeout_ms` and `heartbeat_interval_ms` must be > 0.
+16. `heartbeat_interval_ms` must be strictly less than `session_timeout_ms`.
+
+Integer settings are validated against a lower bound in one of two ways, which
+map to two distinct configuration errors:
+
+- **Must be > 0** -- a zero value is rejected (the setting must be strictly
+  positive): `min_fetch_bytes`, `max_partition_fetch_bytes`, `commit.interval_ms`,
+  `lag_refresh_interval_ms`, `session_timeout_ms`, `heartbeat_interval_ms`.
+- **Must be >= 0** -- zero is a valid value and only negative values are
+  rejected: `max_fetch_bytes`. (`max_fetch_wait_ms` also accepts `0` and has no
+  lower-bound rejection.)
 
 ## Examples
 
