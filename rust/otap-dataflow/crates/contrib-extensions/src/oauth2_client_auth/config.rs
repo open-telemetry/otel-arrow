@@ -11,6 +11,8 @@ use otap_df_config::tls::TlsClientConfig;
 use secrecy::SecretString;
 use serde::Deserialize;
 
+use crate::common::token_refresh::TOKEN_USABLE_MARGIN;
+
 /// Default duration ahead of expiry at which a token is refreshed.
 fn default_expiry_buffer() -> Duration {
     Duration::from_secs(300)
@@ -143,7 +145,8 @@ pub struct Config {
     pub endpoint_params: HashMap<String, String>,
 
     /// Refresh this far ahead of the token's expiry. Accepts human-readable
-    /// durations (e.g. `5m`, `30s`). Must be non-zero.
+    /// durations (e.g. `5m`, `30s`). Must be greater than the fixed usability
+    /// margin ([`TOKEN_USABLE_MARGIN`]).
     #[serde(with = "humantime_serde", default = "default_expiry_buffer")]
     pub expiry_buffer: Duration,
 
@@ -217,15 +220,24 @@ pub struct Config {
 impl Config {
     /// Validates the configuration beyond what deserialization checks.
     ///
-    /// Rejects an empty `token_url`, a zero `expiry_buffer`/`startup_timeout`,
-    /// and a missing client identifier or secret for the selected grant.
+    /// Rejects an empty `token_url`, an `expiry_buffer` that does not clear the
+    /// usability margin, a zero `startup_timeout`, and a missing client
+    /// identifier or secret for the selected grant.
     pub fn validate(&self) -> Result<(), String> {
         if self.token_url.trim().is_empty() {
             return Err("`token_url` must not be empty".to_string());
         }
 
-        if self.expiry_buffer.is_zero() {
-            return Err("`expiry_buffer` must be greater than zero".to_string());
+        // A token is treated as unusable once it is within `TOKEN_USABLE_MARGIN`
+        // of expiry, so a refresh scheduled at or inside that margin only ever
+        // lands after consumers have already started back-pressuring: every
+        // token cycle would stall for the difference, with nothing in the
+        // diagnostics pointing at this setting.
+        if self.expiry_buffer <= TOKEN_USABLE_MARGIN {
+            return Err(format!(
+                "`expiry_buffer` must be greater than {}s, the window before expiry in which a token is no longer used",
+                TOKEN_USABLE_MARGIN.as_secs()
+            ));
         }
 
         if self.timeout.is_zero() {

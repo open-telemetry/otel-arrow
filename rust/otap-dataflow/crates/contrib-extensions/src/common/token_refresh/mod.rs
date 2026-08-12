@@ -25,4 +25,5 @@ mod provider;
 mod tests;
 
 pub use metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
+pub(crate) use provider::TOKEN_USABLE_MARGIN;
 pub use provider::{TokenProviderExtension, TokenSource};

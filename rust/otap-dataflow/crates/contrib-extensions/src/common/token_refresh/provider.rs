@@ -33,7 +33,12 @@ use super::metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
 /// failing a still-valid token should keep being served (not treated as unusable
 /// early), which also avoids stampeding the token endpoint during a transient
 /// outage.
-const TOKEN_USABLE_MARGIN_SECS: u64 = 30;
+///
+/// An extension whose `expiry_buffer` is user-configurable must reject a value
+/// that does not clear this margin: the refresh would then be scheduled inside
+/// the window in which the cached token is already unusable, so every token
+/// cycle would stall until the refresh landed.
+pub(crate) const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 /// Floor between successful refreshes; avoids busy-looping on near-expired
 /// tokens.
 const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
@@ -155,8 +160,7 @@ impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
         let token = self.tx.borrow().clone()?;
         match token.expires_on() {
             Some(expires_on) => {
-                let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
-                if Instant::now() + margin < expires_on {
+                if Instant::now() + TOKEN_USABLE_MARGIN < expires_on {
                     Some(token)
                 } else {
                     None

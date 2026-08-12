@@ -258,7 +258,7 @@ groups:
 | `client_secret_file` | `string?` (path) | *none* | Path re-read on each acquisition; takes precedence over `client_secret`. |
 | `scopes` | `[string]` | `[]` | Requested scopes. |
 | `endpoint_params` | `map<string,string>` | `{}` | Extra parameters sent to the token endpoint (e.g. `audience`). |
-| `expiry_buffer` | duration | `5m` | Refresh this far ahead of `expires_on`. Must be non-zero. |
+| `expiry_buffer` | duration | `5m` | Refresh this far ahead of `expires_on`. Must be greater than the 30 s usability margin. |
 | `default_token_lifetime` | duration | `24h` | Lifetime assumed when the token response omits `expires_in`. Must be non-zero and greater than `expiry_buffer`. See [Expiry handling](#expiry-handling). |
 | `timeout` | duration | `30s` | Per-request timeout on the token client. Must be non-zero. |
 | `connect_timeout` | duration | `10s` | Connection-establishment timeout on the token client. Must be non-zero. |
