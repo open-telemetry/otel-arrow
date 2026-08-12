@@ -149,6 +149,8 @@ impl PipelineStage for ConditionalPipelineStage {
                 .condition
                 .execute_as_value(&otap_batch, session_ctx)?;
 
+            // TODO - there's an optimization we can maybe make here if the thing returned a scalar?
+
             let predicate_selection_vec = match predicate_result {
                 None => BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None),
                 Some(scoped_value) => {
@@ -164,10 +166,17 @@ impl PipelineStage for ConditionalPipelineStage {
                 }
             };
 
-            let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
+            println!("predicate_selection_vec = {:?}", predicate_selection_vec);
 
+            let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
+            
             // update the list of rows that were already selected by branches
             already_selected_vec = or(&already_selected_vec, &predicate_selection_vec)?;
+
+            if branch_selection_vec.true_count() == 0 {
+                // no rows selected - no sense executing the branch on zero rows
+                continue
+            }
 
             // create a batch with only the rows that match the condition
             //
