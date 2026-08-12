@@ -16,7 +16,7 @@ OpenTelemetry attributes rather than encoded in instrument names.
 | `processor.durable_buffer.bundles` | `resolved` | `outcome=acked\|deferred\|permanently_rejected` | Bundle resolution by downstream outcome. |
 | `processor.durable_buffer.ingest` | `failures` | `failure=error\|backpressure` | Failed ingest attempts by failure kind. |
 | `processor.durable_buffer.items` | `rejected`, `consumed`, `produced`, `requeued`, `queued` | `signal=traces\|metrics\|logs` | Item operations and queued gauges by OpenTelemetry signal. |
-| `processor.durable_buffer.loss` | `segments`, `bundles` | `reason=drop_oldest\|expired` | Segment and bundle retention loss. |
+| `processor.durable_buffer.loss` | `segments`, `bundles`, `bytes` | `reason=drop_oldest\|expired` | Runtime retention loss, including full persisted segment-file bytes. |
 | `processor.durable_buffer.loss` | `items` | `signal=traces\|metrics\|logs`, `reason=drop_oldest\|expired` | Item retention loss. |
 
 ## Logs
