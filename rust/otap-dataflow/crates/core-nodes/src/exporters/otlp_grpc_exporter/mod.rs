@@ -54,7 +54,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 
-use crate::exporters::common::bearer_auth::{BearerAuth, BearerAuthEvents};
+use crate::exporters::common::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
 
 /// The URN for the OTLP gRPC exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
@@ -955,17 +955,6 @@ async fn notify_prepare_error(
 /// credential cannot be refreshed.
 fn is_auth_failure(result: &Result<(), tonic::Status>, auth_bound: bool) -> bool {
     auth_bound && matches!(result, Err(status) if status.code() == Code::Unauthenticated)
-}
-
-/// Applies a token rejection reported by [`finalize_completed_export`] to the
-/// bearer adapter: drops the rejected token generation so a retry waits for a
-/// fresh token instead of reusing the rejected one. A no-op when no provider is
-/// bound (`rejected_generation` is `None`) or the rejection is stale (a newer
-/// token was already cached), per [`GrpcBearerAuth::invalidate`]'s generation guard.
-fn apply_auth_rejection(auth: &mut Option<GrpcBearerAuth>, rejected_generation: Option<u64>) {
-    if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
-        adapter.invalidate(generation);
-    }
 }
 
 /// NACKs `pdata` because no usable bearer token is available, and records the

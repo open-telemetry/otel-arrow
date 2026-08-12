@@ -184,6 +184,24 @@ impl<E: BearerAuthEvents> BearerAuth<E> {
     }
 }
 
+/// Applies a token rejection reported by a completed export to the bearer
+/// adapter: drops the rejected token generation so a retry waits for a fresh
+/// token instead of reusing the rejected one.
+///
+/// Takes the exporter's `Option<BearerAuth<_>>` directly so the common
+/// "rejection reported, provider may or may not be bound" shape is expressed
+/// once. A no-op when no provider is bound (`rejected_generation` is `None`) or
+/// the rejection is stale (a newer token was already cached), per
+/// [`BearerAuth::invalidate`]'s generation guard.
+pub(crate) fn apply_auth_rejection<E: BearerAuthEvents>(
+    auth: &mut Option<BearerAuth<E>>,
+    rejected_generation: Option<u64>,
+) {
+    if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
+        adapter.invalidate(generation);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

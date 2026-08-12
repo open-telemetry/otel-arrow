@@ -58,7 +58,7 @@ use reqwest::{Client, Response};
 use secrecy::ExposeSecret;
 
 use self::config::Config;
-use crate::exporters::common::bearer_auth::{BearerAuth, BearerAuthEvents};
+use crate::exporters::common::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataExportMetrics;
@@ -846,17 +846,6 @@ async fn collect_body(response: Response, max_len: usize) -> Result<Bytes, Servi
     }
 
     Ok(buf.freeze())
-}
-
-/// Applies a 401 rejection reported by [`finalize_completed_export`] to the
-/// bearer adapter: drops the rejected token generation so a retry waits for a
-/// fresh token instead of reusing the rejected one. A no-op when no provider is
-/// bound (`rejected_generation` is `None`) or the rejection is stale (a newer
-/// token was already cached), per [`HttpBearerAuth::invalidate`]'s generation guard.
-fn apply_auth_rejection(auth: &mut Option<HttpBearerAuth>, rejected_generation: Option<u64>) {
-    if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
-        adapter.invalidate(generation);
-    }
 }
 
 async fn finalize_completed_export(
