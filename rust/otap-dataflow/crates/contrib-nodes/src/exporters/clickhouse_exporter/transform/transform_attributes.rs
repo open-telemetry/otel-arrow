@@ -358,26 +358,7 @@ pub(crate) fn group_attributes_to_map_str(
         return Ok(None);
     };
     let groups = group_rows_by_id(&id_col);
-    let types = get_u8_array(batch, consts::ATTRIBUTE_TYPE)?;
-    let key_accessor = StringArrayAccessor::try_new_for_column(batch, consts::ATTRIBUTE_KEY)?;
-
-    // Build all value accessors once up front rather than per row. The accessors borrow the batch
-    // columns, so they are valid for the whole grouping loop below.
-    let str_accessor = match get_array_op(batch, consts::ATTRIBUTE_STR) {
-        Some(col) => Some(StringArrayAccessor::try_new(col)?),
-        None => None,
-    };
-    let int_accessor = match get_array_op(batch, consts::ATTRIBUTE_INT) {
-        Some(col) => Some(Int64ArrayAccessor::try_new(col)?),
-        None => None,
-    };
-    let double_col = get_f64_array_opt(batch, consts::ATTRIBUTE_DOUBLE)?;
-    let bool_col = get_bool_array_opt(batch, consts::ATTRIBUTE_BOOL)?;
-    let bytes_col = get_binary_array_opt(batch, consts::ATTRIBUTE_BYTES)?;
-    let ser_accessor = match get_array_op(batch, consts::ATTRIBUTE_SER) {
-        Some(col) => Some(ByteArrayAccessor::try_new(col)?),
-        None => None,
-    };
+    let encoder = AttributeMapEncoder::try_new(batch)?;
 
     let mut map_builder = MapBuilder::with_capacity(
         None,
@@ -389,96 +370,7 @@ pub(crate) fn group_attributes_to_map_str(
 
     for (id, rows) in groups {
         for row in rows.iter() {
-            let Some(key) = key_accessor.str_at(row) else {
-                // No key, skip it
-                continue;
-            };
-            map_builder.keys().append_value(key);
-
-            let t = types.value(row);
-            match t {
-                t if t == AttributeValueType::Empty as u8 => {
-                    // No value, default for type
-                    map_builder.values().append_value("");
-                }
-
-                t if t == AttributeValueType::Str as u8 => {
-                    if let Some(str_accessor) = &str_accessor {
-                        if let Some(v) = str_accessor.str_at(row) {
-                            map_builder.values().append_value(v);
-                            continue;
-                        }
-                    }
-                    map_builder.values().append_value("");
-                }
-
-                t if t == AttributeValueType::Int as u8 => {
-                    if let Some(int_accessor) = &int_accessor {
-                        if let Some(v) = int_accessor.value_at(row) {
-                            let mut itoa_buf = itoa::Buffer::new();
-                            map_builder.values().append_value(itoa_buf.format(v));
-                            continue;
-                        }
-                    }
-                    map_builder.values().append_value("");
-                }
-
-                t if t == AttributeValueType::Double as u8 => {
-                    if let Some(col) = double_col {
-                        if !col.is_null(row) {
-                            let mut r_buf = ryu::Buffer::new();
-                            map_builder
-                                .values()
-                                .append_value(r_buf.format(col.value(row)));
-                            continue;
-                        }
-                    }
-                    map_builder.values().append_value("");
-                }
-
-                t if t == AttributeValueType::Bool as u8 => {
-                    if let Some(col) = bool_col {
-                        if !col.is_null(row) {
-                            if col.value(row) {
-                                map_builder.values().append_value("true");
-                                continue;
-                            } else {
-                                map_builder.values().append_value("false");
-                                continue;
-                            }
-                        }
-                    }
-                    map_builder.values().append_value("");
-                }
-
-                t if t == AttributeValueType::Bytes as u8 => {
-                    if let Some(col) = bytes_col {
-                        if !col.is_null(row) {
-                            let bytes = col.value(row);
-                            let v = base64::engine::general_purpose::STANDARD.encode(bytes);
-                            map_builder.values().append_value(v);
-                            continue;
-                        }
-                    }
-                    map_builder.values().append_value("");
-                }
-
-                t if t == AttributeValueType::Map as u8 || t == AttributeValueType::Slice as u8 => {
-                    if let Some(byte_accessor) = &ser_accessor {
-                        if let Some(v) = byte_accessor.slice_at(row) {
-                            let mut buf = Vec::with_capacity(v.len() * 2);
-                            if append_cbor_as_json(&mut buf, v).is_ok() {
-                                if let Ok(json) = String::from_utf8(buf) {
-                                    map_builder.values().append_value(json);
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                    map_builder.values().append_value("");
-                }
-                _ => map_builder.values().append_value(""),
-            };
+            encoder.append_row(row, &mut map_builder);
         }
         map_builder.append(true)?; // true = row is not null
         id_builder.append_value(id as u32);

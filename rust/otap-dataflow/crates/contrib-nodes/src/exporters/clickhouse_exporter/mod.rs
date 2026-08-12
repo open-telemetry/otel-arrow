@@ -348,13 +348,8 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                 self.ch_metrics.record_log_fast_path();
                                 Ok(HashMap::from([(ArrowPayloadType::Logs, batch)]))
                             }
-                            Ok(LogsFastTransform::NotApplicable(reason)) => {
+                            Ok(LogsFastTransform::NotApplicable(_)) => {
                                 self.ch_metrics.record_log_transform_fallback();
-                                otap_df_telemetry::otel_debug!(
-                                    "clickhouse.exporter.transform.fallback",
-                                    message = "Using generic ClickHouse transform for OTAP logs.",
-                                    reason = reason,
-                                );
                                 batch_transformer.apply_plan(arrow_records)
                             }
                             Err(error) => Err(error),

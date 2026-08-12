@@ -111,7 +111,9 @@ pub(crate) enum LogsFastTransform {
     /// The canonical logs layout was transformed successfully.
     Applied(RecordBatch),
     /// The input layout is valid but not supported by this specialized path.
-    NotApplicable(&'static str),
+    ///
+    /// The reason is retained for benchmark and test diagnostics; production records a counter.
+    NotApplicable(#[allow(dead_code)] &'static str),
 }
 
 /// Specialized transformer with a one-entry output schema cache.
