@@ -270,6 +270,16 @@ impl Exporter<OtapPdata> for OTLPExporter {
         // it may send and stamps the header the adapter hands back.
         let mut auth = self.token_provider.take().map(GrpcBearerAuth::new);
 
+        // Timer that fires when the cached token crosses its usability margin.
+        // Hoisted out of the loop and re-armed only when the deadline actually
+        // moves (i.e. when a refresh is cached), so a busy exporter does not pay
+        // a timer-wheel registration per message. It starts already elapsed and
+        // is only polled once armed, since the `select!` arm below is guarded on
+        // a deadline being present.
+        let margin_sleep = tokio::time::sleep_until(tokio::time::Instant::now());
+        tokio::pin!(margin_sleep);
+        let mut armed_margin_deadline: Option<std::time::Instant> = None;
+
         // Main loop: 1) finish ready completions, 2) biased wait for a token
         // event, a completion, or the next message, 3) dispatch work while
         // respecting the in-flight budget.
@@ -313,6 +323,14 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
             let token_margin_deadline = auth.as_ref().and_then(GrpcBearerAuth::refresh_deadline);
+            if token_margin_deadline != armed_margin_deadline {
+                if let Some(deadline) = token_margin_deadline {
+                    margin_sleep
+                        .as_mut()
+                        .reset(tokio::time::Instant::from_std(deadline));
+                }
+                armed_margin_deadline = token_margin_deadline;
+            }
 
             // A batch parked for in-flight capacity is un-parked only once auth is
             // ready again. Taking it while `accepting_pdata` is false would NACK it
@@ -334,16 +352,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     biased;
 
                     // Wake when the cached token reaches its usability margin so the
-                    // next loop iteration gates intake. The `async` block keeps this
-                    // lazy; the `None` arm is unreachable while the guard holds.
-                    () = async {
-                        match token_margin_deadline {
-                            Some(deadline) => {
-                                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await
-                            }
-                            None => std::future::pending().await,
-                        }
-                    }, if token_margin_deadline.is_some() => {
+                    // next loop iteration gates intake. Guarded because the timer is
+                    // left elapsed whenever nothing is armed; once it fires,
+                    // `refresh_deadline` returns `None`, which closes the guard and
+                    // keeps the arm from busy-looping.
+                    () = &mut margin_sleep, if token_margin_deadline.is_some() => {
                         continue;
                     }
 
