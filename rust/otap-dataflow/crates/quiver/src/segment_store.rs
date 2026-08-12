@@ -744,6 +744,15 @@ impl SegmentStore {
         self.segments.read().keys().copied().collect()
     }
 
+    /// Returns the finalized segment file size in bytes.
+    pub fn segment_file_size(&self, segment_seq: SegmentSeq) -> Result<u64> {
+        self.segments
+            .read()
+            .get(&segment_seq)
+            .map(|handle| handle.file_size_bytes)
+            .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))
+    }
+
     /// Returns segments that were finalized more than `max_age` ago.
     ///
     /// This is used for age-based retention to identify segments that have
