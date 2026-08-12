@@ -25,6 +25,8 @@ use otap_df_telemetry::otel_debug;
 
 use super::cache::{LocalDecisionCache, SharedDecisionCache, digest};
 use super::config::AudienceConfig;
+#[cfg(test)]
+use super::config::DEFAULT_REVIEW_TIMEOUT;
 use super::core::Core;
 
 // -- Shared variant (Send; Arc + Mutex) -------------------------------------
@@ -48,15 +50,33 @@ struct SharedInner {
 
 impl SharedK8sSatTokenAuthorizer {
     /// Builds a new shared-variant instance.
+    #[cfg(test)]
     pub(crate) fn new(
         name: &str,
         audiences: Vec<AudienceConfig>,
         cache_ttl: Duration,
         cache_max_entries: usize,
     ) -> Self {
+        Self::new_with_timeout(
+            name,
+            audiences,
+            cache_ttl,
+            cache_max_entries,
+            DEFAULT_REVIEW_TIMEOUT,
+        )
+    }
+
+    /// Builds a new shared-variant instance with an explicit review timeout.
+    pub(crate) fn new_with_timeout(
+        name: &str,
+        audiences: Vec<AudienceConfig>,
+        cache_ttl: Duration,
+        cache_max_entries: usize,
+        review_timeout: Duration,
+    ) -> Self {
         Self {
             inner: Arc::new(SharedInner {
-                core: Core::new(name, audiences),
+                core: Core::new_with_timeout(name, audiences, review_timeout),
                 cache: SharedDecisionCache::new(cache_ttl, cache_max_entries),
             }),
         }
@@ -80,6 +100,7 @@ impl SharedBearerTokenAuthorizer for SharedK8sSatTokenAuthorizer {
             .cache
             .get_or_decide(digest(token), || inner.core.decide(token))
             .await
+            .map_err(|error| inner.core.capability_error(error))
     }
 }
 
@@ -105,15 +126,33 @@ struct LocalInner {
 
 impl LocalK8sSatTokenAuthorizer {
     /// Builds a new local-variant instance.
+    #[cfg(test)]
     pub(crate) fn new(
         name: &str,
         audiences: Vec<AudienceConfig>,
         cache_ttl: Duration,
         cache_max_entries: usize,
     ) -> Self {
+        Self::new_with_timeout(
+            name,
+            audiences,
+            cache_ttl,
+            cache_max_entries,
+            DEFAULT_REVIEW_TIMEOUT,
+        )
+    }
+
+    /// Builds a new local-variant instance with an explicit review timeout.
+    pub(crate) fn new_with_timeout(
+        name: &str,
+        audiences: Vec<AudienceConfig>,
+        cache_ttl: Duration,
+        cache_max_entries: usize,
+        review_timeout: Duration,
+    ) -> Self {
         Self {
             inner: Rc::new(LocalInner {
-                core: Core::new(name, audiences),
+                core: Core::new_with_timeout(name, audiences, review_timeout),
                 cache: LocalDecisionCache::new(cache_ttl, cache_max_entries),
             }),
         }
@@ -137,5 +176,6 @@ impl LocalBearerTokenAuthorizer for LocalK8sSatTokenAuthorizer {
             .cache
             .get_or_decide(digest(token), || inner.core.decide(token))
             .await
+            .map_err(|error| inner.core.capability_error(error))
     }
 }

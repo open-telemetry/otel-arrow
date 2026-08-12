@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use otap_df_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCap;
 use otap_df_engine::capability::auth::{AuthorizedIdentity, AuthzDecision, ClaimValue, DenyReason};
@@ -17,7 +18,10 @@ use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
 use otap_df_telemetry::otel_debug;
 use tokio::sync::OnceCell;
 
+#[cfg(test)]
+use super::config::DEFAULT_REVIEW_TIMEOUT;
 use super::config::{AudienceConfig, ResourceAttributesConfig};
+use super::error::Error;
 use super::reviewer::{AccessOutcome, AuthenticatedUser, KubeReviews, ReviewOutcome, Reviewer};
 
 /// Authentication scheme tag emitted on every identity from this authorizer.
@@ -61,6 +65,8 @@ pub(crate) struct Core {
     /// The Kubernetes reviewer, built on first use. A failed build leaves the
     /// cell empty so the next request retries.
     reviewer: OnceCell<Arc<Reviewer>>,
+    /// Maximum duration of each Kubernetes review request.
+    review_timeout: Duration,
     /// Pre-tagged capability error builder.
     cap_err: CapabilityErrorSource<BearerTokenAuthorizerCap>,
 }
@@ -70,7 +76,17 @@ impl Core {
     ///
     /// Each entry contributes its audience to the `TokenReview` request and its
     /// own admission policy to the per-audience map.
+    #[cfg(test)]
     pub(crate) fn new(name: &str, audiences: Vec<AudienceConfig>) -> Self {
+        Self::new_with_timeout(name, audiences, DEFAULT_REVIEW_TIMEOUT)
+    }
+
+    /// Builds the core with an explicit Kubernetes review timeout.
+    pub(crate) fn new_with_timeout(
+        name: &str,
+        audiences: Vec<AudienceConfig>,
+        review_timeout: Duration,
+    ) -> Self {
         let requested_audiences = audiences
             .iter()
             .map(|a| a.audience.trim().to_string())
@@ -83,6 +99,7 @@ impl Core {
             audiences: requested_audiences,
             admission_by_audience,
             reviewer: OnceCell::new(),
+            review_timeout,
             cap_err: CapabilityErrorSource::new(name.to_owned().into()),
         }
     }
@@ -95,10 +112,10 @@ impl Core {
     /// Reaches a decision for a non-empty `token` on a cache miss: builds the
     /// client if needed, authenticates via `TokenReview`, then admits.
     ///
-    /// Returns [`CapabilityError`] only when no decision could be reached (client
-    /// build failed, or a review request failed) so callers fail closed; a
-    /// reached deny is `Ok(Deny{..})`.
-    pub(crate) async fn decide(&self, token: &str) -> Result<AuthzDecision, CapabilityError> {
+    /// Returns [`Error`] only when no decision could be reached (client build
+    /// failed, or a review request failed) so callers fail closed; a reached
+    /// deny is `Ok(Deny{..})`.
+    pub(crate) async fn decide(&self, token: &str) -> Result<AuthzDecision, Error> {
         // Lazily build the Kubernetes client on first use; a build failure is
         // undetermined, so fail closed and let the next request retry.
         let reviewer = self.reviewer().await?;
@@ -114,12 +131,9 @@ impl Core {
         &self,
         reviewer: &R,
         token: &str,
-    ) -> Result<AuthzDecision, CapabilityError> {
+    ) -> Result<AuthzDecision, Error> {
         // Perform the TokenReview (a request failure is undetermined).
-        let outcome = reviewer
-            .review(token)
-            .await
-            .map_err(|err| self.cap_err.error(err))?;
+        let outcome = reviewer.review(token).await?;
 
         let decision = match outcome {
             ReviewOutcome::Unauthenticated { error } => {
@@ -170,20 +184,18 @@ impl Core {
                         // RBAC admission needs a second API call
                         // (SubjectAccessReview). A request failure is
                         // undetermined: fail closed.
-                        Admission::Rbac(attrs) => match reviewer
-                            .check_access(&user, attrs)
-                            .await
-                            .map_err(|err| self.cap_err.error(err))?
-                        {
-                            AccessOutcome::Allowed => Ok(()),
-                            AccessOutcome::Denied { reason } => Err(match reason {
-                                Some(detail) => AuthzDecision::deny_with_detail(
-                                    DenyReason::NotPermitted,
-                                    detail,
-                                ),
-                                None => AuthzDecision::deny(DenyReason::NotPermitted),
-                            }),
-                        },
+                        Admission::Rbac(attrs) => {
+                            match reviewer.check_access(&user, attrs).await? {
+                                AccessOutcome::Allowed => Ok(()),
+                                AccessOutcome::Denied { reason } => Err(match reason {
+                                    Some(detail) => AuthzDecision::deny_with_detail(
+                                        DenyReason::NotPermitted,
+                                        detail,
+                                    ),
+                                    None => AuthzDecision::deny(DenyReason::NotPermitted),
+                                }),
+                            }
+                        }
                         _ => Self::admit_non_rbac(&user, admission),
                     };
                     if let Err(deny) = result {
@@ -243,16 +255,20 @@ impl Core {
     /// Returns the lazily-built reviewer, constructing the Kubernetes client on
     /// first use. A construction failure is undetermined (fail closed) and
     /// leaves the cell empty so the next call retries.
-    async fn reviewer(&self) -> Result<Arc<Reviewer>, CapabilityError> {
+    async fn reviewer(&self) -> Result<Arc<Reviewer>, Error> {
         self.reviewer
             .get_or_try_init(|| async {
-                Reviewer::try_new(self.audiences.clone())
+                Reviewer::try_new(self.audiences.clone(), self.review_timeout)
                     .await
                     .map(Arc::new)
-                    .map_err(|e| self.cap_err.error(e))
             })
             .await
             .map(Arc::clone)
+    }
+
+    /// Tags an extension error for the bearer-token-authorizer capability.
+    pub(crate) fn capability_error(&self, error: Error) -> CapabilityError {
+        self.cap_err.error(error)
     }
 
     /// Builds the `Allow` identity for an authenticated user.

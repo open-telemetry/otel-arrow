@@ -139,19 +139,21 @@ extensions is a future enhancement).
 3. **Client init** builds the Kubernetes client on first use; a build failure is
    undetermined and returns an `Err` -- fail closed (the next request retries).
 4. **`TokenReview`** is submitted for the token with the union of all entry
-   audiences. The API server answer maps to:
+   audiences and the configured `review_timeout`. The API server answer maps to:
    - authenticated -> **admission** (below);
    - authenticated as a non-service-account identity ->
      `Deny(InvalidCredential)`;
    - not authenticated -> `Deny(InvalidCredential)` with the API server's
      message as log-only detail;
-   - request failure / missing status -> `Err` (undetermined; not cached).
+   - request failure / timeout / missing status -> `Err` (undetermined; not
+     cached).
 5. **Admission** (only when authenticated): every configured entry whose
    audience the API server *confirmed* must admit the identity (a logical AND,
    failing closed on the first denial); each entry's allow-list / audience-only
    admission is decided in-process, while RBAC admission issues a second API call
-   (`SubjectAccessReview`). A token whose confirmed audiences include none that
-   are configured is `Deny(NotPermitted)`; an RBAC request failure is `Err`
+   (`SubjectAccessReview`, also bounded by `review_timeout`). A token whose
+   confirmed audiences include none that are configured is
+   `Deny(NotPermitted)`; an RBAC request failure or timeout is `Err`
    (undetermined; not cached).
 6. The reached decision (allow or deny) is cached and returned.
 
@@ -204,8 +206,8 @@ mutually exclusive):
   whether the authenticated subject (user, uid, groups, and extra from the
   `TokenReview`) may perform the configured `verb` on the configured resource.
   `allowed` (and not `denied`) admits; anything else is `Deny(NotPermitted)`
-  with the API server's reason as log-only detail. A failed `SubjectAccessReview`
-  call is undetermined and fails closed.
+  with the API server's reason as log-only detail. A failed or timed-out
+  `SubjectAccessReview` call is undetermined and fails closed.
 
 An `Allow` carries an `AuthorizedIdentity` holding every claim the `TokenReview`
 verified, so a downstream tenant / per-route authorization resolver can match on
@@ -239,7 +241,8 @@ matters most at TTL expiry, where a single entry's expiry instant would
 otherwise release a synchronized burst of identical reviews at the API server
 every `cache_ttl` -- enough, under load, to trip API Priority and Fairness and
 have legitimate traffic denied by the extension's own fail-closed path. A failed
-review leaves the slot empty, so the next request retries.
+review publishes the same error to requests already awaiting that flight, then
+removes the slot so a later request retries.
 
 Both variants need this. A thread-per-core runtime multiplexes many tasks on one
 thread and preempts a task at the `.await` on the `TokenReview`, so interleaved
@@ -269,19 +272,21 @@ update and leaves the slot's refcount untouched. Its slots are `Rc`, making them
 `!Send`, so thread-confinement is checked at compile time.
 
 The caches share their bookkeeping: TTL, bounds, and eviction. The security
-decision on a miss comes from the common `Core`.
+decision on a miss comes from the common `Core`. A slot remains in flight until
+its decision completes; its TTL starts at successful completion, so a slow
+review cannot expire and start a duplicate request. In-flight slots are not
+eviction candidates.
 
 The token's SHA-256 is computed by the caller, before the lock is taken, so it
 stays outside the critical section.
 
-On insert at capacity, expired entries are reclaimed first; if the map is still
-full of live entries, an entry closest to expiry is evicted to make room, so the
-cache stays within its bound while always admitting the newest decision.
-Eviction protects availability: cache keys derive from caller-supplied token
-bytes, so an unauthenticated caller can mint unlimited distinct keys, and a full
-map would otherwise pin the cache and force a `TokenReview` round-trip on every
-legitimate request. The victim is chosen from a small sample, keeping eviction
-O(1) under the lock.
+On insert at capacity, a completed entry closest to expiry is chosen from a
+small bounded sample and evicted. The bounded sample keeps insertion O(1) under
+the lock instead of scanning the map. If the sample contains only in-flight
+reviews, the new distinct token is decided without retaining its slot; this
+preserves the entry cap without interrupting duplicate suppression already in
+progress. Eviction protects availability because unauthenticated callers can
+mint unlimited distinct cache keys.
 
 `Allow` decisions are cached for up to `cache_ttl`, so a token revoked at the
 API server may continue to be admitted until its cached decision expires;
@@ -299,6 +304,7 @@ core count and the same token is reviewed once per core.
 | `audiences` | list of audiences | *required* | Per-audience admission audiences. Must be non-empty, with a unique `audience` per entry. |
 | `cache_ttl` | duration | `5m` | How long a reached decision is cached, keyed by the token's SHA-256 digest. Must be non-zero. |
 | `cache_max_entries` | integer | `1024` | Upper bound on cached decisions. Must be greater than zero. |
+| `review_timeout` | duration | `10s` | Maximum duration of each `TokenReview` or `SubjectAccessReview`. Must be non-zero. |
 
 Each **entry**:
 
@@ -326,6 +332,7 @@ extensions:
             verb: export
             namespace: tenant-b
       cache_ttl: 5m
+      review_timeout: 10s
 ```
 
 A receiver binds it via its `capabilities:` map (see
@@ -368,7 +375,8 @@ log-only and never metric labels); the plaintext token is never logged.
 
 ## Security considerations
 
-- **Fail closed.** An unreachable API server yields an `Err`, never an allow.
+- **Fail closed.** An unreachable or unresponsive API server yields an `Err`,
+  never an allow.
 - **Secret handling.** The token is carried by the secret-protecting
   `BearerToken`; it is exposed only to build the `TokenReview` request and to
   compute its SHA-256 cache key. No plaintext token is retained -- the cache

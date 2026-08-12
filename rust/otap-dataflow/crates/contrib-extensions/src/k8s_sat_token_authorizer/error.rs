@@ -3,9 +3,12 @@
 
 //! Error types for the Kubernetes SAT authorizer extension.
 
-/// Errors raised while constructing the Kubernetes client or performing a
-/// `TokenReview`.
-#[derive(Debug, thiserror::Error)]
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Errors raised while constructing the Kubernetes client or performing review
+/// requests.
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
     /// Constructing the in-cluster Kubernetes client failed (e.g. no projected
     /// service-account token, unreadable cluster CA, or unresolvable API
@@ -13,7 +16,7 @@ pub enum Error {
     #[error("failed to construct Kubernetes client: {source}")]
     ClientInit {
         /// Underlying kube error.
-        source: kube::Error,
+        source: Arc<kube::Error>,
     },
 
     /// The `TokenReview` request to the API server could not be completed (e.g.
@@ -22,7 +25,14 @@ pub enum Error {
     #[error("TokenReview request failed: {source}")]
     TokenReview {
         /// Underlying kube error.
-        source: kube::Error,
+        source: Arc<kube::Error>,
+    },
+
+    /// The `TokenReview` did not complete within the configured timeout.
+    #[error("TokenReview request timed out after {timeout:?}")]
+    TokenReviewTimeout {
+        /// Configured request timeout.
+        timeout: Duration,
     },
 
     /// The `SubjectAccessReview` (RBAC) request to the API server could not be
@@ -30,7 +40,14 @@ pub enum Error {
     #[error("SubjectAccessReview request failed: {source}")]
     SubjectAccessReview {
         /// Underlying kube error.
-        source: kube::Error,
+        source: Arc<kube::Error>,
+    },
+
+    /// The `SubjectAccessReview` did not complete within the configured timeout.
+    #[error("SubjectAccessReview request timed out after {timeout:?}")]
+    SubjectAccessReviewTimeout {
+        /// Configured request timeout.
+        timeout: Duration,
     },
 
     /// The API server returned a review response with no `status`, so no

@@ -19,41 +19,56 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use otap_df_engine::capability::CapabilityError;
 use otap_df_engine::capability::auth::AuthzDecision;
 use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 
+use super::error::Error;
+
 /// The cache key: a SHA-256 digest of the token.
 pub(crate) type TokenDigest = [u8; 32];
+
+/// The result published to every request sharing one in-flight review.
+type FlightResult = Result<AuthzDecision, Error>;
 
 /// A reference-counted handle to a decision cell, shared by every request
 /// bearing the same token.
 ///
 /// `Arc` for the shared variant, whose slots cross threads; `Rc` for the local
 /// variant, which gains a compile-time `!Send` check.
-pub(crate) trait SlotHandle: Clone + Deref<Target = OnceCell<AuthzDecision>> {
+pub(crate) trait SlotHandle: Clone + Deref<Target = OnceCell<FlightResult>> {
     /// Allocates a fresh, empty cell.
     fn empty() -> Self;
+
+    /// Returns whether both handles point to the same cell.
+    fn ptr_eq(left: &Self, right: &Self) -> bool;
 }
 
-impl SlotHandle for Arc<OnceCell<AuthzDecision>> {
+impl SlotHandle for Arc<OnceCell<FlightResult>> {
     fn empty() -> Self {
         Arc::new(OnceCell::new())
     }
+
+    fn ptr_eq(left: &Self, right: &Self) -> bool {
+        Arc::ptr_eq(left, right)
+    }
 }
 
-impl SlotHandle for Rc<OnceCell<AuthzDecision>> {
+impl SlotHandle for Rc<OnceCell<FlightResult>> {
     fn empty() -> Self {
         Rc::new(OnceCell::new())
+    }
+
+    fn ptr_eq(left: &Self, right: &Self) -> bool {
+        Rc::ptr_eq(left, right)
     }
 }
 
 /// Slot handle used by the shared (`Send`, cross-thread) variant.
-pub(crate) type SharedSlot = Arc<OnceCell<AuthzDecision>>;
+pub(crate) type SharedSlot = Arc<OnceCell<FlightResult>>;
 
 /// Slot handle used by the local (`!Send`, thread-per-core) variant.
-pub(crate) type LocalSlot = Rc<OnceCell<AuthzDecision>>;
+pub(crate) type LocalSlot = Rc<OnceCell<FlightResult>>;
 
 /// How many entries to sample when choosing an eviction victim, bounding
 /// eviction to O(1) instead of scanning the whole map under the guard.
@@ -89,24 +104,60 @@ impl SharedDecisionCache {
         &self,
         key: TokenDigest,
         decide: impl FnOnce() -> Fut,
-    ) -> Result<AuthzDecision, CapabilityError>
+    ) -> Result<AuthzDecision, Error>
     where
-        Fut: Future<Output = Result<AuthzDecision, CapabilityError>>,
+        Fut: Future<Output = Result<AuthzDecision, Error>>,
     {
-        let slot = match self.entries.lock() {
+        let lease = match self.entries.lock() {
             Ok(mut entries) => entries.slot(key, Instant::now()),
             // A poisoned lock degrades to an uncached decision: the caller still
             // authorizes, it just cannot share the result.
-            Err(_) => SharedSlot::empty(),
+            Err(_) => SlotLease::untracked(SharedSlot::empty()),
         };
 
-        // Cloned after the guard is released; a deep clone under it would stall
-        // requests for unrelated tokens.
-        if let Some(decision) = slot.get() {
-            return Ok(decision.clone());
+        let mut cleanup = SharedFlightCleanup {
+            cache: self,
+            key,
+            cell: lease.handle(),
+            armed: lease.tracked && lease.complete_on_success,
+        };
+        let result = lease.handle().get_or_init(decide).await;
+        cleanup.armed = false;
+        match result {
+            Ok(decision) => {
+                if lease.complete_on_success {
+                    if let Ok(mut entries) = self.entries.lock() {
+                        entries.complete(&key, lease.handle(), Instant::now());
+                    }
+                }
+                // Cloned after the guard is released; a deep clone under it
+                // would stall requests for unrelated tokens.
+                Ok(decision.clone())
+            }
+            Err(error) => {
+                if lease.tracked {
+                    if let Ok(mut entries) = self.entries.lock() {
+                        entries.remove(&key, lease.handle());
+                    }
+                }
+                Err(error.clone())
+            }
         }
+    }
 
-        Ok(slot.get_or_try_init(decide).await?.clone())
+    /// Number of references to the tracked slot for `key`. Test-only.
+    #[cfg(test)]
+    pub(crate) fn slot_ref_count(&self, key: &TokenDigest) -> usize {
+        self.entries
+            .lock()
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .entries
+                    .get(key)
+                    .map(|entry| Arc::strong_count(&entry.cell))
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -135,11 +186,11 @@ impl LocalDecisionCache {
         &self,
         key: TokenDigest,
         decide: impl FnOnce() -> Fut,
-    ) -> Result<AuthzDecision, CapabilityError>
+    ) -> Result<AuthzDecision, Error>
     where
-        Fut: Future<Output = Result<AuthzDecision, CapabilityError>>,
+        Fut: Future<Output = Result<AuthzDecision, Error>>,
     {
-        let slot = {
+        let lease = {
             let mut entries = self.entries.borrow_mut();
 
             // Cloned under the borrow: no `.await` separates the probe from the
@@ -147,6 +198,7 @@ impl LocalDecisionCache {
             if let Some(decision) = entries
                 .live_cell(&key, Instant::now())
                 .and_then(|c| c.get())
+                .and_then(|result| result.as_ref().ok())
             {
                 return Ok(decision.clone());
             }
@@ -156,14 +208,109 @@ impl LocalDecisionCache {
 
         // The borrow must be dropped above: re-entering the cache while borrowed
         // across the await below would panic.
-        Ok(slot.get_or_try_init(decide).await?.clone())
+        let mut cleanup = LocalFlightCleanup {
+            cache: self,
+            key,
+            cell: lease.handle(),
+            armed: lease.tracked && lease.complete_on_success,
+        };
+        let result = lease.handle().get_or_init(decide).await;
+        cleanup.armed = false;
+        match result {
+            Ok(decision) => {
+                if lease.complete_on_success {
+                    self.entries
+                        .borrow_mut()
+                        .complete(&key, lease.handle(), Instant::now());
+                }
+                Ok(decision.clone())
+            }
+            Err(error) => {
+                if lease.tracked {
+                    self.entries.borrow_mut().remove(&key, lease.handle());
+                }
+                Err(error.clone())
+            }
+        }
     }
 }
 
-/// A cached decision cell and the instant it stops being valid.
+/// Removes an abandoned shared flight when its last waiter is dropped.
+struct SharedFlightCleanup<'a> {
+    cache: &'a SharedDecisionCache,
+    key: TokenDigest,
+    cell: &'a SharedSlot,
+    armed: bool,
+}
+
+impl Drop for SharedFlightCleanup<'_> {
+    fn drop(&mut self) {
+        if !self.armed || Arc::strong_count(self.cell) != 2 {
+            return;
+        }
+        if let Ok(mut entries) = self.cache.entries.lock() {
+            entries.remove(&self.key, self.cell);
+        }
+    }
+}
+
+/// Removes an abandoned local flight when its last waiter is dropped.
+struct LocalFlightCleanup<'a> {
+    cache: &'a LocalDecisionCache,
+    key: TokenDigest,
+    cell: &'a LocalSlot,
+    armed: bool,
+}
+
+impl Drop for LocalFlightCleanup<'_> {
+    fn drop(&mut self) {
+        if !self.armed || Rc::strong_count(self.cell) != 2 {
+            return;
+        }
+        self.cache.entries.borrow_mut().remove(&self.key, self.cell);
+    }
+}
+
+/// A slot returned to a request and its cache bookkeeping state.
+pub(crate) struct SlotLease<S> {
+    cell: S,
+    tracked: bool,
+    complete_on_success: bool,
+}
+
+impl<S> SlotLease<S> {
+    fn tracked(cell: S, complete_on_success: bool) -> Self {
+        Self {
+            cell,
+            tracked: true,
+            complete_on_success,
+        }
+    }
+
+    fn untracked(cell: S) -> Self {
+        Self {
+            cell,
+            tracked: false,
+            complete_on_success: false,
+        }
+    }
+
+    /// Returns the underlying decision cell.
+    pub(crate) fn handle(&self) -> &S {
+        &self.cell
+    }
+
+    /// Returns whether this slot is retained by the cache.
+    #[cfg(test)]
+    pub(crate) fn is_tracked(&self) -> bool {
+        self.tracked
+    }
+}
+
+/// A decision cell and its expiration after successful initialization.
 struct CachedDecision<S> {
     cell: S,
-    expires_at: Instant,
+    expires_at: Option<Instant>,
 }
 
 /// Bounded, TTL'd entry map used by both caches.
@@ -194,7 +341,7 @@ impl<S: SlotHandle> Entries<S> {
     pub(crate) fn live_cell(&self, key: &TokenDigest, now: Instant) -> Option<&S> {
         self.entries
             .get(key)
-            .filter(|entry| entry.expires_at > now)
+            .filter(|entry| entry.expires_at.is_some_and(|expiry| expiry > now))
             .map(|entry| &entry.cell)
     }
 
@@ -203,64 +350,90 @@ impl<S: SlotHandle> Entries<S> {
     ///
     /// The first requester initializes the slot while the rest await it, so a
     /// stampede for one token costs one `TokenReview`.
-    pub(crate) fn slot(&mut self, key: TokenDigest, now: Instant) -> S {
+    pub(crate) fn slot(&mut self, key: TokenDigest, now: Instant) -> SlotLease<S> {
         if let Some(entry) = self.entries.get(&key) {
-            if entry.expires_at > now {
-                return entry.cell.clone();
+            match entry.expires_at {
+                None => return SlotLease::tracked(entry.cell.clone(), true),
+                Some(expiry) if expiry > now => {
+                    return SlotLease::tracked(entry.cell.clone(), false);
+                }
+                Some(_) => {}
             }
+
             // Replaced in place, which never grows the map.
             let cell = S::empty();
-            let _ = self.entries.insert(key, self.fresh_entry(&cell, now));
-            return cell;
+            let _ = self.entries.insert(key, Self::fresh_entry(&cell));
+            return SlotLease::tracked(cell, true);
         }
 
         let cell = S::empty();
-        if self.max_entries == 0 {
-            // Nothing may be cached; hand back an unshared slot so the caller
-            // still reaches a decision.
-            return cell;
+        if !self.make_room() {
+            // When capacity is occupied by in-flight reviews, preserve those
+            // flights and decide this distinct token without retaining it.
+            return SlotLease::untracked(cell);
         }
-        self.make_room(now);
-        let _ = self.entries.insert(key, self.fresh_entry(&cell, now));
-        cell
+        let _ = self.entries.insert(key, Self::fresh_entry(&cell));
+        SlotLease::tracked(cell, true)
     }
 
-    /// Builds an entry wrapping `cell` that expires one `ttl` from `now`.
-    fn fresh_entry(&self, cell: &S, now: Instant) -> CachedDecision<S> {
+    /// Builds an in-flight entry wrapping `cell`.
+    fn fresh_entry(cell: &S) -> CachedDecision<S> {
         CachedDecision {
             cell: cell.clone(),
-            expires_at: now
-                .checked_add(self.ttl)
-                .unwrap_or_else(|| now + Duration::from_secs(1)),
+            expires_at: None,
         }
     }
 
-    /// Ensures there is room for one more entry, reclaiming expired entries
-    /// first and otherwise evicting a sampled entry closest to expiry.
+    /// Starts the TTL after a tracked slot successfully reaches a decision.
+    pub(crate) fn complete(&mut self, key: &TokenDigest, cell: &S, now: Instant) {
+        let Some(entry) = self.entries.get_mut(key) else {
+            return;
+        };
+        if S::ptr_eq(&entry.cell, cell) && entry.expires_at.is_none() {
+            entry.expires_at = Some(
+                now.checked_add(self.ttl)
+                    .unwrap_or_else(|| now + Duration::from_secs(1)),
+            );
+        }
+    }
+
+    /// Removes `key` only when it still names `cell`.
+    pub(crate) fn remove(&mut self, key: &TokenDigest, cell: &S) {
+        let matches = self
+            .entries
+            .get(key)
+            .is_some_and(|entry| S::ptr_eq(&entry.cell, cell));
+        if matches {
+            let _ = self.entries.remove(key);
+        }
+    }
+
+    /// Ensures there is room for one more entry by evicting one completed slot
+    /// from a bounded sample. In-flight reviews are never evicted.
     ///
     /// Eviction protects availability: the key derives from caller-supplied
     /// token bytes, so an unauthenticated caller can mint unlimited distinct
     /// keys and would otherwise pin the cache.
-    fn make_room(&mut self, now: Instant) {
-        if self.entries.len() < self.max_entries {
-            return;
+    fn make_room(&mut self) -> bool {
+        if self.max_entries == 0 {
+            return false;
         }
-        self.entries.retain(|_, entry| entry.expires_at > now);
+        if self.entries.len() < self.max_entries {
+            return true;
+        }
 
-        while self.entries.len() >= self.max_entries {
-            let victim = self
-                .entries
-                .iter()
-                .take(EVICTION_SAMPLE)
-                .min_by_key(|(_, entry)| entry.expires_at)
-                .map(|(key, _)| *key);
-            match victim {
-                Some(key) => {
-                    let _ = self.entries.remove(&key);
-                }
-                // Empty map: nothing left to evict.
-                None => return,
-            }
+        let victim = self
+            .entries
+            .iter()
+            .take(EVICTION_SAMPLE)
+            .filter_map(|(key, entry)| entry.expires_at.map(|expiry| (*key, expiry)))
+            .min_by_key(|(_, expiry)| *expiry)
+            .map(|(key, _)| key);
+        if let Some(key) = victim {
+            let _ = self.entries.remove(&key);
+            true
+        } else {
+            false
         }
     }
 

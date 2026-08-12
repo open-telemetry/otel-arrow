@@ -18,6 +18,6 @@ issues: [3494]
 # Use pipe (|) for multiline entries.
 subtext: |
   Admission keys off the audience `TokenReview` confirms, so an identity is
-  only trusted for the audience it was minted for, and only Kubernetes service
-  accounts are admitted. Gated behind the `k8s-sat-token-authorizer-extension`
-  feature; decisions are cached by the token's SHA-256 digest.
+  only trusted for its confirmed audience. Kubernetes review calls have a
+  configurable timeout, and concurrent requests for one token share both
+  successful and failed review results.

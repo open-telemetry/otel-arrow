@@ -25,8 +25,8 @@ Reached decisions are cached, keyed by the token's SHA-256 digest (no plaintext
 credential retained) and bounded by a
 configurable TTL and entry cap, to bound `TokenReview` calls to the API server. A
 reached deny (missing, invalid, or not-permitted token) is a normal outcome; when
-the API server is unreachable the decision is undetermined and surfaced as an
-error so callers fail closed.
+the API server is unreachable or does not respond within `review_timeout`, the
+decision is undetermined and surfaced as an error so callers fail closed.
 
 For the full design -- problem, goals, lifecycle, configuration reference, and
 security considerations -- see

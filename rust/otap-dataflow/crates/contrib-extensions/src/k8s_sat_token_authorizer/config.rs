@@ -9,6 +9,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+/// Default maximum duration of a Kubernetes review request.
+pub(crate) const DEFAULT_REVIEW_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Default time an authorization decision is cached, keyed by the token's
 /// SHA-256 digest (never the plaintext token; see `cache.rs`).
 fn default_cache_ttl() -> Duration {
@@ -18,6 +21,10 @@ fn default_cache_ttl() -> Duration {
 /// Default maximum number of cached decisions.
 fn default_cache_max_entries() -> usize {
     1024
+}
+
+fn default_review_timeout() -> Duration {
+    DEFAULT_REVIEW_TIMEOUT
 }
 
 /// Configuration for the Kubernetes SAT authorizer extension.
@@ -43,6 +50,11 @@ pub struct Config {
     /// greater than zero.
     #[serde(default = "default_cache_max_entries")]
     pub cache_max_entries: usize,
+
+    /// Maximum duration of each `TokenReview` or `SubjectAccessReview` request.
+    /// Accepts human-readable durations (e.g. `10s`, `500ms`). Must be non-zero.
+    #[serde(with = "humantime_serde", default = "default_review_timeout")]
+    pub review_timeout: Duration,
 }
 
 /// One audience-scoped admission entry.
@@ -114,6 +126,9 @@ impl Config {
         }
         if self.cache_max_entries == 0 {
             return Err("`cache_max_entries` must be greater than zero".to_string());
+        }
+        if self.review_timeout.is_zero() {
+            return Err("`review_timeout` must be greater than zero".to_string());
         }
 
         let mut seen_audiences = HashSet::new();

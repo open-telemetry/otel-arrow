@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
 
 use k8s_openapi::api::authentication::v1::{TokenReview, TokenReviewSpec, TokenReviewStatus};
 use k8s_openapi::api::authorization::v1::{
@@ -68,6 +70,7 @@ pub(crate) enum AccessOutcome {
 pub(crate) struct Reviewer {
     client: kube::Client,
     audiences: Vec<String>,
+    request_timeout: Duration,
 }
 
 impl Reviewer {
@@ -77,7 +80,10 @@ impl Reviewer {
     /// Uses [`kube::Client::try_default`], which infers in-cluster config from
     /// the projected service-account token and cluster CA when running inside a
     /// pod, and otherwise falls back to the local kubeconfig.
-    pub(crate) async fn try_new(audiences: Vec<String>) -> Result<Self, Error> {
+    pub(crate) async fn try_new(
+        audiences: Vec<String>,
+        request_timeout: Duration,
+    ) -> Result<Self, Error> {
         // kube talks to the API server over rustls, which needs a process-wide
         // crypto provider installed. Mirror the other auth extensions and ensure
         // one is present before any TLS handshake.
@@ -88,32 +94,56 @@ impl Reviewer {
                 error = %source,
                 message = "kubernetes client init failed; failing closed"
             );
-            Error::ClientInit { source }
+            Error::ClientInit {
+                source: Arc::new(source),
+            }
         })?;
-        Ok(Self { client, audiences })
+        Ok(Self {
+            client,
+            audiences,
+            request_timeout,
+        })
     }
 
     /// Submits a `TokenReview` for `token` and maps the response to a
     /// [`ReviewOutcome`].
     ///
     /// Returns [`Error`] only when no decision could be reached (the request
-    /// failed or the response carried no status); a non-authenticated token is a
-    /// normal [`ReviewOutcome::Unauthenticated`], not an error.
+    /// failed, timed out, or the response carried no status); a
+    /// non-authenticated token is a normal [`ReviewOutcome::Unauthenticated`],
+    /// not an error.
     pub(crate) async fn review(&self, token: &str) -> Result<ReviewOutcome, Error> {
         let api: Api<TokenReview> = Api::all(self.client.clone());
         let review = token_review_request(token, &self.audiences);
 
-        let response = api
-            .create(&PostParams::default(), &review)
-            .await
-            .map_err(|source| {
+        let response = match tokio::time::timeout(
+            self.request_timeout,
+            api.create(&PostParams::default(), &review),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(source)) => {
                 otel_warn!(
                     "k8s_sat_token_authorizer.token_review_failed",
                     error = %source,
                     message = "TokenReview request failed; failing closed"
                 );
-                Error::TokenReview { source }
-            })?;
+                return Err(Error::TokenReview {
+                    source: Arc::new(source),
+                });
+            }
+            Err(_) => {
+                otel_warn!(
+                    "k8s_sat_token_authorizer.token_review_timeout",
+                    timeout = ?self.request_timeout,
+                    message = "TokenReview request timed out; failing closed"
+                );
+                return Err(Error::TokenReviewTimeout {
+                    timeout: self.request_timeout,
+                });
+            }
+        };
 
         let status = response.status.ok_or_else(|| {
             otel_warn!(
@@ -131,8 +161,8 @@ impl Reviewer {
     /// [`AccessOutcome`].
     ///
     /// Returns [`Error`] only when no decision could be reached (the request
-    /// failed or the response carried no status); an RBAC "not allowed" is a
-    /// normal [`AccessOutcome::Denied`], not an error.
+    /// failed, timed out, or the response carried no status); an RBAC "not
+    /// allowed" is a normal [`AccessOutcome::Denied`], not an error.
     pub(crate) async fn check_access(
         &self,
         user: &AuthenticatedUser,
@@ -141,17 +171,34 @@ impl Reviewer {
         let api: Api<SubjectAccessReview> = Api::all(self.client.clone());
         let review = access_review_request(user, attrs);
 
-        let response = api
-            .create(&PostParams::default(), &review)
-            .await
-            .map_err(|source| {
+        let response = match tokio::time::timeout(
+            self.request_timeout,
+            api.create(&PostParams::default(), &review),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(source)) => {
                 otel_warn!(
                     "k8s_sat_token_authorizer.access_review_failed",
                     error = %source,
                     message = "SubjectAccessReview request failed; failing closed"
                 );
-                Error::SubjectAccessReview { source }
-            })?;
+                return Err(Error::SubjectAccessReview {
+                    source: Arc::new(source),
+                });
+            }
+            Err(_) => {
+                otel_warn!(
+                    "k8s_sat_token_authorizer.access_review_timeout",
+                    timeout = ?self.request_timeout,
+                    message = "SubjectAccessReview request timed out; failing closed"
+                );
+                return Err(Error::SubjectAccessReviewTimeout {
+                    timeout: self.request_timeout,
+                });
+            }
+        };
 
         let status = response.status.ok_or_else(|| {
             otel_warn!(

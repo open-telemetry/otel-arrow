@@ -4,6 +4,7 @@
 //! Unit tests for the Kubernetes SAT authorizer extension.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -12,7 +13,6 @@ use k8s_openapi::api::authentication::v1::{TokenReviewStatus, UserInfo};
 use k8s_openapi::api::authorization::v1::SubjectAccessReviewStatus;
 
 use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::capability::CapabilityError;
 use otap_df_engine::capability::auth::{
     AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason,
 };
@@ -51,6 +51,7 @@ fn config_defaults_apply() {
     assert!(cfg.audiences[0].resource_attributes.is_none());
     assert_eq!(cfg.cache_ttl, Duration::from_secs(300));
     assert_eq!(cfg.cache_max_entries, 1024);
+    assert_eq!(cfg.review_timeout, Duration::from_secs(10));
 }
 
 /// Scenario: parse configs that omit `audiences`, supply an empty list, or a
@@ -90,9 +91,9 @@ fn duplicate_audience_is_rejected() {
     );
 }
 
-/// Scenario: parse configs with a zero `cache_ttl` and zero `cache_max_entries`.
+/// Scenario: parse configs with a zero cache TTL, entry cap, or review timeout.
 /// Guarantees: each zero value is rejected so the extension never runs with a
-/// degenerate cache.
+/// degenerate cache or an immediately-expiring API request.
 #[test]
 fn zero_valued_fields_are_rejected() {
     assert!(
@@ -110,6 +111,14 @@ fn zero_valued_fields_are_rejected() {
         }))
         .is_err(),
         "zero cache_max_entries must be rejected"
+    );
+    assert!(
+        config_from_json(serde_json::json!({
+            "audiences": [{ "audience": "a" }],
+            "review_timeout": "0s",
+        }))
+        .is_err(),
+        "zero review_timeout must be rejected"
     );
 }
 
@@ -136,16 +145,18 @@ fn unknown_field_is_rejected() {
     );
 }
 
-/// Scenario: parse a human-readable duration for `cache_ttl`.
-/// Guarantees: the duration deserializes to the exact wall-clock value.
+/// Scenario: parse human-readable cache and Kubernetes review durations.
+/// Guarantees: both durations deserialize to their exact wall-clock values.
 #[test]
 fn human_readable_durations_parse() {
     let cfg = config_from_json(serde_json::json!({
         "audiences": [{ "audience": "a" }],
         "cache_ttl": "90s",
+        "review_timeout": "750ms",
     }))
     .expect("durations parse");
     assert_eq!(cfg.cache_ttl, Duration::from_secs(90));
+    assert_eq!(cfg.review_timeout, Duration::from_millis(750));
 }
 
 /// Scenario: parse an entry whose `allowed_service_accounts` contains a
@@ -830,13 +841,22 @@ async fn authorize_empty_credential_is_missing_local() {
 /// Stores `decision` in the slot `cache` hands out for `token`, mirroring what
 /// `Core::authorize` does after reaching a decision.
 fn set_slot(cache: &mut Entries<SharedSlot>, token: &str, decision: AuthzDecision, now: Instant) {
-    let slot = cache.slot(digest(token), now);
-    slot.set(decision).expect("slot must be empty");
+    let key = digest(token);
+    let lease = cache.slot(key, now);
+    lease
+        .handle()
+        .set(Ok(decision))
+        .expect("slot must be empty");
+    cache.complete(&key, lease.handle(), now);
 }
 
 /// Reads the decision currently cached for `token`, if any.
 fn slot_value(cache: &mut Entries<SharedSlot>, token: &str, now: Instant) -> Option<AuthzDecision> {
-    cache.slot(digest(token), now).get().cloned()
+    cache
+        .live_cell(&digest(token), now)
+        .and_then(|slot| slot.get())
+        .and_then(|result| result.as_ref().ok())
+        .cloned()
 }
 
 /// Scenario: store a decision in a token's slot and read it back before and
@@ -870,7 +890,7 @@ fn cache_hands_concurrent_requests_the_same_slot() {
     let second = cache.slot(digest("tok"), now);
 
     assert!(
-        Arc::ptr_eq(&first, &second),
+        Arc::ptr_eq(first.handle(), second.handle()),
         "concurrent requests for one token must share a single decision slot"
     );
     assert_eq!(
@@ -888,19 +908,25 @@ fn cache_hands_concurrent_requests_the_same_slot() {
 fn cache_replaces_an_expired_slot() {
     let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(300), 1024);
     let now = Instant::now();
-    let stale = cache.slot(digest("tok"), now);
+    let key = digest("tok");
+    let stale_lease = cache.slot(key, now);
+    let stale = Arc::clone(stale_lease.handle());
     stale
-        .set(AuthzDecision::allow_anonymous())
+        .set(Ok(AuthzDecision::allow_anonymous()))
         .expect("cell is empty");
+    cache.complete(&key, &stale, now);
 
     let later = now + Duration::from_secs(301);
     let fresh = cache.slot(digest("tok"), later);
 
     assert!(
-        !Arc::ptr_eq(&stale, &fresh),
+        !Arc::ptr_eq(&stale, fresh.handle()),
         "an expired entry must not hand back its stale cell"
     );
-    assert!(fresh.get().is_none(), "the replacement cell must be empty");
+    assert!(
+        fresh.handle().get().is_none(),
+        "the replacement cell must be empty"
+    );
     assert_eq!(cache.len(), 1, "replacing must not add a second entry");
 }
 
@@ -919,12 +945,13 @@ async fn slot_initialization_collapses_into_a_single_review() {
         let slot = Arc::clone(&slot);
         let reviews = Arc::clone(&reviews);
         tasks.push(tokio::spawn(async move {
-            slot.get_or_try_init(|| async {
+            slot.get_or_init(|| async {
                 let _ = reviews.fetch_add(1, Ordering::SeqCst);
                 tokio::task::yield_now().await;
-                Ok::<_, &'static str>(AuthzDecision::allow_anonymous())
+                Ok::<_, Error>(AuthzDecision::allow_anonymous())
             })
             .await
+            .as_ref()
             .expect("init must succeed")
             .clone()
         }));
@@ -991,29 +1018,286 @@ async fn concurrent_authorize_for_one_token_performs_a_single_review() {
     );
 }
 
-/// Scenario: a slot initializer fails (the API server was unreachable, so no
-/// decision could be reached), then a later request retries.
-/// Guarantees: the failure is not cached -- the cell stays empty so the next
-/// request re-attempts the review, preserving fail-closed semantics without
-/// pinning an undetermined outcome for the whole TTL.
-#[tokio::test]
-async fn failed_slot_initialization_is_not_cached() {
-    let slot: SharedSlot = Arc::new(tokio::sync::OnceCell::new());
+/// Scenario: 32 concurrent shared-cache requests encounter one failed review,
+/// followed by a later successful request for the same token.
+/// Guarantees: current waiters share one failure, while the later request starts
+/// exactly one new flight instead of retaining the undetermined result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shared_cache_coalesces_a_failure_and_allows_a_later_retry() {
+    let cache = Arc::new(SharedDecisionCache::new(Duration::from_secs(300), 16));
+    let reviews = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let key = digest("failed-flight");
 
-    let failed = slot
-        .get_or_try_init(|| async { Err::<AuthzDecision, &'static str>("api server unreachable") })
-        .await;
-    assert!(failed.is_err(), "the initializer must surface the error");
-    assert!(
-        slot.get().is_none(),
-        "a failed review must leave the slot empty so the next request retries"
+    let mut tasks = Vec::new();
+    for _ in 0..32 {
+        let cache = Arc::clone(&cache);
+        let reviews = Arc::clone(&reviews);
+        let release = Arc::clone(&release);
+        tasks.push(tokio::spawn(async move {
+            cache
+                .get_or_decide(key, || async {
+                    let _ = reviews.fetch_add(1, Ordering::SeqCst);
+                    release.notified().await;
+                    Err(Error::MissingStatus)
+                })
+                .await
+        }));
+    }
+
+    while cache.slot_ref_count(&key) < 33 {
+        tokio::task::yield_now().await;
+    }
+    release.notify_waiters();
+
+    for task in tasks {
+        assert!(
+            matches!(
+                task.await.expect("task must not panic"),
+                Err(Error::MissingStatus)
+            ),
+            "every waiter must observe the shared review failure"
+        );
+    }
+    assert_eq!(
+        reviews.load(Ordering::SeqCst),
+        1,
+        "concurrent failures must cost one review"
     );
 
-    let retried = slot
-        .get_or_try_init(|| async { Ok::<_, &'static str>(AuthzDecision::allow_anonymous()) })
+    let decision = cache
+        .get_or_decide(key, || async {
+            let _ = reviews.fetch_add(1, Ordering::SeqCst);
+            Ok(AuthzDecision::allow_anonymous())
+        })
         .await
-        .expect("the retry must succeed");
-    assert_eq!(retried, &AuthzDecision::allow_anonymous());
+        .expect("a later request must retry");
+    assert_eq!(decision, AuthzDecision::allow_anonymous());
+    assert_eq!(
+        reviews.load(Ordering::SeqCst),
+        2,
+        "the later request must start one fresh review"
+    );
+}
+
+/// Scenario: 32 local tasks encounter one failed review, followed by a later
+/// successful request for the same token.
+/// Guarantees: interleaved waiters share one failure and the next request starts
+/// one fresh flight, matching the shared cache's failure behavior.
+#[tokio::test]
+async fn local_cache_coalesces_a_failure_and_allows_a_later_retry() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let cache = Rc::new(LocalDecisionCache::new(Duration::from_secs(300), 16));
+            let reviews = Rc::new(std::cell::Cell::new(0usize));
+            let key = digest("failed-local-flight");
+
+            let mut tasks = Vec::new();
+            for _ in 0..32 {
+                let cache = Rc::clone(&cache);
+                let reviews = Rc::clone(&reviews);
+                tasks.push(tokio::task::spawn_local(async move {
+                    cache
+                        .get_or_decide(key, || async {
+                            reviews.set(reviews.get() + 1);
+                            tokio::task::yield_now().await;
+                            Err(Error::MissingStatus)
+                        })
+                        .await
+                }));
+            }
+
+            for task in tasks {
+                assert!(
+                    matches!(
+                        task.await.expect("task must not panic"),
+                        Err(Error::MissingStatus)
+                    ),
+                    "every waiter must observe the shared review failure"
+                );
+            }
+            assert_eq!(reviews.get(), 1, "concurrent failures must cost one review");
+
+            let decision = cache
+                .get_or_decide(key, || async {
+                    reviews.set(reviews.get() + 1);
+                    Ok(AuthzDecision::allow_anonymous())
+                })
+                .await
+                .expect("a later request must retry");
+            assert_eq!(decision, AuthzDecision::allow_anonymous());
+            assert_eq!(
+                reviews.get(),
+                2,
+                "the later request must start one fresh review"
+            );
+        })
+        .await;
+}
+
+/// Scenario: an in-flight slot remains unresolved beyond the configured TTL.
+/// Guarantees: another request receives the same slot because TTL starts only
+/// after a decision is reached.
+#[test]
+fn cache_does_not_expire_an_in_flight_review() {
+    let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(1), 2);
+    let now = Instant::now();
+    let first = cache.slot(digest("tok"), now);
+    let later = cache.slot(digest("tok"), now + Duration::from_secs(10));
+
+    assert!(
+        Arc::ptr_eq(first.handle(), later.handle()),
+        "an in-flight review must remain shared beyond the decision TTL"
+    );
+}
+
+/// Scenario: a decision completes long after its slot was inserted.
+/// Guarantees: it receives the full configured TTL from completion rather than
+/// expiring relative to the start of the review.
+#[test]
+fn cache_ttl_starts_when_the_decision_completes() {
+    let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(5), 2);
+    let inserted = Instant::now();
+    let completed = inserted + Duration::from_secs(10);
+    let key = digest("tok");
+    let lease = cache.slot(key, inserted);
+    lease
+        .handle()
+        .set(Ok(AuthzDecision::allow_anonymous()))
+        .expect("slot must be empty");
+    cache.complete(&key, lease.handle(), completed);
+
+    assert!(
+        cache
+            .live_cell(&key, completed + Duration::from_secs(4))
+            .is_some(),
+        "the decision must remain live for its full post-completion TTL"
+    );
+    assert!(
+        cache
+            .live_cell(&key, completed + Duration::from_secs(6))
+            .is_none(),
+        "the decision must expire after its post-completion TTL"
+    );
+}
+
+/// Scenario: cache capacity is occupied by an in-flight review and a distinct
+/// token arrives.
+/// Guarantees: the active flight is retained and the new token receives an
+/// untracked slot, preserving both the capacity bound and duplicate suppression
+/// for the request already in progress.
+#[test]
+fn cache_never_evicts_an_in_flight_review() {
+    let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(300), 1);
+    let now = Instant::now();
+    let first = cache.slot(digest("first"), now);
+    let second = cache.slot(digest("second"), now);
+    let first_again = cache.slot(digest("first"), now);
+
+    assert!(first.is_tracked(), "the first flight must be retained");
+    assert!(
+        !second.is_tracked(),
+        "a distinct token must remain uncached while all capacity is in flight"
+    );
+    assert!(
+        Arc::ptr_eq(first.handle(), first_again.handle()),
+        "the active flight must remain available to matching requests"
+    );
+    assert_eq!(cache.len(), 1, "the cache must stay within its bound");
+}
+
+/// Scenario: the only shared caller awaiting a review is cancelled.
+/// Guarantees: its abandoned slot is removed, so it cannot pin cache capacity
+/// or force later decisions to remain uncached.
+#[tokio::test]
+async fn shared_cache_reclaims_an_abandoned_flight() {
+    let cache = Arc::new(SharedDecisionCache::new(Duration::from_secs(300), 1));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let task = {
+        let cache = Arc::clone(&cache);
+        let started = Arc::clone(&started);
+        tokio::spawn(async move {
+            cache
+                .get_or_decide(digest("abandoned"), || async {
+                    started.notify_one();
+                    std::future::pending::<Result<AuthzDecision, Error>>().await
+                })
+                .await
+        })
+    };
+
+    started.notified().await;
+    task.abort();
+    assert!(
+        task.await.is_err(),
+        "the abandoned request must be cancelled"
+    );
+
+    let decisions = AtomicUsize::new(0);
+    for _ in 0..2 {
+        let _ = cache
+            .get_or_decide(digest("replacement"), || async {
+                let _ = decisions.fetch_add(1, Ordering::SeqCst);
+                Ok(AuthzDecision::allow_anonymous())
+            })
+            .await
+            .expect("the replacement decision must succeed");
+    }
+    assert_eq!(
+        decisions.load(Ordering::SeqCst),
+        1,
+        "reclaimed capacity must retain the replacement decision"
+    );
+}
+
+/// Scenario: the only local task awaiting a review is cancelled.
+/// Guarantees: its abandoned `Rc` slot is removed without atomic bookkeeping,
+/// leaving capacity available for a later cached decision.
+#[tokio::test]
+async fn local_cache_reclaims_an_abandoned_flight() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let cache = Rc::new(LocalDecisionCache::new(Duration::from_secs(300), 1));
+            let started = Rc::new(std::cell::Cell::new(false));
+            let task = {
+                let cache = Rc::clone(&cache);
+                let started = Rc::clone(&started);
+                tokio::task::spawn_local(async move {
+                    cache
+                        .get_or_decide(digest("abandoned"), || async {
+                            started.set(true);
+                            std::future::pending::<Result<AuthzDecision, Error>>().await
+                        })
+                        .await
+                })
+            };
+
+            while !started.get() {
+                tokio::task::yield_now().await;
+            }
+            task.abort();
+            assert!(
+                task.await.is_err(),
+                "the abandoned request must be cancelled"
+            );
+
+            let decisions = std::cell::Cell::new(0usize);
+            for _ in 0..2 {
+                let _ = cache
+                    .get_or_decide(digest("replacement"), || async {
+                        decisions.set(decisions.get() + 1);
+                        Ok(AuthzDecision::allow_anonymous())
+                    })
+                    .await
+                    .expect("the replacement decision must succeed");
+            }
+            assert_eq!(
+                decisions.get(),
+                1,
+                "reclaimed capacity must retain the replacement decision"
+            );
+        })
+        .await;
 }
 
 /// Scenario: claim more distinct token slots than the cache capacity allows,
@@ -1081,7 +1365,8 @@ fn cache_with_zero_capacity_caches_nothing() {
     let mut cache = Entries::<SharedSlot>::new(Duration::from_secs(300), 0);
     let now = Instant::now();
     let slot = cache.slot(digest("tok"), now);
-    slot.set(AuthzDecision::allow_anonymous())
+    slot.handle()
+        .set(Ok(AuthzDecision::allow_anonymous()))
         .expect("the slot must still be usable");
 
     assert_eq!(cache.len(), 0, "a zero-capacity cache must stay empty");
@@ -1103,7 +1388,7 @@ async fn shared_cache_serves_a_hit_without_deciding_again() {
         let served = cache
             .get_or_decide(digest("tok"), || async {
                 let _ = decisions.fetch_add(1, Ordering::SeqCst);
-                Ok::<_, CapabilityError>(decision.clone())
+                Ok::<_, Error>(decision.clone())
             })
             .await
             .expect("a decision must be reached");
@@ -1135,7 +1420,7 @@ async fn local_cache_serves_a_hit_without_deciding_again() {
         let served = cache
             .get_or_decide(digest("tok"), || async {
                 decisions.set(decisions.get() + 1);
-                Ok::<_, CapabilityError>(decision.clone())
+                Ok::<_, Error>(decision.clone())
             })
             .await
             .expect("a decision must be reached");
@@ -1163,15 +1448,15 @@ async fn local_cache_serves_a_hit_without_deciding_again() {
 async fn interleaved_local_authorize_for_one_token_performs_a_single_review() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let core = std::rc::Rc::new(make_core(None));
-            let cache = std::rc::Rc::new(LocalDecisionCache::new(Duration::from_secs(300), 16));
-            let reviews = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let core = Rc::new(make_core(None));
+            let cache = Rc::new(LocalDecisionCache::new(Duration::from_secs(300), 16));
+            let reviews = Rc::new(std::cell::Cell::new(0usize));
 
             let mut tasks = Vec::new();
             for _ in 0..32 {
-                let core = std::rc::Rc::clone(&core);
-                let cache = std::rc::Rc::clone(&cache);
-                let reviews = std::rc::Rc::clone(&reviews);
+                let core = Rc::clone(&core);
+                let cache = Rc::clone(&cache);
+                let reviews = Rc::clone(&reviews);
                 tasks.push(tokio::task::spawn_local(async move {
                     let credential = BearerToken::without_expiry("herd-token".to_string());
                     let reviewer = FakeReviewer::authenticated(

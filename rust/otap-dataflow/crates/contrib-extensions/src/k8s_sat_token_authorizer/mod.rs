@@ -75,17 +75,19 @@ fn create(
     // Build both capability variants from the same config. The shared variant is
     // `Arc`-backed (Send) and the local variant is `Rc`-backed (lock-free,
     // thread-per-core); each has its own cache and lazily-built client.
-    let shared = SharedK8sSatTokenAuthorizer::new(
+    let shared = SharedK8sSatTokenAuthorizer::new_with_timeout(
         &name,
         config.audiences.clone(),
         config.cache_ttl,
         config.cache_max_entries,
+        config.review_timeout,
     );
-    let local = LocalK8sSatTokenAuthorizer::new(
+    let local = LocalK8sSatTokenAuthorizer::new_with_timeout(
         &name,
         config.audiences,
         config.cache_ttl,
         config.cache_max_entries,
+        config.review_timeout,
     );
 
     // The extension is passive: it exposes the authorizer capability and builds

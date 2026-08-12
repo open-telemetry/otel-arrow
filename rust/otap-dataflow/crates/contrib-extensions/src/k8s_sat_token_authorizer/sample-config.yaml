@@ -46,6 +46,8 @@ groups:
               # SHA-256 digest), bounding TokenReview calls to the API server.
               cache_ttl: 5m
               cache_max_entries: 1024
+              # Bound each TokenReview and SubjectAccessReview request.
+              review_timeout: 10s
 
         nodes:
           otlp-receiver:
