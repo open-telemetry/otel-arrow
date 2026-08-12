@@ -114,7 +114,7 @@ Attributes:
 The tracing target and exported `InstrumentationScope.name` identify the static
 component type that produced an event. They do not identify a configured node
 instance. Component events use the target convention defined in the
-[System Events Guide](events-guide.md#component-aware-targets), while
+[telemetry crate README](../../crates/telemetry/README.md#logging-macros), while
 `otelcol.node.id` identifies the runtime instance and `otelcol.node.urn` carries
 the complete canonical component identity.
 
