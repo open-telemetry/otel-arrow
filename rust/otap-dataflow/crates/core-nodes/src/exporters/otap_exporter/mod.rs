@@ -38,7 +38,7 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
 };
 use otap_df_telemetry::common_attributes::{Outcome, SignalAttributes, SignalOutcomeAttributes};
 use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{HistogramNormal, Mmsc};
+use otap_df_telemetry::instrument::HistogramNormal;
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
@@ -91,35 +91,35 @@ pub struct OtapExporterExportMetrics {
 pub struct OtapExporterStreamMetrics {
     /// Time spent waiting to enqueue a batch into the per-signal stream task.
     #[metric(name = "enqueue.duration", unit = "ns")]
-    pub enqueue_duration_ns: Mmsc,
+    pub enqueue_duration_ns: HistogramNormal,
     /// Occupancy of the per-signal stream task queue before enqueueing a batch.
     #[metric(name = "enqueue.depth", unit = "{batch}")]
-    pub enqueue_depth: Mmsc,
+    pub enqueue_depth: HistogramNormal,
     /// Time spent encoding an OTAP batch into outbound Arrow batch records.
     #[metric(name = "encode.duration", unit = "ns")]
-    pub encode_duration_ns: Mmsc,
+    pub encode_duration_ns: HistogramNormal,
     /// Time spent enqueueing a yielded batch into the response correlation queue.
     #[metric(name = "correlation.enqueue.duration", unit = "ns")]
-    pub correlation_enqueue_duration_ns: Mmsc,
+    pub correlation_enqueue_duration_ns: HistogramNormal,
     /// Occupancy of the response correlation queue before enqueueing a yielded batch.
     #[metric(name = "correlation.depth", unit = "{batch}")]
-    pub correlation_depth: Mmsc,
+    pub correlation_depth: HistogramNormal,
     /// Time spent waiting for the next server response on an OTAP stream.
     #[metric(name = "response.wait.duration", unit = "ns")]
-    pub response_wait_duration_ns: Mmsc,
+    pub response_wait_duration_ns: HistogramNormal,
     /// Number of yielded batches awaiting a matching server response.
     #[metric(name = "response.inflight", unit = "{batch}")]
-    pub response_inflight: Mmsc,
+    pub response_inflight: HistogramNormal,
 }
 
 /// Fixed-memory timing aggregation owned by one OTAP stream worker.
 #[derive(Debug, Default)]
 struct OtapStreamWorkerMetrics {
-    encode_duration_ns: Mmsc,
-    correlation_enqueue_duration_ns: Mmsc,
-    correlation_depth: Mmsc,
-    response_wait_duration_ns: Mmsc,
-    response_inflight: Mmsc,
+    encode_duration_ns: HistogramNormal,
+    correlation_enqueue_duration_ns: HistogramNormal,
+    correlation_depth: HistogramNormal,
+    response_wait_duration_ns: HistogramNormal,
+    response_inflight: HistogramNormal,
 }
 
 /// Shared handle used to record and collect one stream worker's metrics.
@@ -1369,7 +1369,8 @@ mod tests {
                 .streams_for(SignalType::Metrics)
                 .encode_duration_ns
                 .get()
-                .sum,
+                .summary()
+                .1,
             30.0
         );
         assert_eq!(
@@ -1377,7 +1378,7 @@ mod tests {
                 .streams_for(SignalType::Logs)
                 .encode_duration_ns
                 .get()
-                .count,
+                .count(),
             0
         );
     }
@@ -1408,6 +1409,11 @@ mod tests {
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "exporter.otap.streams"
                 && snapshot.measurement_attribute_value("signal") == Some("traces")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .all(|metric| metric.instrument == Instrument::ExponentialHistogram)
         }));
         assert!(metrics.terminal_snapshots().is_empty());
     }
@@ -1431,14 +1437,14 @@ mod tests {
 
         metrics.merge_stream_worker_metrics(std::slice::from_ref(&worker));
         let stream_metrics = metrics.streams_for(SignalType::Logs);
-        assert_eq!(stream_metrics.encode_duration_ns.get().count, 128);
+        assert_eq!(stream_metrics.encode_duration_ns.get().count(), 128);
         assert_eq!(
-            stream_metrics.correlation_enqueue_duration_ns.get().count,
+            stream_metrics.correlation_enqueue_duration_ns.get().count(),
             128
         );
-        assert_eq!(stream_metrics.correlation_depth.get().count, 128);
-        assert_eq!(stream_metrics.response_wait_duration_ns.get().count, 128);
-        assert_eq!(stream_metrics.response_inflight.get().count, 128);
+        assert_eq!(stream_metrics.correlation_depth.get().count(), 128);
+        assert_eq!(stream_metrics.response_wait_duration_ns.get().count(), 128);
+        assert_eq!(stream_metrics.response_inflight.get().count(), 128);
 
         metrics.merge_stream_worker_metrics(&[worker]);
         assert_eq!(
@@ -1446,7 +1452,7 @@ mod tests {
                 .streams_for(SignalType::Logs)
                 .encode_duration_ns
                 .get()
-                .count,
+                .count(),
             128,
             "collecting an empty worker interval must not duplicate observations"
         );

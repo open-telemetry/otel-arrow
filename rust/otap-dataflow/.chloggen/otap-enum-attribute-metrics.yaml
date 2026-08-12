@@ -5,4 +5,4 @@ component: pipeline
 note: Consolidate OTAP receiver and exporter metrics into bounded signal, outcome, and rejection error dimensions.
 issues: [3300]
 subtext: |
-  Migration: Replace legacy `receiver.otap.*` and `otap.exporter.grpc.async.*` queries with the documented `receiver.otap.*` and `exporter.otap.*` metrics and bounded attributes. Query quantiles from `exporter.otap.exports.duration`; the `.p50`, `.p90`, and `.p99` gauges are removed.
+  Migration: Replace legacy `receiver.otap.*` and `otap.exporter.grpc.async.*` queries with the documented `receiver.otap.*` and `exporter.otap.*` metrics and bounded attributes. Query exponential histogram distributions for `exporter.otap.exports.duration` and the `exporter.otap.streams.*` metrics; the `.p50`, `.p90`, and `.p99` gauges are removed.
