@@ -1,6 +1,6 @@
 change_type: breaking
 component: observability
-note: Internal event scopes now identify registered component types for more precise runtime log filtering.
+note: Use component-specific `InstrumentationScope.name` values for internal logs, enabling log-level filters to target individual components.
 issues: [3387]
 subtext: |
-  Migration: Update exact InstrumentationScope.name queries from package names to <package>::<kind>::<name>. Existing package-prefix EnvFilter directives continue to match.
+  Example: `otap-df-core-nodes` -> `otap-df-core-nodes::processor::transform` applies to transform events only; other components use `<package>::<kind>::<name>`. Use these targets in `engine.telemetry.logs.level`. Migration: update exact scope-name matches; package filters still work.
