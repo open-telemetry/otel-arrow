@@ -399,6 +399,7 @@ mod test {
     use crate::pipeline::{Pipeline, PipelineOptions};
 
     use super::*;
+    use otap_df_pdata::OtapPayloadHelpers;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::schema::consts;
 
@@ -5780,6 +5781,37 @@ mod test {
         let query = "metrics | where is Summary";
         let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
         assert_results(result, vec![summary_metric.clone()]);
+    }
+
+    #[tokio::test]
+    async fn test_filter_check_signal_type_as_concrete_metric_type() {
+        let logs_batch = vec![LogRecord::build().finish()];
+        let spans_batch = vec![Span::build().finish()];
+        let metrics_batch = vec![Metric::build().data_gauge(Gauge::default()).finish()];
+
+        let query = "signals | where is Gauge";
+        let parser_result = OplParser::parse(query).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+
+        let logs_result = pipeline.execute(to_otap_logs(logs_batch)).await.unwrap();
+        assert!(logs_result.is_empty());
+
+        let spans_result = pipeline.execute(to_otap_traces(spans_batch)).await.unwrap();
+        assert!(spans_result.is_empty());
+
+        let metrics_result = pipeline
+            .execute(to_otap_metrics(metrics_batch.clone()))
+            .await
+            .unwrap();
+        let OtlpProtoMessage::Metrics(result) = otap_to_otlp(&metrics_result) else {
+            panic!("invalid signal type after conversion")
+        };
+        assert_eq!(result.resource_metrics.len(), 1);
+        assert_eq!(result.resource_metrics[0].scope_metrics.len(), 1);
+        pretty_assertions::assert_eq!(
+            result.resource_metrics[0].scope_metrics[0].metrics,
+            metrics_batch
+        );
     }
 
     #[tokio::test]
