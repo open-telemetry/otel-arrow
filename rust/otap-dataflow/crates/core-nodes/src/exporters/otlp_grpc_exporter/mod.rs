@@ -1027,7 +1027,7 @@ async fn finalize_completed_export(
         }
         Err(e) => {
             otel_warn!(
-                "otlp.exporter.http.export_error",
+                "otlp.exporter.grpc.export_error",
                 message = "OTLP Exporter gRPC service request did not succeed",
                 error = %e
             );

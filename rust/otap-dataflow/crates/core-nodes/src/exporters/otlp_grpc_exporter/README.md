@@ -183,7 +183,7 @@ channel and is not duplicated by the exporter.
 | `otlp.exporter.grpc.channels` | `info` | gRPC channel pool creation with connection count and endpoint. |
 | `otlp.exporter.grpc.receive` | `debug` | A pdata batch was received by the exporter loop. |
 | `otlp.exporter.grpc.shutdown` | `info` | Exporter shutdown. |
-| `otlp.exporter.http.export_error` | `warn` | A gRPC export request did not complete successfully. |
+| `otlp.exporter.grpc.export_error` | `warn` | A gRPC export request did not complete successfully. |
 | `otlp.exporter.grpc.header_skip` | `debug` | A propagated transport header was skipped while building gRPC metadata. |
 | `otlp.exporter.grpc.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `authorization` header. |
 | `otlp.exporter.grpc.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
