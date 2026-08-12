@@ -93,6 +93,9 @@ pub struct RetentionLossSnapshot {
     pub expired: RetentionLossCounts,
 }
 
+/// Counts the logical items in a decoded WAL bundle during startup expiry.
+pub type WalItemCounter = Arc<dyn Fn(&dyn RecordBundle) -> Option<u64> + Send + Sync + 'static>;
+
 /// Primary entry point for the persistence engine.
 ///
 /// The engine coordinates:
@@ -197,10 +200,23 @@ pub struct QuiverEngine {
 ///     Ok(())
 /// }
 /// ```
-#[derive(Debug)]
 pub struct QuiverEngineBuilder {
     config: QuiverConfig,
     budget: Option<Arc<crate::budget::DiskBudget>>,
+    wal_item_counter: Option<WalItemCounter>,
+}
+
+impl std::fmt::Debug for QuiverEngineBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuiverEngineBuilder")
+            .field("config", &self.config)
+            .field("budget", &self.budget)
+            .field(
+                "wal_item_counter",
+                &self.wal_item_counter.as_ref().map(|_| "<counter>"),
+            )
+            .finish()
+    }
 }
 
 impl QuiverEngineBuilder {
@@ -212,6 +228,7 @@ impl QuiverEngineBuilder {
         Self {
             config,
             budget: None,
+            wal_item_counter: None,
         }
     }
 
@@ -226,6 +243,13 @@ impl QuiverEngineBuilder {
         self
     }
 
+    /// Sets the counter used to recover exact item counts for expired WAL bundles.
+    #[must_use]
+    pub fn with_wal_item_counter(mut self, counter: WalItemCounter) -> Self {
+        self.wal_item_counter = Some(counter);
+        self
+    }
+
     /// Builds the engine asynchronously, returning an `Arc<QuiverEngine>`.
     ///
     /// # Errors
@@ -236,7 +260,7 @@ impl QuiverEngineBuilder {
         let budget = self
             .budget
             .unwrap_or_else(|| Arc::new(crate::budget::DiskBudget::unlimited()));
-        QuiverEngine::open(self.config, budget).await
+        QuiverEngine::open_with_wal_item_counter(self.config, budget, self.wal_item_counter).await
     }
 }
 
@@ -282,6 +306,14 @@ impl QuiverEngine {
     pub async fn open(
         config: QuiverConfig,
         budget: Arc<crate::budget::DiskBudget>,
+    ) -> Result<Arc<Self>> {
+        Self::open_with_wal_item_counter(config, budget, None).await
+    }
+
+    async fn open_with_wal_item_counter(
+        config: QuiverConfig,
+        budget: Arc<crate::budget::DiskBudget>,
+        wal_item_counter: Option<WalItemCounter>,
     ) -> Result<Arc<Self>> {
         config.validate()?;
 
@@ -362,19 +394,16 @@ impl QuiverEngine {
             budget.clone(),
         ));
 
-        // Scan for existing segments from previous runs (recovery).
-        // Pass max_age to skip loading segments that are already expired -
-        // they'll be deleted during scan without the overhead of parsing them.
+        // Scan for existing segments from previous runs. Expired segments are
+        // validated and accounted for before deletion, but are not registered.
         let mut next_segment_seq = 0u64;
         let mut deleted_during_scan = Vec::new();
+        let mut startup_expired = RetentionLossCounts::default();
+        let mut startup_expired_items_by_shape = HashMap::new();
         match segment_store.scan_existing_with_max_age(config.retention.max_age) {
             Ok(scan_result) => {
-                // Determine next sequence from the highest loaded OR deleted segment.
-                // This prevents sequence reuse when all segments are expired and deleted.
-                let highest_found = scan_result.found.last().map(|(seq, _)| seq.raw());
-                let highest_deleted = scan_result.deleted.last().map(|seq| seq.raw());
-                if let Some(highest) = highest_found.into_iter().chain(highest_deleted).max() {
-                    next_segment_seq = highest + 1;
+                if let Some(highest) = scan_result.highest_seen {
+                    next_segment_seq = highest.raw() + 1;
                 }
 
                 if !scan_result.found.is_empty() {
@@ -392,7 +421,18 @@ impl QuiverEngine {
                         next_segment_seq,
                     );
                 }
-                deleted_during_scan = scan_result.deleted;
+                for (seq, bytes, summary) in scan_result.deleted {
+                    startup_expired.segments += 1;
+                    startup_expired.bytes += bytes;
+                    if let Some(summary) = summary {
+                        startup_expired.bundles += summary.bundles;
+                        startup_expired.items += summary.items;
+                        for (shape, items) in summary.items_by_shape {
+                            *startup_expired_items_by_shape.entry(shape).or_insert(0) += items;
+                        }
+                    }
+                    deleted_during_scan.push(seq);
+                }
             }
             Err(e) => {
                 otel_error!(
@@ -440,11 +480,11 @@ impl QuiverEngine {
             force_dropped_items: AtomicU64::new(0),
             force_dropped_bytes: AtomicU64::new(0),
             dropped_items_by_shape: RwLock::new(HashMap::new()),
-            expired_segments: AtomicU64::new(0),
-            expired_bundles: AtomicU64::new(0),
-            expired_items: AtomicU64::new(0),
-            expired_bytes: AtomicU64::new(0),
-            expired_items_by_shape: RwLock::new(HashMap::new()),
+            expired_segments: AtomicU64::new(startup_expired.segments),
+            expired_bundles: AtomicU64::new(startup_expired.bundles),
+            expired_items: AtomicU64::new(startup_expired.items),
+            expired_bytes: AtomicU64::new(startup_expired.bytes),
+            expired_items_by_shape: RwLock::new(startup_expired_items_by_shape),
             segment_store,
             registry: registry.clone(),
             budget: budget.clone(),
@@ -461,7 +501,7 @@ impl QuiverEngine {
 
         // Replay WAL entries that weren't finalized to segments before shutdown/crash
         // This uses the same ingest path as live ingestion (minus WAL writes)
-        let replayed = engine.replay_wal().await?;
+        let replayed = engine.replay_wal(wal_item_counter.as_ref()).await?;
         if replayed > 0 {
             otel_info!("quiver.wal.replay", replayed,);
         }
@@ -773,7 +813,7 @@ impl QuiverEngine {
     ///
     /// The number of WAL entries replayed.
     #[must_use = "the replay count indicates recovery status and should be logged"]
-    async fn replay_wal(&self) -> Result<usize> {
+    async fn replay_wal(&self, wal_item_counter: Option<&WalItemCounter>) -> Result<usize> {
         let wal_path = wal_path(&self.config);
 
         // Load cursor sidecar to find where we left off
@@ -932,6 +972,47 @@ impl QuiverEngine {
                 };
                 if entry_time < cutoff {
                     skipped_expired += 1;
+                    if let Some(counter) = wal_item_counter {
+                        match ReplayBundle::from_wal_entry(&entry) {
+                            Some(bundle) => match counter(&bundle) {
+                                Some(item_count) => {
+                                    let _ =
+                                        self.expired_items.fetch_add(item_count, Ordering::Relaxed);
+                                    if item_count > 0 {
+                                        let mut slot_ids = entry
+                                            .slots
+                                            .iter()
+                                            .map(|slot| slot.slot_id)
+                                            .collect::<Vec<_>>();
+                                        slot_ids.sort_unstable();
+                                        *self
+                                            .expired_items_by_shape
+                                            .write()
+                                            .entry(slot_ids)
+                                            .or_insert(0) += item_count;
+                                    }
+                                }
+                                None => {
+                                    otel_warn!(
+                                        "quiver.wal.expiry.accounting",
+                                        sequence = entry.sequence,
+                                        slot_count = entry.slots.len(),
+                                        reason = "item_count_unavailable",
+                                        message = "deleting expired WAL entry without item loss accounting because the item counter returned no count",
+                                    );
+                                }
+                            },
+                            None => {
+                                otel_warn!(
+                                    "quiver.wal.expiry.accounting",
+                                    sequence = entry.sequence,
+                                    slot_count = entry.slots.len(),
+                                    reason = "decode_failed",
+                                    message = "deleting expired WAL entry without item loss accounting because bundle decoding failed",
+                                );
+                            }
+                        }
+                    }
                     // Advance cursor past this entry so it won't be retried.
                     let cursor = WalConsumerCursor::after(&entry);
                     {
@@ -943,7 +1024,7 @@ impl QuiverEngine {
             }
 
             // Decode WAL entry into a ReplayBundle
-            let bundle = match ReplayBundle::from_wal_entry(&entry) {
+            let mut bundle = match ReplayBundle::from_wal_entry(&entry) {
                 Some(b) => b,
                 None => {
                     // Decode failure logged by from_wal_entry with slot details
@@ -962,6 +1043,21 @@ impl QuiverEngine {
                     continue;
                 }
             };
+
+            if let Some(counter) = wal_item_counter {
+                match counter(&bundle) {
+                    Some(item_count) => bundle.set_item_count(item_count),
+                    None => {
+                        otel_warn!(
+                            "quiver.wal.replay.accounting",
+                            sequence = entry.sequence,
+                            slot_count = entry.slots.len(),
+                            reason = "item_count_unavailable",
+                            message = "replaying WAL entry without an item count; future segment loss accounting may be incomplete",
+                        );
+                    }
+                }
+            }
 
             // Replay through the normal ingest path (minus WAL write)
             let cursor = WalConsumerCursor::after(&entry);
@@ -1921,6 +2017,10 @@ mod tests {
                 None
             }
         }
+
+        fn item_count(&self) -> u64 {
+            self.batch.num_rows() as u64
+        }
     }
 
     /// A bundle wrapper that returns a fixed ingestion time instead of `now()`.
@@ -1950,6 +2050,10 @@ mod tests {
 
         fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
             self.inner.payload(slot)
+        }
+
+        fn item_count(&self) -> u64 {
+            self.inner.item_count()
         }
     }
 
@@ -4663,12 +4767,10 @@ mod tests {
         );
     }
 
-    /// Test that expired segments are deleted during startup scan without loading them.
-    ///
-    /// This verifies that `scan_existing_with_max_age()` deletes expired segments
-    /// based on file mtime alone, without the overhead of opening and parsing them.
+    /// Scenario: Finalized segments expire while the engine is stopped.
+    /// Guarantees: Startup deletion reports exact expired segment, bundle, item, and slot totals.
     #[tokio::test]
-    async fn startup_deletes_expired_segments_without_loading() {
+    async fn startup_deletes_expired_segments_with_exact_loss() {
         let dir = tempdir().expect("tempdir");
 
         // Phase 1: Create segments with a long max_age config
@@ -4686,6 +4788,7 @@ mod tests {
             .expect("config");
 
         let segments_created;
+        let expired_bytes;
         {
             let engine = QuiverEngine::open(config_long_age, test_budget())
                 .await
@@ -4700,6 +4803,17 @@ mod tests {
 
             segments_created = engine.segment_store().segment_count();
             assert!(segments_created >= 1, "should create at least one segment");
+            expired_bytes = engine
+                .segment_store()
+                .segment_sequences()
+                .into_iter()
+                .map(|seq| {
+                    engine
+                        .segment_store()
+                        .segment_file_size(seq)
+                        .expect("segment file size")
+                })
+                .sum::<u64>();
         }
 
         // Backdate segment files so they appear older than our short max_age
@@ -4724,6 +4838,97 @@ mod tests {
             engine2.segment_store().segment_count(),
             0,
             "expired segments should be deleted during startup, not loaded"
+        );
+
+        let loss = engine2.retention_loss_snapshot();
+        let expired_by_shape = engine2.drain_expired_items_by_shape();
+        assert_eq!(
+            (loss.expired, expired_by_shape),
+            (
+                RetentionLossCounts {
+                    segments: segments_created as u64,
+                    bundles: 5,
+                    items: 250,
+                    bytes: expired_bytes,
+                },
+                vec![(vec![SlotId::new(0)], 250)],
+            ),
+            "startup expiry should report the finalized data deleted during recovery"
+        );
+    }
+
+    /// Scenario: An expired finalized segment fails whole-file validation at startup.
+    /// Guarantees: Startup warns, deletes the file, and reports only the trusted segment loss.
+    #[tokio::test]
+    async fn startup_deletes_expired_corrupt_segment_without_item_totals() {
+        let dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).unwrap(),
+            ..Default::default()
+        };
+
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(segment_config.clone())
+                .build()
+                .expect("config");
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+            engine
+                .ingest(&DummyBundle::with_rows(50))
+                .await
+                .expect("ingest");
+            engine.flush().await.expect("flush");
+        }
+
+        let segment_path = fs::read_dir(dir.path().join("segments"))
+            .expect("read segments")
+            .map(|entry| entry.expect("entry").path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "qseg"))
+            .expect("segment file");
+        let segment_metadata = fs::metadata(&segment_path).expect("metadata");
+        let segment_bytes = segment_metadata.len();
+        let original_permissions = segment_metadata.permissions();
+        if original_permissions.readonly() {
+            let mut writable = original_permissions.clone();
+            #[allow(clippy::permissions_set_readonly_false)]
+            writable.set_readonly(false);
+            fs::set_permissions(&segment_path, writable).expect("make writable");
+        }
+        let mut bytes = fs::read(&segment_path).expect("read segment");
+        bytes[0] ^= 0xFF;
+        fs::write(&segment_path, bytes).expect("corrupt segment payload");
+        if original_permissions.readonly() {
+            fs::set_permissions(&segment_path, original_permissions).expect("restore permissions");
+        }
+        backdate_segment_files(dir.path(), Duration::from_secs(1));
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(segment_config)
+            .retention(RetentionConfig {
+                max_age: Some(Duration::from_millis(10)),
+            })
+            .build()
+            .expect("config");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        assert!(
+            !segment_path.exists(),
+            "corrupt expired segment should be deleted"
+        );
+        assert_eq!(
+            engine.retention_loss_snapshot().expired,
+            RetentionLossCounts {
+                segments: 1,
+                bundles: 0,
+                items: 0,
+                bytes: segment_bytes,
+            }
         );
     }
 
@@ -5295,10 +5500,10 @@ mod tests {
         );
     }
 
+    /// Scenario: WAL replay exceeds the segment threshold, then those finalized segments expire.
+    /// Guarantees: Replayed bundles retain exact item counts through later segment expiry.
     #[tokio::test]
-    async fn wal_replay_finalizes_segments_if_threshold_exceeded() {
-        // Test that WAL replay properly finalizes segments if the replayed data
-        // exceeds the segment size threshold
+    async fn wal_replay_finalized_segments_preserve_item_counts_for_expiry() {
         let dir = tempdir().expect("tempdir");
 
         // Segment threshold for replay: 5KB
@@ -5358,9 +5563,20 @@ mod tests {
             );
         }
 
+        let counter: WalItemCounter = Arc::new(|bundle| {
+            bundle
+                .payload(SlotId::new(0))
+                .map(|payload| payload.batch.num_rows() as u64)
+        });
+
         // Second run: reopen with SMALL segment size - replay should trigger finalization
+        let finalized_segment_count;
+        let finalized_segment_bytes;
         {
-            let engine = QuiverEngine::open(config, test_budget())
+            let engine = QuiverEngine::builder(config)
+                .with_budget(test_budget())
+                .with_wal_item_counter(Arc::clone(&counter))
+                .build()
                 .await
                 .expect("engine reopen");
 
@@ -5386,7 +5602,66 @@ mod tests {
                 bundles_remaining,
                 bundles_in_open_segment
             );
+
+            engine.flush().await.expect("finalize replay remainder");
+            finalized_segment_count = engine.segment_store().segment_count();
+            finalized_segment_bytes = engine
+                .segment_store()
+                .segment_sequences()
+                .into_iter()
+                .map(|seq| {
+                    engine
+                        .segment_store()
+                        .segment_file_size(seq)
+                        .expect("segment file size")
+                })
+                .sum::<u64>();
+            assert!(
+                finalized_segment_count >= segments_written as usize,
+                "flush should retain replay-finalized segments"
+            );
         }
+
+        backdate_segment_files(dir.path(), Duration::from_secs(1));
+
+        // Third run: expire the replay-finalized segments and verify their persisted counts.
+        let expiry_config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(replay_segment_threshold).unwrap(),
+                ..Default::default()
+            })
+            .retention(RetentionConfig {
+                max_age: Some(Duration::from_millis(10)),
+            })
+            .build()
+            .expect("expiry config");
+        let engine = QuiverEngine::builder(expiry_config)
+            .with_budget(test_budget())
+            .with_wal_item_counter(counter)
+            .build()
+            .await
+            .expect("expiry reopen");
+
+        assert_eq!(engine.segment_store().segment_count(), 0);
+        assert_eq!(
+            (
+                engine.retention_loss_snapshot().expired,
+                engine.drain_expired_items_by_shape(),
+            ),
+            (
+                RetentionLossCounts {
+                    segments: finalized_segment_count as u64,
+                    bundles: bundles_to_ingest as u64,
+                    items: (bundles_to_ingest * rows_per_bundle) as u64,
+                    bytes: finalized_segment_bytes,
+                },
+                vec![(
+                    vec![SlotId::new(0)],
+                    (bundles_to_ingest * rows_per_bundle) as u64,
+                )],
+            )
+        );
     }
 
     #[tokio::test]
@@ -5755,11 +6030,10 @@ mod tests {
         }
     }
 
+    /// Scenario: WAL-only bundles expire while the engine is stopped.
+    /// Guarantees: Replay skips expired bundles and reports their exact item and slot totals.
     #[tokio::test]
     async fn wal_replay_skips_expired_entries() {
-        // Test that WAL replay filters out entries older than max_age,
-        // preventing expired data from being replayed into new segments
-        // (which would reset its age and retain it longer than intended).
         let dir = tempdir().expect("tempdir");
 
         let max_age = Duration::from_secs(60); // 1 minute
@@ -5819,7 +6093,15 @@ mod tests {
                 .build()
                 .expect("config");
 
-            let engine = QuiverEngine::open(config, test_budget())
+            let counter: WalItemCounter = Arc::new(|bundle| {
+                bundle
+                    .payload(SlotId::new(0))
+                    .map(|payload| payload.batch.num_rows() as u64)
+            });
+            let engine = QuiverEngine::builder(config)
+                .with_budget(test_budget())
+                .with_wal_item_counter(counter)
+                .build()
                 .await
                 .expect("engine");
 
@@ -5831,11 +6113,21 @@ mod tests {
                 fresh_bundles, recovered
             );
 
-            // The expired_bundles counter should reflect the skipped entries
+            // The expired loss snapshot should reflect the skipped entries.
+            let loss = engine.retention_loss_snapshot();
+            let expired_by_shape = engine.drain_expired_items_by_shape();
             assert_eq!(
-                engine.expired_bundles(),
-                old_bundles as u64,
-                "expired_bundles counter should track skipped WAL entries"
+                (loss.expired, expired_by_shape),
+                (
+                    RetentionLossCounts {
+                        segments: 0,
+                        bundles: old_bundles as u64,
+                        items: (old_bundles * 10) as u64,
+                        bytes: 0,
+                    },
+                    vec![(vec![SlotId::new(0)], (old_bundles * 10) as u64)],
+                ),
+                "WAL startup expiry should report the skipped logical data"
             );
         }
     }
