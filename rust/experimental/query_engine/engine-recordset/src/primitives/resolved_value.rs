@@ -394,36 +394,7 @@ impl AsValue for ResolvedValue<'_> {
 impl Display for ResolvedValue<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("[")?;
-        match self.to_value() {
-            Value::Null => f.write_str("Null"),
-            Value::Array(a) => {
-                write!(f, "Array(Count={})", a.len())
-            }
-            Value::Map(m) => {
-                write!(f, "Map(Count={})", m.len())
-            }
-            Value::String(s) => {
-                f.write_str("String(")?;
-                let v = s.get_value();
-                if v.len() <= 32 {
-                    f.write_str(serde_json::to_string(&v).unwrap().as_str())?;
-                } else {
-                    write!(
-                        f,
-                        "{}",
-                        serde_json::to_string(&format!("{}...", &v[..32]))
-                            .unwrap()
-                            .as_str()
-                    )?;
-                }
-                f.write_str(")")
-            }
-            v => {
-                write!(f, "{}(", v.get_value_type())?;
-                v.fmt(f)?;
-                f.write_str(")")
-            }
-        }?;
+        self.to_value().diagnostic_fmt(f)?;
         f.write_str("]")
     }
 }
@@ -466,13 +437,13 @@ impl ArrayValue for List<'_> {
         Err("List does not support static access".to_string())
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
     ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
-            if !item_callback.next(index, value.to_value()) {
+            if !(item_callback)(index, value.to_value()) {
                 return false;
             }
         }
@@ -543,10 +514,10 @@ impl ArrayValue for ArraySlice<'_> {
             .get_static(self.range_start_inclusive + index)
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
     ) -> bool {
         let start = range
             .get_start_range_inclusize()
@@ -700,16 +671,15 @@ impl ArrayValue for Sequence<'_> {
         Err("Sequence does not support static access".to_string())
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
     ) -> bool {
         let len = self.len();
 
         let mut start = range.get_start_range_inclusize().unwrap_or(0);
         let mut end = range.get_end_range_exclusive().unwrap_or(len);
-        let mut index = 0;
 
         if end > len {
             panic!(
@@ -718,6 +688,13 @@ impl ArrayValue for Sequence<'_> {
             )
         }
 
+        let mut index = 0;
+        let mut cb = move |_, v| {
+            let r = (item_callback)(index, v);
+            index += 1;
+            r
+        };
+
         for v in &self.values {
             let len = usize::min(end, v.len());
             if len == 0 {
@@ -725,14 +702,7 @@ impl ArrayValue for Sequence<'_> {
             }
             if start < len {
                 let range = (start..len).into();
-                if !v.get_item_range(
-                    range,
-                    &mut IndexValueClosureCallback::new(|_, v| {
-                        let r = item_callback.next(index, v);
-                        index += 1;
-                        r
-                    }),
-                ) {
+                if !v.get_item_range(range, &mut cb) {
                     return false;
                 }
                 start = 0;
@@ -1071,10 +1041,10 @@ impl ArrayValue for ResolvedArrayValue<'_> {
         self.get_array().get_static(index)
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
     ) -> bool {
         self.get_array().get_item_range(range, item_callback)
     }
@@ -1234,7 +1204,7 @@ impl MapValue for ResolvedMapValue<'_> {
         self.get_map().get_static(key)
     }
 
-    fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(&str, Value<'a>) -> bool) -> bool {
         self.get_map().get_items(item_callback)
     }
 }
@@ -1264,14 +1234,11 @@ mod tests {
         fn run_test(v: &Sequence, range: ArrayRange, expected: &[Value]) {
             let mut items = 0;
 
-            assert!(v.get_item_range(
-                range,
-                &mut IndexValueClosureCallback::new(|i, v| {
-                    assert_eq!(expected[i], v);
-                    items += 1;
-                    true
-                }),
-            ));
+            assert!(v.get_item_range(range, &mut |i, v| {
+                assert_eq!(expected[i], v);
+                items += 1;
+                true
+            },));
 
             assert_eq!(expected.len(), items);
         }
@@ -1355,13 +1322,10 @@ mod tests {
     #[should_panic]
     fn test_sequence_get_item_range_panic() {
         fn run_test(v: &Sequence, range: ArrayRange, expected: &[Value]) {
-            v.get_item_range(
-                range,
-                &mut IndexValueClosureCallback::new(|i, v| {
-                    assert_eq!(expected[i], v);
-                    true
-                }),
-            );
+            v.get_item_range(range, &mut |i, v| {
+                assert_eq!(expected[i], v);
+                true
+            });
         }
 
         let sequence = Sequence::new(vec![

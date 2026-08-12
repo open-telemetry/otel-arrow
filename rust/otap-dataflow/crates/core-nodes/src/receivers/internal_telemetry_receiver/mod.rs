@@ -189,6 +189,7 @@ pub struct InternalTelemetryReceiver {
 
 /// Declares the internal telemetry receiver as a local receiver factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: INTERNAL_TELEMETRY_RECEIVER_URN,
@@ -870,7 +871,7 @@ mod tests {
 
             let mut admin_values = Vec::new();
             registry.visit_admin_metrics_and_reset(|_, _, metrics| {
-                admin_values.extend(metrics.map(|(_, value)| value));
+                admin_values.extend(metrics.map(|(_, value)| value.clone()));
             });
             assert_eq!(
                 admin_values,

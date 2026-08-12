@@ -88,13 +88,9 @@ where
             } else if value_type == ValueType::Null {
                 ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new("".into())))
             } else {
-                let mut string_value = None;
-                inner_value.convert_to_string(&mut |s| {
-                    string_value = Some(StringValueStorage::new(s.into()))
-                });
-                ResolvedValue::Computed(OwnedValue::String(
-                    string_value.expect("Inner value did not return a string"),
-                ))
+                ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(
+                    inner_value.convert_to_string().into(),
+                )))
             }
         }
         ValueType::TimeSpan => {

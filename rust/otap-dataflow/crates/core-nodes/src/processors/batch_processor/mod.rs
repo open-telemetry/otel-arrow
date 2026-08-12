@@ -1546,6 +1546,7 @@ where
 
 /// Register factory for OTAP batch processor
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
@@ -1654,10 +1655,10 @@ mod tests {
             if desc.name == set_name {
                 for (field, metric_value) in iter {
                     if field.name == metric_name
-                        && let otap_df_telemetry::metrics::MetricValue::Mmsc(snapshot) =
+                        && let otap_df_telemetry::metrics::MetricValue::Distribution(distribution) =
                             metric_value
                     {
-                        count = snapshot.count;
+                        count = distribution.count();
                     }
                 }
             }

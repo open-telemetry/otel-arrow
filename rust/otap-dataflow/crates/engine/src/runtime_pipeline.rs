@@ -186,6 +186,8 @@ pub struct RuntimePipeline<PData: Debug> {
     nodes: NodeDefs<PData, PipeNode>,
     /// Channel metrics handles collected during build.
     channel_metrics: Vec<ChannelMetricsHandle>,
+    /// Admission refusal metrics handles collected during node construction.
+    admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
 }
@@ -328,12 +330,20 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             extensions,
             nodes,
             channel_metrics: Default::default(),
+            admission_metrics: Default::default(),
             telemetry_policy,
         }
     }
 
     pub(crate) fn set_channel_metrics(&mut self, channel_metrics: Vec<ChannelMetricsHandle>) {
         self.channel_metrics = channel_metrics;
+    }
+
+    pub(crate) fn set_admission_metrics(
+        &mut self,
+        admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
+    ) {
+        self.admission_metrics = admission_metrics;
     }
 
     /// Returns the number of nodes in the pipeline.
@@ -377,6 +387,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             extensions,
             nodes: _nodes,
             channel_metrics,
+            admission_metrics,
             telemetry_policy,
         } = self;
 
@@ -801,6 +812,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let return_node_metric_handles = node_metric_handles.clone();
         let final_node_metric_handles = node_metric_handles.clone();
         let final_channel_metrics = channel_metrics.clone();
+        let final_admission_metrics = admission_metrics.clone();
         let final_metrics_reporter = metrics_reporter.clone();
         let manager_pipeline_context = pipeline_context.clone();
         let manager_metrics_reporter = metrics_reporter.clone();
@@ -823,6 +835,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 control_plane_metrics_flush_interval,
                 manager_telemetry_policy,
                 channel_metrics,
+                admission_metrics,
                 node_metric_handles,
                 manager_terminal_metrics_deadline,
             );
@@ -934,6 +947,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         final_channel_metrics
                             .iter()
                             .flat_map(ChannelMetricsHandle::terminal_snapshots),
+                    )
+                    .chain(
+                        final_admission_metrics
+                            .iter()
+                            .flat_map(|metrics| metrics.terminal_snapshots()),
                     );
                     report_metric_snapshots(
                         &final_metrics_reporter,

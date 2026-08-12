@@ -320,6 +320,8 @@ pub struct RuntimeCtrlMsgManager<PData> {
     control_plane_metrics_flush_interval: Duration,
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
+    /// Admission refusal metrics handles for periodic reporting.
+    admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
 
     /// Per-node metrics handles for recording consumed/produced outcomes.
     node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
@@ -351,6 +353,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         control_plane_metrics_flush_interval: Duration,
         telemetry_policy: TelemetryPolicy,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
+        admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
         terminal_metrics_deadline: TerminalMetricsDeadline,
     ) -> Self {
@@ -375,6 +378,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             metrics_reporter,
             control_plane_metrics_flush_interval,
             channel_metrics,
+            admission_metrics,
             node_metric_handles,
             telemetry: telemetry_policy,
             pending_sends: VecDeque::new(),
@@ -933,6 +937,11 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             for metrics in &self.channel_metrics {
                 if let Err(err) = metrics.report(&mut self.metrics_reporter) {
                     otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
+                }
+            }
+            for metrics in &self.admission_metrics {
+                if let Err(err) = metrics.report(&mut self.metrics_reporter) {
+                    otel_warn!("admission.metrics.reporting.fail", error = err.to_string());
                 }
             }
         }
@@ -1551,6 +1560,7 @@ mod tests {
             TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             TelemetryPolicy::default(),
             Vec::new(),
+            Vec::new(),
             empty_node_metric_handles(),
             TerminalMetricsDeadline::default(),
         );
@@ -2029,6 +2039,7 @@ mod tests {
                     metrics_reporter,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    Vec::new(),
                     Vec::new(),
                     empty_node_metric_handles(),
                     TerminalMetricsDeadline::default(),
@@ -3373,6 +3384,7 @@ mod tests {
             TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             telemetry_policy.clone(),
             Vec::new(),
+            Vec::new(),
             node_metric_handles.clone(),
             TerminalMetricsDeadline::default(),
         );
@@ -3407,7 +3419,7 @@ mod tests {
                 .entry(label)
                 .and_modify(|existing| {
                     for (dst, src) in existing.iter_mut().zip(values.iter()) {
-                        dst.add_in_place(*src);
+                        dst.add_in_place(src);
                     }
                 })
                 .or_insert(values);
@@ -3417,28 +3429,30 @@ mod tests {
 
     /// Extract u64 from a MetricValue, panicking with context on mismatch.
     fn assert_u64(values: &[MetricValue], index: usize, expected: u64, msg: &str) {
-        match values[index] {
-            MetricValue::U64(v) => assert_eq!(v, expected, "{msg}"),
+        match &values[index] {
+            MetricValue::U64(v) => assert_eq!(*v, expected, "{msg}"),
             other => panic!("{msg}: expected U64, got {other:?}"),
         }
     }
 
     fn assert_u64_gte(values: &[MetricValue], index: usize, min: u64, msg: &str) {
-        match values[index] {
-            MetricValue::U64(v) => assert!(v >= min, "{msg}: expected >= {min}, got {v}"),
+        match &values[index] {
+            MetricValue::U64(v) => assert!(*v >= min, "{msg}: expected >= {min}, got {v}"),
             other => panic!("{msg}: expected U64, got {other:?}"),
         }
     }
 
-    /// Extract Mmsc from a MetricValue, returning the snapshot for further assertions.
-    fn assert_mmsc(
+    /// Extract the MMSC from a MetricValue for further assertions.
+    fn assert_dist_is_mmsc(
         values: &[MetricValue],
         index: usize,
         msg: &str,
-    ) -> otap_df_telemetry::instrument::MmscSnapshot {
-        match values[index] {
-            MetricValue::Mmsc(snap) => snap,
-            other => panic!("{msg}: expected Mmsc, got {other:?}"),
+    ) -> otap_df_telemetry::instrument::Mmsc {
+        match &values[index] {
+            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
+                mmsc,
+            )) => **mmsc,
+            other => panic!("{msg}: expected a basic-tier distribution, got {other:?}"),
         }
     }
 
@@ -3492,9 +3506,9 @@ mod tests {
         for values in iter {
             for (index, value) in values.iter().enumerate() {
                 if gauge_indices.contains(&index) {
-                    merged[index] = *value;
+                    merged[index] = value.clone();
                 } else {
-                    merged[index].add_in_place(*value);
+                    merged[index].add_in_place(value);
                 }
             }
         }
@@ -3619,6 +3633,7 @@ mod tests {
                 flow_metrics: Vec::new(),
             },
             Vec::new(),
+            Vec::new(),
             empty_node_metric_handles(),
             TerminalMetricsDeadline::default(),
         );
@@ -3697,6 +3712,7 @@ mod tests {
                 runtime_metrics: MetricLevel::None,
                 flow_metrics: Vec::new(),
             },
+            Vec::new(),
             Vec::new(),
             empty_node_metric_handles(),
             TerminalMetricsDeadline::default(),
@@ -3825,10 +3841,9 @@ mod tests {
     /// Build a TestPData with frames simulating a 3-node pipeline:
     /// receiver(node0) -> processor(node1) -> exporter(node2).
     ///
-    /// Frames are pushed bottom-to-top (receiver first, exporter last on top).
-    /// Frames carry per-signal item counts (Logs): the receiver produces 10,
-    /// the processor consumes 10 and produces 7 (simulating a filtering drop),
-    /// and the exporter consumes 7.
+    /// Frames are pushed bottom-to-top.  Frames carry per-signal item
+    /// counts: the receiver produces 10, the processor consumes 10
+    /// and produces 7, and the exporter consumes 7.
     fn build_3node_pdata(nodes: &[NodeId], with_timestamp: bool) -> TestPData {
         let mut pdata = TestPData::new();
         pdata.signal = Some(SignalType::Logs);
@@ -4102,7 +4117,7 @@ mod tests {
         assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
     }
 
-    /// Verify that consumed_duration_ns (Mmsc histogram) is recorded
+    /// Verify that consumed_duration_ns, an Mmsc histogram, is recorded
     /// when entry_time_ns > 0 and return_time_ns > 0.
     #[tokio::test]
     async fn test_ack_lifecycle_duration_histogram() {
@@ -4117,14 +4132,14 @@ mod tests {
 
         // Exporter consumed duration: 1 observation, min > 0
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
+        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
         assert_eq!(snap.count, 1, "Exporter should have 1 duration observation");
         assert!(snap.min > 0.0, "Duration min should be > 0");
         assert!(snap.max >= snap.min, "Duration max >= min");
 
         // Processor consumed duration: 1 observation, min > 0
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
         assert_eq!(
             snap.count, 1,
             "Processor should have 1 consumed duration observation"
@@ -4133,9 +4148,9 @@ mod tests {
 
         // Processor produced duration: should be 0 observations because the
         // processor frame has CONSUMER_METRICS, so produced_duration_ns is
-        // suppressed (one duration histogram per component).
+        // suppressed.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        let snap = assert_dist_is_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
         assert_eq!(
             snap.count, 0,
             "Processor should have 0 produced duration observations (suppressed by CONSUMER_METRICS)"
@@ -4157,9 +4172,8 @@ mod tests {
         .await;
 
         // Receiver produced duration: 1 observation, min > 0
-        // (producer-only frame, no CONSUMER_METRICS -> produced_duration recorded)
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
             snap.count, 1,
             "Receiver should have 1 produced duration observation"
@@ -4173,7 +4187,7 @@ mod tests {
         // Processor produced duration: 0 observations
         // (merged frame has CONSUMER_METRICS -> produced_duration suppressed)
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        let snap = assert_dist_is_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
         assert_eq!(
             snap.count, 0,
             "Processor should have 0 produced duration observations"
@@ -4181,7 +4195,7 @@ mod tests {
 
         // Processor consumed duration: 1 observation (still works)
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
         assert_eq!(
             snap.count, 1,
             "Processor should have 1 consumed duration observation"
@@ -4442,7 +4456,7 @@ mod tests {
 
         // Receiver produced duration: 0 observations (no timestamp)
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
             snap.count, 0,
             "No produced duration should be recorded when entry_time_ns == 0"
@@ -4462,14 +4476,14 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
+        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
         assert_eq!(
             snap.count, 0,
             "No duration should be recorded when entry_time_ns == 0"
         );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor duration");
+        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor duration");
         assert_eq!(
             snap.count, 0,
             "No duration should be recorded when entry_time_ns == 0"
@@ -4596,13 +4610,13 @@ mod tests {
         // From pass 1: exporter and processor consumer metrics are recorded.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
         assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
-        let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter consumed duration");
+        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter consumed duration");
         assert_eq!(snap.count, 1, "Exporter should have 1 consumed duration");
         assert!(snap.min > 0.0, "Exporter consumed duration > 0");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
         assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
-        let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
         assert_eq!(snap.count, 1, "Processor should have 1 consumed duration");
 
         // From pass 1: processor produced counter recorded.
@@ -4612,7 +4626,7 @@ mod tests {
         // From pass 2: receiver produced counter AND duration recorded.
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
         assert_u64(recv_p, PRODUCER_REQUESTS, 1, "Receiver produced requests");
-        let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
             snap.count, 1,
             "Receiver should have 1 produced duration observation from two-pass unwind"
@@ -4807,7 +4821,7 @@ mod tests {
                     1,
                     "downstream_shutdown.sent should increment once receivers are drained",
                 );
-                let receiver_phase = assert_mmsc(
+                let receiver_phase = assert_dist_is_mmsc(
                     &drain_finish_metrics,
                     RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS,
                     "receiver-phase duration",
@@ -4816,7 +4830,7 @@ mod tests {
                     receiver_phase.count, 1,
                     "receiver phase duration should record once"
                 );
-                let total_drain = assert_mmsc(
+                let total_drain = assert_dist_is_mmsc(
                     &drain_finish_metrics,
                     RUNTIME_DRAIN_TOTAL_DURATION_NS,
                     "total drain duration",
@@ -4902,7 +4916,7 @@ mod tests {
                     1,
                     "shutdown.deadline_forced should increment once",
                 );
-                let total_drain = assert_mmsc(
+                let total_drain = assert_dist_is_mmsc(
                     &forced_metrics,
                     RUNTIME_DRAIN_TOTAL_DURATION_NS,
                     "forced drain duration",
@@ -5509,7 +5523,7 @@ mod tests {
                     0,
                     "basic should suppress normal counters",
                 );
-                let receiver_phase = assert_mmsc(
+                let receiver_phase = assert_dist_is_mmsc(
                     &metrics,
                     RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS,
                     "basic receiver-phase duration",
@@ -5602,7 +5616,7 @@ mod tests {
                     1,
                     "normal should export downstream shutdown counter",
                 );
-                let total_drain = assert_mmsc(
+                let total_drain = assert_dist_is_mmsc(
                     &metrics,
                     RUNTIME_DRAIN_TOTAL_DURATION_NS,
                     "normal total drain duration",
@@ -5687,8 +5701,11 @@ mod tests {
                     0,
                     "ack.dropped_no_interest should stay at zero for interested unwind",
                 );
-                let unwind =
-                    assert_mmsc(&metrics, COMPLETION_UNWIND_DEPTH, "completion unwind depth");
+                let unwind = assert_dist_is_mmsc(
+                    &metrics,
+                    COMPLETION_UNWIND_DEPTH,
+                    "completion unwind depth",
+                );
                 assert_eq!(unwind.count, 1, "unwind depth should record one Ack unwind");
                 assert_eq!(
                     unwind.min, 2.0,
@@ -5770,7 +5787,7 @@ mod tests {
                     0,
                     "nack.dropped_no_interest should stay at zero for interested unwind",
                 );
-                let unwind = assert_mmsc(
+                let unwind = assert_dist_is_mmsc(
                     &metrics,
                     COMPLETION_UNWIND_DEPTH,
                     "normal completion unwind depth",
@@ -5935,7 +5952,7 @@ mod tests {
                     1,
                     "ack.dropped_no_interest should count uninterested unwinds",
                 );
-                let unwind = assert_mmsc(
+                let unwind = assert_dist_is_mmsc(
                     &metrics,
                     COMPLETION_UNWIND_DEPTH,
                     "dropped-no-interest unwind depth",
@@ -6060,7 +6077,7 @@ mod tests {
                     0,
                     "basic should suppress completion counters",
                 );
-                let unwind = assert_mmsc(
+                let unwind = assert_dist_is_mmsc(
                     &metrics,
                     COMPLETION_UNWIND_DEPTH,
                     "basic completion unwind depth",
@@ -6138,7 +6155,7 @@ mod tests {
                     1,
                     "normal should export completion delivered counters",
                 );
-                let unwind = assert_mmsc(
+                let unwind = assert_dist_is_mmsc(
                     &metrics,
                     COMPLETION_UNWIND_DEPTH,
                     "normal completion unwind depth",

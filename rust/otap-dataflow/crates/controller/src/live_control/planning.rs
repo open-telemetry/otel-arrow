@@ -363,6 +363,30 @@ impl<
         Ok(profiles)
     }
 
+    // The process-wide memory limiter owns a runtime pressure-monitoring task
+    // that is created during controller startup. Live reconciliation can replace
+    // pipelines, but it does not currently restart or reconfigure that task, so
+    // keep the pressure source immutable for live updates.
+    fn validate_live_memory_limiter_unchanged(
+        current_config: &OtelDataflowSpec,
+        desired_config: &OtelDataflowSpec,
+    ) -> Result<(), ControlPlaneError> {
+        let current = current_config
+            .policies
+            .resources()
+            .and_then(|resources| resources.memory_limiter.as_ref());
+        let desired = desired_config
+            .policies
+            .resources()
+            .and_then(|resources| resources.memory_limiter.as_ref());
+        if current != desired {
+            return Err(ControlPlaneError::InvalidRequest {
+                message: "request would require runtime memory_limiter mutation".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     /// Reserves, plans, and starts one explicit per-pipeline rollout.
     pub(super) fn request_reconfigure_pipeline(
         self: &Arc<Self>,
@@ -482,6 +506,7 @@ impl<
                 message: "request would require runtime topic broker mutation".to_owned(),
             });
         }
+        Self::validate_live_memory_limiter_unchanged(&live_config, &candidate_config)?;
 
         let resolved_pipeline = candidate_config
             .resolve()
@@ -1176,6 +1201,8 @@ impl<
     }
 
     fn apply_reconcile_success(&self, desired_config: &OtelDataflowSpec, delete_missing: bool) {
+        self.log_filter_handle
+            .apply(&desired_config.engine.telemetry.logs.level);
         let mut state = self
             .state
             .lock()
@@ -1621,6 +1648,7 @@ impl<
                 message: "desired config would require runtime topic broker mutation".to_owned(),
             });
         }
+        Self::validate_live_memory_limiter_unchanged(&live_config, &desired_config)?;
 
         let mut desired_keys = Vec::new();
         for (pipeline_group_id, group) in &desired_config.groups {

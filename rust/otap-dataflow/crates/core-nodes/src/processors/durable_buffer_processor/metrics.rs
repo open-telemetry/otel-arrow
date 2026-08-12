@@ -7,7 +7,7 @@ use otap_df_config::SignalType;
 use otap_df_engine::context::PipelineContext;
 use otap_df_telemetry::common_attributes::SignalAttributes;
 use otap_df_telemetry::error::Error;
-use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter};
+use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -124,7 +124,7 @@ pub(super) struct LossAttributes {
     pub(super) reason: LossReason,
 }
 
-/// Aggregate storage loss metrics partitioned by retention reason.
+/// Loss metrics partitioned by retention reason.
 #[metric_set(
     name = "processor.durable_buffer.loss",
     measurement_attributes = LossAttributes
@@ -133,13 +133,13 @@ pub(super) struct LossAttributes {
 pub(super) struct DurableBufferLossMetrics {
     /// Number of segments lost.
     #[metric(unit = "{segment}")]
-    pub(super) segments: ObserveCounter<u64>,
+    pub(super) segments: Counter<u64>,
     /// Number of bundles lost.
     #[metric(unit = "{bundle}")]
-    pub(super) bundles: ObserveCounter<u64>,
-    /// Number of items lost.
-    #[metric(unit = "{item}")]
-    pub(super) items: ObserveCounter<u64>,
+    pub(super) bundles: Counter<u64>,
+    /// Persisted segment bytes lost.
+    #[metric(unit = "By")]
+    pub(super) bytes: Counter<u64>,
 }
 
 #[attribute_set(item, measurement)]
@@ -151,11 +151,11 @@ pub(super) struct SignalLossAttributes {
 
 /// Item loss metrics partitioned by signal and retention reason.
 #[metric_set(
-    name = "processor.durable_buffer.item_loss",
+    name = "processor.durable_buffer.loss",
     measurement_attributes = SignalLossAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub(super) struct DurableBufferItemLossMetrics {
+pub(super) struct DurableBufferLossItemMetrics {
     /// Number of items lost.
     #[metric(unit = "{item}")]
     pub(super) items: Counter<u64>,
@@ -168,7 +168,7 @@ pub(super) struct DurableBufferMetrics {
     pub(super) ingest_metrics: MeasurementMetricSet<DurableBufferIngestMetrics>,
     pub(super) item_metrics: MeasurementMetricSet<DurableBufferItemMetrics>,
     pub(super) loss_metrics: MeasurementMetricSet<DurableBufferLossMetrics>,
-    pub(super) item_loss_metrics: MeasurementMetricSet<DurableBufferItemLossMetrics>,
+    pub(super) loss_item_metrics: MeasurementMetricSet<DurableBufferLossItemMetrics>,
 }
 
 impl DurableBufferMetrics {
@@ -179,7 +179,7 @@ impl DurableBufferMetrics {
             ingest_metrics: DurableBufferIngestMetrics::register(pipeline_ctx),
             item_metrics: DurableBufferItemMetrics::register(pipeline_ctx),
             loss_metrics: DurableBufferLossMetrics::register(pipeline_ctx),
-            item_loss_metrics: DurableBufferItemLossMetrics::register(pipeline_ctx),
+            loss_item_metrics: DurableBufferLossItemMetrics::register(pipeline_ctx),
         }
     }
 
@@ -190,7 +190,7 @@ impl DurableBufferMetrics {
             .and_then(|()| reporter.report_measurement(&mut self.ingest_metrics))
             .and_then(|()| reporter.report_measurement(&mut self.item_metrics))
             .and_then(|()| reporter.report_measurement(&mut self.loss_metrics))
-            .and_then(|()| reporter.report_measurement(&mut self.item_loss_metrics))
+            .and_then(|()| reporter.report_measurement(&mut self.loss_item_metrics))
     }
 
     pub(super) fn bundles_for(
@@ -214,12 +214,12 @@ impl DurableBufferMetrics {
         self.loss_metrics.with(LossAttributes { reason })
     }
 
-    pub(super) fn item_loss_for(
+    pub(super) fn loss_items_for(
         &mut self,
         signal: SignalType,
         reason: LossReason,
-    ) -> &mut DurableBufferItemLossMetrics {
-        self.item_loss_metrics
+    ) -> &mut DurableBufferLossItemMetrics {
+        self.loss_item_metrics
             .with(SignalLossAttributes { signal, reason })
     }
 }

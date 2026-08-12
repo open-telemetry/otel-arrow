@@ -110,8 +110,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `processor.durable_buffer.bundles` | `resolved` | `outcome=acked\|deferred\|permanently_rejected` |
 | `processor.durable_buffer.ingest` | `failures` | `failure=error\|backpressure` |
 | `processor.durable_buffer.items` | `rejected`, `consumed`, `produced`, `requeued`, `queued` | `signal=traces\|metrics\|logs` |
-| `processor.durable_buffer.loss` | `segments`, `bundles`, `items` | `reason=drop_oldest\|expired` |
-| `processor.durable_buffer.item_loss` | `items` | `signal=traces\|metrics\|logs`, `reason=drop_oldest\|expired` |
+| `processor.durable_buffer.loss` | `segments`, `bundles`, `bytes` | `reason=drop_oldest\|expired` |
+| `processor.durable_buffer.loss` | `items` | `signal=traces\|metrics\|logs`, `reason=drop_oldest\|expired` |
 
 ### Events
 

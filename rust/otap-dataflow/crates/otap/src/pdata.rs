@@ -425,6 +425,26 @@ impl Context {
     pub fn frames(&self) -> &[Frame] {
         &self.stack
     }
+
+    /// Clone the request-scoped metadata (transport headers, peer address) and
+    /// leave the Ack/Nack routing state behind.
+    ///
+    /// Frames are not copied: a processor that splits a batch parks the inbound
+    /// context and subscribes each outbound batch separately, so copied frames
+    /// would Ack the upstream node once per outbound batch. The flow_metric
+    /// accumulator is dropped for the same reason and must be redistributed by
+    /// the caller. The signal is left unset; the engine recaptures it from the
+    /// payload on the next metrics stamp.
+    #[must_use]
+    pub fn clone_detached(&self) -> Self {
+        Self {
+            stack: Vec::new(),
+            transport_headers: self.transport_headers.clone(),
+            peer_addr: self.peer_addr,
+            flow_compute_ns: None,
+            signal: None,
+        }
+    }
 }
 
 // Frame is defined in otap_df_engine::control (imported above).
@@ -638,13 +658,7 @@ impl OtapPdata {
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
-            context: Context {
-                stack: Vec::new(),
-                transport_headers: self.context.transport_headers.clone(),
-                peer_addr: self.context.peer_addr,
-                flow_compute_ns: None,
-                signal: None,
-            },
+            context: self.context.clone_detached(),
             payload: self.payload.clone(),
         }
     }
@@ -1060,6 +1074,7 @@ mod test {
     use crate::testing::{
         TestCallData, create_empty_test_pdata, create_test_pdata, next_ack, next_nack,
     };
+    use crate::transport_headers::TransportHeader;
     use otap_df_channel::mpsc::Channel as LocalChannel;
     use otap_df_engine::ConsumerEffectHandlerExtension;
     use otap_df_engine::control::{
@@ -2135,6 +2150,51 @@ mod test {
             next_nack(nack).is_none(),
             "reset context must not route nacks"
         );
+    }
+
+    /// Scenario: a context carrying transport headers, a peer address, Ack/Nack
+    /// subscribers, an active flow_metric accumulator and a captured signal is
+    /// detached to seed an outbound batch produced by splitting the inbound one.
+    /// Guarantees: the request-scoped metadata is copied while the frame stack,
+    /// flow accumulator and signal are left behind, so each outbound batch keeps
+    /// the originating request's metadata without re-Acking the upstream node.
+    #[test]
+    fn clone_detached_keeps_request_metadata_and_drops_routing_state() {
+        let addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::text("tenant", "x-tenant", "acme"));
+
+        let (test_data, pdata) = create_test();
+        let mut pdata = pdata
+            .test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 101)
+            .with_peer_addr(addr)
+            .with_transport_headers(headers.clone());
+        pdata.start_flow_metric();
+        pdata.add_flow_compute(42);
+
+        let (mut context, _payload) = pdata.into_parts();
+        context.capture_signal(SignalType::Logs);
+        assert!(context.has_subscribers(), "precondition: has subscribers");
+
+        let detached = context.clone_detached();
+
+        assert_eq!(detached.transport_headers(), Some(&headers));
+        assert_eq!(detached.peer_addr(), Some(addr));
+        assert!(
+            !detached.has_subscribers(),
+            "detached context must not inherit the inbound subscribers"
+        );
+        assert_eq!(detached.source_node(), None);
+        assert_eq!(
+            detached.flow_compute_ns, None,
+            "flow accumulation is distributed by the caller, not copied"
+        );
+        assert_eq!(detached.signal(), None);
+
+        // The source context is untouched: it stays parked in the split
+        // processor's slot map and Acks upstream once its outbounds settle.
+        assert!(context.has_subscribers());
+        assert_eq!(context.signal(), Some(SignalType::Logs));
     }
 
     // -----------------------------------------------------------------------

@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! The Azure Identity Auth extension: `Arc<Inner>` state, the
+//! The generic bearer-token provider extension: `Arc<Inner>` state, the
 //! `BearerTokenProvider` capability implementation, and the background refresh
 //! loop driven by the active `Extension::start()` task.
 
@@ -21,20 +21,16 @@ use otap_df_engine::extension::EffectHandler;
 use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_telemetry::otel_warn;
 use rand::RngExt;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
-use super::auth::Auth;
-use super::metrics::AzureIdentityAuthMetricsTracker;
+use super::metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
 
-/// Refresh this many seconds before `expires_on`.
-const TOKEN_EXPIRY_BUFFER_SECS: u64 = 299;
 /// Safety margin before actual expiry within which a cached token is treated as
-/// no longer usable. Deliberately much smaller than `TOKEN_EXPIRY_BUFFER_SECS`:
-/// the background loop refreshes ~5 min early, but if that refresh is failing a
-/// still-valid token should keep being served (not treated as unusable 5 min
+/// no longer usable. Deliberately much smaller than the refresh `expiry_buffer`:
+/// the background loop refreshes well ahead of expiry, but if that refresh is
+/// failing a still-valid token should keep being served (not treated as unusable
 /// early), which also avoids stampeding the token endpoint during a transient
 /// outage.
 const TOKEN_USABLE_MARGIN_SECS: u64 = 30;
@@ -55,56 +51,100 @@ const REFRESH_JITTER_SECS: u64 = 60;
 /// woken by control messages in the meantime.
 const NON_EXPIRING_REFRESH_SECS: u64 = 365 * 24 * 60 * 60;
 
-/// Shared, clonable Azure Identity Auth extension.
-///
-/// Every clone (consumers + the background refresh task) observes the same
-/// [`Inner`] state via `Arc`, so they share one token cache and refresh loop.
-#[derive(Clone)]
-pub struct AzureIdentityAuthExtension {
-    inner: Arc<Inner>,
+/// The provider-specific half of a bearer-token extension: how one token is
+/// acquired, and how an acquisition failure is logged.
+#[async_trait]
+pub trait TokenSource: Send + Sync + 'static {
+    /// Error returned by a failed acquisition.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Acquires a single token (no retries). Retry and scheduling policy belong
+    /// to the refresh loop, not to the source.
+    async fn fetch_token(&self) -> Result<BearerToken, Self::Error>;
+
+    /// Emits the source's "refresh failed" internal log event. Owned by the
+    /// source because `otel_warn!` requires a literal event name.
+    fn log_refresh_failure(&self, error: &Self::Error);
 }
 
-/// Shared state behind [`AzureIdentityAuthExtension`].
-struct Inner {
-    /// Azure credential + scope used to acquire tokens.
-    auth: Auth,
+/// Shared, clonable bearer-token provider extension.
+///
+/// Every clone (consumers + the background refresh task) observes the same
+/// `Inner` state via `Arc`, so they share one token cache and refresh loop.
+pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
+    inner: Arc<Inner<S, M>>,
+}
+
+// Manual `Clone`: deriving would add `S: Clone, M: Clone` bounds, but the state
+// is shared through the `Arc` and is never cloned itself.
+impl<S: TokenSource, M: TokenProviderMetrics> Clone for TokenProviderExtension<S, M> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+/// Failure bookkeeping shared by the background refresh loop and the slow-path
+/// `get_token`.
+///
+/// Keeping the streak counter here (rather than local to the refresh loop) is
+/// what lets the negative cache widen in step with the loop's retry backoff:
+/// otherwise a sustained outage would leave the loop retrying every 5 minutes
+/// while cache-miss callers kept probing the token endpoint every 10 seconds.
+#[derive(Default)]
+struct FailureState {
+    /// Instant of the most recent failed acquisition.
+    last_failure: Option<Instant>,
+    /// Number of consecutive failed acquisitions. Reset on any success.
+    consecutive_failures: u32,
+}
+
+/// Shared state behind [`TokenProviderExtension`].
+struct Inner<S: TokenSource, M: TokenProviderMetrics> {
+    /// Provider-specific token source.
+    source: S,
+    /// Refresh this far ahead of a token's expiry.
+    expiry_buffer: Duration,
     /// Token cache + pub/sub for `token_stream()`.
     tx: watch::Sender<Option<BearerToken>>,
     /// Pre-tagged capability error builder.
     cap_err: CapabilityErrorSource<BearerTokenProviderCap>,
     /// Coalesces concurrent slow-path fetches onto one in-flight request.
     fetch_lock: tokio::sync::Mutex<()>,
-    /// Instant of the most recent failed acquisition (negative cache). Used to
-    /// throttle slow-path retries so a failing token endpoint is not stampeded.
-    last_failure: Mutex<Option<Instant>>,
+    /// Negative cache + retry-backoff state. Used to throttle slow-path retries
+    /// so a failing token endpoint is not stampeded.
+    failures: Mutex<FailureState>,
     /// Metric tracker. Its critical sections are short and never span an
     /// `.await`, so a `std` `Mutex` is appropriate.
-    metrics: Mutex<AzureIdentityAuthMetricsTracker>,
+    metrics: Mutex<TokenProviderMetricsTracker<M>>,
 }
 
-impl AzureIdentityAuthExtension {
+impl<S: TokenSource, M: TokenProviderMetrics> TokenProviderExtension<S, M> {
     /// Builds a new extension instance.
     #[must_use]
     pub fn new(
         name: &str,
-        auth: Auth,
+        source: S,
+        expiry_buffer: Duration,
         tx: watch::Sender<Option<BearerToken>>,
-        metrics: AzureIdentityAuthMetricsTracker,
+        metrics: TokenProviderMetricsTracker<M>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
-                auth,
+                source,
+                expiry_buffer,
                 tx,
                 cap_err: CapabilityErrorSource::new(name.to_owned().into()),
                 fetch_lock: tokio::sync::Mutex::new(()),
-                last_failure: Mutex::new(None),
+                failures: Mutex::new(FailureState::default()),
                 metrics: Mutex::new(metrics),
             }),
         }
     }
 }
 
-impl Inner {
+impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
     /// Returns the cached token if it is present and still comfortably before
     /// its expiry (outside the usability safety margin).
     fn current_fresh_token(&self) -> Option<BearerToken> {
@@ -126,13 +166,14 @@ impl Inner {
         }
     }
 
-    /// Returns true if the most recent acquisition failed within the retry
-    /// cooldown window. Used as a negative cache to throttle slow-path retries.
+    /// Returns true if the most recent acquisition failed and the backoff for
+    /// the current failure streak has not yet elapsed. Used as a negative cache
+    /// to throttle slow-path retries.
     fn recently_failed(&self) -> bool {
-        // Open the shared box holding the last-failure timestamp. If the lock
-        // is somehow poisoned, treat it as "no recent failure" and allow a
-        // retry rather than failing here.
-        let guard = match self.last_failure.lock() {
+        // Open the shared box holding the failure state. If the lock is somehow
+        // poisoned, treat it as "no recent failure" and allow a retry rather
+        // than failing here.
+        let guard = match self.failures.lock() {
             Ok(guard) => guard,
             Err(_) => return false,
         };
@@ -140,16 +181,29 @@ impl Inner {
         // If a failure timestamp is recorded, we are throttling only while it
         // is still within the cooldown window; otherwise (no failure recorded)
         // we are not throttling.
-        match *guard {
-            Some(failed_at) => failed_at.elapsed() < Duration::from_secs(TOKEN_REFRESH_RETRY_SECS),
+        match guard.last_failure {
+            Some(failed_at) => {
+                let window = negative_cache_window_secs(guard.consecutive_failures);
+                failed_at.elapsed() < Duration::from_secs(window)
+            }
             None => false,
         }
     }
 
+    /// Number of consecutive failed acquisitions recorded so far.
+    fn consecutive_failures(&self) -> u32 {
+        // A poisoned lock degrades to "no failures", which only costs us a
+        // shorter backoff; it must not take the refresh loop down.
+        self.failures
+            .lock()
+            .map(|f| f.consecutive_failures)
+            .unwrap_or(0)
+    }
+
     /// Acquires a token and publishes it to consumers.
-    async fn refresh_once(&self) -> Result<BearerToken, super::error::Error> {
+    async fn refresh_once(&self) -> Result<BearerToken, S::Error> {
         let start = Instant::now();
-        match self.auth.get_token().await {
+        match self.source.fetch_token().await {
             Ok(token) => {
                 let latency_ms = start.elapsed().as_secs_f64() * 1_000.0;
                 // Publish the token to consumers and update the cache. Using
@@ -162,8 +216,8 @@ impl Inner {
                     metrics.record_publish();
                 }
                 // Clear the negative cache: acquisitions are healthy again.
-                if let Ok(mut f) = self.last_failure.lock() {
-                    *f = None;
+                if let Ok(mut failures) = self.failures.lock() {
+                    *failures = FailureState::default();
                 }
                 Ok(token)
             }
@@ -171,10 +225,12 @@ impl Inner {
                 if let Ok(mut metrics) = self.metrics.lock() {
                     metrics.record_failure();
                 }
-                // Record the failure instant so the slow path can throttle
-                // further attempts until the cooldown elapses.
-                if let Ok(mut f) = self.last_failure.lock() {
-                    *f = Some(Instant::now());
+                // Record the failure so the refresh loop and the slow path back
+                // off together: the instant starts the cooldown, the streak
+                // count widens it on each further failure.
+                if let Ok(mut failures) = self.failures.lock() {
+                    failures.last_failure = Some(Instant::now());
+                    failures.consecutive_failures = failures.consecutive_failures.saturating_add(1);
                 }
                 Err(err)
             }
@@ -184,17 +240,17 @@ impl Inner {
 
 /// Computes the next refresh instant from a freshly acquired token.
 ///
-/// Refreshes `TOKEN_EXPIRY_BUFFER_SECS` before expiry, but never sooner than
+/// Refreshes `expiry_buffer` before expiry, but never sooner than
 /// `MIN_TOKEN_REFRESH_INTERVAL_SECS` from now; a non-expiring token pushes the
 /// next refresh far into the future (the loop is still woken by control
 /// messages in the meantime).
-pub(crate) fn schedule_next(token: &BearerToken) -> tokio::time::Instant {
+pub(crate) fn schedule_next(token: &BearerToken, expiry_buffer: Duration) -> tokio::time::Instant {
     let now = tokio::time::Instant::now();
     let min_next = now + Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS);
     match token.expires_on() {
         Some(expires_on) => {
             let target = tokio::time::Instant::from_std(expires_on)
-                .checked_sub(Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS))
+                .checked_sub(expiry_buffer)
                 .unwrap_or(now);
             target.max(min_next)
         }
@@ -215,6 +271,22 @@ pub(crate) fn retry_backoff_secs(consecutive_failures: u32) -> u64 {
     TOKEN_REFRESH_RETRY_SECS
         .saturating_mul(1u64 << shift)
         .min(MAX_TOKEN_REFRESH_RETRY_SECS)
+}
+
+/// Cooldown window during which the slow path refuses to retry, given the
+/// number of consecutive failures recorded so far.
+///
+/// This is the same (un-jittered) delay the refresh loop is waiting out for the
+/// same streak, so a sustained outage throttles both paths identically instead
+/// of leaving cache-miss callers probing a token endpoint the loop has already
+/// backed off from. `consecutive_failures` counts the failure that *started*
+/// the current cooldown, so it is stepped back by one to line the first failure
+/// up with the base delay.
+///
+/// The loop's own sleep is jittered down to as little as half this window, so
+/// the loop always gets to retry before the slow path reopens.
+pub(crate) fn negative_cache_window_secs(consecutive_failures: u32) -> u64 {
+    retry_backoff_secs(consecutive_failures.saturating_sub(1))
 }
 
 /// Applies "equal jitter" to a backoff: half the delay is a fixed floor and the
@@ -255,7 +327,9 @@ pub(crate) fn jitter_refresh(target: tokio::time::Instant) -> tokio::time::Insta
 }
 
 #[async_trait]
-impl SharedBearerTokenProvider for AzureIdentityAuthExtension {
+impl<S: TokenSource, M: TokenProviderMetrics> SharedBearerTokenProvider
+    for TokenProviderExtension<S, M>
+{
     async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
         // Fast path: lock-free read of the watch cache.
         if let Some(token) = self.inner.current_fresh_token() {
@@ -263,8 +337,7 @@ impl SharedBearerTokenProvider for AzureIdentityAuthExtension {
         }
 
         // Slow path: coalesce concurrent cache-miss callers onto a single
-        // in-flight credential call, with a double-check after acquiring the
-        // lock.
+        // in-flight token call, with a double-check after acquiring the lock.
         let _guard = self.inner.fetch_lock.lock().await;
         if let Some(token) = self.inner.current_fresh_token() {
             return Ok(token);
@@ -296,7 +369,7 @@ impl SharedBearerTokenProvider for AzureIdentityAuthExtension {
 }
 
 #[async_trait]
-impl SharedExtension for AzureIdentityAuthExtension {
+impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderExtension<S, M> {
     async fn start(
         self: Box<Self>,
         mut ctrl: ControlChannel,
@@ -309,9 +382,6 @@ impl SharedExtension for AzureIdentityAuthExtension {
         // (see `with_readiness_probe`). Fire once, after the first token is
         // published, so consumers never observe an empty cache.
         let mut ready_signaled = false;
-        // Consecutive failed acquisitions; drives exponential retry backoff and
-        // is reset on any successful (or already-fresh) refresh.
-        let mut consecutive_failures: u32 = 0;
 
         loop {
             tokio::select! {
@@ -342,7 +412,7 @@ impl SharedExtension for AzureIdentityAuthExtension {
                     // The acquisition itself: take the same `fetch_lock` the
                     // slow-path `get_token` uses so a scheduled refresh and a
                     // concurrent cache-miss fetch coalesce onto one in-flight
-                    // credential call instead of both hitting the token endpoint.
+                    // token call instead of both hitting the token endpoint.
                     let refresh = async {
                         // Note the current cache version before contending for
                         // the lock so we can tell whether another caller
@@ -353,10 +423,10 @@ impl SharedExtension for AzureIdentityAuthExtension {
                         // Only coalesce when a concurrent slow-path `get_token`
                         // actually published a fresh token while we waited for
                         // the lock. We must NOT skip merely because the cached
-                        // token is still "usable": the loop refreshes ~5 min
-                        // before expiry, but a token stays usable until ~30 s
-                        // before expiry, so reusing it here would defer the
-                        // planned early refresh far too long.
+                        // token is still "usable": the loop refreshes ahead of
+                        // expiry, but a token stays usable until ~30 s before
+                        // expiry, so reusing it here would defer the planned
+                        // early refresh far too long.
                         if rx.has_changed().unwrap_or(false) {
                             if let Some(token) = inner.current_fresh_token() {
                                 return Ok(token);
@@ -402,24 +472,24 @@ impl SharedExtension for AzureIdentityAuthExtension {
 
                     match outcome {
                         Ok(token) => {
-                            consecutive_failures = 0;
-                            next_refresh = jitter_refresh(schedule_next(&token));
+                            next_refresh =
+                                jitter_refresh(schedule_next(&token, inner.expiry_buffer));
                             if !ready_signaled {
                                 effect_handler.signal_ready();
                                 ready_signaled = true;
                             }
                         }
                         Err(error) => {
-                            otel_warn!(
-                                "azure_identity_auth.token_refresh_failed",
-                                error = %error
-                            );
+                            inner.source.log_refresh_failure(&error);
                             // Bounded exponential backoff with jitter so many
                             // per-core extensions do not stampede the token
                             // endpoint on the same cadence during an outage.
-                            let backoff =
-                                jittered_backoff(retry_backoff_secs(consecutive_failures));
-                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            // The streak counter lives in `Inner` (already
+                            // incremented by `refresh_once`) so the slow-path
+                            // negative cache widens on the same schedule.
+                            let backoff = jittered_backoff(negative_cache_window_secs(
+                                inner.consecutive_failures(),
+                            ));
                             next_refresh = tokio::time::Instant::now() + backoff;
                         }
                     }
