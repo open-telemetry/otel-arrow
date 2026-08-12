@@ -1310,6 +1310,8 @@ groups:
         assert!(config.engine.custom.is_empty());
     }
 
+    /// Scenario: engine configuration omits all pipeline-local runtime settings.
+    /// Guarantees: no scheduler override or diagnostic histogram is enabled by default.
     #[test]
     fn local_runtime_event_interval_defaults_to_tokio_default() {
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
@@ -1322,6 +1324,8 @@ groups:
         assert!(!config.engine.runtime.local_runtime.poll_time_histogram);
     }
 
+    /// Scenario: YAML configures every supported pipeline-local runtime setting.
+    /// Guarantees: all explicit scheduler and diagnostic values deserialize unchanged.
     #[test]
     fn from_yaml_accepts_local_runtime_settings() {
         let yaml = r#"
@@ -1360,6 +1364,8 @@ groups:
         assert!(config.engine.runtime.local_runtime.poll_time_histogram);
     }
 
+    /// Scenario: YAML sets both numeric pipeline-local runtime settings to zero.
+    /// Guarantees: validation rejects the config and identifies both invalid setting paths.
     #[test]
     fn from_yaml_rejects_zero_local_runtime_intervals() {
         let yaml = r#"
