@@ -31,8 +31,8 @@ use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::otel_error;
 use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
+use otap_df_telemetry::{otel_error, otel_warn};
 use otap_df_telemetry_macros::AttributeEnum;
 use std::io::Write;
 use std::sync::Arc;
@@ -254,8 +254,8 @@ impl ConsoleExporter {
     async fn export(&self, payload: &OtapPayload) -> Result<(), ConsoleExportErrorType> {
         match payload.signal_type() {
             SignalType::Logs => self.export_logs(payload).await,
-            SignalType::Traces => self.export_traces(payload).await,
-            SignalType::Metrics => self.export_metrics(payload).await,
+            SignalType::Traces => self.unsupported_signal("traces"),
+            SignalType::Metrics => self.unsupported_signal("metrics"),
         }
     }
 
@@ -278,20 +278,11 @@ impl ConsoleExporter {
         }
     }
 
-    async fn export_traces(&self, _payload: &OtapPayload) -> Result<(), ConsoleExportErrorType> {
-        // TODO: Implement traces formatting.
-        otel_error!(
-            "console.traces.not_implemented",
-            message = "Traces formatting not yet implemented"
-        );
-        Err(ConsoleExportErrorType::UnsupportedSignal)
-    }
-
-    async fn export_metrics(&self, _payload: &OtapPayload) -> Result<(), ConsoleExportErrorType> {
-        // TODO: Implement metrics formatting.
-        otel_error!(
-            "console.metrics.not_implemented",
-            message = "Metrics formatting not yet implemented"
+    fn unsupported_signal(&self, signal: &'static str) -> Result<(), ConsoleExportErrorType> {
+        otel_warn!(
+            "console.message.unsupported_signal",
+            signal = signal,
+            message = "Console exporter supports logs only; use processor:debug followed by exporter:noop to inspect metrics or traces"
         );
         Err(ConsoleExportErrorType::UnsupportedSignal)
     }

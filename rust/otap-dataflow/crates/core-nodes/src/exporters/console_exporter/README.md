@@ -211,8 +211,7 @@ the actual console export result.
 | --- | --- | --- |
 | `console.logs_view.otlp_create_failed` | `error` | Failed to create an OTLP logs view for console output. |
 | `console.logs_view.otap_create_failed` | `error` | Failed to create an OTAP logs view for console output. |
-| `console.traces.not_implemented` | `error` | The exporter received traces, which are not currently rendered. |
-| `console.metrics.not_implemented` | `error` | The exporter received metrics, which are not currently rendered. |
+| `console.message.unsupported_signal` | `warn` | The exporter received an unsupported `metrics` or `traces` signal; use `processor:debug` followed by `exporter:noop` to inspect it. |
 | `console.format_failed` | `error` | Failed to format a payload for console output. |
 | `console.write_failed` | `error` | Failed to write rendered output to stdout. |
 
@@ -223,6 +222,8 @@ the actual console export result.
 - Formatting and writes are best effort. Payloads are ACKed after the export
   attempt, including when formatting or writing fails.
 - Traces and metrics are not currently rendered in either format.
+- To inspect traces or metrics, use `processor:debug` and terminate the pipeline
+  with `exporter:noop`.
 - OTAP views do not currently expose every scope field. In particular, scope
   name and version can be absent from `record_json` after conversion to OTAP,
   while scope attributes remain available.

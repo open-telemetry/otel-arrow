@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add bounded outcome and actionable error type metrics to the console exporter.
+note: Add bounded outcome and error type metrics to the console exporter, with actionable warnings for unsupported signals.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3300]
