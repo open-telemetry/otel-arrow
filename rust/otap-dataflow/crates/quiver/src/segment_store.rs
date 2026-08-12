@@ -112,8 +112,8 @@ struct SegmentHandle {
     reader: SegmentReader,
     /// Number of bundles in this segment.
     bundle_count: u32,
-    /// Total number of logical data items across all bundles.
-    total_item_count: u64,
+    /// Authoritative total number of logical data items across all bundles.
+    total_item_count: Option<u64>,
     /// Size of the segment file in bytes.
     file_size_bytes: u64,
     /// Time when the segment was finalized (from file modification time).
@@ -142,11 +142,11 @@ impl SegmentHandle {
         })?;
 
         let bundle_count = reader.manifest().len() as u32;
-        let total_item_count = reader
-            .manifest()
-            .iter()
-            .map(|entry| entry.item_count())
-            .sum::<u64>();
+        let total_item_count = reader.manifest().iter().try_fold(0u64, |total, entry| {
+            entry
+                .exact_item_count()
+                .and_then(|count| total.checked_add(count))
+        });
 
         Ok(Self {
             seq,
@@ -827,6 +827,18 @@ impl SegmentStore {
             .collect()
     }
 
+    /// Returns bundle count and authoritative item count for retention accounting.
+    pub(crate) fn retention_drop_counts(
+        &self,
+        segment_seq: SegmentSeq,
+    ) -> Result<(u32, Option<u64>)> {
+        let segments = self.segments.read();
+        let handle = segments
+            .get(&segment_seq)
+            .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))?;
+        Ok((handle.bundle_count, handle.total_item_count))
+    }
+
     /// Subtracts `offset` from every segment's `finalized_at` timestamp,
     /// making them appear older for expiration tests without sleeping.
     #[cfg(test)]
@@ -855,7 +867,7 @@ impl SegmentProvider for SegmentStore {
         let segments = self.segments.read();
         segments
             .get(&segment_seq)
-            .map(|h| h.total_item_count)
+            .map(|h| h.total_item_count.unwrap_or(0))
             .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))
     }
 
@@ -898,7 +910,7 @@ impl SegmentProvider for SegmentStore {
         let handle = segments
             .get(&segment_seq)
             .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))?;
-        Ok((handle.bundle_count, handle.total_item_count))
+        Ok((handle.bundle_count, handle.total_item_count.unwrap_or(0)))
     }
 
     fn read_bundle(&self, bundle_ref: BundleRef) -> Result<ReconstructedBundle> {

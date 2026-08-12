@@ -29,7 +29,7 @@ pub(crate) struct ReplayBundle {
     /// The ingestion timestamp from the WAL entry.
     ingestion_time: SystemTime,
     /// Logical item count recovered by the caller's WAL item counter.
-    item_count: u64,
+    item_count: Option<u64>,
     /// Decoded slots with their Arrow RecordBatch data.
     slots: Vec<ReplaySlot>,
 }
@@ -106,14 +106,14 @@ impl ReplayBundle {
         Some(Self {
             descriptor: BundleDescriptor::new(descriptors),
             ingestion_time,
-            item_count: 0,
+            item_count: None,
             slots,
         })
     }
 
     /// Sets the logical item count recovered by the caller's WAL item counter.
     pub(crate) const fn set_item_count(&mut self, item_count: u64) {
-        self.item_count = item_count;
+        self.item_count = Some(item_count);
     }
 }
 
@@ -137,7 +137,11 @@ impl RecordBundle for ReplayBundle {
     }
 
     fn item_count(&self) -> u64 {
-        self.item_count
+        self.item_count.unwrap_or(0)
+    }
+
+    fn item_count_is_known(&self) -> bool {
+        self.item_count.is_some()
     }
 }
 

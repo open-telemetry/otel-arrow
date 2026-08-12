@@ -59,12 +59,12 @@ use super::types::{
 };
 use crate::record_bundle::{ArrowPrimitive, SlotId};
 
-/// Exact logical loss represented by one finalized segment.
+/// Trusted logical loss metadata represented by one finalized segment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SegmentLossSummary {
     /// Number of bundles stored in the segment.
     pub bundles: u64,
-    /// Number of logical telemetry items stored in the segment.
+    /// Number of logical telemetry items, or 0 when exact counts are unavailable.
     pub items: u64,
     /// Logical item totals grouped by each bundle's sorted slot IDs.
     pub items_by_shape: Vec<(Vec<SlotId>, u64)>,
@@ -355,7 +355,7 @@ impl std::fmt::Debug for SegmentReader {
 }
 
 impl SegmentReader {
-    /// Opens and validates a segment, then recovers its exact logical loss.
+    /// Opens and validates a segment, then recovers its trusted logical loss metadata.
     pub(crate) fn read_loss_summary(
         path: impl AsRef<Path>,
     ) -> Result<SegmentLossSummary, SegmentError> {
@@ -363,7 +363,7 @@ impl SegmentReader {
         Self::loss_summary_from_reader(&reader)
     }
 
-    /// Memory-maps and validates a segment, then recovers its exact logical loss.
+    /// Memory-maps and validates a segment, then recovers its trusted logical loss metadata.
     #[cfg(feature = "mmap")]
     pub(crate) fn read_loss_summary_mmap(
         path: impl AsRef<Path>,
@@ -374,8 +374,9 @@ impl SegmentReader {
 
     fn loss_summary_from_reader(reader: &Self) -> Result<SegmentLossSummary, SegmentError> {
         if !reader.manifest_has_item_count {
-            return Err(SegmentError::InvalidFormat {
-                message: "segment manifest has no exact item counts".to_string(),
+            return Ok(SegmentLossSummary {
+                bundles: reader.manifest().len() as u64,
+                ..Default::default()
             });
         }
         Self::summarize_loss(&reader.streams, reader.manifest())
@@ -421,17 +422,24 @@ impl SegmentReader {
             }
             shape.sort_unstable();
 
-            items = items.checked_add(entry.item_count()).ok_or_else(|| {
-                SegmentError::InvalidFormat {
+            let item_count =
+                entry
+                    .exact_item_count()
+                    .ok_or_else(|| SegmentError::InvalidFormat {
+                        message: "segment manifest has no exact item counts".to_string(),
+                    })?;
+            items = items
+                .checked_add(item_count)
+                .ok_or_else(|| SegmentError::InvalidFormat {
                     message: "segment item count overflow".to_string(),
-                }
-            })?;
+                })?;
             let shape_items = items_by_shape.entry(shape).or_insert(0);
-            *shape_items = shape_items.checked_add(entry.item_count()).ok_or_else(|| {
-                SegmentError::InvalidFormat {
-                    message: "segment shape item count overflow".to_string(),
-                }
-            })?;
+            *shape_items =
+                shape_items
+                    .checked_add(item_count)
+                    .ok_or_else(|| SegmentError::InvalidFormat {
+                        message: "segment shape item count overflow".to_string(),
+                    })?;
         }
 
         let mut items_by_shape = items_by_shape.into_iter().collect::<Vec<_>>();
@@ -1002,7 +1010,7 @@ impl SegmentReader {
     /// Arrow IPC file with schema:
     ///
     /// - `bundle_index`: UInt32
-    /// - `item_count`: UInt64 (optional; defaults to 0 for legacy segments)
+    /// - `item_count`: nullable UInt64 (optional for legacy segments)
     /// - `slot_refs`: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
     ///
     /// Each row represents one [`ManifestEntry`] describing which stream chunks
@@ -1034,8 +1042,21 @@ impl SegmentReader {
             Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
 
         // item_count is optional for backward compatibility with legacy segments.
-        let item_counts: Option<Vec<u64>> =
-            Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "item_count").ok();
+        // Null values preserve bundles replayed without an authoritative count.
+        let item_counts = batch
+            .column_by_name("item_count")
+            .and_then(|column| column.as_primitive_opt::<arrow_array::types::UInt64Type>())
+            .map(|array| {
+                (0..array.len())
+                    .map(|index| {
+                        if array.is_null(index) {
+                            None
+                        } else {
+                            Some(array.value(index))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            });
 
         // Get the slot_refs list column
         let slot_refs_col =
@@ -1067,8 +1088,8 @@ impl SegmentReader {
 
         let mut entries = Vec::with_capacity(batch.num_rows());
         for (i, &bundle_index) in bundle_indices.iter().enumerate() {
-            let item_count = item_counts.as_ref().map(|counts| counts[i]).unwrap_or(0);
-            let mut entry = ManifestEntry::new(bundle_index, item_count);
+            let item_count = item_counts.as_ref().and_then(|counts| counts[i]);
+            let mut entry = ManifestEntry::new_with_item_count(bundle_index, item_count);
 
             // Get the struct array for this bundle's slot refs
             let slot_refs_for_bundle = slot_refs_list.value(i);
@@ -1124,7 +1145,10 @@ impl SegmentReader {
             entries.push(entry);
         }
 
-        Ok((entries, item_counts.is_some()))
+        let manifest_has_item_count = item_counts
+            .as_ref()
+            .is_some_and(|counts| counts.iter().all(Option::is_some));
+        Ok((entries, manifest_has_item_count))
     }
 
     /// Extracts a primitive column from a RecordBatch as a Vec.

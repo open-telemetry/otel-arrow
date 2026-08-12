@@ -1523,28 +1523,38 @@ impl QuiverEngine {
         let mut bytes_dropped: u64 = 0;
         for seq in &to_drop {
             // Count bundles and items before deleting (single lock acquisition)
-            if let Ok((bundles, items)) = self.segment_store.segment_drop_counts(*seq) {
-                bundles_dropped += bundles as u64;
-                items_dropped += items;
-            }
-            let file_size = self.segment_store.segment_file_size(*seq);
-            match self.segment_store.bundle_metadata(*seq) {
-                Ok(metadata) => {
-                    let mut map = self.dropped_items_by_shape.write();
-                    for bundle in metadata {
-                        let mut key = bundle.slot_ids;
-                        key.sort_unstable();
-                        *map.entry(key).or_insert(0) += bundle.item_count;
+            let has_exact_item_counts =
+                if let Ok((bundles, items)) = self.segment_store.retention_drop_counts(*seq) {
+                    bundles_dropped += bundles as u64;
+                    if let Some(items) = items {
+                        items_dropped += items;
+                        true
+                    } else {
+                        false
                     }
-                }
-                Err(e) => {
-                    otel_warn!(
-                        "quiver.segment.drop_metadata_failed",
-                        segment = seq.raw(),
-                        error = %e,
-                        error_type = "io",
-                        reason = "force_drop"
-                    );
+                } else {
+                    false
+                };
+            let file_size = self.segment_store.segment_file_size(*seq);
+            if has_exact_item_counts {
+                match self.segment_store.bundle_metadata(*seq) {
+                    Ok(metadata) => {
+                        let mut map = self.dropped_items_by_shape.write();
+                        for bundle in metadata {
+                            let mut key = bundle.slot_ids;
+                            key.sort_unstable();
+                            *map.entry(key).or_insert(0) += bundle.item_count;
+                        }
+                    }
+                    Err(e) => {
+                        otel_warn!(
+                            "quiver.segment.drop_metadata_failed",
+                            segment = seq.raw(),
+                            error = %e,
+                            error_type = "io",
+                            reason = "force_drop"
+                        );
+                    }
                 }
             }
             self.segment_store
@@ -1618,28 +1628,38 @@ impl QuiverEngine {
         let mut bytes_expired: u64 = 0;
         for seq in &expired_segments {
             // Count bundles and items before deleting (single lock acquisition)
-            if let Ok((bundles, items)) = self.segment_store.segment_drop_counts(*seq) {
-                bundles_expired += bundles as u64;
-                items_expired += items;
-            }
-            let file_size = self.segment_store.segment_file_size(*seq);
-            match self.segment_store.bundle_metadata(*seq) {
-                Ok(metadata) => {
-                    let mut map = self.expired_items_by_shape.write();
-                    for bundle in metadata {
-                        let mut key = bundle.slot_ids;
-                        key.sort_unstable();
-                        *map.entry(key).or_insert(0) += bundle.item_count;
+            let has_exact_item_counts =
+                if let Ok((bundles, items)) = self.segment_store.retention_drop_counts(*seq) {
+                    bundles_expired += bundles as u64;
+                    if let Some(items) = items {
+                        items_expired += items;
+                        true
+                    } else {
+                        false
                     }
-                }
-                Err(e) => {
-                    otel_warn!(
-                        "quiver.segment.drop_metadata_failed",
-                        segment = seq.raw(),
-                        error = %e,
-                        error_type = "io",
-                        reason = "expired"
-                    );
+                } else {
+                    false
+                };
+            let file_size = self.segment_store.segment_file_size(*seq);
+            if has_exact_item_counts {
+                match self.segment_store.bundle_metadata(*seq) {
+                    Ok(metadata) => {
+                        let mut map = self.expired_items_by_shape.write();
+                        for bundle in metadata {
+                            let mut key = bundle.slot_ids;
+                            key.sort_unstable();
+                            *map.entry(key).or_insert(0) += bundle.item_count;
+                        }
+                    }
+                    Err(e) => {
+                        otel_warn!(
+                            "quiver.segment.drop_metadata_failed",
+                            segment = seq.raw(),
+                            error = %e,
+                            error_type = "io",
+                            reason = "expired"
+                        );
+                    }
                 }
             }
 
@@ -5662,6 +5682,154 @@ mod tests {
                 )],
             )
         );
+    }
+
+    /// Scenario: A fresh WAL entry is replayed without an item counter and later expires.
+    /// Guarantees: Replay preserves the data while expiry reports bundles without inventing item totals.
+    #[tokio::test]
+    async fn wal_replay_without_item_counter_preserves_unknown_count() {
+        let dir = tempdir().expect("tempdir");
+        let wal_only_config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                max_open_duration: Duration::from_secs(3600),
+                ..Default::default()
+            })
+            .build()
+            .expect("WAL-only config");
+
+        {
+            let engine = QuiverEngine::open(wal_only_config, test_budget())
+                .await
+                .expect("initial engine");
+            engine
+                .ingest(&DummyBundle::with_rows(10))
+                .await
+                .expect("ingest");
+            assert_eq!(engine.total_segments_written(), 0);
+        }
+
+        let replay_config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(1).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("replay config");
+        let finalized_segment_bytes;
+        {
+            let engine = QuiverEngine::open(replay_config, test_budget())
+                .await
+                .expect("replay engine");
+            assert_eq!(engine.segment_store().segment_count(), 1);
+            finalized_segment_bytes = engine
+                .segment_store()
+                .segment_sequences()
+                .into_iter()
+                .map(|seq| {
+                    engine
+                        .segment_store()
+                        .segment_file_size(seq)
+                        .expect("segment file size")
+                })
+                .sum::<u64>();
+        }
+
+        backdate_segment_files(dir.path(), Duration::from_secs(1));
+
+        let expiry_config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .retention(RetentionConfig {
+                max_age: Some(Duration::from_millis(10)),
+            })
+            .build()
+            .expect("expiry config");
+        let engine = QuiverEngine::open(expiry_config, test_budget())
+            .await
+            .expect("expiry engine");
+
+        assert_eq!(engine.segment_store().segment_count(), 0);
+        assert_eq!(
+            engine.retention_loss_snapshot().expired,
+            RetentionLossCounts {
+                segments: 1,
+                bundles: 1,
+                items: 0,
+                bytes: finalized_segment_bytes,
+            }
+        );
+        assert!(engine.drain_expired_items_by_shape().is_empty());
+    }
+
+    /// Scenario: A replayed segment with an unknown item count expires while the engine is running.
+    /// Guarantees: Runtime retention reports the segment and bundle without inventing item or shape totals.
+    #[tokio::test]
+    async fn runtime_expiry_omits_unknown_replay_item_count() {
+        let dir = tempdir().expect("tempdir");
+        let wal_only_config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                max_open_duration: Duration::from_secs(3600),
+                ..Default::default()
+            })
+            .build()
+            .expect("WAL-only config");
+
+        {
+            let engine = QuiverEngine::open(wal_only_config, test_budget())
+                .await
+                .expect("initial engine");
+            engine
+                .ingest(&DummyBundle::with_rows(10))
+                .await
+                .expect("ingest");
+            assert_eq!(engine.total_segments_written(), 0);
+        }
+
+        let replay_config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(1).unwrap(),
+                ..Default::default()
+            })
+            .retention(RetentionConfig {
+                max_age: Some(Duration::from_secs(3600)),
+            })
+            .build()
+            .expect("replay config");
+        let engine = QuiverEngine::open(replay_config, test_budget())
+            .await
+            .expect("replay engine");
+        assert_eq!(engine.segment_store().segment_count(), 1);
+        let finalized_segment_bytes = engine
+            .segment_store()
+            .segment_sequences()
+            .into_iter()
+            .map(|seq| {
+                engine
+                    .segment_store()
+                    .segment_file_size(seq)
+                    .expect("segment file size")
+            })
+            .sum::<u64>();
+
+        engine
+            .segment_store()
+            .backdate_all_segments(Duration::from_secs(7200));
+        assert_eq!(engine.cleanup_expired_segments().expect("cleanup"), 1);
+        assert_eq!(
+            engine.retention_loss_snapshot().expired,
+            RetentionLossCounts {
+                segments: 1,
+                bundles: 1,
+                items: 0,
+                bytes: finalized_segment_bytes,
+            }
+        );
+        assert!(engine.drain_expired_items_by_shape().is_empty());
     }
 
     #[tokio::test]
