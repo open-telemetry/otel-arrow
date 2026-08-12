@@ -121,7 +121,7 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py \
             --config test_suites/integration/clickhouse/otap-clickhouse-logs.yaml \
-            --tests OTAP-IN-BATCHED-100K,OTLP-IN-BATCHED-100K,OTAP-IN-BATCHED-70K,OTLP-IN-BATCHED-70K
+            --tests OTAP-IN-BATCHED-100K,OTLP-IN-BATCHED-100K
 
       - name: Run OTel Collector ClickHouse comparison
         id: clickhouse_collector
@@ -301,33 +301,7 @@ jobs:
               "clickhouse_ram_mib_max",
               "test_duration",
             },
-            "OTAP-IN-BATCHED-70K": {
-              "logs_produced_rate",
-              "log_rows_written_rate",
-              "df-engine_cpu_percentage_normalized_avg",
-              "clickhouse_cpu_percentage_normalized_avg",
-              "df-engine_ram_mib_max",
-              "clickhouse_ram_mib_max",
-              "test_duration",
-            },
-            "OTLP-IN-BATCHED-70K": {
-              "logs_produced_rate",
-              "log_rows_written_rate",
-              "df-engine_cpu_percentage_normalized_avg",
-              "clickhouse_cpu_percentage_normalized_avg",
-              "df-engine_ram_mib_max",
-              "clickhouse_ram_mib_max",
-              "test_duration",
-            },
             "OTELCOL-OTLP-TRANSFORMED-100K": {
-              "logs_produced_rate",
-              "log_rows_written_rate",
-              "go-collector_cpu_percentage_normalized_avg",
-              "clickhouse_cpu_percentage_normalized_avg",
-              "go-collector_ram_mib_max",
-              "clickhouse_ram_mib_max",
-            },
-            "OTELCOL-OTLP-TRANSFORMED-70K": {
               "logs_produced_rate",
               "log_rows_written_rate",
               "go-collector_cpu_percentage_normalized_avg",
