@@ -100,13 +100,11 @@ by the exporter.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.otap.exports.duration` | `ns` | `signal`, `outcome` | End-to-end duration from yielding a batch to its terminal OTAP stream response. |
-| `exporter.otap.exports.duration.p50` | `ns` | `signal`, `outcome` | Median export response duration for the latest telemetry interval. |
-| `exporter.otap.exports.duration.p90` | `ns` | `signal`, `outcome` | 90th percentile export response duration for the latest telemetry interval. |
-| `exporter.otap.exports.duration.p99` | `ns` | `signal`, `outcome` | 99th percentile export response duration for the latest telemetry interval. |
+| `exporter.otap.exports.duration` | `ns` | `signal`, `outcome` | Distribution of end-to-end durations from yielding a batch to its terminal OTAP stream response. |
 
 `signal` is one of `traces`, `metrics`, or `logs`. The exporter emits the
-terminal `outcome` values `success` and `failure`.
+terminal `outcome` values `success` and `failure`. Export duration uses a
+bounded exponential histogram; query its distribution for latency quantiles.
 
 #### `exporter.otap.streams`
 

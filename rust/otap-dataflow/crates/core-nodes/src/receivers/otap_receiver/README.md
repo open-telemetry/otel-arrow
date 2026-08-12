@@ -66,6 +66,14 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
+#### `receiver.otap.batches`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otap.batches.started` | `{batch}` | `signal` | Number of batches admitted to the pipeline send path. |
+| `receiver.otap.batches.completed` | `{batch}` | `signal` | Number of admitted batches whose receiver work terminated. |
+| `receiver.otap.batches.payload_size` | `By` | `signal` | Protobuf-encoded batch bytes after gRPC transport decompression. |
+
 #### `receiver.otap.acknowledgements`
 
 | Metric | Unit | Attributes | Description |

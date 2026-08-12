@@ -36,10 +36,9 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
-use otap_df_telemetry::attributes::AttributeEnum;
 use otap_df_telemetry::common_attributes::{Outcome, SignalAttributes, SignalOutcomeAttributes};
 use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Gauge, Mmsc};
+use otap_df_telemetry::instrument::{HistogramNormal, Mmsc};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
@@ -79,16 +78,7 @@ type StreamBatch = (OtapPdata, OtapArrowRecords);
 pub struct OtapExporterExportMetrics {
     /// End-to-end duration from yielding a batch to its terminal OTAP stream response.
     #[metric(name = "duration", unit = "ns")]
-    pub duration_ns: Mmsc,
-    /// Median export response duration for the latest telemetry interval.
-    #[metric(name = "duration.p50", unit = "ns")]
-    pub duration_p50_ns: Gauge<f64>,
-    /// 90th percentile export response duration for the latest telemetry interval.
-    #[metric(name = "duration.p90", unit = "ns")]
-    pub duration_p90_ns: Gauge<f64>,
-    /// 99th percentile export response duration for the latest telemetry interval.
-    #[metric(name = "duration.p99", unit = "ns")]
-    pub duration_p99_ns: Gauge<f64>,
+    pub duration_ns: HistogramNormal,
 }
 
 /// OTAP stream work partitioned by signal.
@@ -126,80 +116,11 @@ fn elapsed_nanos(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1e9
 }
 
-#[derive(Debug, Default)]
-struct ExportLatencyWindow {
-    samples_ns: Vec<f64>,
-}
-
-impl ExportLatencyWindow {
-    #[inline]
-    fn record(&mut self, duration_ns: f64) {
-        self.samples_ns.push(duration_ns);
-    }
-
-    fn report_into(&mut self, metrics: &mut OtapExporterExportMetrics) {
-        debug_assert!(!self.samples_ns.is_empty());
-        self.samples_ns.sort_by(f64::total_cmp);
-        metrics
-            .duration_p50_ns
-            .set(Self::quantile_sorted(&self.samples_ns, 0.50));
-        metrics
-            .duration_p90_ns
-            .set(Self::quantile_sorted(&self.samples_ns, 0.90));
-        metrics
-            .duration_p99_ns
-            .set(Self::quantile_sorted(&self.samples_ns, 0.99));
-        self.samples_ns.clear();
-    }
-
-    fn quantile_sorted(samples_ns: &[f64], q: f64) -> f64 {
-        debug_assert!(!samples_ns.is_empty());
-        let len = samples_ns.len();
-        let index = ((len as f64 * q).ceil() as usize)
-            .saturating_sub(1)
-            .min(len - 1);
-        samples_ns[index]
-    }
-}
-
-const SIGNAL_TYPES: [SignalType; 3] = [SignalType::Traces, SignalType::Metrics, SignalType::Logs];
-const OUTCOMES: [Outcome; 3] = [Outcome::Success, Outcome::Failure, Outcome::Refused];
-const EXPORT_LATENCY_BUCKETS: usize =
-    <SignalType as AttributeEnum>::CARDINALITY * <Outcome as AttributeEnum>::CARDINALITY;
-
-#[derive(Debug, Default)]
-struct ExportLatencyWindows {
-    buckets: [ExportLatencyWindow; EXPORT_LATENCY_BUCKETS],
-}
-
-impl ExportLatencyWindows {
-    fn bucket_index(signal: SignalType, outcome: Outcome) -> usize {
-        signal.variant_index()
-            + <SignalType as AttributeEnum>::CARDINALITY * outcome.variant_index()
-    }
-
-    fn record(&mut self, signal: SignalType, outcome: Outcome, duration_ns: f64) {
-        self.buckets[Self::bucket_index(signal, outcome)].record(duration_ns);
-    }
-
-    fn report_into(&mut self, exports: &mut MeasurementMetricSet<OtapExporterExportMetrics>) {
-        for signal in SIGNAL_TYPES {
-            for outcome in OUTCOMES {
-                let window = &mut self.buckets[Self::bucket_index(signal, outcome)];
-                if !window.samples_ns.is_empty() {
-                    window.report_into(exports.with(SignalOutcomeAttributes { signal, outcome }));
-                }
-            }
-        }
-    }
-}
-
 /// Bounded-cardinality OTAP exporter metrics tracker.
 #[derive(Debug)]
 struct OtapExporterMetrics {
     exports: MeasurementMetricSet<OtapExporterExportMetrics>,
     streams: MeasurementMetricSet<OtapExporterStreamMetrics>,
-    export_latency_windows: ExportLatencyWindows,
 }
 
 impl OtapExporterMetrics {
@@ -207,7 +128,6 @@ impl OtapExporterMetrics {
         Self {
             exports: OtapExporterExportMetrics::register(pipeline_ctx),
             streams: OtapExporterStreamMetrics::register(pipeline_ctx),
-            export_latency_windows: ExportLatencyWindows::default(),
         }
     }
 
@@ -216,8 +136,6 @@ impl OtapExporterMetrics {
             .with(SignalOutcomeAttributes { signal, outcome })
             .duration_ns
             .record(duration_ns);
-        self.export_latency_windows
-            .record(signal, outcome, duration_ns);
     }
 
     fn record_stream_enqueue(&mut self, signal: SignalType, duration_ns: f64, depth: usize) {
@@ -246,13 +164,11 @@ impl OtapExporterMetrics {
     }
 
     fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
-        self.export_latency_windows.report_into(&mut self.exports);
         reporter.report_measurement(&mut self.exports)?;
         reporter.report_measurement(&mut self.streams)
     }
 
     fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        self.export_latency_windows.report_into(&mut self.exports);
         let mut snapshots = self.exports.terminal_snapshots();
         snapshots.extend(self.streams.terminal_snapshots());
         snapshots
@@ -1292,7 +1208,6 @@ async fn fail_correlated_pdata(
 
 #[cfg(test)]
 mod tests {
-    use crate::exporters::otap_exporter::ExportLatencyWindow;
     use crate::exporters::otap_exporter::OTAP_EXPORTER_URN;
     use crate::exporters::otap_exporter::OTAPExporter;
     use crate::exporters::otap_exporter::OtapExporterMetrics;
@@ -1337,6 +1252,7 @@ mod tests {
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
     use otap_df_telemetry::common_attributes::Outcome;
+    use otap_df_telemetry::descriptor::Instrument;
     use otap_df_telemetry::metrics::MetricSetSnapshot;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -1369,17 +1285,6 @@ mod tests {
             .into()
     }
 
-    /// Scenario: A telemetry interval contains a skewed set of export latency samples.
-    /// Guarantees: P50, P90, and P99 use the nearest-rank value from sorted samples.
-    #[test]
-    fn export_latency_quantile_uses_nearest_rank() {
-        let samples = [1.0, 2.0, 3.0, 4.0, 5.0, 100.0];
-
-        assert_eq!(ExportLatencyWindow::quantile_sorted(&samples, 0.50), 3.0);
-        assert_eq!(ExportLatencyWindow::quantile_sorted(&samples, 0.90), 100.0);
-        assert_eq!(ExportLatencyWindow::quantile_sorted(&samples, 0.99), 100.0);
-    }
-
     /// Scenario: OTAP export and stream timings are recorded for different signals and outcomes.
     /// Guarantees: Every timing remains isolated in its bounded enum-attribute bucket.
     #[test]
@@ -1399,7 +1304,7 @@ mod tests {
                 .exports_for(SignalType::Logs, Outcome::Success)
                 .duration_ns
                 .get()
-                .count,
+                .count(),
             1
         );
         assert_eq!(
@@ -1407,7 +1312,8 @@ mod tests {
                 .exports_for(SignalType::Logs, Outcome::Failure)
                 .duration_ns
                 .get()
-                .sum,
+                .summary()
+                .1,
             20.0
         );
         assert_eq!(
@@ -1415,7 +1321,7 @@ mod tests {
                 .exports_for(SignalType::Metrics, Outcome::Success)
                 .duration_ns
                 .get()
-                .count,
+                .count(),
             0
         );
         assert_eq!(
@@ -1455,6 +1361,7 @@ mod tests {
             snapshot.descriptor().name == "exporter.otap.exports"
                 && snapshot.measurement_attribute_value("signal") == Some("traces")
                 && snapshot.measurement_attribute_value("outcome") == Some("failure")
+                && snapshot.descriptor().metrics[0].instrument == Instrument::ExponentialHistogram
         }));
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "exporter.otap.streams"

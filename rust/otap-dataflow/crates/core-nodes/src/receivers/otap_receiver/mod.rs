@@ -16,7 +16,8 @@ use otap_df_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejection
 use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use otap_df_otap::otap_grpc::{
-    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, Settings,
+    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OtapReceiverTelemetry,
+    Settings,
 };
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
@@ -42,7 +43,8 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_traces_service_server::ArrowTracesServiceServer,
 };
 use otap_df_telemetry::common_attributes::{
-    Outcome, ReceiverRejectionAttributes, ReceiverRejectionErrorType, SignalOutcomeAttributes,
+    Outcome, ReceiverRejectionAttributes, ReceiverRejectionErrorType, SignalAttributes,
+    SignalOutcomeAttributes,
 };
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::Counter;
@@ -274,6 +276,24 @@ impl OTAPReceiver {
     }
 }
 
+/// Lifecycle and payload metrics for admitted OTAP batches.
+#[metric_set(
+    name = "receiver.otap.batches",
+    measurement_attributes = SignalAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct OtapBatchMetrics {
+    /// Number of batches admitted to the pipeline send path.
+    #[metric(unit = "{batch}")]
+    pub started: Counter<u64>,
+    /// Number of admitted batches whose receiver work terminated.
+    #[metric(unit = "{batch}")]
+    pub completed: Counter<u64>,
+    /// Protobuf-encoded batch bytes after gRPC transport decompression.
+    #[metric(unit = "By")]
+    pub payload_size: Counter<u64>,
+}
+
 /// OTAP acknowledgement routing results.
 #[metric_set(
     name = "receiver.otap.acknowledgements",
@@ -312,6 +332,7 @@ pub struct OtapTransportMetrics {
 
 /// Bounded-cardinality OTAP receiver metrics tracker.
 pub struct OtapReceiverMetrics {
+    batches: MeasurementMetricSet<OtapBatchMetrics>,
     acknowledgements: MeasurementMetricSet<OtapAcknowledgementMetrics>,
     rejections: MeasurementMetricSet<OtapRejectionMetrics>,
     transport: MetricSet<OtapTransportMetrics>,
@@ -328,10 +349,28 @@ impl OtapReceiverMetrics {
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
+            batches: OtapBatchMetrics::register(pipeline_ctx),
             acknowledgements: OtapAcknowledgementMetrics::register(pipeline_ctx),
             rejections: OtapRejectionMetrics::register(pipeline_ctx),
             transport: pipeline_ctx.register_metrics::<OtapTransportMetrics>(),
         }
+    }
+
+    /// Records an OTAP batch and its protobuf-encoded size after pipeline admission.
+    pub fn record_batch_admitted(&mut self, signal: SignalType, payload_bytes: u64) {
+        let batches = self.batches.with(SignalAttributes { signal });
+        batches.started.inc();
+        if payload_bytes > 0 {
+            batches.payload_size.add(payload_bytes);
+        }
+    }
+
+    /// Records termination of receiver work for an admitted OTAP batch.
+    pub fn record_batch_completed(&mut self, signal: SignalType) {
+        self.batches
+            .with(SignalAttributes { signal })
+            .completed
+            .inc();
     }
 
     /// Records the outcome of routing an acknowledgement response.
@@ -374,6 +413,12 @@ impl OtapReceiverMetrics {
             .get(SignalOutcomeAttributes { signal, outcome })
     }
 
+    /// Returns a batch lifecycle bucket for inspection without marking it for export.
+    #[must_use]
+    pub fn batches_for(&self, signal: SignalType) -> &OtapBatchMetrics {
+        self.batches.get(SignalAttributes { signal })
+    }
+
     /// Returns a rejection bucket for inspection without marking it for export.
     #[must_use]
     pub fn rejections_for(&self, error_type: ReceiverRejectionErrorType) -> &OtapRejectionMetrics {
@@ -383,6 +428,7 @@ impl OtapReceiverMetrics {
 
     /// Reports every touched OTAP receiver metric bucket.
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        reporter.report_measurement(&mut self.batches)?;
         reporter.report_measurement(&mut self.acknowledgements)?;
         reporter.report_measurement(&mut self.rejections)?;
         reporter.report(&mut self.transport)
@@ -390,7 +436,8 @@ impl OtapReceiverMetrics {
 
     /// Takes every touched OTAP receiver metric bucket for terminal handoff.
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        let mut snapshots = self.acknowledgements.terminal_snapshots();
+        let mut snapshots = self.batches.terminal_snapshots();
+        snapshots.extend(self.acknowledgements.terminal_snapshots());
         snapshots.extend(self.rejections.terminal_snapshots());
         if !self.transport.is_empty() {
             snapshots.extend(self.transport.terminal_snapshots());
@@ -418,6 +465,16 @@ impl ReceiverRejectionMetrics for SharedOtapReceiverMetrics {
 
     fn record_item_rejection(&self, error_type: ReceiverRejectionErrorType) {
         self.lock().record_batch_rejection(error_type);
+    }
+}
+
+impl OtapReceiverTelemetry for SharedOtapReceiverMetrics {
+    fn record_batch_admitted(&self, signal: SignalType, payload_bytes: u64) {
+        self.lock().record_batch_admitted(signal, payload_bytes);
+    }
+
+    fn record_batch_completed(&self, signal: SignalType) {
+        self.lock().record_batch_completed(signal);
     }
 }
 
@@ -476,7 +533,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 .get(),
             wait_for_result: self.config.wait_for_result,
             admission_state: self.admission_state.clone(),
-            receiver_rejection_metrics: Some(self.metrics.clone()),
+            receiver_metrics: Some(self.metrics.clone()),
         };
 
         //create services for the grpc server and clone the effect handler to pass message
@@ -1301,7 +1358,7 @@ mod tests {
         );
     }
 
-    /// Scenario: OTAP acknowledgements and stream/batch rejections span bounded dimensions.
+    /// Scenario: OTAP batch lifecycles, acknowledgements, and rejections span bounded dimensions.
     /// Guarantees: Counts remain isolated by signal, outcome, rejection scope, and error type.
     #[test]
     fn receiver_metrics_are_partitioned_by_context() {
@@ -1329,8 +1386,20 @@ mod tests {
             .metrics
             .lock()
             .record_acknowledgement(SignalType::Logs, Outcome::Success);
+        receiver
+            .metrics
+            .lock()
+            .record_batch_admitted(SignalType::Logs, 42);
+        receiver
+            .metrics
+            .lock()
+            .record_batch_completed(SignalType::Logs);
 
         let metrics = receiver.metrics.lock();
+        assert_eq!(metrics.batches_for(SignalType::Logs).started.get(), 1);
+        assert_eq!(metrics.batches_for(SignalType::Logs).completed.get(), 1);
+        assert_eq!(metrics.batches_for(SignalType::Logs).payload_size.get(), 42);
+        assert_eq!(metrics.batches_for(SignalType::Metrics).started.get(), 0);
         assert_eq!(
             metrics
                 .rejections_for(ReceiverRejectionErrorType::MemoryPressure)
@@ -1368,8 +1437,8 @@ mod tests {
         );
     }
 
-    /// Scenario: OTAP receiver metrics are transferred into terminal snapshots twice.
-    /// Guarantees: Touched buckets carry stable enum values once and are then cleared.
+    /// Scenario: OTAP receiver metric sets are transferred into terminal snapshots twice.
+    /// Guarantees: Touched lifecycle, acknowledgement, and rejection buckets emit once.
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
         let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
@@ -1379,11 +1448,17 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let mut metrics = OtapReceiverMetrics::register(&pipeline_ctx);
 
+        metrics.record_batch_admitted(SignalType::Traces, 64);
+        metrics.record_batch_completed(SignalType::Traces);
         metrics.record_acknowledgement(SignalType::Traces, Outcome::Refused);
         metrics.record_batch_rejection(ReceiverRejectionErrorType::InvalidRequest);
 
         let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots.len(), 3);
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.otap.batches"
+                && snapshot.measurement_attribute_value("signal") == Some("traces")
+        }));
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.otap.acknowledgements"
                 && snapshot.measurement_attribute_value("signal") == Some("traces")
