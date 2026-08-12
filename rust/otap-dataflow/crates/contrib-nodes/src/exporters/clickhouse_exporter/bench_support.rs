@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Benchmark-only access to the ClickHouse logs transformation implementations.
+//!
+//! Criterion benchmarks are compiled as separate crates, so they cannot access the exporter's
+//! crate-private transformers directly. This feature-gated bridge exposes only the operations
+//! needed to compare the generic and specialized implementations without making those
+//! implementation details part of the production API.
 
 use arrow::array::RecordBatch;
 use otap_df_pdata::OtapArrowRecords;

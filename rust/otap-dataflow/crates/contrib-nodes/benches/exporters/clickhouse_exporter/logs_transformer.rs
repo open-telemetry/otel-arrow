@@ -7,7 +7,7 @@ use std::hint::black_box;
 
 use arrow::ipc::writer::StreamWriter;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_contrib_nodes::exporters::clickhouse_exporter::benchmark::LogsTransformBenchmark;
+use otap_df_contrib_nodes::exporters::clickhouse_exporter::bench_support::LogsTransformBenchmark;
 use otap_df_pdata::testing::{fixtures, round_trip::encode_logs};
 
 const LOGS_PER_BATCH: usize = 8192;

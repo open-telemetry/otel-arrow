@@ -69,7 +69,7 @@ use crate::exporters::clickhouse_exporter::writer::ClickHouseWriter;
 mod arrays;
 #[cfg(feature = "clickhouse-exporter-bench")]
 #[doc(hidden)]
-pub mod benchmark;
+pub mod bench_support;
 mod config;
 mod consts;
 mod error;
