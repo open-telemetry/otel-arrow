@@ -61,7 +61,7 @@ impl MapValue for Resource {
         Ok(None)
     }
 
-    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(&str, Value<'a>) -> bool) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool {
         (item_callback)("Attributes", Value::Map(&self.attributes))
     }
 }
@@ -98,7 +98,7 @@ impl MapValue for InstrumentationScope {
         })
     }
 
-    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(&str, Value<'a>) -> bool) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool {
         if let Some(v) = &self.name {
             if !(item_callback)("Name", Value::String(v)) {
                 return false;
