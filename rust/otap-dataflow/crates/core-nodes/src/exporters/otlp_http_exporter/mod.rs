@@ -455,11 +455,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // may yet arrive, so nothing is dropped.
                     if let Some(a) = auth.as_ref() {
                         if !a.is_ready() {
-                            let mut nack = NackMsg::new(
+                            // `NackMsg::new` is retryable by construction.
+                            let nack = NackMsg::new(
                                 a.not_ready_reason(),
                                 OtapPdata::new(context, payload),
                             );
-                            nack.permanent = false;
                             _ = effect_handler.notify_nack(nack).await;
                             self.pdata_metrics
                                 .with(SignalOutcomeAttributes {

@@ -789,7 +789,6 @@ struct EncodedExport {
 
 /// Per-request gRPC metadata paired with the bearer token generation stamped
 /// into it, so a later `UNAUTHENTICATED` can be matched to the exact token used.
-#[derive(Default)]
 struct RequestMetadata {
     /// gRPC metadata built from static headers, the propagation policy, and the
     /// bearer token. `None` when there is nothing to send (zero overhead).
