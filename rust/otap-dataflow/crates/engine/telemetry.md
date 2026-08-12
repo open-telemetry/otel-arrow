@@ -10,12 +10,10 @@ emitted via `otel_*` log macros.
 | --- | --- | --- |
 | `engine.memory_rss` | Process resident memory (RSS) in bytes. | `crates/engine/src/engine_metrics.rs` |
 | `engine.cpu_utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | `crates/engine/src/engine_metrics.rs` |
-| `channel.sender.send.count` | Number of messages successfully sent to a channel. | `crates/engine/src/channel_metrics.rs` |
-| `channel.sender.send.error_full` | Number of send attempts that failed because the channel was full. | `crates/engine/src/channel_metrics.rs` |
-| `channel.sender.send.error_closed` | Number of send attempts that failed because the channel was closed. | `crates/engine/src/channel_metrics.rs` |
-| `channel.receiver.recv.count` | Number of messages successfully received from a channel. | `crates/engine/src/channel_metrics.rs` |
-| `channel.receiver.recv.error_empty` | Number of receive attempts when the channel was empty. | `crates/engine/src/channel_metrics.rs` |
-| `channel.receiver.recv.error_closed` | Number of receive attempts after the channel was closed. | `crates/engine/src/channel_metrics.rs` |
+| `channel.sender.messages` | Number of immediate send attempts, grouped by `outcome` and, for PData channels, `signal`. | `crates/engine/src/channel_metrics.rs` |
+| `channel.sender.failures` | Number of unsuccessful send attempts, grouped by `error.type` and, for PData channels, `signal`. | `crates/engine/src/channel_metrics.rs` |
+| `channel.receiver.messages` | Number of messages successfully dequeued, grouped by `signal` for PData channels. | `crates/engine/src/channel_metrics.rs` |
+| `channel.receiver.queue.depth` | Current number of messages buffered in the channel. | `crates/engine/src/channel_metrics.rs` |
 | `channel.receiver.capacity` | Configured channel buffer capacity. | `crates/engine/src/channel_metrics.rs` |
 | `node.consumer.consumed.duration` | Duration from entry until the corresponding ack or nack is routed, in nanoseconds (MMSC). | `crates/engine/src/channel_metrics.rs` |
 | `node.consumer.consumed.messages` | Messages consumed by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
@@ -61,6 +59,20 @@ emitted via `otel_*` log macros.
 | `tokio.runtime.io_driver_fd_registered_count` | Total file descriptors registered in Tokio I/O driver (`tokio_unstable`, `target_has_atomic = "64"`). | `crates/engine/src/pipeline_metrics.rs` |
 | `tokio.runtime.io_driver_fd_deregistered_count` | Total file descriptors deregistered in Tokio I/O driver (`tokio_unstable`, `target_has_atomic = "64"`). | `crates/engine/src/pipeline_metrics.rs` |
 | `tokio.runtime.io_driver_ready_count` | Total ready events processed by Tokio I/O driver (`tokio_unstable`, `target_has_atomic = "64"`). | `crates/engine/src/pipeline_metrics.rs` |
+
+### Channel metric semantics
+
+`channel.sender.messages` records every immediate send attempt. Use
+`outcome=success` for delivered channel throughput, `outcome=refused` for
+capacity backpressure, and `outcome=failure` for a closed receiver. The
+`channel.sender.failures` metric gives the actionable cause as
+`error.type=full` or `error.type=closed`.
+
+`channel.receiver.messages` records only successful dequeues. Empty polls are
+normal for non-blocking consumers, and closure is channel lifecycle state, so
+neither condition is counted as a receive error. Alert on sustained send
+failures, or on `channel.receiver.queue.depth / channel.receiver.capacity`
+remaining near one, rather than on empty receive attempts.
 
 ## Logs
 

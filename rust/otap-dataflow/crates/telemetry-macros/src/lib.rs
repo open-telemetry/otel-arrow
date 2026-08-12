@@ -612,12 +612,9 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 
                     unsafe {
                         INIT.call_once(|| {
-                            // Create a dummy instance to access composed descriptors
-                            let dummy = Self::default();
-
                             // Calculate total field count
                             let mut total_fields = #local_fields_len;
-                            #( total_fields += dummy.#composed_field_idents.descriptor().fields.len(); )*
+                            #( total_fields += self.#composed_field_idents.descriptor().fields.len(); )*
 
                             // Create a vector to hold all fields
                             let mut all_fields = ::std::vec::Vec::with_capacity(total_fields);
@@ -632,7 +629,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                             ]);
 
                             // Add fields from composed sets
-                            #( all_fields.extend_from_slice(dummy.#composed_field_idents.descriptor().fields); )*
+                            #( all_fields.extend_from_slice(self.#composed_field_idents.descriptor().fields); )*
 
                             // Leak the vector to get a 'static reference
                             let fields_slice: &'static [#field_path] = ::std::boxed::Box::leak(all_fields.into_boxed_slice());

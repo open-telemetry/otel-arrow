@@ -4,7 +4,8 @@
 //! Context providing general information on the current controller and the current pipeline.
 
 use crate::attributes::{
-    CustomAttributeSet, EngineAttributeSet, EngineEntityAttributeSet, ExtensionAttributeSet,
+    ChannelImplementation, ChannelKind, ChannelMode, ChannelType, CustomAttributeSet,
+    EngineAttributeSet, EngineEntityAttributeSet, ExtensionAttributeSet,
     ExtensionChannelAttributeSet, ExtensionScopeAttributeSet, NodeAttributeSet,
     NodeChannelAttributeSet, NodeWithCustomAttributeSet, NodeWithCustomTopicAttributeSet,
     NodeWithTopicAttributeSet, PipelineAttributeSet, config_map_to_telemetry,
@@ -638,19 +639,19 @@ impl PipelineContext {
         &self,
         channel_id: Cow<'static, str>,
         node_port: Cow<'static, str>,
-        channel_kind: &'static str,
-        channel_mode: &'static str,
-        channel_type: &'static str,
-        channel_impl: &'static str,
+        channel_kind: ChannelKind,
+        channel_mode: ChannelMode,
+        channel_type: ChannelType,
+        channel_impl: ChannelImplementation,
     ) -> NodeChannelAttributeSet {
         NodeChannelAttributeSet {
             node_attrs: self.node_attribute_set(),
             node_port,
             channel_id,
-            channel_kind: Cow::Borrowed(channel_kind),
-            channel_mode: Cow::Borrowed(channel_mode),
-            channel_type: Cow::Borrowed(channel_type),
-            channel_impl: Cow::Borrowed(channel_impl),
+            channel_kind,
+            channel_mode,
+            channel_type,
+            channel_impl,
         }
     }
 
@@ -660,10 +661,10 @@ impl PipelineContext {
         &self,
         channel_id: Cow<'static, str>,
         node_port: Cow<'static, str>,
-        channel_kind: &'static str,
-        channel_mode: &'static str,
-        channel_type: &'static str,
-        channel_impl: &'static str,
+        channel_kind: ChannelKind,
+        channel_mode: ChannelMode,
+        channel_type: ChannelType,
+        channel_impl: ChannelImplementation,
     ) -> EntityKey {
         let attrs = self.node_channel_attribute_set(
             channel_id,
@@ -919,14 +920,14 @@ impl ExtensionContext {
         extension_id: Cow<'static, str>,
         variant: crate::extension::wrapper::ExtensionVariant,
         channel_id: Cow<'static, str>,
-        channel_mode: &'static str,
-        channel_impl: &'static str,
+        channel_mode: ChannelMode,
+        channel_impl: ChannelImplementation,
     ) -> ExtensionChannelAttributeSet {
         ExtensionChannelAttributeSet {
             extension_attrs: self.extension_attribute_set(extension_id, variant),
             channel_id,
-            channel_mode: Cow::Borrowed(channel_mode),
-            channel_impl: Cow::Borrowed(channel_impl),
+            channel_mode,
+            channel_impl,
         }
     }
 
@@ -937,8 +938,8 @@ impl ExtensionContext {
         extension_id: Cow<'static, str>,
         variant: crate::extension::wrapper::ExtensionVariant,
         channel_id: Cow<'static, str>,
-        channel_mode: &'static str,
-        channel_impl: &'static str,
+        channel_mode: ChannelMode,
+        channel_impl: ChannelImplementation,
     ) -> EntityKey {
         let attrs = self.extension_channel_attribute_set(
             extension_id,
