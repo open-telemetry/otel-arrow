@@ -88,11 +88,11 @@ use arrow::array::{
     UInt16Array, UInt32Array,
 };
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Field, Schema, UInt8Type};
+use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::{OtapArrowRecords, schema::consts};
 
-use crate::exporters::clickhouse_exporter::arrays::StructColumnAccessor;
+use crate::exporters::clickhouse_exporter::arrays::{StructColumnAccessor, get_u16_array_opt};
 use crate::exporters::clickhouse_exporter::consts as ch_consts;
 use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
 use crate::exporters::clickhouse_exporter::transform::transform_attributes::{
@@ -187,7 +187,7 @@ impl LogsFastTransformer {
         }
 
         if let Some(attributes_batch) = log_attrs {
-            let Some(log_ids) = u16_column(logs, consts::ID) else {
+            let Some(log_ids) = fast_path_u16_column(logs, consts::ID) else {
                 return Ok(LogsFastTransform::NotApplicable(
                     "log id column is not UInt16",
                 ));
@@ -199,7 +199,7 @@ impl LogsFastTransformer {
 
         if let Some(compact) = resource_attrs.as_ref() {
             let Some(resource_ids) =
-                resource.and_then(|array| struct_u16_column(array, consts::ID))
+                resource.and_then(|array| fast_path_struct_u16_column(array, consts::ID))
             else {
                 return Ok(LogsFastTransform::NotApplicable(
                     "resource id column is not UInt16",
@@ -223,7 +223,8 @@ impl LogsFastTransformer {
         }
 
         if let Some(compact) = scope_attrs.as_ref() {
-            let Some(scope_ids) = scope.and_then(|array| struct_u16_column(array, consts::ID))
+            let Some(scope_ids) =
+                scope.and_then(|array| fast_path_struct_u16_column(array, consts::ID))
             else {
                 return Ok(LogsFastTransform::NotApplicable(
                     "scope id column is not UInt16",
@@ -304,18 +305,19 @@ impl LogsFastTransformer {
     }
 }
 
-fn u16_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a UInt16Array> {
-    batch
-        .column_by_name(name)?
-        .as_any()
-        .downcast_ref::<UInt16Array>()
+fn fast_path_u16_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a UInt16Array> {
+    // Missing and mistyped columns both mean that this specialized layout does not apply. The
+    // generic transformer remains responsible for deciding whether the input itself is invalid.
+    get_u16_array_opt(batch, name).ok().flatten()
 }
 
-fn struct_u16_column<'a>(array: &'a StructArray, name: &str) -> Option<&'a UInt16Array> {
-    array
-        .column_by_name(name)?
-        .as_any()
-        .downcast_ref::<UInt16Array>()
+fn fast_path_struct_u16_column<'a>(array: &'a StructArray, name: &str) -> Option<&'a UInt16Array> {
+    // Preserve the same applicability policy while delegating Arrow access and type checking to
+    // the exporter's shared accessor.
+    StructColumnAccessor::new(array)
+        .primitive_column_op::<UInt16Type>(name)
+        .ok()
+        .flatten()
 }
 
 fn grouped_attributes(
@@ -535,6 +537,53 @@ mod tests {
         };
 
         assert!(Arc::ptr_eq(first.schema_ref(), second.schema_ref()));
+    }
+
+    /// Scenario: a root log ID is present as UInt16, absent, or encoded with another type.
+    /// Guarantees: the shared accessor is reused while unsupported layouts remain fallback cases.
+    #[test]
+    fn root_log_id_accessor_preserves_fast_path_fallback_policy() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("valid_id", DataType::UInt16, false),
+                Field::new("wrong_id", DataType::UInt32, false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![7_u16])),
+                Arc::new(UInt32Array::from(vec![7_u32])),
+            ],
+        )
+        .expect("ID test batch");
+
+        assert_eq!(
+            fast_path_u16_column(&batch, "valid_id").map(|ids| ids.value(0)),
+            Some(7)
+        );
+        assert!(fast_path_u16_column(&batch, "missing_id").is_none());
+        assert!(fast_path_u16_column(&batch, "wrong_id").is_none());
+    }
+
+    /// Scenario: a resource or scope ID is present as UInt16, absent, or has another type.
+    /// Guarantees: nested ID access reuses StructColumnAccessor and preserves generic fallback.
+    #[test]
+    fn nested_parent_id_accessor_preserves_fast_path_fallback_policy() {
+        let array = StructArray::from(vec![
+            (
+                Arc::new(Field::new("valid_id", DataType::UInt16, false)),
+                Arc::new(UInt16Array::from(vec![11_u16])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("wrong_id", DataType::UInt32, false)),
+                Arc::new(UInt32Array::from(vec![11_u32])) as ArrayRef,
+            ),
+        ]);
+
+        assert_eq!(
+            fast_path_struct_u16_column(&array, "valid_id").map(|ids| ids.value(0)),
+            Some(11)
+        );
+        assert!(fast_path_struct_u16_column(&array, "missing_id").is_none());
+        assert!(fast_path_struct_u16_column(&array, "wrong_id").is_none());
     }
 
     /// Scenario: parent rows contain sparse, null, known, and unknown attribute IDs.
