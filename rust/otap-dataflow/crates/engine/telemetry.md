@@ -62,10 +62,11 @@ emitted via `otel_*` log macros.
 
 ### Channel metric semantics
 
-`channel.sender.messages` records every immediate send attempt. Use
-`outcome=success` for delivered channel throughput, `outcome=refused` for
-capacity backpressure, and `outcome=failure` for a closed receiver. The
-`channel.sender.failures` metric gives the actionable cause as
+`channel.sender.messages` records the terminal local result of each
+instrumented send operation. Use `outcome=success` for messages enqueued on the
+channel, `outcome=refused` for non-blocking sends rejected because the channel
+is full, and `outcome=failure` for sends rejected because the receiver is
+closed. The `channel.sender.failures` metric gives the actionable cause as
 `error.type=full` or `error.type=closed`.
 
 `channel.receiver.messages` records only successful dequeues. Empty polls are
@@ -73,6 +74,26 @@ normal for non-blocking consumers, and closure is channel lifecycle state, so
 neither condition is counted as a receive error. Alert on sustained send
 failures, or on `channel.receiver.queue.depth / channel.receiver.capacity`
 remaining near one, rather than on empty receive attempts.
+
+Channel metrics and node producer/consumer metrics observe different stages of
+a message's lifecycle:
+
+| Metric layer | Recorded when | Operational use |
+| --- | --- | --- |
+| `channel.sender` / `channel.receiver` | A forward-path send or receive operation completes. | Diagnose edge throughput, queue saturation, backpressure, and closed channels. |
+| `node.producer` / `node.consumer` | A terminal ACK or NACK unwinds through the node's route frame. | Attribute logical PData outcomes, durations, and item counts to nodes. |
+
+Do not aggregate `outcome` values across these layers as equivalent events. For
+channel metrics, `refused` means local capacity backpressure and `failure`
+means a closed receiver. For node metrics, `refused` means a permanent NACK and
+`failure` means a retryable NACK.
+
+On a healthy, drained, one-input/one-output path, successful channel send and
+receive counts and terminal node message counts are often close. They can
+differ while messages are queued or in flight, when a non-blocking send is
+rejected, after a downstream NACK, or when an operation is retried. Use channel
+metrics for transport health and node metrics for the eventual processing
+result.
 
 ## Logs
 
