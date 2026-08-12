@@ -324,9 +324,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         // usability; the loop below stays auth-agnostic -- it only asks whether
         // it may send and stamps the header the adapter hands back.
         let mut auth = self.token_provider.take().map(HttpBearerAuth::new);
-        // Constant for the whole run (the adapter is created once), so precompute
-        // it for the auth-aware retry decision in `finalize_completed_export`.
-        let auth_bound = auth.is_some();
 
         loop {
             // Admit pdata only when auth is ready (a usable token is cached, or no
@@ -389,7 +386,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             completed,
                             &effect_handler,
                             &mut self.pdata_metrics,
-                            auth_bound,
                         )
                         .await;
                         // Server rejected the token this request used (401); drop
@@ -420,7 +416,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 completed,
                                 &effect_handler,
                                 &mut self.pdata_metrics,
-                                auth_bound,
                             )
                             .await;
                             // Honor a 401 even while draining, so a later
@@ -594,7 +589,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     completed,
                                     &effect_handler,
                                     &mut self.pdata_metrics,
-                                    auth_bound,
                                 )
                                 .await;
                                 // Honor a 401 here too, so the next force-drained
@@ -856,7 +850,6 @@ async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
     pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
-    auth_bound: bool,
 ) -> Option<u64> {
     let CompletedExport {
         result,
@@ -902,8 +895,11 @@ async fn finalize_completed_export(
             // With a bearer token provider bound, a 401 usually means the cached
             // token lapsed or a refresh raced, so retry rather than drop; record
             // the rejected generation so the caller invalidates exactly the token
-            // that was used before the retry.
-            let auth_failure = auth_bound && e.is_auth_failure();
+            // that was used before the retry. A stamped generation is what "a
+            // provider is bound" means for this request: the dispatch path only
+            // reaches a send with a usable token cached, so the generation is
+            // `Some` exactly when the request carried a refreshable credential.
+            let auth_failure = token_generation.is_some() && e.is_auth_failure();
             if auth_failure {
                 rejected_generation = token_generation;
             }
@@ -2559,7 +2555,6 @@ mod test {
             completed,
             &effect_handler,
             &mut metrics,
-            false,
         ));
 
         assert_eq!(

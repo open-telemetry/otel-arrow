@@ -269,9 +269,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
         // usability; the loop below stays auth-agnostic -- it only asks whether
         // it may send and stamps the header the adapter hands back.
         let mut auth = self.token_provider.take().map(GrpcBearerAuth::new);
-        // Constant for the whole run (the adapter is created once), so precompute
-        // it for the auth-aware retry decision in `finalize_completed_export`.
-        let auth_bound = auth.is_some();
 
         // Main loop: 1) finish ready completions, 2) biased wait for a token
         // event, a completion, or the next message, 3) dispatch work while
@@ -284,7 +281,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         completed,
                         &effect_handler,
                         &mut self.pdata_metrics,
-                        auth_bound,
                     )
                     .await;
                     apply_auth_rejection(&mut auth, rejected_generation);
@@ -296,13 +292,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // Opportunistically drain completions before we park on a recv.
             while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten()
             {
-                let (client, rejected_generation) = finalize_completed_export(
-                    completed,
-                    &effect_handler,
-                    &mut self.pdata_metrics,
-                    auth_bound,
-                )
-                .await;
+                let (client, rejected_generation) =
+                    finalize_completed_export(completed, &effect_handler, &mut self.pdata_metrics)
+                        .await;
                 apply_auth_rejection(&mut auth, rejected_generation);
                 grpc_clients.release(client);
             }
@@ -381,7 +373,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 completed,
                                 &effect_handler,
                                 &mut self.pdata_metrics,
-                                auth_bound,
                             )
                             .await;
                             // Server rejected the token this request used
@@ -440,7 +431,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 completed,
                                 &effect_handler,
                                 &mut self.pdata_metrics,
-                                auth_bound,
                             )
                             .await;
                             // Honor a rejection even while draining, so a later
@@ -999,7 +989,6 @@ async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
     pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
-    auth_bound: bool,
 ) -> (SignalClient, Option<u64>) {
     let CompletedExport {
         result,
@@ -1011,8 +1000,11 @@ async fn finalize_completed_export(
     } = completed;
 
     // Record the rejected generation so the caller invalidates exactly the token
-    // that was used, before the batch is retried.
-    let auth_failure = is_auth_failure(&result, auth_bound);
+    // that was used, before the batch is retried. A stamped generation is what
+    // "a provider is bound" means for this request: the dispatch path only
+    // reaches a send with a usable token cached, so the generation is `Some`
+    // exactly when the request carried a refreshable credential.
+    let auth_failure = is_auth_failure(&result, token_generation.is_some());
     let rejected_generation = if auth_failure { token_generation } else { None };
 
     match route_export_result(result, context, saved_payload, effect_handler, auth_failure).await {
