@@ -543,8 +543,8 @@ mod test {
     }
 
     /// Scenario: Run a pipeline sourced from a concrete metric type over mixed inputs.
-     /// Guarantees: Only gauge metric rows are transformed; other metric types and other signals
-     /// pass through unchanged.
+    /// Guarantees: Only gauge metric rows are transformed; other metric types and other signals
+    /// pass through unchanged.
     #[tokio::test]
     async fn test_pipelines_selecting_concrete_metrics_type_skip_exec_only_on_selected_rows() {
         let logs_batch = vec![
