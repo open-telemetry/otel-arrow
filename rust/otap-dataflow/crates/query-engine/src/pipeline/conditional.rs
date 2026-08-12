@@ -166,8 +166,6 @@ impl PipelineStage for ConditionalPipelineStage {
                 }
             };
 
-            println!("predicate_selection_vec = {:?}", predicate_selection_vec);
-
             let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
             
             // update the list of rows that were already selected by branches

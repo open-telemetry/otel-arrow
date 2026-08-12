@@ -260,6 +260,8 @@ impl Default for PipelineOptions {
     }
 }
 
+
+
 /// The main entrypoint for transform pipeline execution
 pub struct Pipeline {
     /// The expression tree (AST) defining this pipeline

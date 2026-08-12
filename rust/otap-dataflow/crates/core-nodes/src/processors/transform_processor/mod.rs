@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use data_engine_expressions::{Expression, PipelineExpression};
+use data_engine_expressions::Expression;
 use data_engine_kql_parser::{KqlParser, Parser};
 use linkme::distributed_slice;
 use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
@@ -99,22 +99,48 @@ enum SignalScope {
     Signal(SignalType),
 }
 
-impl TryFrom<&PipelineExpression> for SignalScope {
-    type Error = ConfigError;
-
-    fn try_from(pipeline_expr: &PipelineExpression) -> Result<Self, Self::Error> {
+impl SignalScope {
+    fn try_from_kql_query(query: &str) -> Result<Self, ConfigError> {
         // Current logic looks at the start of the pipeline and expects it to be in a form like
         // "logs | ..." or "traces | ...", etc.
-        //
-        // TODO the logic here wouldn't be safe for languages other than Kql. We might want to have
-        //  the pipeline expression be able to return name of the source
-        let query = pipeline_expr.get_query_slice(pipeline_expr.get_query_location());
         let query = query.trim_start();
         Ok(if query.starts_with("logs") {
             Self::Signal(SignalType::Logs)
         } else if query.starts_with("traces") {
             Self::Signal(SignalType::Traces)
         } else if query.starts_with("metrics") {
+            Self::Signal(SignalType::Metrics)
+        } else if query.starts_with("signal") {
+            Self::All
+        } else {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "could not determine signal type from query".into(),
+            });
+        })
+    }
+
+    fn try_from_opl_query(query: &str) -> Result<Self, ConfigError> {
+        // Current logic looks at the start of the pipeline and expects it to be in a form like
+        // "logs | ..." or "traces | ...", etc.
+        //
+        // The OPL Parser will inspect the source during parsing and if it sees the source is the
+        // plural form of some concrete metric type (gauges, sums, histograms, etc.), it creates a
+        // query plan that will select for processing only these batch types and only rows having
+        // the specified metric type. All other batches / rows are treated as passthrough. This is
+        // why for OPL only we allow these identifiers to the the query source
+        //
+        let query = query.trim_start();
+        Ok(if query.starts_with("logs") {
+            Self::Signal(SignalType::Logs)
+        } else if query.starts_with("traces") {
+            Self::Signal(SignalType::Traces)
+        } else if query.starts_with("metrics")
+            | query.starts_with("gauges")
+            | query.starts_with("sums")
+            | query.starts_with("histograms")
+            | query.starts_with("exponential_histograms")
+            | query.starts_with("summaries")
+        {
             Self::Signal(SignalType::Metrics)
         } else if query.starts_with("signal") {
             Self::All
@@ -152,7 +178,9 @@ impl TransformProcessor {
                 let pipeline_expr = KqlParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
-                let signal_scope = SignalScope::try_from(&pipeline_expr)?;
+                let signal_scope = SignalScope::try_from_kql_query(
+                    &pipeline_expr.get_query_slice(pipeline_expr.get_query_location()),
+                )?;
                 (
                     vec![Transform {
                         pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
@@ -165,7 +193,9 @@ impl TransformProcessor {
                 let pipeline_expr = OplParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
-                let signal_scope = SignalScope::try_from(&pipeline_expr)?;
+                let signal_scope = SignalScope::try_from_opl_query(
+                    &pipeline_expr.get_query_slice(pipeline_expr.get_query_location()),
+                )?;
                 (
                     vec![Transform {
                         pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
@@ -692,7 +722,9 @@ mod test {
                 arrow::v1::ArrowPayloadType,
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
-                metrics::v1::{Metric, MetricsData, ResourceMetrics, ScopeMetrics},
+                metrics::v1::{
+                    Gauge, Histogram, Metric, MetricsData, ResourceMetrics, ScopeMetrics, Sum,
+                },
                 resource::v1::Resource,
                 trace::v1::{ResourceSpans, ScopeSpans, Span, Status, TracesData},
             },
@@ -2823,6 +2855,104 @@ mod test {
                     }
                     _ => panic!("unexpected payload type"),
                 }
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_process_histogram_concrete_data_types() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = "histograms | set name = \"new_histogram_name\"";
+        let processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let gauge_metric = Metric::build()
+                    .name("gauge_name")
+                    .data_gauge(Gauge::default())
+                    .finish();
+
+                let histogram_metric = Metric::build()
+                    .name("histogram_metric")
+                    .data_histogram(Histogram::default())
+                    .finish();
+
+                let input_batch1 = vec![gauge_metric.clone(), histogram_metric.clone()];
+                let otap_batch1 = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData {
+                    resource_metrics: vec![ResourceMetrics::new(
+                        Resource::default(),
+                        vec![ScopeMetrics::new(
+                            InstrumentationScope::default(),
+                            input_batch1.clone(),
+                        )],
+                    )],
+                }));
+                let pdata_batch1 = OtapPdata::new(
+                    Context::default(),
+                    OtapPayload::OtapArrowRecords(otap_batch1),
+                );
+                ctx.process(Message::PData(pdata_batch1)).await.unwrap();
+
+                // check it still processes correctly metrics batches even if they don't have
+                // any of the specific metric type selected by the query
+                let sum_metric = Metric::build()
+                    .name("sum_metric")
+                    .data_sum(Sum::default())
+                    .finish();
+
+                let input_batch2 = vec![sum_metric.clone()];
+                let otap_batch2 = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData {
+                    resource_metrics: vec![ResourceMetrics::new(
+                        Resource::default(),
+                        vec![ScopeMetrics::new(
+                            InstrumentationScope::default(),
+                            input_batch2.clone(),
+                        )],
+                    )],
+                }));
+                let pdata_batch2 = OtapPdata::new(
+                    Context::default(),
+                    OtapPayload::OtapArrowRecords(otap_batch2),
+                );
+                ctx.process(Message::PData(pdata_batch2)).await.unwrap();
+
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2);
+
+                let mut outputs = output.into_iter();
+                let mut result1 = outputs.next().unwrap();
+                let mut result2 = outputs.next().unwrap();
+
+                let payload1: OtapArrowRecords =
+                    result1.take_payload().try_into_with_default().unwrap();
+                let OtlpProtoMessage::Metrics(metrics_result1) = otap_to_otlp(&payload1) else {
+                    panic!("invalid signal type result")
+                };
+                assert_eq!(metrics_result1.resource_metrics.len(), 1);
+                assert_eq!(metrics_result1.resource_metrics[0].scope_metrics.len(), 1);
+                assert_eq!(
+                    metrics_result1.resource_metrics[0].scope_metrics[0].metrics,
+                    vec![
+                        gauge_metric.clone(),
+                        Metric::build()
+                            .name("new_histogram_name")
+                            .data_histogram(Histogram::default())
+                            .finish()
+                    ]
+                );
+
+                let payload2: OtapArrowRecords =
+                    result2.take_payload().try_into_with_default().unwrap();
+                let OtlpProtoMessage::Metrics(metrics_result2) = otap_to_otlp(&payload2) else {
+                    panic!("invalid signal type result")
+                };
+                assert_eq!(metrics_result2.resource_metrics.len(), 1);
+                assert_eq!(metrics_result2.resource_metrics[0].scope_metrics.len(), 1);
+                assert_eq!(
+                    metrics_result2.resource_metrics[0].scope_metrics[0].metrics,
+                    vec![sum_metric.clone()]
+                );
             })
             .validate(|_ctx| async move {})
     }
