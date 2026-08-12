@@ -1,7 +1,7 @@
 change_type: bug_fix
 component: pipeline
 note: Report exact item and signal loss when finalized segments or WAL-only bundles expire during durable buffer startup.
-issues: [3705]
+issues: [3728]
 subtext: |
   Current-format finalized segments avoid payload reads; older segments use full validation when exact accounting is available.
-  Newly written segment and WAL formats require the current or a later version; downgrade after new data is written is unsupported.
+  No segment or WAL format changes are required; existing data remains readable across upgrades and rollbacks.
