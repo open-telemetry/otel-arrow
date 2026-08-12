@@ -3,7 +3,7 @@
 
 //! Broadcast topic benchmarks against `tokio::sync::broadcast`.
 //!
-//! This module provides four benchmark families:
+//! This module provides five benchmark families:
 //! - `topic_broadcast_vs_tokio`: `BroadcastOnly` topic vs tokio broadcast in
 //!   steady-state no-lag conditions (large capacity)
 //! - `topic_mixed_broadcast_vs_tokio`: broadcast path of `TopicOptions::Mixed`
@@ -13,6 +13,8 @@
 //! - `topic_broadcast_tracked`: tracked-publish path comparing `first` ack mode
 //!   against `all` (consensus) ack mode over an identical workload, isolating
 //!   the consensus-tracking overhead
+//! - `topic_broadcast_consensus_cleanup`: worst-case disconnect and lag cleanup
+//!   with many outstanding consensus requirements
 //!
 //! Workload model:
 //! - one publisher sends `MSG_COUNT` messages of fixed-size payloads
@@ -30,17 +32,19 @@
 
 use std::hint::black_box;
 use std::sync::Arc;
+use std::time::Duration;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otap_df_engine::topic::{
     InMemoryBackend, RecvItem, SubscriberOptions, SubscriptionMode, TopicBroadcastAckMode,
-    TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions,
+    TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
 };
 use tokio::runtime::Runtime;
 
 const MSG_COUNT: u64 = 10_000;
 const MSG_SIZES: [usize; 3] = [32, 256, 4096];
 const SUBSCRIBER_COUNTS: [usize; 4] = [1, 2, 4, 8];
+const CLEANUP_PENDING_COUNTS: [usize; 3] = [1, 64, 1024];
 
 const BROADCAST_CAPACITY: usize = 16_384;
 const LAG_CAPACITY: usize = 64;
@@ -171,6 +175,47 @@ async fn run_topic_broadcast_tracked_case(case: BenchCase, ack_mode: TopicBroadc
         total += h.await.expect("subscriber task panicked");
     }
     assert_eq!(total, MSG_COUNT * case.num_subs as u64);
+}
+
+async fn setup_consensus_cleanup_case(
+    pending_count: usize,
+    on_lag: TopicBroadcastOnLagPolicy,
+) -> (
+    otap_df_engine::topic::Subscription<Vec<u8>>,
+    Vec<otap_df_engine::topic::TrackedPublishReceipt>,
+    otap_df_engine::topic::TopicHandle<Vec<u8>>,
+) {
+    let capacity = pending_count.max(2).next_power_of_two();
+    let broker = TopicBroker::new();
+    let topic = broker
+        .create_topic(
+            "bench-consensus-cleanup",
+            TopicOptions::BroadcastOnly {
+                capacity,
+                on_lag,
+                ack_mode: TopicBroadcastAckMode::All,
+            },
+            InMemoryBackend,
+        )
+        .expect("benchmark topic creation failed");
+    let publisher = topic.tracked_publisher_with_config(TopicPublishOutcomeConfig {
+        max_in_flight: pending_count,
+        timeout: Duration::from_secs(30),
+    });
+    let sub = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .expect("benchmark subscription failed");
+    let payload = make_payload(32);
+    let mut receipts = Vec::with_capacity(pending_count);
+    for _ in 0..pending_count {
+        receipts.push(
+            publisher
+                .publish(Arc::clone(&payload))
+                .await
+                .expect("benchmark tracked publish failed"),
+        );
+    }
+    (sub, receipts, topic)
 }
 
 async fn run_tokio_broadcast_case(case: BenchCase) {
@@ -420,11 +465,81 @@ fn bench_topic_broadcast_tracked(c: &mut Criterion) {
     }
 }
 
+/// Measure worst-case consensus cleanup when one subscriber owes many messages.
+fn bench_topic_broadcast_consensus_cleanup(c: &mut Criterion) {
+    let mut group = c.benchmark_group("topic_broadcast_consensus_cleanup");
+
+    for &pending_count in &CLEANUP_PENDING_COUNTS {
+        _ = group.throughput(Throughput::Elements(pending_count as u64));
+
+        _ = group.bench_with_input(
+            BenchmarkId::new("disconnect", pending_count),
+            &pending_count,
+            |b, pending_count| {
+                let rt = Runtime::new().expect("tokio runtime creation failed");
+                b.iter_batched(
+                    || {
+                        rt.block_on(setup_consensus_cleanup_case(
+                            *pending_count,
+                            TopicBroadcastOnLagPolicy::Disconnect,
+                        ))
+                    },
+                    |(sub, receipts, topic)| {
+                        drop(sub);
+                        topic.close();
+                        _ = black_box(receipts);
+                        _ = black_box(topic);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        _ = group.bench_with_input(
+            BenchmarkId::new("drop_oldest_lag", pending_count),
+            &pending_count,
+            |b, pending_count| {
+                let rt = Runtime::new().expect("tokio runtime creation failed");
+                b.iter_batched(
+                    || {
+                        let (sub, receipts, topic) = rt.block_on(setup_consensus_cleanup_case(
+                            *pending_count,
+                            TopicBroadcastOnLagPolicy::DropOldest,
+                        ));
+                        let payload = make_payload(32);
+                        rt.block_on(async {
+                            for _ in 0..pending_count.saturating_add(1) {
+                                topic
+                                    .publish(Arc::clone(&payload))
+                                    .await
+                                    .expect("benchmark untracked publish failed");
+                            }
+                        });
+                        (sub, receipts, topic)
+                    },
+                    |(mut sub, receipts, topic)| {
+                        let item = rt
+                            .block_on(sub.recv())
+                            .expect("benchmark lag receive failed");
+                        assert!(matches!(item, RecvItem::Lagged { .. }));
+                        topic.close();
+                        _ = black_box((sub, receipts, topic));
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_topic_broadcast_vs_tokio,
     bench_topic_mixed_broadcast_vs_tokio,
     bench_topic_broadcast_lag_vs_tokio,
-    bench_topic_broadcast_tracked
+    bench_topic_broadcast_tracked,
+    bench_topic_broadcast_consensus_cleanup
 );
 criterion_main!(benches);

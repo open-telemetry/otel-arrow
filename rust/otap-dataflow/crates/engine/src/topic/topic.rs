@@ -174,7 +174,7 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
     /// window, which is read-safe (readers see `NotReady` and re-park).
     pub(crate) fn publish(&self, envelope: Envelope<T>) {
         let seq = self.reserve_seq();
-        self.commit_slot(seq, envelope);
+        let _ = self.commit_slot(seq, envelope);
     }
 
     /// Reserve the next ring sequence without writing a slot.
@@ -198,7 +198,8 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
     /// A delayed publisher can reach this point after enough later reservations
     /// have wrapped onto the same slot. In that case, keep the newer sequence:
     /// the delayed message has already fallen outside the ring's retained range.
-    pub(crate) fn commit_slot(&self, seq: u64, envelope: Envelope<T>) {
+    #[must_use]
+    pub(crate) fn commit_slot(&self, seq: u64, envelope: Envelope<T>) -> bool {
         let idx = ((seq - 1) as usize) & self.mask;
         let mut slot = self.slots[idx].lock();
         let can_commit = match &*slot {
@@ -210,6 +211,7 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
         }
         drop(slot);
         self.waker_set.wake_all();
+        can_commit
     }
 
     pub(crate) fn try_read(&self, read_seq: u64) -> BroadcastReadResult<T> {
@@ -603,11 +605,11 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
 /// Registry of live broadcast subscribers for a single `all`-mode topic.
 ///
 /// Constructed only when `ack_mode == All`. It is the single linearization
-/// point for consensus membership: subscribe, publish, and disconnect all take
-/// its lock so a subscriber is either in a message's snapshot AND started at or
-/// before that message's ring sequence, or excluded AND started strictly after
-/// it. Lock order is always **registry -> tracker**; tracker code must never
-/// call back into the registry.
+/// point for consensus membership: subscribe, tracked publish, and disconnect
+/// all take its lock so a subscriber is either in a message's snapshot AND
+/// started at or before that message's ring sequence, or excluded AND started
+/// strictly after it. Lock order is always **registry -> tracker**; tracker code
+/// must never call back into the registry.
 struct BroadcastSubscriberRegistry {
     next_subscriber_id: AtomicU64,
     subscribers: Mutex<Arc<HashSet<BroadcastSubscriberId>>>,
@@ -710,7 +712,7 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
                 .outcomes
                 .register_consensus(id, timeout, permit, snapshot, seq);
             drop(subscribers);
-            self.broadcast_ring.commit_slot(
+            let committed = self.broadcast_ring.commit_slot(
                 seq,
                 Envelope {
                     id,
@@ -718,6 +720,14 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
                     payload: msg,
                 },
             );
+            if !committed {
+                let _ = self.outcomes.resolve(
+                    id,
+                    TrackedPublishOutcome::Nack {
+                        reason: Arc::from("broadcast message was overtaken before ring commit"),
+                    },
+                );
+            }
             return Ok(receipt);
         }
 
@@ -1265,9 +1275,9 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
     /// (`all`-mode) message it still owes an ack for. No-op in `first` mode and
     /// idempotent across repeated calls (lag-disconnect followed by drop).
     ///
-    /// Lock order is registry -> tracker: the registry lock is held across the
-    /// removal and the tracker scan so a concurrent publish cannot add this
-    /// subscriber to a new consensus entry after it has been removed.
+    /// Remove the subscriber under the registry lock, then release it before
+    /// scanning tracked entries. Once removed, no later publish can include this
+    /// subscriber in a new consensus snapshot.
     fn disconnect(&self, reason: Arc<str>) {
         let (Some(registry), Some(subscriber_id)) = (&self.registry, self.subscriber_id) else {
             return;
@@ -1275,32 +1285,32 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
         if self.disconnect_done.swap(true, Ordering::AcqRel) {
             return;
         }
-        let mut subscribers = registry.subscribers.lock();
-        let _ = Arc::make_mut(&mut subscribers).remove(&subscriber_id);
+        {
+            let mut subscribers = registry.subscribers.lock();
+            let _ = Arc::make_mut(&mut subscribers).remove(&subscriber_id);
+        }
         self.ack_state
             .outcomes
             .nack_pending_for_subscriber(subscriber_id, reason);
-        drop(subscribers);
     }
 
     /// Nack the `all`-mode consensus messages this subscriber skipped after a
     /// `DropOldest` lag (publish sequence `< new_read_seq`) without disconnecting
     /// it. No-op in `first` mode.
     ///
-    /// The registry lock is held across the tracker scan (registry -> tracker,
-    /// matching [`Self::disconnect`] and `publish_tracked`) so a consensus entry
-    /// with sequence `< new_read_seq` that is concurrently being registered
-    /// cannot be missed: its publish holds the registry lock until registration
-    /// completes.
+    /// Acquire and release the registry lock as a barrier before scanning. Any
+    /// publish that reserved a sequence below `new_read_seq` must finish
+    /// consensus registration before this lock can be acquired; a later publish
+    /// receives a sequence at or above the threshold.
     fn nack_skipped_on_lag(&self, new_read_seq: u64, reason: Arc<str>) {
         let (Some(registry), Some(subscriber_id)) = (&self.registry, self.subscriber_id) else {
             return;
         };
         let subscribers = registry.subscribers.lock();
+        drop(subscribers);
         self.ack_state
             .outcomes
             .nack_owed_before(subscriber_id, new_read_seq, reason);
-        drop(subscribers);
     }
 }
 

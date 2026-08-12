@@ -17,9 +17,5 @@ issues: [2252]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Not yet configurable: this wires the engine to honor `all` mode but the config surface lands in a
-  follow-up PR under #2252. An `all`-mode broadcast topic now resolves the upstream receipt only once
-  every eligible subscriber acks, snapshotting the required subscriber set under a registry -> tracker
-  lock order, and nacks fast on subscriber nack/disconnect/lag. Also fixes a stall where a required
-  subscriber lagging past a tracked message under the `DropOldest` policy would leave consensus
-  incomplete forever; skipped messages are now nacked while still-readable ones stay pending.
+  Every eligible broadcast subscriber must Ack an `all`-mode tracked message. Any required Nack,
+  disconnect, or unrecoverable lag resolves it as Nack. Configuration support follows in #2252.

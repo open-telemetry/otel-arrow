@@ -1899,8 +1899,8 @@ fn recv_message_id(item: Result<RecvItem<u64>, Error>) -> u64 {
     }
 }
 
-// `all` mode resolves the upstream Ack only after *every* eligible broadcast
-// subscriber has acked the message.
+/// Scenario: Two eligible broadcast subscribers receive one `all`-mode tracked message.
+/// Guarantees: The upstream receipt resolves only after both subscribers acknowledge it.
 #[tokio::test]
 async fn broadcast_all_mode_acks_only_after_all_subscribers_ack() {
     let broker = TopicBroker::<u64>::new();
@@ -1929,7 +1929,7 @@ async fn broadcast_all_mode_acks_only_after_all_subscribers_ack() {
 
     // First subscriber acks: consensus is not yet complete.
     sub1.ack(id1).unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::task::yield_now().await;
     assert!(
         !outcome.is_finished(),
         "upstream resolved before all subscribers acked"
@@ -1940,8 +1940,8 @@ async fn broadcast_all_mode_acks_only_after_all_subscribers_ack() {
     assert_eq!(outcome.await.unwrap(), TrackedPublishOutcome::Ack);
 }
 
-// Any single Nack from a required subscriber resolves the upstream as Nack,
-// even if other subscribers ack.
+/// Scenario: One required subscriber Acks and another Nacks an `all`-mode message.
+/// Guarantees: Any required subscriber's Nack resolves the upstream receipt as Nack.
 #[tokio::test]
 async fn broadcast_all_mode_single_nack_resolves_nack() {
     let broker = TopicBroker::<u64>::new();
@@ -1974,8 +1974,8 @@ async fn broadcast_all_mode_single_nack_resolves_nack() {
     }
 }
 
-// A required subscriber that lag-disconnects before acking resolves the
-// upstream as Nack.
+/// Scenario: A required subscriber lag-disconnects before acknowledging a tracked message.
+/// Guarantees: The outstanding upstream receipt resolves as Nack.
 #[tokio::test]
 async fn broadcast_all_mode_lag_disconnect_before_ack_nacks() {
     let broker = TopicBroker::<u64>::new();
@@ -2008,9 +2008,8 @@ async fn broadcast_all_mode_lag_disconnect_before_ack_nacks() {
     ));
 }
 
-// `all` mode + `DropOldest` (the default lag policy): a required subscriber that
-// lags past a tracked message can no longer ack it, so the dropped message must
-// resolve promptly as Nack rather than stalling until the tracker timeout.
+/// Scenario: A required `DropOldest` subscriber lags past an `all`-mode tracked message.
+/// Guarantees: The unread message resolves promptly as Nack instead of timing out.
 #[tokio::test]
 async fn broadcast_all_mode_lag_drop_oldest_before_ack_nacks() {
     let broker = TopicBroker::<u64>::new();
@@ -2049,8 +2048,8 @@ async fn broadcast_all_mode_lag_drop_oldest_before_ack_nacks() {
     ));
 }
 
-// A required subscriber dropped/closed before acking resolves the upstream as
-// Nack.
+/// Scenario: A required subscriber is dropped before acknowledging a tracked message.
+/// Guarantees: Dropping the subscriber resolves its outstanding message as Nack.
 #[tokio::test]
 async fn broadcast_all_mode_drop_before_ack_nacks() {
     let broker = TopicBroker::<u64>::new();
@@ -2078,8 +2077,8 @@ async fn broadcast_all_mode_drop_before_ack_nacks() {
     ));
 }
 
-// With zero eligible subscribers at publish time, the upstream resolves
-// immediately as Ack.
+/// Scenario: An `all`-mode tracked message is published with no eligible subscribers.
+/// Guarantees: The upstream receipt resolves immediately as Ack.
 #[tokio::test]
 async fn broadcast_all_mode_zero_subscribers_acks_immediately() {
     let broker = TopicBroker::<u64>::new();
@@ -2096,8 +2095,8 @@ async fn broadcast_all_mode_zero_subscribers_acks_immediately() {
     assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
-// A subscriber that joins after a message is published is not required for it:
-// the message resolves once the earlier subscriber acks.
+/// Scenario: A subscriber joins after an `all`-mode tracked message is published.
+/// Guarantees: The late subscriber is excluded from that message's Ack consensus.
 #[tokio::test]
 async fn broadcast_all_mode_late_subscriber_not_required() {
     let broker = TopicBroker::<u64>::new();
@@ -2126,8 +2125,8 @@ async fn broadcast_all_mode_late_subscriber_not_required() {
     assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
-// Per-subscriber outstanding messages are tracked independently: acking one
-// message then disappearing only nacks the still-unacked message.
+/// Scenario: A subscriber Acks one of two messages and disappears before Acking the other.
+/// Guarantees: Only the still-outstanding message resolves as Nack.
 #[tokio::test]
 async fn broadcast_all_mode_multi_message_nacks_only_unacked() {
     let broker = TopicBroker::<u64>::new();
@@ -2163,8 +2162,8 @@ async fn broadcast_all_mode_multi_message_nacks_only_unacked() {
     ));
 }
 
-// First terminal transition wins: an Ack that completes the consensus makes a
-// later disconnect a no-op (outcome stays Ack).
+/// Scenario: A subscriber completes consensus and then disconnects.
+/// Guarantees: The completed Ack remains terminal and the later disconnect is a no-op.
 #[tokio::test]
 async fn broadcast_all_mode_ack_then_disconnect_keeps_ack() {
     let broker = TopicBroker::<u64>::new();
@@ -2190,8 +2189,8 @@ async fn broadcast_all_mode_ack_then_disconnect_keeps_ack() {
     assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
-// First terminal transition wins: a disconnect that resolves the consensus as
-// Nack makes a later ack a no-op (the ack is reported not-tracked).
+/// Scenario: A required subscriber disconnects before another subscriber's late Ack.
+/// Guarantees: The Nack remains terminal and the late Ack is reported as not tracked.
 #[tokio::test]
 async fn broadcast_all_mode_disconnect_then_ack_keeps_nack() {
     let broker = TopicBroker::<u64>::new();
@@ -2227,9 +2226,8 @@ async fn broadcast_all_mode_disconnect_then_ack_keeps_nack() {
     ));
 }
 
-// A subscriber that has already acked cannot retract its contribution with a
-// later (e.g. duplicated) Nack: once it has left the pending set, the Nack is a
-// no-op and the remaining subscriber's ack still drives the consensus to Ack.
+/// Scenario: A subscriber Acks and then sends a late Nack for the same message.
+/// Guarantees: The late Nack cannot retract its Ack or prevent consensus completion.
 #[tokio::test]
 async fn broadcast_all_mode_ack_then_nack_is_ignored() {
     let broker = TopicBroker::<u64>::new();
@@ -2264,8 +2262,8 @@ async fn broadcast_all_mode_ack_then_nack_is_ignored() {
     assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
-// Topic close resolves outstanding `all`-mode entries as `TopicClosed`, not
-// Nack (close is a lifecycle event, not a subscriber disappearance).
+/// Scenario: A topic closes while an `all`-mode tracked message is outstanding.
+/// Guarantees: The receipt resolves as TopicClosed rather than subscriber Nack.
 #[tokio::test]
 async fn broadcast_all_mode_topic_close_resolves_topic_closed() {
     let broker = TopicBroker::<u64>::new();
@@ -2292,10 +2290,8 @@ async fn broadcast_all_mode_topic_close_resolves_topic_closed() {
     );
 }
 
-// Concurrent publishes and subscriptions must not deadlock and every receipt
-// must reach a terminal outcome. Subscribers that ack everything they receive
-// drive all messages to Ack; this exercises the registry -> tracker lock order
-// under contention (subscribe vs publish vs ack).
+/// Scenario: Publishing, subscribing, and acknowledging run concurrently in `all` mode.
+/// Guarantees: Registry and tracker contention does not deadlock or strand receipts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn broadcast_all_mode_concurrent_publish_subscribe_resolves() {
     let broker = TopicBroker::<u64>::new();
@@ -2782,9 +2778,8 @@ async fn consensus_duplicate_ack_does_not_complete() {
     );
 }
 
-// An ack from a subscriber that was never eligible must not count toward
-// consensus: it leaves the entry pending and cannot falsely satisfy the
-// `acked == members` completion check by inflating the acked set.
+/// Scenario: A non-member acknowledges a consensus entry before its required members.
+/// Guarantees: The unrelated Ack does not advance or falsely complete consensus.
 #[tokio::test]
 async fn consensus_ack_from_non_member_does_not_advance() {
     let tracker = TrackedPublishTracker::new();
@@ -2813,9 +2808,8 @@ async fn consensus_ack_from_non_member_does_not_advance() {
     );
 }
 
-// A Nack from a subscriber that still requires the message resolves the entry as
-// Nack; a Nack from one that has already acked (left the pending set) is a no-op
-// and reported as `NotRequired`, and an unknown message id is `NotTracked`.
+/// Scenario: Required, already-Acked, and unknown subscribers Nack consensus entries.
+/// Guarantees: Nack results distinguish Resolved, NotRequired, and NotTracked cases.
 #[tokio::test]
 async fn consensus_nack_from_respects_pending_membership() {
     let tracker = TrackedPublishTracker::new();
@@ -2853,6 +2847,17 @@ async fn consensus_nack_from_respects_pending_membership() {
     assert_eq!(
         tracker.resolve_nack_from(999, BroadcastSubscriberId(1), Arc::from("unknown")),
         NackFromResult::NotTracked
+    );
+
+    let first_receipt = tracker.register(2, Duration::from_secs(30), consensus_permit());
+    assert_eq!(
+        tracker.resolve_nack_from(2, BroadcastSubscriberId(1), Arc::from("wrong mode")),
+        NackFromResult::NotTracked
+    );
+    assert!(tracker.resolve(2, TrackedPublishOutcome::Ack));
+    assert_eq!(
+        first_receipt.wait_for_outcome().await,
+        TrackedPublishOutcome::Ack
     );
 }
 
@@ -2960,9 +2965,8 @@ async fn consensus_disappearance_only_nacks_entries_requiring_subscriber() {
     assert_eq!(r2.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
 
-// `nack_owed_before` only nacks entries the subscriber requires whose publish
-// sequence is below the threshold; entries at/after the threshold stay pending
-// (the lagging subscriber under `DropOldest` can still read and ack those).
+/// Scenario: A lag threshold divides one subscriber's skipped and readable messages.
+/// Guarantees: Only required messages below the sequence threshold resolve as Nack.
 #[tokio::test]
 async fn consensus_nack_owed_before_respects_seq_threshold() {
     let tracker = TrackedPublishTracker::new();
@@ -2974,13 +2978,13 @@ async fn consensus_nack_owed_before_respects_seq_threshold() {
         subscriber_set([1]),
         3,
     );
-    // Message at seq 7 also requires subscriber 1 but is still readable.
+    // Message at the threshold also requires subscriber 1 but is still readable.
     let readable = tracker.register_consensus(
         11,
         Duration::from_secs(30),
         consensus_permit(),
         subscriber_set([1]),
-        7,
+        5,
     );
 
     // Subscriber 1 lagged: its next read position is seq 5, so only seq < 5 is
@@ -3006,6 +3010,8 @@ async fn consensus_nack_owed_before_respects_seq_threshold() {
         TrackedPublishOutcome::Ack
     );
 }
+/// Scenario: The generic resolver Nacks an entry after one consensus Ack.
+/// Guarantees: A terminal generic Nack overrides the still-pending consensus.
 #[tokio::test]
 async fn consensus_single_resolve_nack_overrides_consensus() {
     let tracker = TrackedPublishTracker::new();
@@ -3301,41 +3307,58 @@ async fn topic_set_len_and_is_empty() {
     assert_eq!(set.len(), 1);
 }
 
-/// Scenario: A delayed publisher commits after later publishers wrap onto its ring slot.
-/// Guarantees: The stale commit cannot overwrite the newer sequence already in that slot.
-#[test]
-fn broadcast_ring_stale_commit_does_not_overwrite_newer_wrapped_sequence() {
+/// Scenario: A delayed tracked publisher commits after the ring wraps onto its slot.
+/// Guarantees: The stale message cannot overwrite newer data and resolves promptly as Nack.
+#[tokio::test]
+async fn broadcast_ring_stale_commit_does_not_overwrite_newer_wrapped_sequence() {
     let ring = FastBroadcastRing::new(2);
     let stale_seq = ring.reserve_seq();
+    let tracker = TrackedPublishTracker::new();
+    let receipt = tracker.register_consensus(
+        stale_seq,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1]),
+        stale_seq,
+    );
 
     let next_seq = ring.reserve_seq();
-    ring.commit_slot(
+    assert!(ring.commit_slot(
         next_seq,
         Envelope {
             id: next_seq,
             tracked: false,
             payload: Arc::new(next_seq),
         },
-    );
+    ));
 
     let wrapped_seq = ring.reserve_seq();
-    ring.commit_slot(
+    assert!(ring.commit_slot(
         wrapped_seq,
         Envelope {
             id: wrapped_seq,
             tracked: false,
             payload: Arc::new(wrapped_seq),
         },
-    );
+    ));
 
-    ring.commit_slot(
+    let committed = ring.commit_slot(
         stale_seq,
         Envelope {
             id: stale_seq,
-            tracked: false,
+            tracked: true,
             payload: Arc::new(stale_seq),
         },
     );
+    assert!(!committed);
+    if !committed {
+        let _ = tracker.resolve(
+            stale_seq,
+            TrackedPublishOutcome::Nack {
+                reason: Arc::from("broadcast message was overtaken before ring commit"),
+            },
+        );
+    }
 
     match ring.try_read(wrapped_seq) {
         BroadcastReadResult::Ready(envelope) => {
@@ -3344,4 +3367,33 @@ fn broadcast_ring_stale_commit_does_not_overwrite_newer_wrapped_sequence() {
         }
         _ => panic!("wrapped sequence should remain readable"),
     }
+    assert!(matches!(
+        receipt.wait_for_outcome().await,
+        TrackedPublishOutcome::Nack { .. }
+    ));
+}
+
+/// Scenario: One member Acks while another member still keeps consensus pending.
+/// Guarantees: A later disconnect cannot Nack the member's completed contribution.
+#[tokio::test]
+async fn consensus_disconnect_does_not_nack_completed_ack() {
+    let tracker = TrackedPublishTracker::new();
+    let receipt = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1, 2]),
+        1,
+    );
+
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::StillPending
+    );
+    tracker.nack_pending_for_subscriber(BroadcastSubscriberId(1), Arc::from("disconnected"));
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(2)),
+        AckFromResult::Resolved
+    );
+    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
 }
