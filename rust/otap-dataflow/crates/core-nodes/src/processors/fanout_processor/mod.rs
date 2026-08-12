@@ -18,6 +18,12 @@
 //!
 //! See `processors/fanout_processor/README.md` for detailed diagrams and examples.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = FANOUT_PROCESSOR_URN,
+    kind = "processor",
+    name = "fanout",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::PortName;

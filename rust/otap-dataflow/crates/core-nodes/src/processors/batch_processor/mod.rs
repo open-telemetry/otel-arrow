@@ -28,6 +28,12 @@
 //! Interests::RETURN_DATA because (a) more memory required, (b) forces
 //! whole-request retry (instead of partial).
 
+otap_df_telemetry::otel_component_scope!(
+    urn = OTAP_BATCH_PROCESSOR_URN,
+    kind = "processor",
+    name = "batch",
+);
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;

@@ -39,7 +39,6 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use prost::Message;
 use rdkafka::Message as _;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
@@ -263,7 +262,7 @@ impl KafkaReceiver {
 
         // Warn about consumer_config keys that may be overwritten by first-class fields.
         for key in config.overridden_consumer_config_keys() {
-            otap_df_telemetry::otel_warn!(
+            otel_warn!(
                 "kafka.receiver.consumer_config.override",
                 key = %key,
                 "consumer_config contains key '{key}' which is also managed by a \

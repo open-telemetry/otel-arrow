@@ -43,6 +43,77 @@ pub mod _private {
             i += 1;
         }
     }
+
+    /// Validates that a component telemetry scope agrees with its registered
+    /// component URN.
+    ///
+    /// This runs in a const context from `otel_component_scope!`, preventing
+    /// the filter target from drifting away from the component identity.
+    pub const fn validate_component_urn(urn: &str, kind: &str, name: &str) {
+        let urn = urn.as_bytes();
+        let kind = kind.as_bytes();
+        let name = name.as_bytes();
+
+        assert!(
+            !kind.is_empty(),
+            "component telemetry kind must not be empty"
+        );
+        assert!(
+            !name.is_empty(),
+            "component telemetry name must not be empty"
+        );
+        assert!(
+            urn.len() > 4 && urn[0] == b'u' && urn[1] == b'r' && urn[2] == b'n' && urn[3] == b':',
+            "component telemetry URN must start with urn:"
+        );
+
+        let mut namespace_end = 4;
+        while namespace_end < urn.len() && urn[namespace_end] != b':' {
+            namespace_end += 1;
+        }
+        assert!(
+            namespace_end > 4,
+            "component telemetry URN namespace is empty"
+        );
+        assert!(
+            namespace_end < urn.len(),
+            "component telemetry URN has no kind"
+        );
+
+        let kind_start = namespace_end + 1;
+        let mut kind_end = kind_start;
+        while kind_end < urn.len() && urn[kind_end] != b':' {
+            kind_end += 1;
+        }
+        assert!(kind_end < urn.len(), "component telemetry URN has no name");
+        assert!(
+            kind_end - kind_start == kind.len(),
+            "component telemetry kind does not match its URN"
+        );
+
+        let mut i = 0;
+        while i < kind.len() {
+            assert!(
+                urn[kind_start + i] == kind[i],
+                "component telemetry kind does not match its URN"
+            );
+            i += 1;
+        }
+
+        let name_start = kind_end + 1;
+        assert!(
+            urn.len() - name_start == name.len(),
+            "component telemetry name does not match its URN"
+        );
+        i = 0;
+        while i < name.len() {
+            assert!(
+                urn[name_start + i] == name[i],
+                "component telemetry name does not match its URN"
+            );
+            i += 1;
+        }
+    }
 }
 
 /// Macro for logging informational messages.
@@ -59,16 +130,22 @@ pub mod _private {
 /// ```
 #[macro_export]
 macro_rules! otel_info {
-    ($name:expr, $($fields:tt)+) => {{
+    (target: $target:expr, $name:expr, $($fields:tt)+) => {{
         const _: () = $crate::_private::validate_event_name($name);
-        $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+        $crate::_private::info!(name: $name, target: $target, $($fields)+);
+    }};
+    (target: $target:expr, $name:expr) => {{
+        const _: () = $crate::_private::validate_event_name($name);
+        $crate::_private::info!(name: $name, target: $target, "");
+    }};
+    ($name:expr, $($fields:tt)+) => {{
+        $crate::otel_info!(target: env!("CARGO_PKG_NAME"), $name, $($fields)+);
     }};
     // The trailing "" is required because tracing macros need at least a format
     // string or fields. The encoder skips empty strings so no body is encoded.
     // See: `DirectFieldVisitor::encode_body_string` in encoder.rs.
     ($name:expr) => {{
-        const _: () = $crate::_private::validate_event_name($name);
-        $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+        $crate::otel_info!(target: env!("CARGO_PKG_NAME"), $name);
     }};
 }
 
@@ -86,14 +163,20 @@ macro_rules! otel_info {
 /// ```
 #[macro_export]
 macro_rules! otel_warn {
-    ($name:expr, $($fields:tt)+) => {{
+    (target: $target:expr, $name:expr, $($fields:tt)+) => {{
         const _: () = $crate::_private::validate_event_name($name);
-        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+        $crate::_private::warn!(name: $name, target: $target, $($fields)+);
+    }};
+    (target: $target:expr, $name:expr) => {{
+        const _: () = $crate::_private::validate_event_name($name);
+        $crate::_private::warn!(name: $name, target: $target, "");
+    }};
+    ($name:expr, $($fields:tt)+) => {{
+        $crate::otel_warn!(target: env!("CARGO_PKG_NAME"), $name, $($fields)+);
     }};
     // See otel_info! for why "" is needed here.
     ($name:expr) => {{
-        const _: () = $crate::_private::validate_event_name($name);
-        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+        $crate::otel_warn!(target: env!("CARGO_PKG_NAME"), $name);
     }};
 }
 
@@ -111,14 +194,20 @@ macro_rules! otel_warn {
 /// ```
 #[macro_export]
 macro_rules! otel_debug {
-    ($name:expr, $($fields:tt)+) => {{
+    (target: $target:expr, $name:expr, $($fields:tt)+) => {{
         const _: () = $crate::_private::validate_event_name($name);
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+        $crate::_private::debug!(name: $name, target: $target, $($fields)+);
+    }};
+    (target: $target:expr, $name:expr) => {{
+        const _: () = $crate::_private::validate_event_name($name);
+        $crate::_private::debug!(name: $name, target: $target, "");
+    }};
+    ($name:expr, $($fields:tt)+) => {{
+        $crate::otel_debug!(target: env!("CARGO_PKG_NAME"), $name, $($fields)+);
     }};
     // See otel_info! for why "" is needed here.
     ($name:expr) => {{
-        const _: () = $crate::_private::validate_event_name($name);
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+        $crate::otel_debug!(target: env!("CARGO_PKG_NAME"), $name);
     }};
 }
 
@@ -136,14 +225,20 @@ macro_rules! otel_debug {
 /// ```
 #[macro_export]
 macro_rules! otel_error {
-    ($name:expr, $($fields:tt)+) => {{
+    (target: $target:expr, $name:expr, $($fields:tt)+) => {{
         const _: () = $crate::_private::validate_event_name($name);
-        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+        $crate::_private::error!(name: $name, target: $target, $($fields)+);
+    }};
+    (target: $target:expr, $name:expr) => {{
+        const _: () = $crate::_private::validate_event_name($name);
+        $crate::_private::error!(name: $name, target: $target, "");
+    }};
+    ($name:expr, $($fields:tt)+) => {{
+        $crate::otel_error!(target: env!("CARGO_PKG_NAME"), $name, $($fields)+);
     }};
     // See otel_info! for why "" is needed here.
     ($name:expr) => {{
-        const _: () = $crate::_private::validate_event_name($name);
-        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+        $crate::otel_error!(target: env!("CARGO_PKG_NAME"), $name);
     }};
 }
 
@@ -173,45 +268,51 @@ macro_rules! otel_error {
 /// ```
 #[macro_export]
 macro_rules! otel_event {
-    ($level:expr, $name:expr, $($fields:tt)+) => {{
+    (target: $target:expr, $level:expr, $name:expr, $($fields:tt)+) => {{
         const _: () = $crate::_private::validate_event_name($name);
         match $level {
             $crate::_private::Level::TRACE => {
-                $crate::_private::trace!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+                $crate::_private::trace!(name: $name, target: $target, $($fields)+);
             }
             $crate::_private::Level::DEBUG => {
-                $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+                $crate::_private::debug!(name: $name, target: $target, $($fields)+);
             }
             $crate::_private::Level::INFO => {
-                $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+                $crate::_private::info!(name: $name, target: $target, $($fields)+);
             }
             $crate::_private::Level::WARN => {
-                $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+                $crate::_private::warn!(name: $name, target: $target, $($fields)+);
             }
             $crate::_private::Level::ERROR => {
-                $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+                $crate::_private::error!(name: $name, target: $target, $($fields)+);
             }
         }
     }};
-    ($level:expr, $name:expr) => {{
+    (target: $target:expr, $level:expr, $name:expr) => {{
         const _: () = $crate::_private::validate_event_name($name);
         match $level {
             $crate::_private::Level::TRACE => {
-                $crate::_private::trace!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+                $crate::_private::trace!(name: $name, target: $target, "");
             }
             $crate::_private::Level::DEBUG => {
-                $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+                $crate::_private::debug!(name: $name, target: $target, "");
             }
             $crate::_private::Level::INFO => {
-                $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+                $crate::_private::info!(name: $name, target: $target, "");
             }
             $crate::_private::Level::WARN => {
-                $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+                $crate::_private::warn!(name: $name, target: $target, "");
             }
             $crate::_private::Level::ERROR => {
-                $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+                $crate::_private::error!(name: $name, target: $target, "");
             }
         }
+    }};
+    ($level:expr, $name:expr, $($fields:tt)+) => {{
+        $crate::otel_event!(target: env!("CARGO_PKG_NAME"), $level, $name, $($fields)+);
+    }};
+    ($level:expr, $name:expr) => {{
+        $crate::otel_event!(target: env!("CARGO_PKG_NAME"), $level, $name);
     }};
 }
 
@@ -273,6 +374,41 @@ macro_rules! __log_record_impl {
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
+
+    /// Scenario: component target segments match a namespaced component URN.
+    /// Guarantees: valid registered component identities pass scope validation.
+    #[test]
+    fn component_urn_validation_accepts_matching_segments() {
+        super::_private::validate_component_urn(
+            "urn:microsoft:exporter:geneva",
+            "exporter",
+            "geneva",
+        );
+    }
+
+    /// Scenario: a component target kind differs from the registered URN kind.
+    /// Guarantees: target and component identities cannot silently drift apart.
+    #[test]
+    #[should_panic(expected = "component telemetry kind does not match its URN")]
+    fn component_urn_validation_rejects_mismatched_kind() {
+        super::_private::validate_component_urn(
+            "urn:otel:processor:transform",
+            "receiver",
+            "transform",
+        );
+    }
+
+    /// Scenario: a component target name differs from the registered URN name.
+    /// Guarantees: target and component identities cannot silently drift apart.
+    #[test]
+    #[should_panic(expected = "component telemetry name does not match its URN")]
+    fn component_urn_validation_rejects_mismatched_name() {
+        super::_private::validate_component_urn(
+            "urn:otel:processor:transform",
+            "processor",
+            "filter",
+        );
+    }
 
     #[test]
     fn test_raw_error() {

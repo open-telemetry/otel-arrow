@@ -15,8 +15,118 @@ use quote::{format_ident, quote};
 use std::collections::HashSet;
 use syn::parse_quote;
 use syn::{
-    Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr, parse_macro_input, spanned::Spanned,
+    Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr, Token, parse_macro_input,
+    spanned::Spanned,
 };
+
+struct ComponentTelemetryScopeArgs {
+    urn: syn::Expr,
+    kind: LitStr,
+    name: LitStr,
+}
+
+impl syn::parse::Parse for ComponentTelemetryScopeArgs {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let urn_key: syn::Ident = input.parse()?;
+        if urn_key != "urn" {
+            return Err(syn::Error::new(urn_key.span(), "expected `urn`"));
+        }
+        let _ = input.parse::<Token![=]>()?;
+        let urn = input.parse()?;
+        let _ = input.parse::<Token![,]>()?;
+
+        let kind_key: syn::Ident = input.parse()?;
+        if kind_key != "kind" {
+            return Err(syn::Error::new(kind_key.span(), "expected `kind`"));
+        }
+        let _ = input.parse::<Token![=]>()?;
+        let kind = input.parse()?;
+        let _ = input.parse::<Token![,]>()?;
+
+        let name_key: syn::Ident = input.parse()?;
+        if name_key != "name" {
+            return Err(syn::Error::new(name_key.span(), "expected `name`"));
+        }
+        let _ = input.parse::<Token![=]>()?;
+        let name = input.parse()?;
+        if input.peek(Token![,]) {
+            let _ = input.parse::<Token![,]>()?;
+        }
+        if !input.is_empty() {
+            return Err(input.error("unexpected component telemetry scope input"));
+        }
+
+        Ok(Self { urn, kind, name })
+    }
+}
+
+/// Binds the `otel_*` event macros in the current module subtree to one
+/// registered component target.
+///
+/// The kind and name are compile-time checked against `urn`. The generated
+/// target is `<cargo-package>::<kind>::<name>`.
+#[proc_macro]
+pub fn otel_component_scope(input: TokenStream) -> TokenStream {
+    let ComponentTelemetryScopeArgs { urn, kind, name } =
+        parse_macro_input!(input as ComponentTelemetryScopeArgs);
+    let telemetry = quote!(::otap_df_telemetry);
+
+    quote! {
+        const _: () = #telemetry::_private::validate_component_urn(#urn, #kind, #name);
+
+        #[allow(unused_macros)]
+        macro_rules! otel_debug {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_debug!(
+                    target: concat!(env!("CARGO_PKG_NAME"), "::", #kind, "::", #name),
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_info {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_info!(
+                    target: concat!(env!("CARGO_PKG_NAME"), "::", #kind, "::", #name),
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_warn {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_warn!(
+                    target: concat!(env!("CARGO_PKG_NAME"), "::", #kind, "::", #name),
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_error {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_error!(
+                    target: concat!(env!("CARGO_PKG_NAME"), "::", #kind, "::", #name),
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_event {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_event!(
+                    target: concat!(env!("CARGO_PKG_NAME"), "::", #kind, "::", #name),
+                    $($tokens)*
+                )
+            };
+        }
+
+    }
+    .into()
+}
 
 /// Derive implementation of `otap_df_telemetry::metrics::MetricSetHandler` for a struct.
 ///

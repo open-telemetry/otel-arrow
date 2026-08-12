@@ -1,0 +1,207 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Cross-crate coverage for component-aware event targets.
+
+use std::sync::{Arc, Mutex};
+
+use tracing::{Event, Subscriber};
+use tracing_subscriber::{EnvFilter, Layer, layer::Context, prelude::*};
+
+#[derive(Clone, Default)]
+struct TargetCapture {
+    targets: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl<S> Layer<S> for TargetCapture
+where
+    S: Subscriber,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        self.targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(event.metadata().target());
+    }
+}
+
+mod scoped_component {
+    const COMPONENT_URN: &str = "urn:otel:processor:scope_test";
+
+    otap_df_telemetry::otel_component_scope!(
+        urn = COMPONENT_URN,
+        kind = "processor",
+        name = "scope_test",
+    );
+
+    pub(super) fn emit_from_root() {
+        otel_info!("test.component.root");
+    }
+
+    pub(super) fn emit_from_child() {
+        child::emit();
+    }
+
+    pub(super) fn emit_all_helpers() {
+        otel_debug!("test.component.debug");
+        otel_info!("test.component.info");
+        otel_warn!("test.component.warn");
+        otel_error!("test.component.error");
+        otel_event!(tracing::Level::TRACE, "test.component.trace");
+    }
+
+    pub(super) mod child {
+        pub(super) fn emit() {
+            otel_warn!("test.component.child", value = 1);
+        }
+    }
+}
+
+mod second_scoped_component {
+    const COMPONENT_URN: &str = "urn:otel:processor:second_scope_test";
+
+    otap_df_telemetry::otel_component_scope!(
+        urn = COMPONENT_URN,
+        kind = "processor",
+        name = "second_scope_test",
+    );
+
+    pub(super) fn emit() {
+        otel_debug!("test.component.second");
+    }
+}
+
+/// Scenario: a component scope emits events from its root and a child module.
+/// Guarantees: every event inherits the stable package, kind, and component target.
+#[test]
+fn component_scope_applies_to_module_subtree() {
+    let capture = TargetCapture::default();
+    let targets = Arc::clone(&capture.targets);
+    let subscriber = tracing_subscriber::registry().with(capture);
+
+    tracing::subscriber::with_default(subscriber, || {
+        scoped_component::emit_from_root();
+        scoped_component::emit_from_child();
+    });
+
+    assert_eq!(
+        *targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        [
+            "otap-df-telemetry::processor::scope_test",
+            "otap-df-telemetry::processor::scope_test",
+        ]
+    );
+}
+
+/// Scenario: every event helper is used inside a component telemetry scope.
+/// Guarantees: all generated helpers compile and apply the same component target.
+#[test]
+fn component_scope_covers_every_event_helper() {
+    let capture = TargetCapture::default();
+    let targets = Arc::clone(&capture.targets);
+    let subscriber = tracing_subscriber::registry().with(capture);
+
+    tracing::subscriber::with_default(subscriber, scoped_component::emit_all_helpers);
+
+    let targets = targets
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(targets.len(), 5);
+    assert!(
+        targets
+            .iter()
+            .all(|target| *target == "otap-df-telemetry::processor::scope_test")
+    );
+}
+
+/// Scenario: callers use the base macro with and without an explicit target.
+/// Guarantees: explicit targets are honored while the legacy form retains its package target.
+#[test]
+fn base_macros_support_explicit_and_default_targets() {
+    let capture = TargetCapture::default();
+    let targets = Arc::clone(&capture.targets);
+    let subscriber = tracing_subscriber::registry().with(capture);
+
+    tracing::subscriber::with_default(subscriber, || {
+        otap_df_telemetry::otel_info!(target: "test::explicit", "test.explicit");
+        otap_df_telemetry::otel_info!("test.default");
+    });
+
+    assert_eq!(
+        *targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        ["test::explicit", "otap-df-telemetry"]
+    );
+}
+
+/// Scenario: target directives select a component kind or one exact component.
+/// Guarantees: component targets preserve hierarchical EnvFilter selection semantics.
+#[test]
+fn component_targets_support_hierarchical_filtering() {
+    let kind_capture = TargetCapture::default();
+    let kind_targets = Arc::clone(&kind_capture.targets);
+    let kind_filter = EnvFilter::try_new("off,otap-df-telemetry::processor=debug")
+        .expect("kind filter should parse");
+    let kind_subscriber = tracing_subscriber::registry()
+        .with(kind_capture)
+        .with(kind_filter);
+
+    tracing::subscriber::with_default(kind_subscriber, || {
+        scoped_component::emit_from_root();
+        second_scoped_component::emit();
+        otap_df_telemetry::otel_info!("test.unscoped");
+    });
+
+    assert_eq!(
+        *kind_targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        [
+            "otap-df-telemetry::processor::scope_test",
+            "otap-df-telemetry::processor::second_scope_test",
+        ]
+    );
+
+    let component_capture = TargetCapture::default();
+    let component_targets = Arc::clone(&component_capture.targets);
+    let component_filter = EnvFilter::try_new("off,otap-df-telemetry::processor::scope_test=info")
+        .expect("component filter should parse");
+    let component_subscriber = tracing_subscriber::registry()
+        .with(component_capture)
+        .with(component_filter);
+
+    tracing::subscriber::with_default(component_subscriber, || {
+        scoped_component::emit_from_root();
+        second_scoped_component::emit();
+    });
+
+    assert_eq!(
+        *component_targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        ["otap-df-telemetry::processor::scope_test"]
+    );
+}
+
+/// Scenario: an existing package-level directive observes a component-scoped event.
+/// Guarantees: adding component segments preserves package-prefix EnvFilter behavior.
+#[test]
+fn package_filter_continues_to_match_component_targets() {
+    let capture = TargetCapture::default();
+    let targets = Arc::clone(&capture.targets);
+    let filter =
+        EnvFilter::try_new("off,otap-df-telemetry=info").expect("package filter should parse");
+    let subscriber = tracing_subscriber::registry().with(capture).with(filter);
+
+    tracing::subscriber::with_default(subscriber, scoped_component::emit_from_root);
+
+    assert_eq!(
+        *targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        ["otap-df-telemetry::processor::scope_test"]
+    );
+}

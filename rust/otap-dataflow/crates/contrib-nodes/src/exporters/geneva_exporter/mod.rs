@@ -24,6 +24,12 @@
 //!       # ... additional config
 //! ```
 
+otap_df_telemetry::otel_component_scope!(
+    urn = GENEVA_EXPORTER_URN,
+    kind = "exporter",
+    name = "geneva",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -48,8 +54,6 @@ use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
-use otap_df_telemetry::otel_info;
-use otap_df_telemetry::otel_warn;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Deserializer};
 use std::path::PathBuf;

@@ -18,6 +18,12 @@
 //!   in the headers of pdata messages.
 //! - Support live reconfiguration via control message.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = OTAP_PERF_EXPORTER_URN,
+    kind = "exporter",
+    name = "perf",
+);
+
 pub mod config;
 
 use crate::exporters::perf_exporter::config::Config;
@@ -40,7 +46,6 @@ use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::otel_info;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;

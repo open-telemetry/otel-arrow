@@ -111,6 +111,13 @@ Attributes:
 - `otelcol.node.urn`: Node plugin URN.
 - `otelcol.node.type`: Node type (e.g. "receiver", "processor", "exporter").
 
+The tracing target and exported `InstrumentationScope.name` identify the static
+component type that produced an event. They do not identify a configured node
+instance. Component events use the target convention defined in the
+[System Events Guide](events-guide.md#component-aware-targets), while
+`otelcol.node.id` identifies the runtime instance and `otelcol.node.urn` carries
+the complete canonical component identity.
+
 ### Channels
 
 Channels connect nodes within a pipeline. There are two types of channels:

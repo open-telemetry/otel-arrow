@@ -5,6 +5,12 @@
 //!
 //! Sends OpenTelemetry logs to Azure Monitor using the Data Collection Rules (DCR) API.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = AZURE_MONITOR_EXPORTER_URN,
+    kind = "exporter",
+    name = "azure_monitor",
+);
+
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;

@@ -63,9 +63,31 @@ macros all require a constant event-name string as the first argument;
 the event name must follow
 [OpenTelemetry Event naming conventions](../../docs/telemetry/events-guide.md#event-naming)
 (lowercase, dot-separated, stable, low-cardinality). The `target`
-(equivalent to OpenTelemetry `InstrumentationScope.name`) is
-automatically set to the crate name by these macros. Otherwise, they
-follow Tokio `tracing` syntax for key-value expressions.
+(equivalent to OpenTelemetry `InstrumentationScope.name`) is set to the
+component target established by `otel_component_scope!`, or to the Cargo
+package name outside registered component modules. Otherwise, the macros follow
+Tokio `tracing` syntax for key-value expressions.
+
+Registered components bind their target once in the component root, before
+declaring child modules:
+
+```rust
+pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
+
+otap_df_telemetry::otel_component_scope!(
+    urn = TRANSFORM_PROCESSOR_URN,
+    kind = "processor",
+    name = "transform",
+);
+
+mod config;
+mod routing;
+```
+
+The component and all child modules can then use `otel_info!`, `otel_debug!`,
+and the other event macros without repeating a target. The macro checks that
+the kind and name match the URN and produces a target such as
+`otap-df-core-nodes::processor::transform`.
 
 For example:
 

@@ -1,0 +1,6 @@
+change_type: breaking
+component: observability
+note: Internal event scopes now identify registered component types for more precise runtime log filtering.
+issues: [3387]
+subtext: |
+  Migration: Update exact InstrumentationScope.name queries from package names to <package>::<kind>::<name>. Existing package-prefix EnvFilter directives continue to match.

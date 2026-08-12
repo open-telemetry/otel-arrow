@@ -10,6 +10,12 @@
 //! - JSON encoding payloads (currently only proto is supported and it's not configurable)
 //! - Unit test metrics reporting
 
+otap_df_telemetry::otel_component_scope!(
+    urn = OTLP_HTTP_EXPORTER_URN,
+    kind = "exporter",
+    name = "otlp_http",
+);
+
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -52,7 +58,6 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
 use secrecy::ExposeSecret;

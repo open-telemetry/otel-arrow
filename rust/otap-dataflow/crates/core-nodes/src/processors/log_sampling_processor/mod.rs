@@ -7,6 +7,12 @@
 //! according to a configurable sampling strategy. Non-log signals
 //! (metrics and traces) pass through unchanged.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = LOG_SAMPLING_PROCESSOR_URN,
+    kind = "processor",
+    name = "log_sampling",
+);
+
 mod config;
 mod metrics;
 mod samplers;

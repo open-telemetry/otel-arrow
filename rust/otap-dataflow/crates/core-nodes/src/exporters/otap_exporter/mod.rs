@@ -6,6 +6,8 @@
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
+otap_df_telemetry::otel_component_scope!(urn = OTAP_EXPORTER_URN, kind = "exporter", name = "otap",);
+
 use async_stream::stream;
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -39,7 +41,6 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::instrument::{Gauge, Mmsc};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
 use std::collections::HashMap;

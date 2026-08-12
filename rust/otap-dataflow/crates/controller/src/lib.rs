@@ -97,8 +97,8 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
     InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup,
-    log_filter::RuntimeLogFilterHandle, otel_error, otel_info, otel_info_span, otel_warn,
-    resource_detectors, self_tracing::LogContext,
+    log_filter::RuntimeLogFilterHandle, otel_info_span, resource_detectors,
+    self_tracing::LogContext,
 };
 use smallvec::smallvec;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -122,6 +122,11 @@ pub mod error;
 pub mod extension;
 
 mod listener_group;
+/// URN of the built-in dataflow controller.
+pub const CONTROLLER_URN: &str = "urn:otel:controller:main";
+
+otap_df_telemetry::otel_component_scope!(urn = CONTROLLER_URN, kind = "controller", name = "main",);
+
 mod live_control;
 mod placement;
 /// Reusable startup helpers (validation, CLI overrides, system info).

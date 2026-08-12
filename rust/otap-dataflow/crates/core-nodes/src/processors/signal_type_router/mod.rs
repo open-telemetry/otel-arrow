@@ -40,6 +40,12 @@
 //! If neither a signal-specific named route nor a default output exists, the
 //! message is dropped with the historical routing-failure behavior.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = SIGNAL_TYPE_ROUTER_URN,
+    kind = "processor",
+    name = "type_router",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::PortName;
