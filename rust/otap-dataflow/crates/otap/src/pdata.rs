@@ -323,6 +323,7 @@ impl Context {
 
     /// Signal captured on the forward path for per-signal metric attribution.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn signal(&self) -> Option<SignalType> {
         self.signal
     }
@@ -511,7 +512,7 @@ impl otap_df_engine::Unwindable for OtapPdata {
     }
 
     fn signal(&self) -> Option<SignalType> {
-        self.context.signal()
+        Some(self.signal_type())
     }
 
     fn drop_payload(&mut self) {

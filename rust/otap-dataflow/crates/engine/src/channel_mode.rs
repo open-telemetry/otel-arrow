@@ -14,29 +14,34 @@
 //! - Keeping the mode-specific sender/receiver types preserves `Send` requirements for shared
 //!   nodes while still avoiding local/shared code divergence.
 
+use crate::attributes::{
+    ChannelImplementation, ChannelKind, ChannelMode as ChannelModeAttribute, ChannelType,
+};
 use crate::channel_metrics::{
-    CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_CONTROL, CHANNEL_MODE_LOCAL,
-    CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPSC, ChannelMetricsRegistry, ChannelReceiverMetrics,
-    ChannelSenderMetrics, control_channel_id,
+    ChannelMetricsRegistry, ChannelQueueDepth, ChannelReceiverMetricSets, ChannelSenderMetricSets,
+    ControlChannelReceiverMetricSets, ControlChannelReceiverMetrics,
+    ControlChannelSenderFailureMetrics, ControlChannelSenderMetricSets,
+    ControlChannelSenderMetrics, LocalChannelQueueDepth, SharedChannelQueueDepth,
+    control_channel_id,
 };
 use crate::context::{ExtensionContext, PipelineContext};
 use crate::entity_context::{EntityTelemetryHandle, current_node_telemetry_handle};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use otap_df_channel::mpsc;
-use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::registry::EntityKey;
 use std::borrow::Cow;
 
 pub(crate) trait ChannelMode {
-    const CHANNEL_MODE: &'static str;
-    const CHANNEL_IMPL: &'static str;
+    const CHANNEL_MODE: ChannelModeAttribute;
+    const CHANNEL_IMPL: ChannelImplementation;
 
     type ControlSender<T>;
     type ControlReceiver<T>;
     type InnerSender<T>;
     type InnerReceiver<T>;
+    type QueueDepth: ChannelQueueDepth + Default;
 
     /// Unwraps the inner MPSC sender from the mode-specific control sender.
     /// Returns `Err(original)` when the underlying variant is not MPSC
@@ -65,7 +70,8 @@ pub(crate) trait ChannelMode {
     fn attach_sender_metrics<T>(
         sender: Self::InnerSender<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelSenderMetrics>,
+        metrics: ChannelSenderMetricSets,
+        queue_depth: Self::QueueDepth,
     ) -> Self::ControlSender<T>;
 
     /// Attach metrics to a receiver and register it with the channel metrics registry.
@@ -73,8 +79,9 @@ pub(crate) trait ChannelMode {
     fn attach_receiver_metrics<T>(
         receiver: Self::InnerReceiver<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelReceiverMetrics>,
+        metrics: ChannelReceiverMetricSets,
         capacity: u64,
+        queue_depth: Self::QueueDepth,
     ) -> Self::ControlReceiver<T>;
 }
 
@@ -82,13 +89,14 @@ pub(crate) struct LocalMode;
 pub(crate) struct SharedMode;
 
 impl ChannelMode for LocalMode {
-    const CHANNEL_MODE: &'static str = CHANNEL_MODE_LOCAL;
-    const CHANNEL_IMPL: &'static str = CHANNEL_IMPL_INTERNAL;
+    const CHANNEL_MODE: ChannelModeAttribute = ChannelModeAttribute::Local;
+    const CHANNEL_IMPL: ChannelImplementation = ChannelImplementation::Internal;
 
     type ControlSender<T> = LocalSender<T>;
     type ControlReceiver<T> = LocalReceiver<T>;
     type InnerSender<T> = mpsc::Sender<T>;
     type InnerReceiver<T> = mpsc::Receiver<T>;
+    type QueueDepth = LocalChannelQueueDepth;
 
     fn try_into_inner_sender<T>(
         sender: Self::ControlSender<T>,
@@ -113,29 +121,39 @@ impl ChannelMode for LocalMode {
     fn attach_sender_metrics<T>(
         sender: Self::InnerSender<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelSenderMetrics>,
+        metrics: ChannelSenderMetricSets,
+        queue_depth: Self::QueueDepth,
     ) -> Self::ControlSender<T> {
-        LocalSender::mpsc_with_metrics(sender, channel_metrics, metrics)
+        LocalSender::mpsc_with_metrics(sender, channel_metrics, metrics, queue_depth, None)
     }
 
     fn attach_receiver_metrics<T>(
         receiver: Self::InnerReceiver<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelReceiverMetrics>,
+        metrics: ChannelReceiverMetricSets,
         capacity: u64,
+        queue_depth: Self::QueueDepth,
     ) -> Self::ControlReceiver<T> {
-        LocalReceiver::mpsc_with_metrics(receiver, channel_metrics, metrics, capacity)
+        LocalReceiver::mpsc_with_metrics(
+            receiver,
+            channel_metrics,
+            metrics,
+            capacity,
+            queue_depth,
+            None,
+        )
     }
 }
 
 impl ChannelMode for SharedMode {
-    const CHANNEL_MODE: &'static str = CHANNEL_MODE_SHARED;
-    const CHANNEL_IMPL: &'static str = CHANNEL_IMPL_TOKIO;
+    const CHANNEL_MODE: ChannelModeAttribute = ChannelModeAttribute::Shared;
+    const CHANNEL_IMPL: ChannelImplementation = ChannelImplementation::Tokio;
 
     type ControlSender<T> = SharedSender<T>;
     type ControlReceiver<T> = SharedReceiver<T>;
     type InnerSender<T> = tokio::sync::mpsc::Sender<T>;
     type InnerReceiver<T> = tokio::sync::mpsc::Receiver<T>;
+    type QueueDepth = SharedChannelQueueDepth;
 
     fn try_into_inner_sender<T>(
         sender: Self::ControlSender<T>,
@@ -160,18 +178,27 @@ impl ChannelMode for SharedMode {
     fn attach_sender_metrics<T>(
         sender: Self::InnerSender<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelSenderMetrics>,
+        metrics: ChannelSenderMetricSets,
+        queue_depth: Self::QueueDepth,
     ) -> Self::ControlSender<T> {
-        SharedSender::mpsc_with_metrics(sender, channel_metrics, metrics)
+        SharedSender::mpsc_with_metrics(sender, channel_metrics, metrics, queue_depth, None)
     }
 
     fn attach_receiver_metrics<T>(
         receiver: Self::InnerReceiver<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelReceiverMetrics>,
+        metrics: ChannelReceiverMetricSets,
         capacity: u64,
+        queue_depth: Self::QueueDepth,
     ) -> Self::ControlReceiver<T> {
-        SharedReceiver::mpsc_with_metrics(receiver, channel_metrics, metrics, capacity)
+        SharedReceiver::mpsc_with_metrics(
+            receiver,
+            channel_metrics,
+            metrics,
+            capacity,
+            queue_depth,
+            None,
+        )
     }
 }
 
@@ -201,9 +228,9 @@ where
             let key = pipeline_ctx.register_node_channel_entity(
                 control_channel_id(name),
                 "input".into(),
-                CHANNEL_KIND_CONTROL,
+                ChannelKind::Control,
                 M::CHANNEL_MODE,
-                CHANNEL_TYPE_MPSC,
+                ChannelType::Mpsc,
                 M::CHANNEL_IMPL,
             );
             if let Some(telemetry) = current_node_telemetry_handle() {
@@ -216,10 +243,20 @@ where
         // `current_node_telemetry_handle()`.
         |channel_entity_key| {
             (
-                pipeline_ctx
-                    .register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key),
-                pipeline_ctx
-                    .register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key),
+                ControlChannelSenderMetricSets {
+                    messages: pipeline_ctx
+                        .register_measurement_metric_set_for_entity::<ControlChannelSenderMetrics>(
+                            channel_entity_key,
+                        ),
+                    failures: pipeline_ctx.register_measurement_metric_set_for_entity::<
+                        ControlChannelSenderFailureMetrics,
+                    >(channel_entity_key),
+                },
+                ControlChannelReceiverMetricSets {
+                    metrics: pipeline_ctx.register_metric_set_for_entity::<
+                        ControlChannelReceiverMetrics,
+                    >(channel_entity_key),
+                },
             )
         },
     )
@@ -263,10 +300,19 @@ where
         },
         |channel_entity_key| {
             (
-                entity_handle
-                    .register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key),
-                entity_handle
-                    .register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key),
+                ControlChannelSenderMetricSets {
+                    messages: entity_handle.register_measurement_metric_set_for_entity::<
+                        ControlChannelSenderMetrics,
+                    >(channel_entity_key),
+                    failures: entity_handle.register_measurement_metric_set_for_entity::<
+                        ControlChannelSenderFailureMetrics,
+                    >(channel_entity_key),
+                },
+                ControlChannelReceiverMetricSets {
+                    metrics: entity_handle.register_metric_set_for_entity::<
+                        ControlChannelReceiverMetrics,
+                    >(channel_entity_key),
+                },
             )
         },
     )
@@ -286,8 +332,8 @@ fn wrap_control_channel_metrics_inner<M, Msg>(
     register_metrics: impl FnOnce(
         EntityKey,
     ) -> (
-        MetricSet<ChannelSenderMetrics>,
-        MetricSet<ChannelReceiverMetrics>,
+        ControlChannelSenderMetricSets,
+        ControlChannelReceiverMetricSets,
     ),
 ) -> (M::ControlSender<Msg>, M::ControlReceiver<Msg>)
 where
@@ -300,13 +346,20 @@ where
             let channel_entity_key = register_channel();
             if channel_metrics_enabled {
                 let (sender_metrics, receiver_metrics) = register_metrics(channel_entity_key);
+                let queue_depth = M::QueueDepth::default();
                 (
-                    M::attach_sender_metrics(sender, channel_metrics, sender_metrics),
+                    M::attach_sender_metrics(
+                        sender,
+                        channel_metrics,
+                        ChannelSenderMetricSets::Control(sender_metrics),
+                        queue_depth.clone(),
+                    ),
                     M::attach_receiver_metrics(
                         receiver,
                         channel_metrics,
-                        receiver_metrics,
+                        ChannelReceiverMetricSets::Control(receiver_metrics),
                         capacity,
+                        queue_depth,
                     ),
                 )
             } else {

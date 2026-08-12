@@ -6,7 +6,9 @@
 //! input/output channel entities.
 
 use otap_df_config::PortName;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::metrics::{
+    MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetHandler,
+};
 use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
 use std::cell::{Cell, RefCell};
 use std::fmt::Debug;
@@ -230,6 +232,20 @@ impl EntityTelemetryHandle {
         metrics
     }
 
+    /// Registers a measurement metric set for an arbitrary entity and tracks it for cleanup.
+    pub(crate) fn register_measurement_metric_set_for_entity<
+        T: MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        entity_key: EntityKey,
+    ) -> MeasurementMetricSet<T> {
+        let metrics = self
+            .registry
+            .register_metric_set_with_measurement_attributes_for_entity::<T>(entity_key);
+        self.track_metric_set(metrics.metric_set_key());
+        metrics
+    }
+
     pub(crate) fn track_metric_set(&self, metrics_key: MetricSetKey) {
         self.state.borrow_mut().metric_keys.push(metrics_key);
     }
@@ -425,10 +441,8 @@ impl Drop for NodeTelemetryGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel_metrics::{
-        CHANNEL_IMPL_INTERNAL, CHANNEL_KIND_CONTROL, CHANNEL_KIND_PDATA, CHANNEL_MODE_LOCAL,
-        CHANNEL_TYPE_MPSC, ChannelReceiverMetrics, ChannelSenderMetrics,
-    };
+    use crate::attributes::{ChannelImplementation, ChannelKind, ChannelMode, ChannelType};
+    use crate::channel_metrics::{ChannelReceiverMetrics, ChannelSenderMetrics};
     use crate::context::ControllerContext;
     use crate::pipeline_metrics::PipelineMetricsMonitor;
     use otap_df_config::node::NodeKind;
@@ -436,6 +450,8 @@ mod tests {
     use std::borrow::Cow;
     use std::collections::HashMap;
 
+    /// Scenario: A pipeline with node and channel telemetry finishes and drops every guard.
+    /// Guarantees: All registered entities and metric sets, including measurement sets, are removed.
     #[test]
     fn pipeline_cleanup_unregisters_entities() {
         let registry = TelemetryRegistryHandle::new();
@@ -473,38 +489,43 @@ mod tests {
         let out_key = source_ctx.register_node_channel_entity(
             channel_id.clone(),
             "out".into(),
-            CHANNEL_KIND_PDATA,
-            CHANNEL_MODE_LOCAL,
-            CHANNEL_TYPE_MPSC,
-            CHANNEL_IMPL_INTERNAL,
+            ChannelKind::Pdata,
+            ChannelMode::Local,
+            ChannelType::Mpsc,
+            ChannelImplementation::Internal,
         );
         source_handle.add_output_channel_key("out".into(), out_key);
         let in_key = dest_ctx.register_node_channel_entity(
             channel_id,
             "input".into(),
-            CHANNEL_KIND_PDATA,
-            CHANNEL_MODE_LOCAL,
-            CHANNEL_TYPE_MPSC,
-            CHANNEL_IMPL_INTERNAL,
+            ChannelKind::Pdata,
+            ChannelMode::Local,
+            ChannelType::Mpsc,
+            ChannelImplementation::Internal,
         );
         dest_handle.set_input_channel_key(in_key);
         let ctrl_key = source_ctx.register_node_channel_entity(
             "chan:ctrl".into(),
             "input".into(),
-            CHANNEL_KIND_CONTROL,
-            CHANNEL_MODE_LOCAL,
-            CHANNEL_TYPE_MPSC,
-            CHANNEL_IMPL_INTERNAL,
+            ChannelKind::Control,
+            ChannelMode::Local,
+            ChannelType::Mpsc,
+            ChannelImplementation::Internal,
         );
         source_handle.set_control_channel_key(ctrl_key);
 
         let out_metrics =
-            source_ctx.register_metric_set_for_entity::<ChannelSenderMetrics>(out_key);
+            source_ctx.register_measurement_metric_set_for_entity::<ChannelSenderMetrics>(out_key);
         source_handle.track_metric_set(out_metrics.metric_set_key());
-        let in_metrics = dest_ctx.register_metric_set_for_entity::<ChannelReceiverMetrics>(in_key);
+        let in_metrics =
+            dest_ctx.register_measurement_metric_set_for_entity::<ChannelReceiverMetrics>(in_key);
         dest_handle.track_metric_set(in_metrics.metric_set_key());
-        let _ = source_handle.register_metric_set::<ChannelSenderMetrics>();
-        let _ = dest_handle.register_metric_set::<ChannelSenderMetrics>();
+        let _ = source_handle
+            .entity_handle()
+            .register_measurement_metric_set_for_entity::<ChannelSenderMetrics>(source_entity_key);
+        let _ = dest_handle
+            .entity_handle()
+            .register_measurement_metric_set_for_entity::<ChannelSenderMetrics>(dest_entity_key);
 
         assert_eq!(registry.entity_count(), 6);
         assert_eq!(registry.metric_set_count(), 6);
@@ -518,6 +539,8 @@ mod tests {
         assert_eq!(registry.entity_count(), 0);
     }
 
+    /// Scenario: Multiple owners request cleanup through the same node telemetry handle.
+    /// Guarantees: Repeated cleanup is a no-op and never unregisters a reused entity key.
     #[test]
     fn entity_telemetry_handle_cleanup_is_idempotent() {
         // Handle state is `Rc<RefCell<...>>` so multiple paths can call
@@ -542,11 +565,12 @@ mod tests {
             "idem".into(),
             crate::extension::wrapper::ExtensionVariant::Local,
             "ctrl".into(),
-            CHANNEL_MODE_LOCAL,
-            CHANNEL_IMPL_INTERNAL,
+            ChannelMode::Local,
+            ChannelImplementation::Internal,
         );
         handle.track_entity(extra_entity);
-        let _metrics = handle.register_metric_set::<ChannelSenderMetrics>();
+        let _metrics =
+            handle.register_measurement_metric_set_for_entity::<ChannelSenderMetrics>(entity_key);
 
         assert_eq!(registry.entity_count(), baseline_entities + 2);
         assert_eq!(registry.metric_set_count(), baseline_metric_sets + 1);

@@ -4,12 +4,13 @@
 //! Abstraction to represent generic shared senders and receivers.
 
 use crate::channel_metrics::{
-    ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
-    ChannelReceiverMetricsState, ChannelSenderMetrics, ChannelSenderMetricsState,
-    SharedChannelReceiverMetricsHandle, SharedChannelSenderMetricsHandle,
+    ChannelMetricsHandle, ChannelMetricsRegistry, ChannelQueueDepth, ChannelReceiverMetricSets,
+    ChannelReceiverMetricsState, ChannelSendErrorType, ChannelSenderMetricSets,
+    ChannelSenderMetricsState, SharedChannelQueueDepth, SharedChannelReceiverMetricsHandle,
+    SharedChannelSenderMetricsHandle,
 };
 use otap_df_channel::error::{RecvError, SendError};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_config::SignalType;
 use std::sync::{Arc, Mutex};
 
 enum SharedSenderInner<T> {
@@ -22,6 +23,8 @@ enum SharedSenderInner<T> {
 pub struct SharedSender<T> {
     inner: SharedSenderInner<T>,
     metrics: Option<SharedChannelSenderMetricsHandle>,
+    queue_depth: Option<SharedChannelQueueDepth>,
+    signal: Option<fn(&T) -> Option<SignalType>>,
 }
 
 impl<T> Clone for SharedSender<T> {
@@ -33,6 +36,8 @@ impl<T> Clone for SharedSender<T> {
         Self {
             inner,
             metrics: self.metrics.clone(),
+            queue_depth: self.queue_depth.clone(),
+            signal: self.signal,
         }
     }
 }
@@ -43,6 +48,8 @@ impl<T> SharedSender<T> {
         Self {
             inner: SharedSenderInner::Mpsc(sender),
             metrics: None,
+            queue_depth: None,
+            signal: None,
         }
     }
 
@@ -50,12 +57,16 @@ impl<T> SharedSender<T> {
     pub(crate) fn mpsc_with_metrics(
         sender: tokio::sync::mpsc::Sender<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelSenderMetrics>,
+        metrics: ChannelSenderMetricSets,
+        queue_depth: SharedChannelQueueDepth,
+        signal: Option<fn(&T) -> Option<SignalType>>,
     ) -> Self {
         let handle = Arc::new(Mutex::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::SharedSender(handle.clone()));
         let mut sender = Self::mpsc(sender);
         sender.metrics = Some(handle);
+        sender.queue_depth = Some(queue_depth);
+        sender.signal = signal;
         sender
     }
 
@@ -64,6 +75,8 @@ impl<T> SharedSender<T> {
         Self {
             inner: SharedSenderInner::Mpmc(sender),
             metrics: None,
+            queue_depth: None,
+            signal: None,
         }
     }
 
@@ -71,28 +84,40 @@ impl<T> SharedSender<T> {
     pub(crate) fn mpmc_with_metrics(
         sender: flume::Sender<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelSenderMetrics>,
+        metrics: ChannelSenderMetricSets,
+        queue_depth: SharedChannelQueueDepth,
+        signal: Option<fn(&T) -> Option<SignalType>>,
     ) -> Self {
         let handle = Arc::new(Mutex::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::SharedSender(handle.clone()));
         let mut sender = Self::mpmc(sender);
         sender.metrics = Some(handle);
+        sender.queue_depth = Some(queue_depth);
+        sender.signal = signal;
         sender
     }
 
     pub(crate) fn into_mpsc(self) -> Result<tokio::sync::mpsc::Sender<T>, Self> {
-        let SharedSender { inner, metrics } = self;
+        let SharedSender {
+            inner,
+            metrics,
+            queue_depth,
+            signal,
+        } = self;
         match inner {
             SharedSenderInner::Mpsc(sender) => Ok(sender),
             SharedSenderInner::Mpmc(sender) => Err(Self {
                 inner: SharedSenderInner::Mpmc(sender),
                 metrics,
+                queue_depth,
+                signal,
             }),
         }
     }
 
     /// Sends a message to the channel.
     pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
+        let signal = self.signal.and_then(|extract| extract(&msg));
         let result = match &self.inner {
             SharedSenderInner::Mpsc(sender) => {
                 sender.send(msg).await.map_err(|e| SendError::Closed(e.0))
@@ -103,12 +128,21 @@ impl<T> SharedSender<T> {
                 .map_err(|e| SendError::Closed(e.0)),
         };
 
+        if result.is_ok()
+            && let Some(queue_depth) = &self.queue_depth
+        {
+            queue_depth.record_send();
+        }
         if let Some(metrics) = &self.metrics {
             if let Ok(mut metrics) = metrics.lock() {
                 match &result {
-                    Ok(()) => metrics.record_send_ok(),
-                    Err(SendError::Full(_)) => metrics.record_send_error_full(),
-                    Err(SendError::Closed(_)) => metrics.record_send_error_closed(),
+                    Ok(()) => metrics.record_send_ok(signal),
+                    Err(SendError::Full(_)) => {
+                        metrics.record_send_error(signal, ChannelSendErrorType::Full);
+                    }
+                    Err(SendError::Closed(_)) => {
+                        metrics.record_send_error(signal, ChannelSendErrorType::Closed);
+                    }
                 }
             }
         }
@@ -118,6 +152,7 @@ impl<T> SharedSender<T> {
 
     /// Attempts to send a message to the channel without awaiting.
     pub fn try_send(&self, msg: T) -> Result<(), SendError<T>> {
+        let signal = self.signal.and_then(|extract| extract(&msg));
         let result = match &self.inner {
             SharedSenderInner::Mpsc(sender) => sender.try_send(msg).map_err(|e| match e {
                 tokio::sync::mpsc::error::TrySendError::Full(v) => SendError::Full(v),
@@ -129,12 +164,21 @@ impl<T> SharedSender<T> {
             }),
         };
 
+        if result.is_ok()
+            && let Some(queue_depth) = &self.queue_depth
+        {
+            queue_depth.record_send();
+        }
         if let Some(metrics) = &self.metrics {
             if let Ok(mut metrics) = metrics.lock() {
                 match &result {
-                    Ok(()) => metrics.record_send_ok(),
-                    Err(SendError::Full(_)) => metrics.record_send_error_full(),
-                    Err(SendError::Closed(_)) => metrics.record_send_error_closed(),
+                    Ok(()) => metrics.record_send_ok(signal),
+                    Err(SendError::Full(_)) => {
+                        metrics.record_send_error(signal, ChannelSendErrorType::Full);
+                    }
+                    Err(SendError::Closed(_)) => {
+                        metrics.record_send_error(signal, ChannelSendErrorType::Closed);
+                    }
                 }
             }
         }
@@ -152,6 +196,8 @@ enum SharedReceiverInner<T> {
 pub struct SharedReceiver<T> {
     inner: SharedReceiverInner<T>,
     metrics: Option<SharedChannelReceiverMetricsHandle>,
+    queue_depth: Option<SharedChannelQueueDepth>,
+    signal: Option<fn(&T) -> Option<SignalType>>,
 }
 
 impl<T> SharedReceiver<T> {
@@ -161,6 +207,8 @@ impl<T> SharedReceiver<T> {
         Self {
             inner: SharedReceiverInner::Mpsc(receiver),
             metrics: None,
+            queue_depth: None,
+            signal: None,
         }
     }
 
@@ -168,15 +216,21 @@ impl<T> SharedReceiver<T> {
     pub(crate) fn mpsc_with_metrics(
         receiver: tokio::sync::mpsc::Receiver<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelReceiverMetrics>,
+        metrics: ChannelReceiverMetricSets,
         capacity: u64,
+        queue_depth: SharedChannelQueueDepth,
+        signal: Option<fn(&T) -> Option<SignalType>>,
     ) -> Self {
         let handle = Arc::new(Mutex::new(ChannelReceiverMetricsState::new(
-            metrics, capacity,
+            metrics,
+            capacity,
+            queue_depth.clone(),
         )));
         channel_metrics.register(ChannelMetricsHandle::SharedReceiver(handle.clone()));
         let mut receiver = Self::mpsc(receiver);
         receiver.metrics = Some(handle);
+        receiver.queue_depth = Some(queue_depth);
+        receiver.signal = signal;
         receiver
     }
 
@@ -186,6 +240,8 @@ impl<T> SharedReceiver<T> {
         Self {
             inner: SharedReceiverInner::Mpmc(receiver),
             metrics: None,
+            queue_depth: None,
+            signal: None,
         }
     }
 
@@ -193,25 +249,38 @@ impl<T> SharedReceiver<T> {
     pub(crate) fn mpmc_with_metrics(
         receiver: flume::Receiver<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelReceiverMetrics>,
+        metrics: ChannelReceiverMetricSets,
         capacity: u64,
+        queue_depth: SharedChannelQueueDepth,
+        signal: Option<fn(&T) -> Option<SignalType>>,
     ) -> Self {
         let handle = Arc::new(Mutex::new(ChannelReceiverMetricsState::new(
-            metrics, capacity,
+            metrics,
+            capacity,
+            queue_depth.clone(),
         )));
         channel_metrics.register(ChannelMetricsHandle::SharedReceiver(handle.clone()));
         let mut receiver = Self::mpmc(receiver);
         receiver.metrics = Some(handle);
+        receiver.queue_depth = Some(queue_depth);
+        receiver.signal = signal;
         receiver
     }
 
     pub(crate) fn into_mpsc(self) -> Result<tokio::sync::mpsc::Receiver<T>, Self> {
-        let SharedReceiver { inner, metrics } = self;
+        let SharedReceiver {
+            inner,
+            metrics,
+            queue_depth,
+            signal,
+        } = self;
         match inner {
             SharedReceiverInner::Mpsc(receiver) => Ok(receiver),
             SharedReceiverInner::Mpmc(receiver) => Err(Self {
                 inner: SharedReceiverInner::Mpmc(receiver),
                 metrics,
+                queue_depth,
+                signal,
             }),
         }
     }
@@ -225,12 +294,15 @@ impl<T> SharedReceiver<T> {
             }
         };
 
+        if result.is_ok()
+            && let Some(queue_depth) = &self.queue_depth
+        {
+            queue_depth.record_receive();
+        }
         if let Some(metrics) = &self.metrics {
             if let Ok(mut metrics) = metrics.lock() {
-                match &result {
-                    Ok(_) => metrics.record_recv_ok(),
-                    Err(RecvError::Empty) => metrics.record_recv_error_empty(),
-                    Err(RecvError::Closed) => metrics.record_recv_error_closed(),
+                if let Ok(message) = &result {
+                    metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
                 }
             }
         }
@@ -251,12 +323,15 @@ impl<T> SharedReceiver<T> {
             }),
         };
 
+        if result.is_ok()
+            && let Some(queue_depth) = &self.queue_depth
+        {
+            queue_depth.record_receive();
+        }
         if let Some(metrics) = &self.metrics {
             if let Ok(mut metrics) = metrics.lock() {
-                match &result {
-                    Ok(_) => metrics.record_recv_ok(),
-                    Err(RecvError::Empty) => metrics.record_recv_error_empty(),
-                    Err(RecvError::Closed) => metrics.record_recv_error_closed(),
+                if let Ok(message) = &result {
+                    metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
                 }
             }
         }
