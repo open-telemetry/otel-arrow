@@ -127,7 +127,7 @@ impl SignalScope {
         // plural form of some concrete metric type (gauges, sums, histograms, etc.), it creates a
         // query plan that will select for processing only these batch types and only rows having
         // the specified metric type. All other batches / rows are treated as passthrough. This is
-        // why for OPL only we allow these identifiers to the the query source
+        // why for OPL only we allow these identifiers to the query source
         //
         let query = query.trim_start();
         Ok(if query.starts_with("logs") {
@@ -135,11 +135,11 @@ impl SignalScope {
         } else if query.starts_with("traces") {
             Self::Signal(SignalType::Traces)
         } else if query.starts_with("metrics")
-            | query.starts_with("gauges")
-            | query.starts_with("sums")
-            | query.starts_with("histograms")
-            | query.starts_with("exponential_histograms")
-            | query.starts_with("summaries")
+            || query.starts_with("gauges")
+            || query.starts_with("sums")
+            || query.starts_with("histograms")
+            || query.starts_with("exponential_histograms")
+            || query.starts_with("summaries")
         {
             Self::Signal(SignalType::Metrics)
         } else if query.starts_with("signal") {
@@ -2859,6 +2859,9 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: Process metrics with an OPL pipeline sourced from some specific metric type.
+    /// Guarantees: Only selected metric type are modified; rows w/out this metric type and batches
+    /// without of the selected metric type pass through unchanged.
     #[test]
     fn test_process_histogram_concrete_data_types() {
         let runtime = TestRuntime::<OtapPdata>::new();

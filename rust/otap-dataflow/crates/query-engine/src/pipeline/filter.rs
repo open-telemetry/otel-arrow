@@ -5703,6 +5703,8 @@ mod test {
         assert_eq!(traces_input, traces_ouptut);
     }
 
+    /// Scenario: Filter a metrics stream using `is <MetricType>` predicates.
+    /// Guarantees: Only metrics of the requested concrete type remain after filtering.
     #[tokio::test]
     async fn test_filter_check_metric_type() {
         let gauge_metric = Metric::build()
@@ -5783,6 +5785,9 @@ mod test {
         assert_results(result, vec![summary_metric.clone()]);
     }
 
+    /// Scenario: Run selecting some concrete metric type against a mixed stream of batches of
+    /// various signal types
+    /// Guarantees: Only rows from metrics batches having the selected metric type remain
     #[tokio::test]
     async fn test_filter_check_signal_type_as_concrete_metric_type() {
         let logs_batch = vec![LogRecord::build().finish()];
