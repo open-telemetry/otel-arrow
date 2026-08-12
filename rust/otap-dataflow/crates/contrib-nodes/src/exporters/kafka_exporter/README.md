@@ -69,7 +69,7 @@ permanently nack it (non-retryable).
 | `topic_from_transport_header` | string | *none* | Transport header name for dynamic topic routing. When set and the header is present with a valid topic, its value overrides `topic`; if the header is absent the static `topic` is used, and if present but invalid the batch is permanently nacked. See [Dynamic Topic Routing](#dynamic-topic-routing). |
 | `partition_by_transport_headers` | bool | `false` | Serialize all transport headers into a Kafka record key. See [Partitioning](#partitioning). |
 | `allowed_topics` | list of strings | *empty* | Operator allowlist of exact topic names permitted for header-supplied (dynamic) routing. Empty means no exact-match constraint. See [Security](#security). |
-| `allowed_topics_regex` | list of strings | *empty* | Operator allowlist of regex patterns permitted for header-supplied (dynamic) routing. Each pattern must match the whole topic (anchored, not a substring); entries must be valid regular expressions. Empty means no regex constraint. See [Security](#security). |
+| `allowed_topics_regex` | list of strings | *empty* | Operator allowlist of regex patterns permitted for header-supplied (dynamic) routing. Each pattern must match the whole topic (anchored, not a substring); entries must be valid standalone regular expressions (validated at config time). Empty means no regex constraint. See [Security](#security). |
 
 ### Dynamic Topic Routing
 
@@ -115,9 +115,13 @@ allowlist so a client cannot direct data to an arbitrary topic:
 - `allowed_topics_regex`: regex patterns permitted for header routing. Each
   pattern must match the **whole** topic (it is anchored as `\A(?:<pattern>)\z`),
   so a prefix/suffix pattern cannot be satisfied by a substring of a
-  client-supplied topic; entries must be valid regular expressions. Patterns are
-  compiled once at exporter construction (and on reconfigure); an invalid pattern
-  is a configuration error caught at startup.
+  client-supplied topic. Because this is an authorization boundary, each entry
+  must be a valid **standalone** regular expression: a pattern is compiled on its
+  own before being anchored, which rejects a pattern crafted to balance its
+  parentheses against the anchoring wrapper (and thereby drop the whole-topic
+  anchors). Patterns are validated at config time and compiled once at exporter
+  construction (and on reconfigure); an invalid pattern is a configuration error
+  caught at startup.
 
 When either list is non-empty, a header-supplied topic must exactly match the
 `allowed_topics` list or fully match an `allowed_topics_regex` pattern; otherwise

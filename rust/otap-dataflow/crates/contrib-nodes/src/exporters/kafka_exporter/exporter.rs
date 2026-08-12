@@ -13,6 +13,7 @@ use super::encoder;
 use super::error::{KafkaExporterError, is_permanent_send_error};
 use super::metrics::KafkaExporterMetrics;
 use super::partitioner;
+use super::topic_regex;
 use super::topic_router::TopicRouter;
 #[cfg(feature = "aws")]
 use crate::common::kafka::aws::ProducerClientContext;
@@ -51,37 +52,41 @@ use std::time::Duration;
 /// or returns `None` when the signal configures no patterns (avoiding an
 /// empty-vector allocation for the common case).
 ///
-/// Each operator pattern is anchored to require a **whole-topic** match: it is
-/// wrapped as `\A(?:<pattern>)\z` before compiling. The dynamic-routing
-/// allowlist is an authorization boundary for a client-controlled destination,
-/// so an unanchored pattern (which the `regex` crate would match as a
-/// substring) must not permit unintended topics -- e.g. `tenant_.*` must permit
-/// `tenant_a` but reject `evil-tenant_a-x`. The non-capturing group contains any
-/// top-level alternation so the anchors cannot be escaped (e.g. `a|b` compiles
-/// to `\A(?:a|b)\z`, matching only exactly `a` or `b`). Entries must be valid
-/// regular expressions.
+/// Each operator pattern is anchored to require a **whole-topic** match via
+/// [`topic_regex::compile_anchor_and_validate`], which wraps it as
+/// `\A(?:<pattern>)\z`. The dynamic-routing allowlist is an authorization
+/// boundary for a client-controlled destination, so an unanchored pattern
+/// (which the `regex` crate would match as a substring) must not permit
+/// unintended topics -- e.g. `tenant_.*` must permit `tenant_a` but reject
+/// `evil-tenant_a-x`. To keep the anchors from being escaped, each operator
+/// pattern is first validated as a self-contained regex before being wrapped (a
+/// pattern that balances its parentheses against the wrapper, e.g.
+/// `tenant_.)\z|(?:evil.`, is rejected rather than allowed to drop the `\A`
+/// anchor on an alternation). Entries must be valid standalone regular
+/// expressions.
 ///
 /// # Errors
 ///
-/// Returns [`KafkaExporterError::ConfigInvalidTopicRegex`] if any pattern fails
-/// to compile, naming the `signal` and reporting the operator's original
-/// pattern (not the anchored form) for diagnosis.
+/// Returns [`KafkaExporterError::ConfigInvalidTopicRegex`] if any pattern is not
+/// a valid standalone regex or the anchored form fails to compile, naming the
+/// `signal` and reporting the operator's original pattern (not the anchored
+/// form) for diagnosis.
 fn compile_allowed_topic_regexes(
     patterns: &[String],
-    signal: &str,
+    signal: SignalType,
 ) -> Result<Option<Vec<Regex>>, KafkaExporterError> {
     if patterns.is_empty() {
         return Ok(None);
     }
     let mut compiled = Vec::with_capacity(patterns.len());
     for pattern in patterns {
-        let anchored = format!(r"\A(?:{pattern})\z");
-        let re =
-            Regex::new(&anchored).map_err(|e| KafkaExporterError::ConfigInvalidTopicRegex {
-                signal: signal.to_string(),
+        let re = topic_regex::compile_anchor_and_validate(pattern).map_err(|message| {
+            KafkaExporterError::ConfigInvalidTopicRegex {
+                signal,
                 pattern: pattern.clone(),
-                message: e.to_string(),
-            })?;
+                message,
+            }
+        })?;
         compiled.push(re);
     }
     Ok(Some(compiled))
@@ -276,15 +281,17 @@ impl KafkaExporter {
     ) -> Result<(Option<Vec<Regex>>, Option<Vec<Regex>>, Option<Vec<Regex>>), KafkaExporterError>
     {
         let traces = match config.traces() {
-            Some(s) => compile_allowed_topic_regexes(s.allowed_topics_regex(), "traces")?,
+            Some(s) => compile_allowed_topic_regexes(s.allowed_topics_regex(), SignalType::Traces)?,
             None => None,
         };
         let metrics = match config.metrics() {
-            Some(s) => compile_allowed_topic_regexes(s.allowed_topics_regex(), "metrics")?,
+            Some(s) => {
+                compile_allowed_topic_regexes(s.allowed_topics_regex(), SignalType::Metrics)?
+            }
             None => None,
         };
         let logs = match config.logs() {
-            Some(s) => compile_allowed_topic_regexes(s.allowed_topics_regex(), "logs")?,
+            Some(s) => compile_allowed_topic_regexes(s.allowed_topics_regex(), SignalType::Logs)?,
             None => None,
         };
         Ok((traces, metrics, logs))
@@ -793,7 +800,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                 }
                 Message::Control(NodeControlMsg::Config { config }) => {
                     // Live reconfiguration: build-and-swap the librdkafka
-                    // producer with a bounded drain of the old one. Invalid
+                    // producer with a bounded drain of the old one, Invalid
                     // configs are logged and ignored (the current producer keeps
                     // running).
                     self.reconfigure(config, &effect_handler).await;
@@ -1132,9 +1139,10 @@ pub mod test_support {
         /// the substring authorization gap on this client-controlled boundary.
         #[test]
         fn compile_allowed_topic_regexes_anchors_to_whole_topic() {
-            let compiled = compile_allowed_topic_regexes(&["tenant_.*".to_string()], "logs")
-                .expect("valid pattern compiles")
-                .expect("some patterns");
+            let compiled =
+                compile_allowed_topic_regexes(&["tenant_.*".to_string()], SignalType::Logs)
+                    .expect("valid pattern compiles")
+                    .expect("some patterns");
             let re = &compiled[0];
             assert!(
                 re.is_match("tenant_a"),
@@ -1154,7 +1162,7 @@ pub mod test_support {
             );
 
             // Alternation containment: `a|b` must match only exactly `a` or `b`.
-            let alt = compile_allowed_topic_regexes(&["a|b".to_string()], "logs")
+            let alt = compile_allowed_topic_regexes(&["a|b".to_string()], SignalType::Logs)
                 .expect("valid pattern compiles")
                 .expect("some patterns");
             let alt_re = &alt[0];
@@ -1170,18 +1178,29 @@ pub mod test_support {
             );
         }
 
-        /// Scenario (security: dynamic topic routing): an invalid operator regex
-        /// pattern is compiled.
-        /// Guarantees: compilation fails with `ConfigInvalidTopicRegex` and the
-        /// error reports the operator's ORIGINAL pattern (not the internally
-        /// anchored `\A(?:...)\z` form), so the diagnostic stays actionable.
+        /// Scenario (security: dynamic topic routing): an operator pattern
+        /// crafted to break out of the `\A(?:<pattern>)\z` anchoring wrapper
+        /// (`tenant_.)\z|(?:evil.`) is compiled through the exporter's allowlist
+        /// path.
+        /// Guarantees: the pattern is rejected with `ConfigInvalidTopicRegex`
+        /// carrying the offending `signal` and the operator's original `pattern`
+        /// (never compiled into an allowlist entry), so a pattern that would
+        /// otherwise under-anchor an alternation and permit unintended
+        /// header-routed topics cannot reach the router -- the anchor-breakout
+        /// authorization bypass is closed at compile time.
         #[test]
-        fn compile_allowed_topic_regexes_reports_original_pattern_on_error() {
-            let err = compile_allowed_topic_regexes(&["[".to_string()], "logs")
-                .expect_err("invalid regex must fail");
+        fn compile_allowed_topic_regexes_rejects_anchor_breakout() {
+            let err = compile_allowed_topic_regexes(
+                &[r"tenant_.)\z|(?:evil.".to_string()],
+                SignalType::Logs,
+            )
+            .expect_err("anchor-breakout pattern must be rejected");
             match err {
-                KafkaExporterError::ConfigInvalidTopicRegex { pattern, .. } => {
-                    assert_eq!(pattern, "[", "the operator's original pattern is reported");
+                KafkaExporterError::ConfigInvalidTopicRegex {
+                    pattern, signal, ..
+                } => {
+                    assert_eq!(pattern, r"tenant_.)\z|(?:evil.");
+                    assert_eq!(signal, SignalType::Logs);
                 }
                 other => panic!("unexpected error variant: {other:?}"),
             }
@@ -2088,6 +2107,109 @@ pub mod test_support {
                         .await;
 
                     exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): block the first Kafka
+        /// delivery (stall it at the broker), queue a second batch (P2) behind
+        /// it, then send a `Config` that changes the logs topic, then release
+        /// the first delivery.
+        /// Guarantees: a live reconfigure must not retroactively reroute data
+        /// that was accepted before the `Config` across a topic (or credential)
+        /// boundary. Batches accepted before the `Config` (P1, P2) must be
+        /// exported to the ORIGINAL topic under the configuration in effect when
+        /// they were accepted, and only a batch accepted after the `Config` (P3)
+        /// may land on the new topic.
+        #[tokio::test]
+        async fn reconfigure_routes_pre_config_backlog_to_old_topic() {
+            let original_topic = "it-reconfig-backlog-original";
+            let new_topic = "it-reconfig-backlog-new";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(original_topic)
+                    .topic(new_topic),
+                |cluster| async move {
+                    let original_consumer = cluster.consumer().subscribe(&[original_topic]);
+                    let new_consumer = cluster.consumer().subscribe(&[new_topic]);
+
+                    // Block the first delivery: stall every broker round trip so
+                    // P1 stays in flight and P2 remains buffered in the inbox
+                    // when the Config arrives. `round_trip_time` is the harness's
+                    // deterministic "hold pending then release" primitive (a hard
+                    // broker_down would instead fail-fast under message.timeout).
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(400));
+
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(
+                            original_topic.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        // Generous per-message bound so the stalled deliveries
+                        // still succeed (release) rather than timing out.
+                        .with_timeout_ms(5000)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // P1 (first delivery, blocked) and P2 (queued behind it) are
+                    // both accepted before the reconfigure.
+                    let p1 = logs_request_bytes_seq(1);
+                    let p2 = logs_request_bytes_seq(2);
+                    exporter
+                        .send_pdata(logs_pdata(p1.clone(), None))
+                        .await
+                        .expect("send pdata p1 before reconfigure");
+                    exporter
+                        .send_pdata(logs_pdata(p2.clone(), None))
+                        .await
+                        .expect("send pdata p2 before reconfigure");
+
+                    // Change the topic while P1 is in flight and P2 is buffered.
+                    exporter
+                        .send_config(logs_reconfig_json(cluster.bootstrap_servers(), new_topic))
+                        .await;
+
+                    // A batch accepted after the reconfigure.
+                    let p3 = logs_request_bytes_seq(3);
+                    exporter
+                        .send_pdata(logs_pdata(p3.clone(), None))
+                        .await
+                        .expect("send pdata p3 after reconfigure");
+
+                    // DESIRED: the batches accepted before the Config land on the
+                    // original topic; the batch accepted after it lands on the
+                    // new topic.
+                    let mut on_original: std::collections::HashSet<Vec<u8>> =
+                        std::collections::HashSet::new();
+                    for _ in 0..2 {
+                        let m = original_consumer.recv().await;
+                        let _ = on_original
+                            .insert(m.payload.clone().expect("record carries a payload"));
+                    }
+                    assert!(
+                        on_original.contains(&p1),
+                        "P1 (accepted before Config) must land on the original topic"
+                    );
+                    assert!(
+                        on_original.contains(&p2),
+                        "P2 (accepted before Config) must land on the original topic"
+                    );
+
+                    // The batch accepted after the reconfigure lands on the new
+                    // topic.
+                    let _ = new_consumer.recv().await.assert_payload(&p3);
+
+                    // The new topic must receive neither pre-config batch.
+                    new_consumer
+                        .assert_no_more_messages(Duration::from_millis(500))
+                        .await;
+
+                    exporter.shutdown(Duration::from_secs(2)).await;
                     exporter.await_stopped().await;
                 },
             )

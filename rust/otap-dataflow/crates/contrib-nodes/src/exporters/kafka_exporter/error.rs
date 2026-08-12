@@ -84,11 +84,11 @@ pub enum KafkaExporterError {
 
     /// A dynamic-routing allowlist regex pattern failed to compile.
     #[error(
-        "invalid kafka exporter configuration: invalid regex in {signal}.allowed_topics_regex: '{pattern}': {message}"
+        "invalid kafka exporter configuration: invalid regex in {signal:?}.allowed_topics_regex: '{pattern}': {message}"
     )]
     ConfigInvalidTopicRegex {
-        /// The signal the pattern belongs to (`traces`, `metrics`, or `logs`).
-        signal: String,
+        /// The signal the pattern belongs to.
+        signal: SignalType,
         /// The offending pattern.
         pattern: String,
         /// The regex-compilation error message.
@@ -133,7 +133,7 @@ pub enum KafkaExporterError {
         /// The offending topic value (already sanitized/bounded for safe
         /// rendering).
         topic: String,
-        /// Human-readable reason the topic failed validation.
+        /// Human-readable reason the topic failed validation
         reason: String,
     },
 
@@ -154,12 +154,11 @@ impl KafkaExporterError {
     /// Builds a [`KafkaExporterError::InvalidHeaderTopic`] and emits the routing
     /// warning once, so all "header present but unusable as a topic" cases
     /// (non-UTF-8 value or failed Kafka topic validation) share a single
-    /// construction and log site. The topic value is sanitized/bounded before
-    /// it is logged or stored, since it is client-controlled and may be
-    /// adversarial.
+    /// construction and log site. Both the topic value and the reason are
+    /// sanitized/bounded before they are logged or stored.
     pub(crate) fn invalid_header_topic(topic: impl AsRef<str>, reason: impl Into<String>) -> Self {
         let topic = sanitize_for_log(topic.as_ref());
-        let reason = reason.into();
+        let reason = sanitize_for_log(&reason.into());
         otap_df_telemetry::otel_warn!(
             "kafka.exporter.topic.invalid_header",
             header_topic = %topic,
@@ -217,17 +216,18 @@ mod tests {
     }
 
     /// Scenario: an invalid dynamic-routing regex is reported.
-    /// Guarantees: the Display string names the signal, the pattern, and the
-    /// allowed_topics_regex field so an operator can fix the config.
+    /// Guarantees: the Display string names the signal (rendered from the
+    /// `SignalType`), the pattern, and the allowed_topics_regex field so an
+    /// operator can fix the config.
     #[test]
     fn invalid_topic_regex_message() {
         let err = KafkaExporterError::ConfigInvalidTopicRegex {
-            signal: "logs".to_string(),
+            signal: SignalType::Logs,
             pattern: "[".to_string(),
             message: "unclosed character class".to_string(),
         };
         let s = err.to_string();
-        assert!(s.contains("logs.allowed_topics_regex"), "got: {s}");
+        assert!(s.contains("Logs.allowed_topics_regex"), "got: {s}");
         assert!(s.contains('['), "got: {s}");
     }
 
@@ -242,6 +242,38 @@ mod tests {
                 assert!(
                     !topic.contains('\n'),
                     "raw newline must be escaped: {topic:?}"
+                );
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+
+    /// Scenario: the invalid-header-topic constructor sanitizes the reason,
+    /// using a reason produced by the real `validate_kafka_topic` for a topic
+    /// containing a raw newline (which embeds that client-supplied character
+    /// into the reason string).
+    /// Guarantees: no raw control character from the client-supplied topic
+    /// survives in the stored/logged reason field (log-injection defense also
+    /// covers the reason, not just the topic value).
+    #[test]
+    fn invalid_header_topic_sanitizes_reason() {
+        use crate::common::kafka::validate_kafka_topic;
+        // The offending topic carries a control char that validation reflects
+        // verbatim into its error string.
+        let bad_topic = "evil\ntopic";
+        let reason = validate_kafka_topic(bad_topic)
+            .expect_err("a topic with a newline must fail validation");
+        assert!(
+            reason.contains('\n'),
+            "precondition: the raw validation reason must embed the newline: {reason:?}"
+        );
+
+        let err = KafkaExporterError::invalid_header_topic(bad_topic, reason);
+        match err {
+            KafkaExporterError::InvalidHeaderTopic { reason, .. } => {
+                assert!(
+                    !reason.contains('\n'),
+                    "raw newline in reason must be escaped: {reason:?}"
                 );
             }
             other => panic!("unexpected variant: {other:?}"),

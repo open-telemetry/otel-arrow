@@ -54,6 +54,7 @@ pub mod exporter;
 pub mod metrics;
 pub mod partitioner;
 mod producer;
+mod topic_regex;
 pub mod topic_router;
 
 pub use config::{KafkaExporterConfig, KafkaExporterConfigBuilder};

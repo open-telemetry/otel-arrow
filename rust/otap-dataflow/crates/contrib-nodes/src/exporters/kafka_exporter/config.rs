@@ -3,6 +3,7 @@
 
 //! Configuration structures for the Kafka exporter.
 
+use super::topic_regex;
 pub use crate::common::kafka::TlsConfig;
 use crate::common::kafka::auth::Auth;
 use crate::common::kafka::security::{apply_sasl_config, resolve_security_protocol};
@@ -11,7 +12,6 @@ use crate::common::kafka::{
     validate_kafka_topic,
 };
 use rdkafka::ClientConfig;
-use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -616,22 +616,28 @@ pub struct KafkaExporterConfig(KafkaExporterConfigBuilder);
 /// `allowed_topics[0]:`, `allowed_topics_regex[1]:`) so the caller can prepend
 /// the signal name.
 ///
-/// Each `allowed_topics_regex` pattern is compiled exactly as the exporter
-/// compiles it at runtime -- anchored to a whole-topic match as
-/// `\A(?:<pattern>)\z` -- so an invalid pattern fails fast at config time,
-/// including through the factory `validate_config` path, which runs this
-/// validation without constructing an exporter.
+/// Each `allowed_topics_regex` pattern is compiled via
+/// `topic_regex::compile_anchor_and_validate` -- validated
+/// as a standalone regex and then anchored to a whole-topic match as
+/// `\A(?:<pattern>)\z` -- so an invalid pattern (including one crafted to break
+/// out of the anchoring wrapper) fails fast at config time, including through
+/// the factory `validate_config` path, which runs this validation without
+/// constructing an exporter.
 fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
     validate_kafka_topic(&signal.topic).map_err(|e| format!("topic: {e}"))?;
     for (i, t) in signal.allowed_topics.iter().enumerate() {
         validate_kafka_topic(t).map_err(|e| format!("allowed_topics[{i}]: {e}"))?;
     }
     for (i, p) in signal.allowed_topics_regex.iter().enumerate() {
-        // Compile the anchored form the exporter uses at runtime so validation
-        // and runtime compilation stay in lock-step.
-        Regex::new(&format!(r"\A(?:{p})\z"))
+        // Compile via the same helper the exporter uses at runtime so validation
+        // and runtime compilation stay in lock-step -- including the standalone
+        // check that rejects a pattern which would otherwise break out of the
+        // whole-topic anchoring wrapper.
+        topic_regex::compile_anchor_and_validate(p)
             .map(drop)
-            .map_err(|e| format!("allowed_topics_regex[{i}]: invalid regex '{p}': {e}"))?;
+            .map_err(|message| {
+                format!("allowed_topics_regex[{i}]: invalid regex '{p}': {message}")
+            })?;
     }
     Ok(())
 }
@@ -2069,6 +2075,28 @@ mod tests {
             )
             .try_into();
         let err = result.expect_err("invalid regex entry should be rejected");
+        assert!(
+            err.contains("allowed_topics_regex[0]"),
+            "error should point at the offending pattern, got: {err}"
+        );
+    }
+
+    /// Scenario: a regex allowlist entry is crafted to break out of the
+    /// whole-topic anchoring wrapper (`tenant_.)\z|(?:evil.`), which compiles
+    /// only because its parentheses balance against the wrapper.
+    /// Guarantees: config validation rejects it at config time (fail fast,
+    /// including through the factory validate path), naming the offending entry,
+    /// so a pattern that would under-anchor an alternation and permit unintended
+    /// header-routed topics can never be accepted into a validated config.
+    #[test]
+    fn anchor_breakout_regex_allowlist_entry_is_rejected() {
+        let result: Result<KafkaExporterConfig, _> = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(
+                SignalConfig::new("static".into(), MessageFormat::OtlpProto)
+                    .with_allowed_topics_regex([r"tenant_.)\z|(?:evil."]),
+            )
+            .try_into();
+        let err = result.expect_err("anchor-breakout regex entry should be rejected");
         assert!(
             err.contains("allowed_topics_regex[0]"),
             "error should point at the offending pattern, got: {err}"

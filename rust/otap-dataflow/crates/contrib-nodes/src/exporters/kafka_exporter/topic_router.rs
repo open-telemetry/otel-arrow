@@ -597,14 +597,18 @@ mod tests {
     // ---- Security: operator allowlist / prefix constraint on dynamic routing ----
 
     /// Compiles allowlist regex patterns the same way the exporter does at
-    /// runtime -- anchored to a whole-topic match (`\A(?:<pattern>)\z`, see
-    /// `compile_allowed_topic_regexes` in `exporter.rs`) -- so the router tests
-    /// exercise the real whole-topic matching semantics rather than a substring
-    /// search.
+    /// runtime -- via `topic_regex::compile_anchor_and_validate`, which
+    /// validates each pattern as a standalone regex and anchors it to a
+    /// whole-topic match
+    /// (`\A(?:<pattern>)\z`) -- so the router tests exercise the real
+    /// whole-topic matching semantics rather than a substring search.
     fn compile(patterns: &[&str]) -> Vec<Regex> {
         patterns
             .iter()
-            .map(|p| Regex::new(&format!(r"\A(?:{p})\z")).expect("valid regex"))
+            .map(|p| {
+                crate::exporters::kafka_exporter::topic_regex::compile_anchor_and_validate(p)
+                    .expect("valid regex")
+            })
             .collect()
     }
 
@@ -667,6 +671,44 @@ mod tests {
             .expect("whole-topic match is permitted");
         assert_eq!(&*topic, "tenant_a_logs");
         assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
+    }
+
+    /// Scenario (security: dynamic topic routing): the anchor-breakout operator
+    /// pattern `tenant_.)\z|(?:evil.` is compiled through the real
+    /// `topic_regex::compile_anchor_and_validate` helper the router uses.
+    /// Guarantees: the helper rejects the pattern (so it can never become an
+    /// allowlist entry), and a legitimately compiled `tenant_.*` allowlist does
+    /// not route the unintended `evil`-suffixed topic that the broken-out
+    /// pattern would have permitted -- confirming the bypass is closed on this
+    /// authorization boundary.
+    #[test]
+    fn test_anchor_breakout_pattern_cannot_authorize_unintended_topic() {
+        // The breakout pattern is rejected at compile time.
+        let compiled = crate::exporters::kafka_exporter::topic_regex::compile_anchor_and_validate(
+            r"tenant_.)\z|(?:evil.",
+        );
+        assert!(
+            compiled.is_err(),
+            "the anchor-breakout pattern must not compile into an allowlist entry"
+        );
+
+        // With only a legitimate `tenant_.*` allowlist, the topic the broken-out
+        // pattern would have authorized is rejected.
+        let config = make_signal_config("fallback", Some("x-topic"));
+        let allowed = compile(&["tenant_.*"]);
+        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "x-evil_")]);
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
+        let result = TopicRouter::resolve(&config, Some(&allowed), &ctx, &mut metrics);
+        assert!(
+            matches!(
+                result,
+                Err(KafkaExporterError::DisallowedHeaderTopic { .. })
+            ),
+            "an `evil`-suffixed topic must not be authorized by a legitimate allowlist"
+        );
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 
     /// Scenario: a syntactically valid header-supplied topic that matches
