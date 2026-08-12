@@ -363,6 +363,8 @@ fn inline_attributes(
         }
     }
 
+    // Bulk range copies with MutableArrayData did not improve typical batches in benchmarks.
+    // Revisit that approach for high-cardinality attributes, where the setup cost may amortize.
     let mut map_builder = MapBuilder::with_capacity(
         None,
         StringBuilder::new(),
