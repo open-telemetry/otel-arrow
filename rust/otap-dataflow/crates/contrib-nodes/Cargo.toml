@@ -149,6 +149,10 @@ geneva-exporter = [
     "dep:opentelemetry-proto",
     "dep:url",
 ]
+geneva-certificate-auth = [
+    "geneva-exporter",
+    "geneva-uploader/certificate-auth",
+]
 azure-monitor-exporter = [
     "dep:opentelemetry-proto",
     "dep:reqwest",
