@@ -3,4 +3,4 @@ component: pipeline
 note: "Refactor signal_type_router telemetry to use standard outcome-and-reason enum attributes instead of discrete named metrics."
 issues: [3716]
 subtext: |
-  Migration: The `processor.signal_type_router.signals.*` discrete metrics have been removed. Use `processor.signal_type_router.signals.decision` (with `outcome` and `reason` attributes) instead.
+  Migration: The `processor.type_router.signals.*` discrete metrics have been removed. Use `processor.type_router.signals.decision` (with `outcome` and `reason` attributes) instead.
