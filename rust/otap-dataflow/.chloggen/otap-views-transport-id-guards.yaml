@@ -1,0 +1,8 @@
+change_type: bug_fix
+component: pdata
+note: "Fix OTAP Arrow views to reject still-encoded transport IDs with a typed error before building indexes."
+issues: [2824]
+subtext: |
+  Adds `DecodedOtapArrowRecords`, `DecodedOtapLogsResources`, and
+  `otap_metrics_have_aggregatable_metrics` helper APIs for callers that need
+  decoded or preflighted OTAP Arrow records.

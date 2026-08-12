@@ -1017,6 +1017,45 @@ pub fn remove_transport_optimized_encodings(
     }
 }
 
+/// Decode only the root resource ID column used by resource-level views.
+pub fn remove_transport_optimized_resource_id(record_batch: &RecordBatch) -> Result<RecordBatch> {
+    let schema = record_batch.schema_ref();
+    if is_column_encoded(RESOURCE_ID_COL_PATH, schema) == Some(false) {
+        return Ok(record_batch.clone());
+    }
+
+    let Some(resource_ids) = access_column(RESOURCE_ID_COL_PATH, schema, record_batch.columns())
+    else {
+        return Ok(record_batch.clone());
+    };
+
+    let resource_ids = resource_ids
+        .as_any()
+        .downcast_ref::<UInt16Array>()
+        .ok_or_else(|| Error::InvalidListArray {
+            expect_oneof: vec![DataType::UInt16],
+            actual: resource_ids.data_type().clone(),
+        })?;
+
+    let mut columns = record_batch.columns().to_vec();
+    let mut fields = schema.fields.to_vec();
+    let decoded_resource_ids = remove_delta_encoding_from_column(resource_ids);
+    replace_column(
+        RESOURCE_ID_COL_PATH,
+        None,
+        schema,
+        &mut columns,
+        Arc::new(decoded_resource_ids),
+    );
+    update_field_encoding_metadata(RESOURCE_ID_COL_PATH, None, &mut fields);
+
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).map_err(|e| {
+        Error::UnexpectedRecordBatchState {
+            reason: format!("could not decode resource ID column: {e}"),
+        }
+    })
+}
+
 /// Adds the quasi-delta/transport optimized encoding to the encoding to the parent ID column.
 ///
 /// See the comments on [`super::materialize_parent_id_for_attributes`] for more information about

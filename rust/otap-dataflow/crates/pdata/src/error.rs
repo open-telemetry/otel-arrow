@@ -140,6 +140,12 @@ pub enum Error {
     #[error("RecordBatch not found: {:?}", payload_type)]
     RecordBatchNotFound { payload_type: ArrowPayloadType },
 
+    #[error("Transport-optimized IDs not decoded for {payload_type:?} column `{column}`")]
+    TransportOptimizedIdsNotDecoded {
+        payload_type: ArrowPayloadType,
+        column: String,
+    },
+
     #[error("Invalid protobuf wire format")]
     InvalidProtobufWireFormat,
 
