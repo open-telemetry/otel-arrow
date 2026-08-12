@@ -5,10 +5,12 @@
 
 use crate::{
     admission::AdmissionBinder,
+    attributes::{ChannelImplementation, ChannelKind, ChannelMode, ChannelType},
     channel_metrics::{
-        CHANNEL_IMPL_FLUME, CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_PDATA,
-        CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
-        ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
+        ChannelMetricsRegistry, ChannelReceiverMetricSets, ChannelReceiverMetrics,
+        ChannelReceiverStateMetrics, ChannelSenderFailureMetrics, ChannelSenderMetricSets,
+        ChannelSenderMetrics, LocalChannelQueueDepth, PdataChannelReceiverMetricSets,
+        PdataChannelSenderMetricSets, SharedChannelQueueDepth,
     },
     config::{ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
@@ -402,15 +404,9 @@ pub trait Unwindable {
     /// Remove and return the top frame.
     fn pop_frame(&mut self) -> Option<control::Frame>;
 
-    /// Signal type of the payload, used to attribute per-signal produced /
-    /// consumed item counts during unwinding. Returns `None` when unknown or
-    /// not applicable.
-    ///
-    /// Signal is a property of the whole pdata batch (a batch is homogeneous),
-    /// so it is stored once on the pdata context rather than per frame. It is
-    /// captured on the forward path while the payload is live and survives
-    /// [`Unwindable::drop_payload`], so it remains readable throughout
-    /// unwinding.
+    /// Signal type carried by the payload. Returns `None` when unknown or not
+    /// applicable. Implementations must keep this metadata available after
+    /// [`Unwindable::drop_payload`] so it remains readable during unwinding.
     fn signal(&self) -> Option<SignalType>;
 
     /// Drop the retained payload unless RETURN_DATA is set.
@@ -761,7 +757,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<RateLimiterDeclarationScope>,
         internal_telemetry: Option<InternalTelemetrySettings>,
-    ) -> Result<RuntimePipeline<PData>, Error> {
+    ) -> Result<RuntimePipeline<PData>, Error>
+    where
+        PData: Unwindable,
+    {
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
         let mut exporters = Vec::new();
@@ -1413,7 +1412,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         dest_telemetries: &[NodeTelemetryHandle],
         channel_metrics: &mut ChannelMetricsRegistry,
         channel_metrics_enabled: bool,
-    ) -> Result<(Vec<Sender<PData>>, Vec<Receiver<PData>>), Error> {
+    ) -> Result<(Vec<Sender<PData>>, Vec<Receiver<PData>>), Error>
+    where
+        PData: Unwindable,
+    {
         let any_source_is_shared = src_nodes.iter().any(|source| source.is_shared());
         let any_dest_is_shared = dest_nodes.iter().any(|dest| dest.is_shared());
         let use_shared_channels = any_source_is_shared || any_dest_is_shared;
@@ -1425,16 +1427,49 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         debug_assert_eq!(num_destinations, dest_contexts.len());
         debug_assert_eq!(num_destinations, dest_telemetries.len());
 
-        let channel_kind = CHANNEL_KIND_PDATA;
+        let channel_kind = ChannelKind::Pdata;
         let capacity = buffer_size.get() as u64;
+
+        let register_sender_metrics = |ctx: &PipelineContext,
+                                       telemetry: &NodeTelemetryHandle,
+                                       entity_key| {
+            let metrics = PdataChannelSenderMetricSets {
+                messages: ctx
+                    .register_measurement_metric_set_for_entity::<ChannelSenderMetrics>(entity_key),
+                failures: ctx
+                    .register_measurement_metric_set_for_entity::<ChannelSenderFailureMetrics>(
+                        entity_key,
+                    ),
+            };
+            for key in metrics.metric_set_keys() {
+                telemetry.track_metric_set(key);
+            }
+            ChannelSenderMetricSets::Pdata(metrics)
+        };
+        let register_receiver_metrics = |ctx: &PipelineContext,
+                                         telemetry: &NodeTelemetryHandle,
+                                         entity_key| {
+            let metrics = PdataChannelReceiverMetricSets {
+                messages: ctx.register_measurement_metric_set_for_entity::<ChannelReceiverMetrics>(
+                    entity_key,
+                ),
+                state: ctx
+                    .register_metric_set_for_entity::<ChannelReceiverStateMetrics>(entity_key),
+            };
+            for key in metrics.metric_set_keys() {
+                telemetry.track_metric_set(key);
+            }
+            ChannelReceiverMetricSets::Pdata(metrics)
+        };
 
         if channel_metrics_enabled {
             match (use_shared_channels, num_destinations > 1) {
                 (true, true) => {
-                    let channel_mode = CHANNEL_MODE_SHARED;
-                    let channel_type = CHANNEL_TYPE_MPMC;
-                    let channel_impl = CHANNEL_IMPL_FLUME;
+                    let channel_mode = ChannelMode::Shared;
+                    let channel_type = ChannelType::Mpmc;
+                    let channel_impl = ChannelImplementation::Flume;
                     let (pdata_sender, pdata_receiver) = flume::bounded(buffer_size.get());
+                    let queue_depth = SharedChannelQueueDepth::default();
                     let mut pdata_senders = Vec::with_capacity(num_sources);
                     for ((ctx, telemetry), port) in source_contexts
                         .iter()
@@ -1450,15 +1485,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             channel_impl,
                         );
                         telemetry.add_output_channel_key(port.clone(), sender_entity_key);
-                        let sender_metrics = ctx
-                            .register_metric_set_for_entity::<ChannelSenderMetrics>(
-                                sender_entity_key,
-                            );
-                        telemetry.track_metric_set(sender_metrics.metric_set_key());
+                        let sender_metrics =
+                            register_sender_metrics(ctx, telemetry, sender_entity_key);
                         let sender = SharedSender::mpmc_with_metrics(
                             pdata_sender.clone(),
                             channel_metrics,
                             sender_metrics,
+                            queue_depth.clone(),
+                            Some(<PData as Unwindable>::signal),
                         );
                         pdata_senders.push(Sender::Shared(sender));
                     }
@@ -1475,16 +1509,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 channel_impl,
                             );
                             telemetry.set_input_channel_key(receiver_entity_key);
-                            let receiver_metrics = ctx
-                                .register_metric_set_for_entity::<ChannelReceiverMetrics>(
-                                    receiver_entity_key,
-                                );
-                            telemetry.track_metric_set(receiver_metrics.metric_set_key());
+                            let receiver_metrics =
+                                register_receiver_metrics(ctx, telemetry, receiver_entity_key);
                             let receiver = SharedReceiver::mpmc_with_metrics(
                                 pdata_receiver.clone(),
                                 channel_metrics,
                                 receiver_metrics,
                                 capacity,
+                                queue_depth.clone(),
+                                Some(<PData as Unwindable>::signal),
                             );
                             Receiver::Shared(receiver)
                         })
@@ -1492,11 +1525,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     Ok((pdata_senders, pdata_receivers))
                 }
                 (true, false) => {
-                    let channel_mode = CHANNEL_MODE_SHARED;
-                    let channel_type = CHANNEL_TYPE_MPSC;
-                    let channel_impl = CHANNEL_IMPL_TOKIO;
+                    let channel_mode = ChannelMode::Shared;
+                    let channel_type = ChannelType::Mpsc;
+                    let channel_impl = ChannelImplementation::Tokio;
                     let (pdata_sender, pdata_receiver) =
                         tokio::sync::mpsc::channel::<PData>(buffer_size.get());
+                    let queue_depth = SharedChannelQueueDepth::default();
                     let mut pdata_senders = Vec::with_capacity(num_sources);
                     for ((ctx, telemetry), port) in source_contexts
                         .iter()
@@ -1512,15 +1546,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             channel_impl,
                         );
                         telemetry.add_output_channel_key(port.clone(), sender_entity_key);
-                        let sender_metrics = ctx
-                            .register_metric_set_for_entity::<ChannelSenderMetrics>(
-                                sender_entity_key,
-                            );
-                        telemetry.track_metric_set(sender_metrics.metric_set_key());
+                        let sender_metrics =
+                            register_sender_metrics(ctx, telemetry, sender_entity_key);
                         let sender = SharedSender::mpsc_with_metrics(
                             pdata_sender.clone(),
                             channel_metrics,
                             sender_metrics,
+                            queue_depth.clone(),
+                            Some(<PData as Unwindable>::signal),
                         );
                         pdata_senders.push(Sender::Shared(sender));
                     }
@@ -1535,26 +1568,26 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         channel_impl,
                     );
                     telemetry.set_input_channel_key(receiver_entity_key);
-                    let receiver_metrics = ctx
-                        .register_metric_set_for_entity::<ChannelReceiverMetrics>(
-                            receiver_entity_key,
-                        );
-                    telemetry.track_metric_set(receiver_metrics.metric_set_key());
+                    let receiver_metrics =
+                        register_receiver_metrics(ctx, telemetry, receiver_entity_key);
                     let pdata_receiver = SharedReceiver::mpsc_with_metrics(
                         pdata_receiver,
                         channel_metrics,
                         receiver_metrics,
                         capacity,
+                        queue_depth,
+                        Some(<PData as Unwindable>::signal),
                     );
                     Ok((pdata_senders, vec![Receiver::Shared(pdata_receiver)]))
                 }
                 (false, true) => {
-                    let channel_mode = CHANNEL_MODE_LOCAL;
-                    let channel_type = CHANNEL_TYPE_MPMC;
-                    let channel_impl = CHANNEL_IMPL_INTERNAL;
+                    let channel_mode = ChannelMode::Local;
+                    let channel_type = ChannelType::Mpmc;
+                    let channel_impl = ChannelImplementation::Internal;
                     // ToDo(LQ): Use a local SPMC channel when available.
                     let (pdata_sender, pdata_receiver) =
                         otap_df_channel::mpmc::Channel::new(buffer_size);
+                    let queue_depth = LocalChannelQueueDepth::default();
                     let mut pdata_senders = Vec::with_capacity(num_sources);
                     for ((ctx, telemetry), port) in source_contexts
                         .iter()
@@ -1570,15 +1603,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             channel_impl,
                         );
                         telemetry.add_output_channel_key(port.clone(), sender_entity_key);
-                        let sender_metrics = ctx
-                            .register_metric_set_for_entity::<ChannelSenderMetrics>(
-                                sender_entity_key,
-                            );
-                        telemetry.track_metric_set(sender_metrics.metric_set_key());
+                        let sender_metrics =
+                            register_sender_metrics(ctx, telemetry, sender_entity_key);
                         let sender = LocalSender::mpmc_with_metrics(
                             pdata_sender.clone(),
                             channel_metrics,
                             sender_metrics,
+                            queue_depth.clone(),
+                            Some(<PData as Unwindable>::signal),
                         );
                         pdata_senders.push(Sender::Local(sender));
                     }
@@ -1595,16 +1627,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 channel_impl,
                             );
                             telemetry.set_input_channel_key(receiver_entity_key);
-                            let receiver_metrics = ctx
-                                .register_metric_set_for_entity::<ChannelReceiverMetrics>(
-                                    receiver_entity_key,
-                                );
-                            telemetry.track_metric_set(receiver_metrics.metric_set_key());
+                            let receiver_metrics =
+                                register_receiver_metrics(ctx, telemetry, receiver_entity_key);
                             let receiver = LocalReceiver::mpmc_with_metrics(
                                 pdata_receiver.clone(),
                                 channel_metrics,
                                 receiver_metrics,
                                 capacity,
+                                queue_depth.clone(),
+                                Some(<PData as Unwindable>::signal),
                             );
                             Receiver::Local(receiver)
                         })
@@ -1612,12 +1643,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     Ok((pdata_senders, pdata_receivers))
                 }
                 (false, false) => {
-                    let channel_mode = CHANNEL_MODE_LOCAL;
-                    let channel_type = CHANNEL_TYPE_MPSC;
-                    let channel_impl = CHANNEL_IMPL_INTERNAL;
+                    let channel_mode = ChannelMode::Local;
+                    let channel_type = ChannelType::Mpsc;
+                    let channel_impl = ChannelImplementation::Internal;
                     // ToDo(LQ): Use a local SPSC channel when available.
                     let (pdata_sender, pdata_receiver) =
                         otap_df_channel::mpsc::Channel::new(buffer_size.get());
+                    let queue_depth = LocalChannelQueueDepth::default();
                     let mut pdata_senders = Vec::with_capacity(num_sources);
                     for ((ctx, telemetry), port) in source_contexts
                         .iter()
@@ -1633,15 +1665,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             channel_impl,
                         );
                         telemetry.add_output_channel_key(port.clone(), sender_entity_key);
-                        let sender_metrics = ctx
-                            .register_metric_set_for_entity::<ChannelSenderMetrics>(
-                                sender_entity_key,
-                            );
-                        telemetry.track_metric_set(sender_metrics.metric_set_key());
+                        let sender_metrics =
+                            register_sender_metrics(ctx, telemetry, sender_entity_key);
                         let sender = LocalSender::mpsc_with_metrics(
                             pdata_sender.clone(),
                             channel_metrics,
                             sender_metrics,
+                            queue_depth.clone(),
+                            Some(<PData as Unwindable>::signal),
                         );
                         pdata_senders.push(Sender::Local(sender));
                     }
@@ -1656,16 +1687,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         channel_impl,
                     );
                     telemetry.set_input_channel_key(receiver_entity_key);
-                    let receiver_metrics = ctx
-                        .register_metric_set_for_entity::<ChannelReceiverMetrics>(
-                            receiver_entity_key,
-                        );
-                    telemetry.track_metric_set(receiver_metrics.metric_set_key());
+                    let receiver_metrics =
+                        register_receiver_metrics(ctx, telemetry, receiver_entity_key);
                     let pdata_receiver = LocalReceiver::mpsc_with_metrics(
                         pdata_receiver,
                         channel_metrics,
                         receiver_metrics,
                         capacity,
+                        queue_depth,
+                        Some(<PData as Unwindable>::signal),
                     );
                     Ok((pdata_senders, vec![Receiver::Local(pdata_receiver)]))
                 }
@@ -1673,9 +1703,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         } else {
             match (use_shared_channels, num_destinations > 1) {
                 (true, true) => {
-                    let channel_mode = CHANNEL_MODE_SHARED;
-                    let channel_type = CHANNEL_TYPE_MPMC;
-                    let channel_impl = CHANNEL_IMPL_FLUME;
+                    let channel_mode = ChannelMode::Shared;
+                    let channel_type = ChannelType::Mpmc;
+                    let channel_impl = ChannelImplementation::Flume;
                     let (pdata_sender, pdata_receiver) = flume::bounded(buffer_size.get());
                     let mut pdata_senders = Vec::with_capacity(num_sources);
                     for ((ctx, telemetry), port) in source_contexts
@@ -1714,9 +1744,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     Ok((pdata_senders, pdata_receivers))
                 }
                 (true, false) => {
-                    let channel_mode = CHANNEL_MODE_SHARED;
-                    let channel_type = CHANNEL_TYPE_MPSC;
-                    let channel_impl = CHANNEL_IMPL_TOKIO;
+                    let channel_mode = ChannelMode::Shared;
+                    let channel_type = ChannelType::Mpsc;
+                    let channel_impl = ChannelImplementation::Tokio;
                     let (pdata_sender, pdata_receiver) =
                         tokio::sync::mpsc::channel::<PData>(buffer_size.get());
                     let mut pdata_senders = Vec::with_capacity(num_sources);
@@ -1754,9 +1784,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     ))
                 }
                 (false, true) => {
-                    let channel_mode = CHANNEL_MODE_LOCAL;
-                    let channel_type = CHANNEL_TYPE_MPMC;
-                    let channel_impl = CHANNEL_IMPL_INTERNAL;
+                    let channel_mode = ChannelMode::Local;
+                    let channel_type = ChannelType::Mpmc;
+                    let channel_impl = ChannelImplementation::Internal;
                     // ToDo(LQ): Use a local SPMC channel when available.
                     let (pdata_sender, pdata_receiver) =
                         otap_df_channel::mpmc::Channel::new(buffer_size);
@@ -1797,9 +1827,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     Ok((pdata_senders, pdata_receivers))
                 }
                 (false, false) => {
-                    let channel_mode = CHANNEL_MODE_LOCAL;
-                    let channel_type = CHANNEL_TYPE_MPSC;
-                    let channel_impl = CHANNEL_IMPL_INTERNAL;
+                    let channel_mode = ChannelMode::Local;
+                    let channel_type = ChannelType::Mpsc;
+                    let channel_impl = ChannelImplementation::Internal;
                     // ToDo(LQ): Use a local SPSC channel when available.
                     let (pdata_sender, pdata_receiver) =
                         otap_df_channel::mpsc::Channel::new(buffer_size.get());
@@ -2419,7 +2449,7 @@ impl ResolvedHyperEdgeRuntime {
         core_id: usize,
     ) -> Result<HyperEdgeWiring<PData>, Error>
     where
-        PData: 'static + Clone + Debug,
+        PData: 'static + Clone + Debug + Unwindable,
     {
         let channel_id = self.channel_id();
         let ResolvedHyperEdgeRuntime {
