@@ -315,7 +315,7 @@ impl ArrayValueMut for ByteArrayValueStorage {
         )))
     }
 
-    fn retain(&mut self, item_callback: &mut ArrayValueMutIteratorCallback) {
+    fn retain(&mut self, item_callback: &mut ArrayValueMutIteratorCallback<'_>) {
         let mut index = 0;
         self.values.retain_mut(|v| {
             let r = (item_callback)(index, v);

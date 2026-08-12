@@ -177,7 +177,7 @@ impl MapValueMut for TestRecord {
         }
     }
 
-    fn retain(&mut self, item_callback: &mut MapValueMutIteratorCallback) {
+    fn retain(&mut self, item_callback: &mut MapValueMutIteratorCallback<'_>) {
         self.values.retain(|k, v| (item_callback)(k, v));
     }
 }

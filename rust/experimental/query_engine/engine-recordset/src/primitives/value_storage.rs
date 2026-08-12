@@ -400,7 +400,7 @@ impl<T: EnumerableValueSource<T>> ArrayValueMut for ArrayValueStorage<T> {
         ValueMutRemoveResult::Removed(old.into())
     }
 
-    fn retain(&mut self, item_callback: &mut ArrayValueMutIteratorCallback) {
+    fn retain(&mut self, item_callback: &mut ArrayValueMutIteratorCallback<'_>) {
         let mut index = 0;
         self.values.retain_mut(|v| {
             let r = (item_callback)(index, v);
@@ -515,7 +515,7 @@ impl<T: EnumerableValueSource<T>> MapValueMut for MapValueStorage<T> {
         }
     }
 
-    fn retain(&mut self, item_callback: &mut MapValueMutIteratorCallback) {
+    fn retain(&mut self, item_callback: &mut MapValueMutIteratorCallback<'_>) {
         self.values.retain(|k, v| (item_callback)(k, v));
     }
 }

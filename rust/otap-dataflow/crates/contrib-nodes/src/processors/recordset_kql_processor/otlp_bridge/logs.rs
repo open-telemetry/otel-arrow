@@ -402,7 +402,7 @@ impl MapValueMut for LogRecord {
         }
     }
 
-    fn retain(&mut self, item_callback: &mut MapValueMutIteratorCallback) {
+    fn retain(&mut self, item_callback: &mut MapValueMutIteratorCallback<'_>) {
         if let Some(v) = &mut self.timestamp {
             if !(item_callback)("time_unix_nano", v) {
                 self.timestamp = None;
