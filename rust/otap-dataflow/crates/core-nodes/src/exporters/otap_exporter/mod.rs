@@ -78,8 +78,8 @@ type StreamBatch = (OtapPdata, OtapArrowRecords);
 #[derive(Debug, Default, Clone)]
 pub struct OtapExporterExportMetrics {
     /// End-to-end duration from yielding a batch to its terminal OTAP stream response.
-    #[metric(name = "duration", unit = "ns")]
-    pub duration_ns: HistogramNormal,
+    #[metric(name = "duration", unit = "s")]
+    pub duration_seconds: HistogramNormal,
 }
 
 /// OTAP stream work partitioned by signal.
@@ -90,23 +90,23 @@ pub struct OtapExporterExportMetrics {
 #[derive(Debug, Default, Clone)]
 pub struct OtapExporterStreamMetrics {
     /// Time spent waiting to enqueue a batch into the per-signal stream task.
-    #[metric(name = "enqueue.duration", unit = "ns")]
-    pub enqueue_duration_ns: HistogramNormal,
+    #[metric(name = "enqueue.duration", unit = "s")]
+    pub enqueue_duration_seconds: HistogramNormal,
     /// Occupancy of the per-signal stream task queue before enqueueing a batch.
     #[metric(name = "enqueue.depth", unit = "{batch}")]
     pub enqueue_depth: HistogramNormal,
     /// Time spent encoding an OTAP batch into outbound Arrow batch records.
-    #[metric(name = "encode.duration", unit = "ns")]
-    pub encode_duration_ns: HistogramNormal,
+    #[metric(name = "encode.duration", unit = "s")]
+    pub encode_duration_seconds: HistogramNormal,
     /// Time spent enqueueing a yielded batch into the response correlation queue.
-    #[metric(name = "correlation.enqueue.duration", unit = "ns")]
-    pub correlation_enqueue_duration_ns: HistogramNormal,
+    #[metric(name = "correlation.enqueue.duration", unit = "s")]
+    pub correlation_enqueue_duration_seconds: HistogramNormal,
     /// Occupancy of the response correlation queue before enqueueing a yielded batch.
     #[metric(name = "correlation.depth", unit = "{batch}")]
     pub correlation_depth: HistogramNormal,
     /// Time spent waiting for the next server response on an OTAP stream.
-    #[metric(name = "response.wait.duration", unit = "ns")]
-    pub response_wait_duration_ns: HistogramNormal,
+    #[metric(name = "response.wait.duration", unit = "s")]
+    pub response_wait_duration_seconds: HistogramNormal,
     /// Number of yielded batches awaiting a matching server response.
     #[metric(name = "response.inflight", unit = "{batch}")]
     pub response_inflight: HistogramNormal,
@@ -115,10 +115,10 @@ pub struct OtapExporterStreamMetrics {
 /// Fixed-memory timing aggregation owned by one OTAP stream worker.
 #[derive(Debug, Default)]
 struct OtapStreamWorkerMetrics {
-    encode_duration_ns: HistogramNormal,
-    correlation_enqueue_duration_ns: HistogramNormal,
+    encode_duration_seconds: HistogramNormal,
+    correlation_enqueue_duration_seconds: HistogramNormal,
     correlation_depth: HistogramNormal,
-    response_wait_duration_ns: HistogramNormal,
+    response_wait_duration_seconds: HistogramNormal,
     response_inflight: HistogramNormal,
 }
 
@@ -137,19 +137,26 @@ impl OtapStreamWorkerMetricsHandle {
         }
     }
 
-    fn record_encode(&self, duration_ns: f64) {
-        self.metrics.lock().encode_duration_ns.record(duration_ns);
+    fn record_encode(&self, duration_seconds: f64) {
+        self.metrics
+            .lock()
+            .encode_duration_seconds
+            .record(duration_seconds);
     }
 
-    fn record_correlation_enqueue(&self, duration_ns: f64, depth: usize) {
+    fn record_correlation_enqueue(&self, duration_seconds: f64, depth: usize) {
         let mut metrics = self.metrics.lock();
-        metrics.correlation_enqueue_duration_ns.record(duration_ns);
+        metrics
+            .correlation_enqueue_duration_seconds
+            .record(duration_seconds);
         metrics.correlation_depth.record(depth as f64);
     }
 
-    fn record_response_wait(&self, duration_ns: f64, inflight: usize) {
+    fn record_response_wait(&self, duration_seconds: f64, inflight: usize) {
         let mut metrics = self.metrics.lock();
-        metrics.response_wait_duration_ns.record(duration_ns);
+        metrics
+            .response_wait_duration_seconds
+            .record(duration_seconds);
         metrics.response_inflight.record(inflight as f64);
     }
 
@@ -159,8 +166,8 @@ impl OtapStreamWorkerMetricsHandle {
 }
 
 #[inline]
-fn elapsed_nanos(start: Instant) -> f64 {
-    start.elapsed().as_secs_f64() * 1e9
+fn elapsed_seconds(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64()
 }
 
 /// Bounded-cardinality OTAP exporter metrics tracker.
@@ -178,16 +185,21 @@ impl OtapExporterMetrics {
         }
     }
 
-    fn record_export_duration(&mut self, signal: SignalType, outcome: Outcome, duration_ns: f64) {
+    fn record_export_duration(
+        &mut self,
+        signal: SignalType,
+        outcome: Outcome,
+        duration_seconds: f64,
+    ) {
         self.exports
             .with(SignalOutcomeAttributes { signal, outcome })
-            .duration_ns
-            .record(duration_ns);
+            .duration_seconds
+            .record(duration_seconds);
     }
 
-    fn record_stream_enqueue(&mut self, signal: SignalType, duration_ns: f64, depth: usize) {
+    fn record_stream_enqueue(&mut self, signal: SignalType, duration_seconds: f64, depth: usize) {
         let metrics = self.streams.with(SignalAttributes { signal });
-        metrics.enqueue_duration_ns.record(duration_ns);
+        metrics.enqueue_duration_seconds.record(duration_seconds);
         metrics.enqueue_depth.record(depth as f64);
     }
 
@@ -198,17 +210,17 @@ impl OtapExporterMetrics {
                 signal: worker.signal,
             });
             metrics
-                .encode_duration_ns
-                .merge(worker_metrics.encode_duration_ns);
+                .encode_duration_seconds
+                .merge(worker_metrics.encode_duration_seconds);
             metrics
-                .correlation_enqueue_duration_ns
-                .merge(worker_metrics.correlation_enqueue_duration_ns);
+                .correlation_enqueue_duration_seconds
+                .merge(worker_metrics.correlation_enqueue_duration_seconds);
             metrics
                 .correlation_depth
                 .merge(worker_metrics.correlation_depth);
             metrics
-                .response_wait_duration_ns
-                .merge(worker_metrics.response_wait_duration_ns);
+                .response_wait_duration_seconds
+                .merge(worker_metrics.response_wait_duration_seconds);
             metrics
                 .response_inflight
                 .merge(worker_metrics.response_inflight);
@@ -335,12 +347,12 @@ impl OTAPExporter {
         effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match update {
-            PDataMetricsUpdate::IncFailed(signal_type, pdata, response_duration_ns) => {
-                if let Some(duration_ns) = response_duration_ns {
+            PDataMetricsUpdate::IncFailed(signal_type, pdata, response_duration_seconds) => {
+                if let Some(duration_seconds) = response_duration_seconds {
                     self.otap_metrics.record_export_duration(
                         signal_type,
                         Outcome::Failure,
-                        duration_ns,
+                        duration_seconds,
                     );
                 }
                 self.pdata_metrics
@@ -354,11 +366,11 @@ impl OTAPExporter {
                     .notify_nack(NackMsg::new("export failed", pdata))
                     .await?;
             }
-            PDataMetricsUpdate::IncExported(signal_type, pdata, response_duration_ns) => {
+            PDataMetricsUpdate::IncExported(signal_type, pdata, response_duration_seconds) => {
                 self.otap_metrics.record_export_duration(
                     signal_type,
                     Outcome::Success,
-                    response_duration_ns,
+                    response_duration_seconds,
                 );
                 self.pdata_metrics
                     .with(SignalOutcomeAttributes {
@@ -387,7 +399,7 @@ impl OTAPExporter {
             Ok(()) => {
                 self.otap_metrics.record_stream_enqueue(
                     signal,
-                    elapsed_nanos(enqueue_start),
+                    elapsed_seconds(enqueue_start),
                     queue_depth,
                 );
                 Ok(EnqueueResult::Done)
@@ -400,7 +412,7 @@ impl OTAPExporter {
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 self.otap_metrics.record_stream_enqueue(
                     signal,
-                    elapsed_nanos(enqueue_start),
+                    elapsed_seconds(enqueue_start),
                     queue_depth,
                 );
                 Ok(EnqueueResult::Done)
@@ -617,7 +629,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 pending.take().expect("pending batch retained");
                             self.otap_metrics.record_stream_enqueue(
                                 signal,
-                                elapsed_nanos(enqueue_start),
+                                elapsed_seconds(enqueue_start),
                                 queue_depth,
                             );
                             permit.send(item);
@@ -627,7 +639,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                                 pending.take().expect("pending batch retained");
                             self.otap_metrics.record_stream_enqueue(
                                 signal,
-                                elapsed_nanos(enqueue_start),
+                                elapsed_seconds(enqueue_start),
                                 queue_depth,
                             );
                         }
@@ -965,7 +977,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                                 .send(PDataMetricsUpdate::IncFailed(
                                     signal_type,
                                     correlated.pdata,
-                                    Some(elapsed_nanos(correlated.sent_at)),
+                                    Some(elapsed_seconds(correlated.sent_at)),
                                 ))
                                 .await;
                         }
@@ -1025,7 +1037,7 @@ fn create_req_stream(
         // send the first batch
         let encode_start = Instant::now();
         let bar_result = producer.produce_bar(&mut first_batch);
-        worker_metrics.record_encode(elapsed_nanos(encode_start));
+        worker_metrics.record_encode(elapsed_seconds(encode_start));
         match bar_result {
             Ok(bar) => {
                 let correlation_depth =
@@ -1034,7 +1046,7 @@ fn create_req_stream(
                 match correlation_tx.reserve().await {
                     Ok(permit) => {
                         worker_metrics.record_correlation_enqueue(
-                            elapsed_nanos(correlation_start),
+                            elapsed_seconds(correlation_start),
                             correlation_depth,
                         );
                         permit.send(CorrelatedPdata {
@@ -1065,7 +1077,7 @@ fn create_req_stream(
         while let Some((pdata, mut otap_batch)) = rx.recv().await {
             let encode_start = Instant::now();
             let bar_result = producer.produce_bar(&mut otap_batch);
-            worker_metrics.record_encode(elapsed_nanos(encode_start));
+            worker_metrics.record_encode(elapsed_seconds(encode_start));
             match bar_result {
                 Ok(bar) => {
                     let correlation_depth =
@@ -1074,7 +1086,7 @@ fn create_req_stream(
                     match correlation_tx.reserve().await {
                         Ok(permit) => {
                             worker_metrics.record_correlation_enqueue(
-                                elapsed_nanos(correlation_start),
+                                elapsed_seconds(correlation_start),
                                 correlation_depth,
                             );
                             permit.send(CorrelatedPdata {
@@ -1116,11 +1128,11 @@ async fn handle_res_stream(
             res = async {
                 let response_wait_start = Instant::now();
                 let res = res_stream.message().await;
-                (res, elapsed_nanos(response_wait_start))
+                (res, elapsed_seconds(response_wait_start))
             } => {
-                let (res, duration_ns) = res;
+                let (res, duration_seconds) = res;
                 worker_metrics.record_response_wait(
-                    duration_ns,
+                    duration_seconds,
                     correlated_by_batch_id.len() + correlation_rx.len(),
                 );
                 match res {
@@ -1132,7 +1144,7 @@ async fn handle_res_stream(
                                     .send(PDataMetricsUpdate::IncExported(
                                         signal_type,
                                         correlated.pdata,
-                                        elapsed_nanos(correlated.sent_at),
+                                        elapsed_seconds(correlated.sent_at),
                                     ))
                                     .await;
                             } else {
@@ -1147,7 +1159,7 @@ async fn handle_res_stream(
                                     .send(PDataMetricsUpdate::IncFailed(
                                         signal_type,
                                         correlated.pdata,
-                                        Some(elapsed_nanos(correlated.sent_at)),
+                                        Some(elapsed_seconds(correlated.sent_at)),
                                     ))
                                     .await;
                             }
@@ -1236,7 +1248,7 @@ async fn fail_correlated_pdata(
             .send(PDataMetricsUpdate::IncFailed(
                 signal_type,
                 correlated.pdata,
-                Some(elapsed_nanos(correlated.sent_at)),
+                Some(elapsed_seconds(correlated.sent_at)),
             ))
             .await;
     }
@@ -1333,16 +1345,16 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let mut metrics = OtapExporterMetrics::register(&pipeline_ctx);
 
-        metrics.record_export_duration(SignalType::Logs, Outcome::Success, 10.0);
-        metrics.record_export_duration(SignalType::Logs, Outcome::Failure, 20.0);
+        metrics.record_export_duration(SignalType::Logs, Outcome::Success, 0.010);
+        metrics.record_export_duration(SignalType::Logs, Outcome::Failure, 0.020);
         let worker = OtapStreamWorkerMetricsHandle::new(SignalType::Metrics);
-        worker.record_encode(30.0);
+        worker.record_encode(0.030);
         metrics.merge_stream_worker_metrics(&[worker]);
 
         assert_eq!(
             metrics
                 .exports_for(SignalType::Logs, Outcome::Success)
-                .duration_ns
+                .duration_seconds
                 .get()
                 .count(),
             1
@@ -1350,16 +1362,16 @@ mod tests {
         assert_eq!(
             metrics
                 .exports_for(SignalType::Logs, Outcome::Failure)
-                .duration_ns
+                .duration_seconds
                 .get()
                 .summary()
                 .1,
-            20.0
+            0.020
         );
         assert_eq!(
             metrics
                 .exports_for(SignalType::Metrics, Outcome::Success)
-                .duration_ns
+                .duration_seconds
                 .get()
                 .count(),
             0
@@ -1367,16 +1379,16 @@ mod tests {
         assert_eq!(
             metrics
                 .streams_for(SignalType::Metrics)
-                .encode_duration_ns
+                .encode_duration_seconds
                 .get()
                 .summary()
                 .1,
-            30.0
+            0.030
         );
         assert_eq!(
             metrics
                 .streams_for(SignalType::Logs)
-                .encode_duration_ns
+                .encode_duration_seconds
                 .get()
                 .count(),
             0
@@ -1384,7 +1396,7 @@ mod tests {
     }
 
     /// Scenario: OTAP exporter metrics are transferred into terminal snapshots twice.
-    /// Guarantees: Touched buckets include signal/outcome wire values once and are then cleared.
+    /// Guarantees: Touched buckets include bounded wire attributes and seconds-based duration units once, then clear.
     #[test]
     fn otap_exporter_terminal_snapshots_preserve_attributes_once() {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -1405,6 +1417,7 @@ mod tests {
                 && snapshot.measurement_attribute_value("signal") == Some("traces")
                 && snapshot.measurement_attribute_value("outcome") == Some("failure")
                 && snapshot.descriptor().metrics[0].instrument == Instrument::ExponentialHistogram
+                && snapshot.descriptor().metrics[0].unit == "s"
         }));
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "exporter.otap.streams"
@@ -1414,6 +1427,20 @@ mod tests {
                     .metrics
                     .iter()
                     .all(|metric| metric.instrument == Instrument::ExponentialHistogram)
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .all(|metric| match metric.name {
+                        "enqueue.duration"
+                        | "encode.duration"
+                        | "correlation.enqueue.duration"
+                        | "response.wait.duration" => metric.unit == "s",
+                        "enqueue.depth" | "correlation.depth" | "response.inflight" => {
+                            metric.unit == "{batch}"
+                        }
+                        _ => false,
+                    })
         }));
         assert!(metrics.terminal_snapshots().is_empty());
     }
@@ -1437,20 +1464,26 @@ mod tests {
 
         metrics.merge_stream_worker_metrics(std::slice::from_ref(&worker));
         let stream_metrics = metrics.streams_for(SignalType::Logs);
-        assert_eq!(stream_metrics.encode_duration_ns.get().count(), 128);
+        assert_eq!(stream_metrics.encode_duration_seconds.get().count(), 128);
         assert_eq!(
-            stream_metrics.correlation_enqueue_duration_ns.get().count(),
+            stream_metrics
+                .correlation_enqueue_duration_seconds
+                .get()
+                .count(),
             128
         );
         assert_eq!(stream_metrics.correlation_depth.get().count(), 128);
-        assert_eq!(stream_metrics.response_wait_duration_ns.get().count(), 128);
+        assert_eq!(
+            stream_metrics.response_wait_duration_seconds.get().count(),
+            128
+        );
         assert_eq!(stream_metrics.response_inflight.get().count(), 128);
 
         metrics.merge_stream_worker_metrics(&[worker]);
         assert_eq!(
             metrics
                 .streams_for(SignalType::Logs)
-                .encode_duration_ns
+                .encode_duration_seconds
                 .get()
                 .count(),
             128,

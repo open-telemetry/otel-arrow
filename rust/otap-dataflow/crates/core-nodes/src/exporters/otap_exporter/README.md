@@ -100,27 +100,28 @@ by the exporter.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.otap.exports.duration` | `ns` | `signal`, `outcome` | Distribution of end-to-end durations from yielding a batch to its terminal OTAP stream response. |
+| `exporter.otap.exports.duration` | `s` | `signal`, `outcome` | Distribution of end-to-end durations from yielding a batch to its terminal OTAP stream response. |
 
 `signal` is one of `traces`, `metrics`, or `logs`. The exporter emits the
 terminal `outcome` values `success` and `failure`. Export duration uses a
-bounded exponential histogram; query its distribution for latency quantiles.
+bounded exponential histogram and is reported in seconds; query its
+distribution for latency quantiles.
 
 #### `exporter.otap.streams`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.otap.streams.enqueue.duration` | `ns` | `signal` | Time spent waiting to enqueue a batch into a per-signal stream task. |
+| `exporter.otap.streams.enqueue.duration` | `s` | `signal` | Time spent waiting to enqueue a batch into a per-signal stream task. |
 | `exporter.otap.streams.enqueue.depth` | `{batch}` | `signal` | Occupancy of the per-signal stream task queue before enqueueing a batch. |
-| `exporter.otap.streams.encode.duration` | `ns` | `signal` | Time spent encoding an OTAP batch into outbound Arrow batch records. |
-| `exporter.otap.streams.correlation.enqueue.duration` | `ns` | `signal` | Time spent enqueueing a yielded batch into the response correlation queue. |
+| `exporter.otap.streams.encode.duration` | `s` | `signal` | Time spent encoding an OTAP batch into outbound Arrow batch records. |
+| `exporter.otap.streams.correlation.enqueue.duration` | `s` | `signal` | Time spent enqueueing a yielded batch into the response correlation queue. |
 | `exporter.otap.streams.correlation.depth` | `{batch}` | `signal` | Occupancy of the response correlation queue before enqueueing a yielded batch. |
-| `exporter.otap.streams.response.wait.duration` | `ns` | `signal` | Time spent waiting for the next server response on an OTAP stream. |
+| `exporter.otap.streams.response.wait.duration` | `s` | `signal` | Time spent waiting for the next server response on an OTAP stream. |
 | `exporter.otap.streams.response.inflight` | `{batch}` | `signal` | Number of yielded batches awaiting a matching server response. |
 
 All stream duration, depth, and in-flight measurements use bounded exponential
 histograms so their distributions and quantiles remain available without
-unbounded telemetry state.
+unbounded telemetry state. Duration measurements are reported in seconds.
 
 ### Events
 
