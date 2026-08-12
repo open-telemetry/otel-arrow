@@ -59,6 +59,8 @@ components:
           - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
           - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
           - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+          - KAFKA_MESSAGE_MAX_BYTES=10485760
+          - KAFKA_REPLICA_FETCH_MAX_BYTES=10485760
           - KAFKA_NUM_PARTITIONS=1
           - KAFKA_LOG_RETENTION_MS=300000
           - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
@@ -75,6 +77,10 @@ components:
         environment:
           - RUST_LOG=info
         command:
+          # Select the Kafka receiver; without this rotel defaults to its OTLP
+          # receiver and never consumes from Kafka.
+          - "--receiver"
+          - "kafka"
           - "--kafka-receiver-logs"
           - "--kafka-receiver-metrics"
           - "--kafka-receiver-traces"

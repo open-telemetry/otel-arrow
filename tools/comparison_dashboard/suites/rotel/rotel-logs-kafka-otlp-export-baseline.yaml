@@ -20,6 +20,10 @@ variables:
   protocol: otlp
   signal: logs
   loadgen_max_batch_size: 1000
+  # Offline synthetic load source (semantic_conventions fetches the semconv
+  # registry from GitHub at runtime, which the sandboxed containers cannot reach).
+  data_source: synthetic
+  num_log_attributes: 12
   compression_method: none
   wait_for_result: true
 
@@ -28,7 +32,7 @@ variables:
   kafka_producer_acks_sarama: 1
   kafka_producer_compression: none
   kafka_producer_linger_ms: 5
-  kafka_producer_max_message_bytes: 1000000
+  kafka_producer_max_message_bytes: 10485760
   kafka_producer_partitioner: consistent_random
   kafka_producer_partitioner_rotel: consistent-random
   kafka_producer_batch_num_messages: 10000

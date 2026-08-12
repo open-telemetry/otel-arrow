@@ -16,7 +16,9 @@ receivers:
     min_fetch_size: {{ kafka_consumer_fetch_min_bytes | default(1) }}
     default_fetch_size: {{ kafka_consumer_max_partition_fetch_bytes | default(1048576) }}
     max_fetch_size: {{ kafka_consumer_fetch_max_bytes | default(1048576) }}
-    isolation_level: {{ kafka_consumer_isolation_level_sarama | default("ReadUncommitted") }}
+    # NOTE: the Go collector (Sarama) kafkareceiver does not expose an
+    # isolation_level setting; it is a librdkafka-only knob used by the DFE and
+    # rotel receivers. Omitted here so the two rdkafka variants can still align.
     logs:
       topic: otel-logs
       encoding: otlp_proto

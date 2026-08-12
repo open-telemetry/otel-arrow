@@ -1639,8 +1639,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
-=======
     fn test_topic_from_transport_header_is_lowercased_on_validation() {
         // A natural mixed-case header name must be normalized (lowercased) so it
         // matches captured transport header names, which are lowercased on
@@ -1670,7 +1668,6 @@ mod tests {
     }
 
     #[test]
->>>>>>> main
     fn test_config_empty_client_id_fails_validation() {
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "")
             .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto));

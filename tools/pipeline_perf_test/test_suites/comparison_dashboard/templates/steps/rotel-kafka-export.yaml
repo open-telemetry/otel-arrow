@@ -19,6 +19,18 @@ steps:
     action:
       wait:
         delay_seconds: 15
+  - name: Create Kafka Topics
+    # Pre-create all benchmark topics so the benchmarked kafka node never races
+    # the broker's lazy auto-creation (which caused UnknownTopicOrPartition and
+    # readiness timeouts at higher rates).
+    action:
+      no_op: {}
+    hooks:
+      run:
+        pre:
+          - run_command:
+              command: >-
+                docker exec kafka-broker sh -c 'for t in otel-logs otel-metrics otel-spans otel-logs-otap otel-metrics-otap otel-spans-otap; do /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic $t --partitions 1 --replication-factor 1 --config max.message.bytes=10485760; done'
   - name: Deploy Backend Engine
     action:
       component_action:
