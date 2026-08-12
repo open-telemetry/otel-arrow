@@ -28,6 +28,7 @@
 //! ```
 
 use async_trait::async_trait;
+use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::validation::validate_typed_config;
@@ -50,10 +51,12 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MetricSetHandler;
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::exporters::clickhouse_exporter::config::{Config, ConfigPatch};
+use crate::exporters::clickhouse_exporter::in_flight::{CompletedWrite, InFlightWrites};
 use crate::exporters::clickhouse_exporter::metrics::ClickhouseExporterMetrics;
 use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
 use crate::exporters::clickhouse_exporter::writer::ClickHouseWriter;
@@ -62,6 +65,7 @@ mod arrays;
 mod config;
 mod consts;
 mod error;
+mod in_flight;
 mod metrics;
 mod schema;
 mod tables;
@@ -137,6 +141,42 @@ impl ClickhouseExporter {
 
         TerminalState::new(deadline, snapshots)
     }
+
+    fn finalize_write(&mut self, completed: CompletedWrite) {
+        let CompletedWrite {
+            signal_type,
+            result,
+        } = completed;
+
+        match result {
+            Ok(written_rows) => {
+                for (payload_type, rows) in written_rows {
+                    self.ch_metrics.add(rows, payload_type);
+                }
+                self.pdata_metrics
+                    .with(SignalOutcomeAttributes {
+                        signal: signal_type,
+                        outcome: Outcome::Success,
+                    })
+                    .messages
+                    .inc();
+            }
+            Err(error) => {
+                self.pdata_metrics
+                    .with(SignalOutcomeAttributes {
+                        signal: signal_type,
+                        outcome: Outcome::Failure,
+                    })
+                    .messages
+                    .inc();
+                otap_df_telemetry::otel_warn!(
+                    "clickhouse.exporter.write.error",
+                    message = format!("Error writing batch to clickhouse: {error}"),
+                    signal_type = format!("{signal_type:?}"),
+                );
+            }
+        }
+    }
 }
 
 /// Register Clickhouse exporter with the OTAP exporter factory
@@ -177,19 +217,21 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
             message = "Clickhouse exporter starting",
             endpoint = self.config.endpoint,
             database = self.config.database,
-            username = self.config.username
+            username = self.config.username,
+            max_in_flight = self.config.max_in_flight.get()
         );
 
         let mut batch_transformer = BatchTransformer::new();
         let clickhouse_writer =
-            ClickHouseWriter::new(&self.config)
-                .await
-                .map_err(|e| Error::ExporterError {
+            Rc::new(ClickHouseWriter::new(&self.config).await.map_err(|e| {
+                Error::ExporterError {
                     exporter: exporter_id.clone(),
                     kind: ExporterErrorKind::Connect,
                     error: format!("clickhouse writer initialization error: {e}"),
                     source_detail: format_error_sources(&e),
-                })?;
+                }
+            })?);
+        let mut in_flight_writes = InFlightWrites::new(self.config.max_in_flight);
 
         // Start periodic telemetry collection (internal metrics)
         let telemetry_cancel_handle = effect_handler
@@ -198,12 +240,37 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
         // Message loop
         loop {
-            match inbox.recv().await? {
+            let accepting_pdata = !in_flight_writes.is_at_capacity();
+            let message = tokio::select! {
+                biased;
+
+                completed = in_flight_writes.next_completion(), if !in_flight_writes.is_empty() => {
+                    if let Some(completed) = completed {
+                        self.finalize_write(completed);
+                    }
+                    continue;
+                }
+                message = inbox.recv_when(accepting_pdata) => message?,
+            };
+
+            match message {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     otap_df_telemetry::otel_info!(
                         "clickhouse.exporter.shutdown",
                         message = "Clickhouse exporter shutting down",
                     );
+                    let abandoned = in_flight_writes
+                        .drain_until(tokio::time::Instant::from_std(deadline), |completed| {
+                            self.finalize_write(completed);
+                        })
+                        .await;
+                    if abandoned > 0 {
+                        otap_df_telemetry::otel_warn!(
+                            "clickhouse.exporter.shutdown.deadline_exceeded",
+                            message = "ClickHouse writes abandoned at the shutdown deadline",
+                            abandoned_writes = abandoned,
+                        );
+                    }
                     let _ = telemetry_cancel_handle.cancel().await;
                     return Ok(Self::terminal_state(
                         deadline,
@@ -282,34 +349,15 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             continue;
                         }
                     };
-                    match clickhouse_writer
-                        .write_batches(&write_batches, &mut self.ch_metrics)
-                        .await
-                    {
-                        Ok(_) => {
-                            self.pdata_metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Success,
-                                })
-                                .messages
-                                .inc();
-                        }
-                        Err(e) => {
-                            self.pdata_metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .messages
-                                .inc();
-                            otap_df_telemetry::otel_warn!(
-                                "clickhouse.exporter.write.error",
-                                message = format!("Error writing batch to clickhouse: {}", e),
-                                signal_type = format!("{:?}", signal_type),
-                            );
-                        }
-                    }
+                    let writer = Rc::clone(&clickhouse_writer);
+                    let write_future: LocalBoxFuture<'static, CompletedWrite> =
+                        Box::pin(async move {
+                            CompletedWrite {
+                                signal_type,
+                                result: writer.write_batches(&write_batches).await,
+                            }
+                        });
+                    in_flight_writes.push(write_future);
                 }
                 _ => {
                     // Ignore other messages
@@ -323,6 +371,8 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 mod tests {
     use super::*;
 
+    /// Scenario: the ClickHouse exporter is registered with its public component URN.
+    /// Guarantees: configuration references continue to resolve to the exporter factory.
     #[test]
     fn test_urn_constant() {
         assert_eq!(CLICKHOUSE_EXPORTER_URN, "urn:otel:exporter:clickhouse");

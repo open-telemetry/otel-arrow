@@ -315,10 +315,13 @@ impl ArrayValueMut for ByteArrayValueStorage {
         )))
     }
 
-    fn retain(&mut self, item_callback: &mut dyn IndexValueMutCallback) {
+    fn retain(
+        &mut self,
+        item_callback: &mut dyn FnMut(usize, &mut (dyn AsStaticValueMut + 'static)) -> bool,
+    ) {
         let mut index = 0;
         self.values.retain_mut(|v| {
-            let r = item_callback.next(index, v);
+            let r = (item_callback)(index, v);
             index += 1;
             r
         });
