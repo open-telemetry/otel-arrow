@@ -6,7 +6,7 @@
 
 - Type: `processor:log_sampling` (`urn:otel:processor:log_sampling`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

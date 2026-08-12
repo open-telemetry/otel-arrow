@@ -4,7 +4,7 @@
 
 - Type: `urn:microsoft:exporter:geneva`
 - Feature gate: `geneva-exporter`
-- Stability: Alpha; supports logs and traces
+- Stability: alpha
 
 ## Overview
 
@@ -12,6 +12,8 @@ The Geneva Exporter is designed for Microsoft products to send telemetry data
 to Microsoft's Geneva monitoring backend. It is not meant to be used outside
 of Microsoft products and is open sourced to demonstrate best practices and to
 be transparent about what is being collected.
+
+It currently supports exporting logs and traces.
 
 ## Getting Started
 

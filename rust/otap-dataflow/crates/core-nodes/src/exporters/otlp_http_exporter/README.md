@@ -6,7 +6,7 @@
 
 - Type: `exporter:otlp_http` (`urn:otel:exporter:otlp_http`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

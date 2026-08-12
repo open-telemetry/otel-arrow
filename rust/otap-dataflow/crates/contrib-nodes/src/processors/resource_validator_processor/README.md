@@ -4,7 +4,7 @@
 
 - Type: `processor:resource_validator` (`urn:otel:processor:resource_validator`)
 - Feature gate: `resource-validator-processor`
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

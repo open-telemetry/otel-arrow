@@ -6,7 +6,7 @@
 
 - Type: `receiver:traffic_generator` (`urn:otel:receiver:traffic_generator`)
 - Feature gate: `dev-tools`
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 
