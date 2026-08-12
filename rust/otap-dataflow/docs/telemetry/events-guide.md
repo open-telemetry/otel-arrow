@@ -49,11 +49,9 @@ All events MUST be emitted using the `otel_*` macros from the
   event name. Raw `tracing` macros do not require one, and their default name
   includes the file path and line number -- which is not durable and breaks
   filtering, alerting, and dashboards whenever code is moved or reformatted.
-- **Automatic `target`.** Registered component modules bind the wrappers to a
-  stable component target. Other code uses the Cargo package name. When
-  exported via OTLP, this becomes the `InstrumentationScope.name`. With raw
-  `tracing` macros the default target is the module path, which is an internal
-  implementation detail and can change without notice.
+- **Automatic `target`.** Registered components use
+  `<package>::<kind>::<name>`; other code uses the Cargo package name. When
+  exported via OTLP, this becomes `InstrumentationScope.name`.
 
 ### Available macros
 
@@ -64,177 +62,9 @@ All events MUST be emitted using the `otel_*` macros from the
 | `otel_warn!` | WARN |
 | `otel_error!` | ERROR |
 
-### Component-aware targets
-
-#### Motivation
-
-The tracing target serves two externally observable purposes:
-
-- `EnvFilter` uses it to select which callsites are enabled.
-- OTLP log export records it as `InstrumentationScope.name`.
-
-A package-only target is stable, but it is too broad for packages containing
-many components. For example, setting `otap-df-core-nodes=debug` enables debug
-events from every receiver, processor, and exporter in that package. During an
-incident, an operator should be able to temporarily increase verbosity for the
-transform processor without also increasing log volume from unrelated nodes.
-
-Events semantically owned by a registered component MUST therefore use a stable
-component-aware target:
-
-```text
-<cargo-package>::<component-kind>::<component-name>
-```
-
-The component kind and name MUST be taken from the registered component URN:
-
-```text
-urn:<namespace>:<component-kind>:<component-name>
-```
-
-For example:
-
-| Component URN | Component-aware target |
-| --- | --- |
-| `urn:otel:processor:transform` | `otap-df-core-nodes::processor::transform` |
-| `urn:otel:processor:durable_buffer` | `otap-df-core-nodes::processor::durable_buffer` |
-| `urn:otel:receiver:otlp` | `otap-df-core-nodes::receiver::otlp` |
-| `urn:otel:receiver:host_metrics` | `otap-df-core-nodes::receiver::host_metrics` |
-| `urn:otel:exporter:otlp_grpc` | `otap-df-core-nodes::exporter::otlp_grpc` |
-| `urn:otel:receiver:kafka` | `otap-df-contrib-nodes::receiver::kafka` |
-| `urn:otel:exporter:kafka` | `otap-df-contrib-nodes::exporter::kafka` |
-| `urn:microsoft:exporter:geneva` | `otap-df-contrib-nodes::exporter::geneva` |
-
-The URN namespace is omitted because the target is an operational hierarchy,
-not the canonical component identifier. The complete identity remains
-available in `otelcol.node.urn`. A package MUST NOT register two components
-with the same `<component-kind>::<component-name>` pair, even when their URN
-namespaces differ.
-
-Use singular component kinds such as `receiver`, `processor`, `exporter`, and
-`extension`, matching the URN. Use the exact component name from the URN rather
-than a Rust module name. For example, use `processor::transform`, not
-`processors::transform_processor`. Module names are implementation details and
-may change during refactoring.
-
-Code that is not owned by one registered component MUST retain its package-level
-target. Shared code MUST NOT guess a component from the module in which it is
-implemented. When an event semantically belongs to the calling component, the
-component target should be propagated explicitly; otherwise, the shared
-subsystem should use its package-level target.
-
-#### Binding a component target
-
-Declare the component telemetry scope once in the component's root module,
-before its child module declarations:
-
-```rust
-pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
-
-otap_df_telemetry::otel_component_scope!(
-    urn = TRANSFORM_PROCESSOR_URN,
-    kind = "processor",
-    name = "transform",
-);
-
-mod config;
-mod metrics;
-mod routing;
-```
-
-The declaration creates lexically scoped `otel_debug!`, `otel_info!`,
-`otel_warn!`, `otel_error!`, and `otel_event!` wrappers for that module subtree.
-Callsites therefore remain concise and do not repeat the target:
-
-```rust
-otel_debug!("transform.expression.evaluate", expression = %expression);
-```
-
-The macro validates at compile time that `kind` and `name` match the component
-URN, then constructs the static target from the consuming Cargo package. Child
-modules MUST use the lexically scoped macros rather than importing or invoking
-the package-level macros by a fully qualified path.
-
-This mechanism is intentionally lexical. A tracing target is static callsite
-metadata, so it cannot be selected from a runtime node instance. Deriving the
-target from `module_path!()` is also prohibited because Rust module paths are
-implementation details rather than registered component identities.
-
-#### Identity boundaries
-
-The target identifies the stable software component type, not a configured
-runtime instance:
-
-| Concern | Representation |
-| --- | --- |
-| Emitting package and component type | Target / `InstrumentationScope.name` |
-| Canonical component identity | `otelcol.node.urn` |
-| Configured node instance | `otelcol.node.id` |
-| Pipeline instance | `otelcol.pipeline_group.id` and `otelcol.pipeline.id` |
-| Event class and schema | LogRecord `event_name` |
-| Occurrence-specific details | Event attributes and body |
-
-Targets MUST be compile-time-stable and MUST NOT contain configured node IDs,
-pipeline IDs, endpoints, tenant names, or other runtime values. Two configured
-instances of the transform processor use the same component target and are
-distinguished by their entity attributes.
-
-#### Filtering
-
-The hierarchy preserves package-wide filtering while adding narrower scopes:
-
-```text
-# All core nodes at debug.
-warn,otap-df-core-nodes=debug
-
-# All core processors at debug.
-warn,otap-df-core-nodes::processor=debug
-
-# Only the transform processor at debug.
-warn,otap-df-core-nodes::processor::transform=debug
-```
-
-`EnvFilter` target directives use prefix matching. Retaining the Cargo package
-as the first segment means existing package-level directives continue to select
-the new component-aware targets. Because `engine.telemetry.logs.level` can be
-reconciled at runtime, an OpAMP or admin control plane can apply the specific
-component directive during an active incident and restore the normal filter
-afterward without restarting the engine.
-
-Filtering selects the component type. Filtering a single configured instance
-remains a separate concern and MUST NOT be implemented by putting the instance
-ID in the target.
-
-#### Relationship to EventName
-
-EventName values are unchanged by this target migration. EventName naming and
-compatibility are outside the scope of this change.
-
-#### Compatibility and migration
-
-Changing a target changes the exported `InstrumentationScope.name`. Existing
-package-prefix `EnvFilter` directives remain effective, but consumers using an
-exact scope-name comparison, scope grouping, or an allowlist must be updated.
-
-Package-prefix `EnvFilter` directives require no change. Exact-match queries and
-allowlists must replace the old package scope with one or more component scopes.
-For example, the old exact scope:
-
-```text
-otap-df-core-nodes
-```
-
-becomes, depending on the components of interest:
-
-```text
-otap-df-core-nodes::receiver::otlp
-otap-df-core-nodes::processor::transform
-otap-df-core-nodes::exporter::otlp_grpc
-```
-
-See the
-[Stability and Compatibility Guide](stability-compatibility-guide.md#instrumentation-scopes)
-for the compatibility rules governing scope-name changes.
+Registered components declare `otel_component_scope!` at their root module to
+apply the component target to the module subtree. See the
+[telemetry crate README](../../crates/telemetry/README.md#logging-macros).
 
 ### Basic usage
 
