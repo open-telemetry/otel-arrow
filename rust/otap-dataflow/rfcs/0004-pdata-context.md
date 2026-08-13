@@ -388,17 +388,12 @@ identities and fields for partitioning, load-balancing, table lookup
 and various applications of per-tenant configuration.
 
 These bindings will refer to fields and identities in effect for the
-nodes. Such an interface will support table lookup and equality
+nodes. Such an interface will support fast table lookup and equality
 checking.
 
 ```yaml
 TODO e.g.
 ```
-
-Users of the metadata context interface will bind specific mechanisms,
-for receivers to obtain extactors, for exporters to obtain injectors,
-and propagators to get a parition function, a condition set evaluator,
-and so on.
 
 ### Conslusion
 
