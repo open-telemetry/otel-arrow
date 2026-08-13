@@ -154,7 +154,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- |
 | `processor.type_router.signals.decision` | `{message}` | Number of messages with a given routing outcome. |
 
-The `signals.decision` metric includes `outcome` and `reason` attributes to describe the terminal routing result:
+The `signals.decision` metric includes `signal`, `outcome`, and `reason` attributes to describe the terminal routing result:
 
 | Terminal routing result | `outcome` | `reason` |
 | --- | --- | --- |
