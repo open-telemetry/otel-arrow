@@ -46,6 +46,7 @@ config:
 | `required_acks` | string | `"one"` | Required broker acks: `none` (0), `one` (1), or `all` (-1). |
 | `max_message_bytes` | integer | `1000000` | Maximum message size in bytes (`message.max.bytes`). |
 | `linger_ms` | integer | `5` | Artificial delay in ms before sending a batch (`linger.ms`). |
+| `max_in_flight` | integer | `1` | Maximum number of Kafka deliveries kept in flight concurrently before the exporter stops accepting new pdata. `1` (the default) preserves serial send order; higher values pipeline deliveries for throughput. Must be `> 0`. See [Backpressure and concurrency](#backpressure-and-concurrency). |
 | `auth` | object | *none* | Authentication configuration (see [Authentication](#authentication)). |
 | `tls` | object | *none* | TLS configuration (see [TLS Configuration](#tls-configuration)). |
 | `partitioning_strategy` | string | `"consistent_random"` | Librdkafka partitioner algorithm. See [Partitioning](#partitioning). |
@@ -304,6 +305,21 @@ producer_config:
   "batch.num.messages": "10000"
 ```
 
+### Backpressure and concurrency
+
+The exporter encodes and enqueues each accepted pdata to librdkafka and then
+tracks the delivery in a bounded in-flight set. The `max_in_flight` config caps
+how many deliveries may be outstanding at once:
+
+- **`max_in_flight = 1` (default).** Exactly one delivery is awaited at a time,
+  preserving the historical serial send order across batches.
+- **`max_in_flight > 1`.** Deliveries are pipelined for higher throughput. When
+  the in-flight set is full the exporter stops accepting new pdata and only
+  drains completions, so in-flight memory stays bounded and backpressure
+  propagates upstream. Per-partition ordering is still guaranteed by librdkafka
+  for records that share a partition key; only the relative completion order of
+  records targeting different partitions is no longer serialized.
+
 ### Comparison with the Go Kafka exporter
 
 The OpenTelemetry Collector's Go Kafka exporter bundles a synchronous producer
@@ -492,7 +508,7 @@ the equivalent here, assuming this exporter runs with an upstream
 | Go exporter option | Equivalent here | Notes |
 | --- | --- | --- |
 | `retry_on_failure.randomization_factor` | *(no equivalent)* | The retry processor backoff has no jitter. |
-| `sending_queue` (`queue_size`, `num_consumers`) | *(no equivalent)* | No application-level sending queue or backpressure; relies on the pipeline and the librdkafka producer queue. |
+| `sending_queue` (`queue_size`, `num_consumers`) | `max_in_flight` (bounded delivery pipelining) | `max_in_flight` bounds concurrent in-flight deliveries and propagates backpressure upstream; there is still no separate application-level queue with persistent storage. See [Backpressure and concurrency](#backpressure-and-concurrency). |
 | `sending_queue` persistent storage | Add a `processor:durable_buffer` node | Retry/queue state is in-memory; add a durable buffer node for cross-restart durability. |
 | *(in-line per-export retry ordering)* | *(no equivalent)* | The retry processor retries out-of-band, so a later batch may be sent and acked before an earlier batch still being retried. |
 | *(drop after retries exhausted)* | Final nack forwarded upstream | After `max_elapsed_time` the retry processor forwards a final nack; data is dropped at the source. No dead-letter queue. |

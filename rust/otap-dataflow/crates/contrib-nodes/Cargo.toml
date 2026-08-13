@@ -109,6 +109,10 @@ aws = [
     "dep:aws-config",
     "dep:aws-msk-iam-sasl-signer",
 ]
+# Exposes the in-process Kafka mock-broker test suite and exporter harness as a
+# public API for benchmarks (which are compiled as separate crates and so do not
+# see the crate's `#[cfg(test)]` modules). Only intended for `[[bench]]` targets.
+kafka_bench = ["kafka-exporter", "otap-df-otap/test-utils"]
 contrib-receivers = [
     "etw-receiver",
     "kafka-receiver",
@@ -222,6 +226,12 @@ name = "azure_monitor_gzip_batcher"
 path = "benches/exporters/azure_monitor_exporter/gzip_batcher.rs"
 harness = false
 required-features = ["azure-monitor-exporter"]
+
+[[bench]]
+name = "kafka_exporter_throughput"
+path = "benches/exporters/kafka_exporter/throughput.rs"
+harness = false
+required-features = ["kafka_bench"]
 
 [[bench]]
 name = "otlp_bridge_extend"
