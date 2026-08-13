@@ -196,11 +196,11 @@ impl<T: ArrowNativeType> AsRef<[T]> for BufferWrapper<T> {
 
 impl<T: ArrowNativeType + AsStaticValue + Into<i64>> ArrayValue for BufferWrapper<T> {
     fn is_empty(&self) -> bool {
-        self.value.is_empty()
+        self.value.typed_data::<T>().is_empty()
     }
 
     fn len(&self) -> usize {
-        self.value.len()
+        self.value.typed_data::<T>().len()
     }
 
     fn get(&self, index: usize) -> Option<&dyn AsValue> {
@@ -404,7 +404,7 @@ impl<'a> ArrayValueOrRefSlice<'a> {
 
 impl ArrayValue for ArrayValueOrRefSlice<'_> {
     fn is_empty(&self) -> bool {
-        self.range_end_exclusive - self.range_start_inclusive > 0
+        self.len() == 0
     }
 
     fn len(&self) -> usize {
