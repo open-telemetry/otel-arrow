@@ -1,8 +1,0 @@
-change_type: bug_fix
-component: pipeline
-note: Reject unsupported live changes to the process-wide memory limiter.
-issues: [3529]
-subtext: >-
-  Live reconciliation cannot rebuild the process-wide pressure monitor. A
-  memory_limiter change now returns an error instead of accepting configuration
-  that the running monitor cannot apply. Restart the process to change it.

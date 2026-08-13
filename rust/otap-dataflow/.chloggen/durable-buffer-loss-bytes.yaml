@@ -1,5 +1,0 @@
-change_type: enhancement
-component: pipeline
-note: Report persisted bytes removed by durable-buffer runtime retention.
-issues: [2884]
-subtext: The new `processor.durable_buffer.loss.bytes` counter is partitioned by `reason=drop_oldest|expired`.

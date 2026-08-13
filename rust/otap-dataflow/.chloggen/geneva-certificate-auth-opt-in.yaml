@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: Geneva PKCS#12 certificate authentication is now disabled by default and requires an explicit build feature.
-issues: [3408]
-subtext: |
-  Migration: Prefer managed identity, workload identity, or agent-fed authentication. Builds that still require `auth.type: certificate` must enable the `geneva-certificate-auth` feature.

@@ -1,5 +1,0 @@
-change_type: breaking
-component: observability
-note: Invalid internal log-level settings now cause startup or reconciliation to fail.
-issues: [3387]
-subtext: "Migration: Review `engine.telemetry.logs.level` and fix values that do not use the supported severity or target syntax before upgrading. See [log-level configuration](crates/telemetry/README.md#internal-telemetry-collection)."
