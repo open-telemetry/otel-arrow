@@ -173,6 +173,73 @@ config:
   max_concurrent_uploads: 4
 ```
 
+## On-Behalf-Of (OBO) with table routing
+
+OBO lets a single agent upload telemetry on behalf of multiple customer
+identities. When a batch's event/table name has an OBO entry, the exporter
+attaches the customer identity (`onbehalfid`) and an optional annotations recipe
+(`onbehalfannotations`) as GIG query parameters on the upload.
+
+OBO entries are keyed by the **destination** event/table name -- the name
+*after* `event_name_mapping` resolves it, not the pre-mapping source value. This
+matches the Geneva agents (MA, mdsd, AMACA), which all associate OBO with the
+routed/renamed target event.
+
+The following example both renames tables via `event_name_mapping` and enables
+OBO on the resolved destinations:
+
+```yaml
+type: urn:microsoft:exporter:geneva
+config:
+  endpoint: "https://geneva.example.com"
+  environment: production
+  account: "my-account"
+  namespace: "my-namespace"
+  region: westus2
+  config_major_version: 1
+  tenant: "my-tenant"
+  role_name: "df-engine"
+  role_instance: "instance-001"
+  auth:
+    type: systemmanagedidentity
+    msi_resource: "https://monitor.azure.com/"
+
+  # Routing: source event name -> destination table.
+  logs:
+    default_event_name: "Log"        # fallback table for unmapped records
+    event_name_mapping:
+      routing_key: event_name        # route by the record's event name
+      events:
+        audit: AuditLogs             # source "audit" -> table "AuditLogs"
+        raw:                         # null: source "raw" -> table "raw" (unchanged)
+
+  # OBO: keyed by the DESTINATION table name (post-mapping).
+  obo:
+    events:
+      AuditLogs:                     # the destination name, NOT "audit"
+        identity: "Microsoft.AuditService"
+        annotations: '<Config onBehalfFields="resourceId" />'
+      raw:                           # destination == source here (passthrough)
+        identity: "Microsoft.RawService"
+```
+
+How a record flows through the exporter and uploader:
+
+| Incoming event name | Destination table (after mapping) | OBO applied (query params) |
+| --- | --- | --- |
+| `audit` | `AuditLogs` | `onbehalfid=Microsoft.AuditService`, `onbehalfannotations=<Config .../>` |
+| `raw` | `raw` | `onbehalfid=Microsoft.RawService` (no annotations) |
+| `foo` (unmapped) | `Log` (default) | none -- `Log` is not in `obo.events` |
+
+The uploader resolves the destination table first, then looks up OBO by that
+resolved name. A single flat `obo.events` map is shared across `logs` and
+`spans`, keyed by event/table name.
+
+Gotcha: because OBO keys on the destination, keying an entry on the source value
+silently disables OBO. If you wrote `obo.events.audit` instead of
+`obo.events.AuditLogs`, the post-routing lookup (`AuditLogs`) would miss and the
+`audit` records would upload without OBO -- no error, just silently omitted.
+
 ## Test Configuration
 
 To test using the configuration file `otlp-geneva.yaml` provided
