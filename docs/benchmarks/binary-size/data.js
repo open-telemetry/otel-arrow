@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786588053514,
+  "lastUpdate": 1786595028761,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -13223,6 +13223,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 100.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "136855179+ragumarimuthu-git@users.noreply.github.com",
+            "name": "Ragu Marimuthu",
+            "username": "ragumarimuthu-git"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "00c8f10c341584d2448216f09429285127305d98",
+          "message": "fix(pdata): split oversize single OTLP resource entry when batching by bytes (#3673)\n\n## Description\n\nWhen the batch processor batches by bytes (`sizer: bytes`),\n`make_bytes_batches`\npreviously only cut at **top-level resource-entry boundaries**. A single\nOTLP\nrequest carrying one `ResourceLogs` / `ResourceSpans` /\n`ResourceMetrics` entry\nis a single indivisible top-level field, so it was emitted whole\nregardless of\n`max_size` — e.g. 10k log records in one request never split.\n\nThis rewrites the byte splitter to **descend within an oversize resource\nentry**:\nwhole scopes are packed greedily into resource-entry fragments, and when\na single\nscope is still too large it is split by individual records. The resource\nand\nscope wrapper headers (including `schema_url` and unknown fields) are\nre-encoded\naround every fragment so each output batch is a valid\n`ExportXServiceRequest`.\n\nThe path is signal-agnostic — logs, traces and metrics share the same\nOTLP\nnesting (resource entry = field 1; scope list and record list = field\n2), so one\ncode path covers all three.\n\n## Guarantees\n\n- Records are never dropped, duplicated or reordered; unknown wrapper\nfields are\n  preserved.\n- The whole-entry fast path stays byte-exact; splitting only happens for\nentries\n  that exceed `max_size` on their own.\n- Any indivisible unit whose minimal encoding still exceeds `max_size`\n(a lone\nrecord, an opaque/unparseable field, or a wrapper-only fragment) is\nemitted\n  alone, exceeding the limit (best-effort).\n- A malformed nested field aborts sub-splitting and emits the\nentry/scope whole,\nbyte-preserving, rather than reordering the corrupt tail ahead of valid\nrecords.\n\n## Tests\n\nAdds sub-resource splitting tests: single-resource many-records,\nmulti-scope,\nunknown-field preservation, lone-oversize-record, malformed nested\nfields (at\nresource and scope level), plus traces and metrics variants. The logs\nsplit\ntests add an independent **ordered** record comparison (the shared\n`assert_equivalent` canonicalizes into a `BTreeSet`, so it cannot by\nitself catch\nduplication or reordering).\n\n- `cargo test -p otap-df-pdata otlp::batching` → 12 passed\n- `cargo test -p otap-df-core-nodes batch_processor` → 50 passed\n- `cargo clippy -p otap-df-pdata --all-targets -- -D warnings` → clean\n\nFixes #3661\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>\nCopilot-Session: bfc8430d-07c1-49bb-9497-ef6471a3cd7d",
+          "timestamp": "2026-08-13T03:17:13Z",
+          "tree_id": "5ad1801395115d5b0dfe975bb74811e1da8a4279",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/00c8f10c341584d2448216f09429285127305d98"
+        },
+        "date": 1786595016379,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 81.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 68.9,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 113.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 100.54,
             "unit": "MB"
           }
         ]
