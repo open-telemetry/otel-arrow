@@ -191,7 +191,7 @@ impl BearerAuth {
 /// adapter: drops the rejected token generation so a retry waits for a fresh
 /// token instead of reusing the rejected one.
 ///
-/// Takes the exporter's `Option<BearerAuth<_>>` directly so the common
+/// Takes the exporter's `Option<BearerAuth>` directly so the common
 /// "rejection reported, provider may or may not be bound" shape is expressed
 /// once. A no-op when no provider is bound (`rejected_generation` is `None`) or
 /// the rejection is stale (a newer token was already cached), per
