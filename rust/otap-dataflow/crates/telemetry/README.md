@@ -114,6 +114,10 @@ reconciliation applies changes to this field to existing tracing subscribers,
 so an OpAMP or admin control plane can temporarily increase verbosity without
 restarting the engine. Failed reconciliation preserves the active filter.
 
+`EnvFilter` target directives use prefix matching. A directive for
+`<package>::<kind>::<name>` also matches another component whose target begins
+with that complete string.
+
 At startup, a valid `RUST_LOG` environment variable takes precedence over
 `logs.level`. After startup, a successful full-engine reconciliation makes the
 reconciled `logs.level` authoritative and replaces the environment-derived

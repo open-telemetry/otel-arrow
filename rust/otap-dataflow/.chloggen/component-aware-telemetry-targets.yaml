@@ -1,6 +1,6 @@
 change_type: breaking
 component: observability
-note: Use component-specific `InstrumentationScope.name` values for internal logs, enabling log-level filters to target individual components.
+note: Use component-specific `InstrumentationScope.name` values for internal logs, enabling more targeted log-level filters.
 issues: [3738]
 subtext: |
-  Example: `otap-df-core-nodes` -> `otap-df-core-nodes::processor::transform` applies to transform events only; other components use `<package>::<kind>::<name>`. Use these targets in `engine.telemetry.logs.level`. Migration: update exact scope-name matches; package filters still work.
+  Example: `otap-df-core-nodes` -> `otap-df-core-nodes::processor::transform` selects the transform target prefix. Other components use `<package>::<kind>::<name>`. Use these targets in `engine.telemetry.logs.level`; `EnvFilter` uses prefix matching. Migration: update exact scope-name matches.

@@ -71,6 +71,20 @@ mod second_scoped_component {
     }
 }
 
+mod prefix_collision_component {
+    const COMPONENT_URN: &str = "urn:otel:processor:scope_test_extra";
+
+    otap_df_telemetry::otel_component_scope!(
+        urn = COMPONENT_URN,
+        kind = "processor",
+        name = "scope_test_extra",
+    );
+
+    pub(super) fn emit() {
+        otel_info!("test.component.prefix_collision");
+    }
+}
+
 /// Scenario: a component scope emits events from its root and a child module.
 /// Guarantees: every event inherits the stable package, kind, and component target.
 #[test]
@@ -137,10 +151,10 @@ fn base_macros_support_explicit_and_default_targets() {
     );
 }
 
-/// Scenario: target directives select a component kind or one exact component.
-/// Guarantees: component targets preserve hierarchical EnvFilter selection semantics.
+/// Scenario: target directives select a component kind or component target prefix.
+/// Guarantees: EnvFilter prefix semantics include components with prefix-colliding names.
 #[test]
-fn component_targets_support_hierarchical_filtering() {
+fn component_targets_support_hierarchical_prefix_filtering() {
     let kind_capture = TargetCapture::default();
     let kind_targets = Arc::clone(&kind_capture.targets);
     let kind_filter = EnvFilter::try_new("off,otap-df-telemetry::processor=debug")
@@ -175,6 +189,7 @@ fn component_targets_support_hierarchical_filtering() {
 
     tracing::subscriber::with_default(component_subscriber, || {
         scoped_component::emit_from_root();
+        prefix_collision_component::emit();
         second_scoped_component::emit();
     });
 
@@ -182,7 +197,10 @@ fn component_targets_support_hierarchical_filtering() {
         *component_targets
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        ["otap-df-telemetry::processor::scope_test"]
+        [
+            "otap-df-telemetry::processor::scope_test",
+            "otap-df-telemetry::processor::scope_test_extra",
+        ]
     );
 }
 
