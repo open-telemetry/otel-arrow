@@ -34,7 +34,6 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 slotmap = { workspace = true }
 parking_lot = { workspace = true }
-prost = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }
 arc-swap = { workspace = true }
@@ -50,6 +49,7 @@ criterion = { workspace = true }
 temp-env = { workspace = true }
 tempfile = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
+prost = { workspace = true }
 
 [[bench]]
 name = "distribution_record"
