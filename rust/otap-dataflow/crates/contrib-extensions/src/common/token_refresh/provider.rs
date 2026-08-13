@@ -38,7 +38,7 @@ use super::metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
 /// that does not clear this margin: the refresh would then be scheduled inside
 /// the window in which the cached token is already unusable, so every token
 /// cycle would stall until the refresh landed.
-pub(crate) const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
+pub const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 /// Floor between successful refreshes; avoids busy-looping on near-expired
 /// tokens.
 const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
