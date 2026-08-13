@@ -3,6 +3,15 @@
 If working on Rust code (i.e., the `rust/` directory), read and follow all
 instructions in [rust/otap-dataflow/AGENTS.md](rust/otap-dataflow/AGENTS.md).
 
+## Reviewing changes
+
+When reviewing a pull request, follow
+[rust/otap-dataflow/docs/ai/ai-assisted-pr-review.md](rust/otap-dataflow/docs/ai/ai-assisted-pr-review.md).
+It describes what matters in an OTAP Dataflow review for both human and agent
+reviewers: architectural invariants, runtime and performance characteristics,
+bounded resources, backpressure, correctness, semantic fidelity, test adequacy,
+and security.
+
 ## ASCII-only source
 
 Rust source under `rust/otap-dataflow` must be ASCII-only; CI

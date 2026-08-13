@@ -9,6 +9,11 @@ impl TryFrom<OtlpProtoMessage> for OtapPdata {
     type Error = Error;
 
     fn try_from(value: OtlpProtoMessage) -> Result<Self, Self::Error> {
-        Ok(OtapPdata::new_todo_context(value.try_into()?))
+        let payload = value
+            .try_into()
+            .map_err(|error: prost::EncodeError| Error::PDataError {
+                reason: error.to_string(),
+            })?;
+        Ok(OtapPdata::new_todo_context(payload))
     }
 }

@@ -6,8 +6,8 @@ import {
   updateChannelSeries,
 } from '../charts-controller.js';
 
-// Verifies per-channel sender/receiver counters are converted into rates and
-// merged into a single channel sample point.
+// Scenario: Channel snapshots contain bounded sender outcome, failure, and receiver signal buckets.
+// Guarantees: Only successful sends become throughput and actionable send failures remain classified.
 test('updateChannelSeries aggregates sender/receiver rates per channel', () => {
   const channelSeries = new Map();
   const metricSets = [
@@ -15,18 +15,18 @@ test('updateChannelSeries aggregates sender/receiver rates per channel', () => {
       name: 'channel.sender',
       attributes: { 'channel.id': 'ch1' },
       metrics: [
-        { name: 'send.count', value: 20 },
-        { name: 'send.error_full', value: 2 },
-        { name: 'send.error_closed', value: 1 },
+        { name: 'messages', value: 20, attributes: { signal: 'logs', outcome: 'success' } },
+        { name: 'messages', value: 2, attributes: { signal: 'logs', outcome: 'refused' } },
+        { name: 'messages', value: 1, attributes: { signal: 'logs', outcome: 'failure' } },
+        { name: 'failures', value: 2, attributes: { signal: 'logs', 'error.type': 'full' } },
+        { name: 'failures', value: 1, attributes: { signal: 'logs', 'error.type': 'closed' } },
       ],
     },
     {
       name: 'channel.receiver',
       attributes: { 'channel.id': 'ch1' },
       metrics: [
-        { name: 'recv.count', value: 10 },
-        { name: 'recv.error_empty', value: 4 },
-        { name: 'recv.error_closed', value: 2 },
+        { name: 'messages', value: 10, attributes: { signal: 'logs' } },
       ],
     },
   ];
@@ -49,13 +49,11 @@ test('updateChannelSeries aggregates sender/receiver rates per channel', () => {
     recvRate: 5,
     sendErrorFullRate: 1,
     sendErrorClosedRate: 0.5,
-    recvErrorEmptyRate: 2,
-    recvErrorClosedRate: 1,
   });
 });
 
-// Verifies edge-rate computation prefers the sampled channel-series point when
-// available instead of recalculating from raw cumulative counters.
+// Scenario: An edge has both a sampled channel-series point and raw bounded metric buckets.
+// Guarantees: Edge rendering prefers the sample and reports no synthetic receiver errors.
 test('computeEdgeRates uses channel series point when available', () => {
   const channelSeries = new Map([
     [
@@ -68,8 +66,6 @@ test('computeEdgeRates uses channel series point when available', () => {
             recvRate: 7,
             sendErrorFullRate: 0.25,
             sendErrorClosedRate: 0.75,
-            recvErrorEmptyRate: 0.5,
-            recvErrorClosedRate: 1.5,
           },
         ],
       },
@@ -80,8 +76,12 @@ test('computeEdgeRates uses channel series point when available', () => {
     id: 'edge-1',
     channelId: 'ch1',
     data: {
-      sender: { metrics: [{ name: 'send.count', value: 100 }] },
-      receiver: { metrics: [{ name: 'recv.count', value: 100 }] },
+      sender: {
+        metrics: [
+          { name: 'messages', value: 100, attributes: { outcome: 'success' } },
+        ],
+      },
+      receiver: { metrics: [{ name: 'messages', value: 100 }] },
     },
   };
 
@@ -94,21 +94,14 @@ test('computeEdgeRates uses channel series point when available', () => {
     getWindowMs: () => 60_000,
     getDisplayTimeMs: () => 2_000,
     calcRate: (value, sampleSeconds) => value / sampleSeconds,
-    metricMap: (metrics) => {
-      const out = {};
-      for (const metric of metrics || []) {
-        out[metric.name] = metric.value;
-      }
-      return out;
-    },
   });
 
   assert.deepEqual(rates.get('edge-1'), {
     sendRate: 8,
     recvRate: 7,
     sendErrorRate: 1,
-    recvErrorRate: 2,
-    errorRate: 3,
+    recvErrorRate: 0,
+    errorRate: 1,
     active: true,
     errorActive: true,
   });

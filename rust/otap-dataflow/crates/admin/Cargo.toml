@@ -36,6 +36,7 @@ include_dir = { workspace = true }
 mime_guess = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
+pprof = { workspace = true }
 jemalloc_pprof = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -134,7 +134,7 @@ Attributes:
 - `otelcol.channel.id`: Unique channel identifier (in scope of the pipeline).
 - `otelcol.channel.kind`: Channel payload kind ("control" or "pdata").
 - `otelcol.channel.mode`: Concurrency mode of the channel ("local" or "shared").
-- `otelcol.channel.type`: Channel type ("mpsc", "mpmc", "spsc", "spmc").
+- `otelcol.channel.type`: Channel type ("mpsc" or "mpmc").
 - `otelcol.channel.impl`: Channel implementation ("tokio", "flume", "internal").
 - `otelcol.channel.sender.out.port`: Output port of the sender node.
 

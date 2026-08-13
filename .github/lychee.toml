@@ -1,0 +1,5 @@
+offline = true
+include_fragments = "full"
+
+# Do not skip hidden directories and files (e.g. .chloggen/README.md)
+hidden = true

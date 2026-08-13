@@ -732,7 +732,7 @@ jobs:
   host-metrics-weaver-live-check:
     runs-on: ubuntu-latest
     env:
-      WEAVER_VERSION: v0.24.0
+      WEAVER_VERSION: v0.25.1
       # Semantic-conventions tag to validate against. Keep in sync with
       # the `VERSION` constant in
       # rust/otap-dataflow/crates/core-nodes/src/receivers/host_metrics_receiver/semconv.rs

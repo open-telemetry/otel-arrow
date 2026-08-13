@@ -73,6 +73,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aligned-vec"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc890384c8602f339876ded803c97ad529f3842aba97f6392b3dba0dd171769b"
+dependencies = [
+ "equator",
+]
+
+[[package]]
 name = "alloca"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1104,7 +1113,7 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1136,7 +1145,7 @@ dependencies = [
 [[package]]
 name = "azure_core_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1164,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1255,7 +1264,7 @@ dependencies = [
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
  "otap-df-test-net",
- "prost",
+ "prost 0.14.4",
  "roaring",
  "serde_json",
  "tikv-jemallocator",
@@ -1469,8 +1478,8 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85a885520bf6249ab931a764ffdb87b0ceef48e6e7d807cfdb21b751e086e1ad"
 dependencies = [
- "prost",
- "prost-types",
+ "prost 0.14.4",
+ "prost-types 0.14.4",
  "tonic",
  "tonic-prost",
  "ureq",
@@ -1485,7 +1494,7 @@ dependencies = [
  "base64",
  "bollard-buildkit-proto",
  "bytes",
- "prost",
+ "prost 0.14.4",
  "serde",
  "serde_json",
  "serde_repr",
@@ -3127,7 +3136,7 @@ dependencies = [
  "itertools 0.14.0",
  "parking_lot",
  "paste",
- "petgraph",
+ "petgraph 0.8.3",
  "tokio",
 ]
 
@@ -3281,6 +3290,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
 
 [[package]]
+name = "debugid"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef552e6f588e446098f6ba40d89ac146c8c7b64aade83c051ee00bb5d2bc18d"
+dependencies = [
+ "uuid",
+]
+
+[[package]]
 name = "deflate64"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3411,15 +3429,6 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "des"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffdd80ce8ce993de27e9f063a444a4d53ce8e8db4c1f00cc03af5ad5a9867a1e"
-dependencies = [
- "cipher",
 ]
 
 [[package]]
@@ -3593,6 +3602,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "equator"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4711b213838dfee0117e3be6ac926007d7f433d7bbe33595975d4190cb07e6fc"
+dependencies = [
+ "equator-macro",
+]
+
+[[package]]
+name = "equator-macro"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44f23cf4b44bfce11a86ace86f8a73ffdec849c9fd00a386a53d278bd9e81fb3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3629,11 +3658,10 @@ dependencies = [
 
 [[package]]
 name = "event-listener"
-version = "5.4.1"
+version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
- "concurrent-queue",
  "parking",
  "pin-project-lite",
 ]
@@ -3755,6 +3783,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
+name = "findshlibs"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40b9e59cd0f7e0806cca4be089683ecb6434e602038df21fe6bf6711b2f07f64"
+dependencies = [
+ "cc",
+ "lazy_static",
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "finl_unicode"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3827,7 +3867,7 @@ checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
 dependencies = [
  "futures-core",
  "futures-sink",
- "spin",
+ "spin 0.9.9",
 ]
 
 [[package]]
@@ -4010,7 +4050,7 @@ dependencies = [
 [[package]]
 name = "geneva-uploader"
 version = "0.5.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=75a2b0ad0e19ecb1322c3c2095dc6e69a2de7e9d#75a2b0ad0e19ecb1322c3c2095dc6e69a2de7e9d"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=f101f2a7bc48a1ca214c2432931e0f253a51a963#f101f2a7bc48a1ca214c2432931e0f253a51a963"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
@@ -5596,6 +5636,15 @@ dependencies = [
 
 [[package]]
 name = "itertools"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
@@ -6602,6 +6651,17 @@ checksum = "cf5a574dadd7941adeaa71823ecba5e28331b8313fb2e1c6a5c7e5981ea53ad6"
 
 [[package]]
 name = "nix"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
+dependencies = [
+ "bitflags 1.3.2",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
+name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
@@ -7091,13 +7151,13 @@ checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
- "prost",
+ "prost 0.14.4",
 ]
 
 [[package]]
 name = "opentelemetry-resource-detectors"
 version = "0.11.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=4f5296b92b2a8e50d2078e011fa04371b69a5cf6#4f5296b92b2a8e50d2078e011fa04371b69a5cf6"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=24d1f73fe8d44aa8820471b1ddd3d57c20e4a8bd#24d1f73fe8d44aa8820471b1ddd3d57c20e4a8bd"
 dependencies = [
  "opentelemetry",
  "opentelemetry-semantic-conventions",
@@ -7192,6 +7252,7 @@ dependencies = [
  "otap-df-state",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
+ "pprof",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -7278,6 +7339,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tracing-subscriber",
  "wiremock",
 ]
 
@@ -7366,7 +7428,7 @@ dependencies = [
  "otap-df-telemetry-macros",
  "paste",
  "pretty_assertions",
- "prost",
+ "prost 0.14.4",
  "rand 0.10.2",
  "rdkafka",
  "regex",
@@ -7425,7 +7487,7 @@ dependencies = [
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
  "otap-df-test-net",
- "prost",
+ "prost 0.14.4",
  "serde",
  "serde_json",
  "smallvec",
@@ -7434,6 +7496,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
 ]
@@ -7487,8 +7551,8 @@ dependencies = [
  "parking_lot",
  "parquet",
  "pretty_assertions",
- "prost",
- "prost-types",
+ "prost 0.14.4",
+ "prost-types 0.14.4",
  "rand 0.10.2",
  "regex",
  "reqwest 0.13.4",
@@ -7564,7 +7628,7 @@ dependencies = [
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
  "parking_lot",
- "prost",
+ "prost 0.14.4",
  "secrecy",
  "serde_json",
  "serde_yaml",
@@ -7633,8 +7697,8 @@ dependencies = [
  "otap-df-test-tls-certs",
  "parking_lot",
  "pretty_assertions",
- "prost",
- "prost-types",
+ "prost 0.14.4",
+ "prost-types 0.14.4",
  "reqwest 0.13.4",
  "rustls",
  "rustls-native-certs",
@@ -7687,7 +7751,7 @@ dependencies = [
  "otap-df-test-net",
  "paste",
  "pretty_assertions",
- "prost",
+ "prost 0.14.4",
  "rand 0.10.2",
  "replace_with",
  "roaring",
@@ -7742,7 +7806,7 @@ dependencies = [
  "otap-df-query-engine-languages",
  "parking_lot",
  "pretty_assertions",
- "prost",
+ "prost 0.14.4",
  "sha1 0.11.0",
  "smallvec",
  "thiserror 2.0.19",
@@ -7778,7 +7842,7 @@ dependencies = [
  "otap-df-pdata",
  "otap-df-query-engine",
  "otap-df-query-engine-languages",
- "prost",
+ "prost 0.14.4",
  "serde",
  "tokio",
 ]
@@ -7848,6 +7912,7 @@ dependencies = [
 name = "otap-df-telemetry"
 version = "0.50.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "chrono",
  "criterion",
@@ -7861,7 +7926,7 @@ dependencies = [
  "otap-df-pdata-views",
  "otap-df-telemetry-macros",
  "parking_lot",
- "prost",
+ "prost 0.14.4",
  "serde",
  "serde_yaml",
  "slotmap",
@@ -7914,7 +7979,7 @@ dependencies = [
  "otap-df-telemetry-macros",
  "otap-df-test-net",
  "otap-df-test-tls-certs",
- "prost",
+ "prost 0.14.4",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -7969,16 +8034,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffb9bf5222606eb712d3bb30e01bc9420545b00859970897e70c682353a034f2"
 dependencies = [
  "base64",
- "cbc",
  "cms",
  "der 0.7.10",
- "des",
  "hex",
  "hmac 0.12.1",
  "pkcs12",
  "pkcs5",
  "rand 0.10.2",
- "rc2",
  "sha1 0.10.7",
  "sha2 0.10.9",
  "thiserror 2.0.19",
@@ -8190,6 +8252,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85abd351c0de1e8384fc791a0737111a350394937e92b956b743dac12429f57c"
 dependencies = [
  "pest",
+]
+
+[[package]]
+name = "petgraph"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
+dependencies = [
+ "fixedbitset 0.4.2",
+ "indexmap 2.14.0",
 ]
 
 [[package]]
@@ -8450,6 +8522,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "efca4c95a19a79d1c98f791f10aebd5c1363b473244630bb7dbde1dc98455a24"
 
 [[package]]
+name = "pprof"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38a01da47675efa7673b032bf8efd8214f1917d89685e07e395ab125ea42b187"
+dependencies = [
+ "aligned-vec",
+ "backtrace",
+ "cfg-if",
+ "findshlibs",
+ "libc",
+ "log",
+ "nix 0.26.4",
+ "once_cell",
+ "prost 0.12.6",
+ "prost-build 0.12.6",
+ "prost-derive 0.12.6",
+ "sha2 0.10.9",
+ "smallvec",
+ "spin 0.10.1",
+ "symbolic-demangle",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "pprof_util"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8460,7 +8557,7 @@ dependencies = [
  "flate2",
  "num",
  "paste",
- "prost",
+ "prost 0.14.4",
 ]
 
 [[package]]
@@ -8523,12 +8620,43 @@ dependencies = [
 
 [[package]]
 name = "prost"
+version = "0.12.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "deb1435c188b76130da55f17a466d252ff7b1418b2ad3e037d127b94e3411f29"
+dependencies = [
+ "bytes",
+ "prost-derive 0.12.6",
+]
+
+[[package]]
+name = "prost"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
 dependencies = [
  "bytes",
- "prost-derive",
+ "prost-derive 0.14.4",
+]
+
+[[package]]
+name = "prost-build"
+version = "0.12.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22505a5c94da8e3b7c2996394d1c933236c4d743e81a410bcca4e6989fc066a4"
+dependencies = [
+ "bytes",
+ "heck",
+ "itertools 0.12.1",
+ "log",
+ "multimap",
+ "once_cell",
+ "petgraph 0.6.5",
+ "prettyplease",
+ "prost 0.12.6",
+ "prost-types 0.12.6",
+ "regex",
+ "syn 2.0.119",
+ "tempfile",
 ]
 
 [[package]]
@@ -8541,15 +8669,28 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "multimap",
- "petgraph",
+ "petgraph 0.8.3",
  "prettyplease",
- "prost",
- "prost-types",
+ "prost 0.14.4",
+ "prost-types 0.14.4",
  "pulldown-cmark",
  "pulldown-cmark-to-cmark",
  "regex",
  "syn 2.0.119",
  "tempfile",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.12.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81bddcdb20abf9501610992b6759a4c888aef7d1a7247ef75e2404275ac24af1"
+dependencies = [
+ "anyhow",
+ "itertools 0.12.1",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -8567,11 +8708,20 @@ dependencies = [
 
 [[package]]
 name = "prost-types"
+version = "0.12.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9091c90b0a32608e984ff2fa4091273cbdd755d54935c51d520887f4a1dbd5b0"
+dependencies = [
+ "prost 0.12.6",
+]
+
+[[package]]
+name = "prost-types"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a"
 dependencies = [
- "prost",
+ "prost 0.14.4",
 ]
 
 [[package]]
@@ -8954,15 +9104,6 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
-]
-
-[[package]]
-name = "rc2"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62c64daa8e9438b84aaae55010a93f396f8e60e3911590fcba770d04643fc1dd"
-dependencies = [
- "cipher",
 ]
 
 [[package]]
@@ -10125,6 +10266,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
+dependencies = [
+ "lock_api",
+]
+
+[[package]]
 name = "spki"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10243,6 +10393,29 @@ name = "supports-unicode"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
+
+[[package]]
+name = "symbolic-common"
+version = "12.18.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "332615d90111d8eeaf86a84dc9bbe9f65d0d8c5cf11b4caccedc37754eb0dcfd"
+dependencies = [
+ "debugid",
+ "memmap2",
+ "stable_deref_trait",
+ "uuid",
+]
+
+[[package]]
+name = "symbolic-demangle"
+version = "12.18.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "912017718eb4d21930546245af9a3475c9dccf15675a5c215664e76621afc471"
+dependencies = [
+ "cpp_demangle 0.4.5",
+ "rustc-demangle",
+ "symbolic-common",
+]
 
 [[package]]
 name = "symcrypt"
@@ -10917,7 +11090,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50849f68853be452acf590cde0b146665b8d507b3b8af17261df47e02c209ea0"
 dependencies = [
  "bytes",
- "prost",
+ "prost 0.14.4",
  "tonic",
 ]
 
@@ -10929,8 +11102,8 @@ checksum = "654e5643eff75d7f8c99197ce1440ed19a3474eada74c12bbac488b2cafdae27"
 dependencies = [
  "prettyplease",
  "proc-macro2",
- "prost-build",
- "prost-types",
+ "prost-build 0.14.4",
+ "prost-types 0.14.4",
  "quote",
  "syn 2.0.119",
  "tempfile",
@@ -11152,7 +11325,7 @@ dependencies = [
 [[package]]
 name = "typespec"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "base64",
  "bytes",
@@ -11190,7 +11363,7 @@ dependencies = [
 [[package]]
 name = "typespec_client_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "async-trait",
  "base64",
@@ -11225,7 +11398,7 @@ dependencies = [
 [[package]]
 name = "typespec_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=606bf947308148c86b1545964af6f4d0f8baf209#606bf947308148c86b1545964af6f4d0f8baf209"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11829,7 +12002,7 @@ dependencies = [
 [[package]]
 name = "weaver_common"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=885d083428d047c3074a5393b08fda71a0b6c4ef#885d083428d047c3074a5393b08fda71a0b6c4ef"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
 dependencies = [
  "dirs",
  "flate2",
@@ -11854,7 +12027,7 @@ dependencies = [
 [[package]]
 name = "weaver_diff"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=885d083428d047c3074a5393b08fda71a0b6c4ef#885d083428d047c3074a5393b08fda71a0b6c4ef"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
 dependencies = [
  "serde_json",
  "similar",
@@ -11864,7 +12037,7 @@ dependencies = [
 [[package]]
 name = "weaver_forge"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=885d083428d047c3074a5393b08fda71a0b6c4ef#885d083428d047c3074a5393b08fda71a0b6c4ef"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
 dependencies = [
  "convert_case 0.11.0",
  "dirs",
@@ -11899,7 +12072,7 @@ dependencies = [
 [[package]]
 name = "weaver_resolved_schema"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=885d083428d047c3074a5393b08fda71a0b6c4ef#885d083428d047c3074a5393b08fda71a0b6c4ef"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
 dependencies = [
  "log",
  "schemars 1.2.2",
@@ -11913,7 +12086,7 @@ dependencies = [
 [[package]]
 name = "weaver_resolver"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=885d083428d047c3074a5393b08fda71a0b6c4ef#885d083428d047c3074a5393b08fda71a0b6c4ef"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
 dependencies = [
  "globset",
  "itertools 0.15.0",
@@ -11937,7 +12110,7 @@ dependencies = [
 [[package]]
 name = "weaver_semconv"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=885d083428d047c3074a5393b08fda71a0b6c4ef#885d083428d047c3074a5393b08fda71a0b6c4ef"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
 dependencies = [
  "glob",
  "globset",
@@ -11961,7 +12134,7 @@ dependencies = [
 [[package]]
 name = "weaver_version"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=885d083428d047c3074a5393b08fda71a0b6c4ef#885d083428d047c3074a5393b08fda71a0b6c4ef"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
 dependencies = [
  "schemars 1.2.2",
  "semver",
@@ -12600,7 +12773,7 @@ dependencies = [
  "otap-df-component-inventory-syntax",
  "otap-df-pdata-otlp-model",
  "proc-macro2",
- "prost-build",
+ "prost-build 0.14.4",
  "serde",
  "serde_json",
  "syn 2.0.119",
