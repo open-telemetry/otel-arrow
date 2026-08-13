@@ -425,6 +425,7 @@ impl<PData> EffectHandlerCore<PData> {
     ///
     /// Returns the scheduler-assigned identity that will accompany the
     /// corresponding [`crate::control::NodeControlMsg::DelayedData`].
+    /// Returns the original pdata if scheduling is rejected.
     pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<LocalResumeId, PData> {
         self.local_scheduler
             .as_ref()

@@ -587,6 +587,9 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Requeue retained pdata onto this node later.
+    ///
+    /// Returns a scheduler-local ID that accompanies the corresponding delayed-data
+    /// message. Returns the original pdata if scheduling is rejected.
     pub fn requeue_later(
         &self,
         when: Instant,
