@@ -3,14 +3,6 @@
 
 //! Process-wide memory limiter state and sampling.
 
-const MEMORY_LIMITER_URN: &str = "urn:otel:safety:memory_limiter";
-
-otap_df_telemetry::otel_component_scope!(
-    urn = MEMORY_LIMITER_URN,
-    kind = "safety",
-    name = "memory_limiter",
-);
-
 use otap_df_config::policy::{MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource};
 use std::cell::Cell;
 #[cfg(all(not(windows), feature = "jemalloc"))]
