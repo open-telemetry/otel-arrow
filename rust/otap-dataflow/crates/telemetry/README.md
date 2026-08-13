@@ -89,6 +89,13 @@ and the other event macros without repeating a target. The macro checks that
 the kind and name match the URN and produces a target such as
 `otap-df-core-nodes::processor::transform`.
 
+The component target applies to instrumentation owned by that module subtree.
+Events emitted by shared libraries retain the shared library's target, as is
+normal for `tracing`; enabling a caller's target does not automatically enable
+targets used by its dependencies. Component modules should use the unqualified
+local `otel_*` macros because fully qualified calls to the base macros retain
+the Cargo package target.
+
 For example:
 
 ```rust
@@ -117,6 +124,14 @@ restarting the engine. Failed reconciliation preserves the active filter.
 `EnvFilter` target directives use prefix matching. A directive for
 `<package>::<kind>::<name>` also matches another component whose target begins
 with that complete string.
+
+When an investigation also needs diagnostics from a shared library, enable
+both targets. For example, OTLP receiver HTTP diagnostics include events owned
+by `otap-df-otap`:
+
+```text
+warn,otap-df-core-nodes::receiver::otlp=debug,otap-df-otap=debug
+```
 
 At startup, a valid `RUST_LOG` environment variable takes precedence over
 `logs.level`. After startup, a successful full-engine reconciliation makes the
