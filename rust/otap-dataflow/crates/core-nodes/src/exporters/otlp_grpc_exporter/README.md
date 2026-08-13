@@ -91,7 +91,7 @@ optional and additive: without it the exporter sends no `authorization` metadata
 (the default); with it, the bound extension acquires and refreshes the token in
 the background so credentials rotate without restarting the exporter.
 
-Declare a provider extension -- for gRPC that is
+Declare a provider extension -- for example
 [`oauth2_client_auth`](../../../../contrib-extensions/src/oauth2_client_auth/README.md)
 (any OAuth 2.0 token endpoint), or any other extension exposing
 `bearer_token_provider` whose tokens are accepted by a gRPC OTLP endpoint -- in
@@ -123,11 +123,6 @@ groups:
             config:
               grpc_endpoint: "https://otlp.example.com:4317"
 ```
-
-The `azure_identity_auth` extension is **not** a useful pairing here: Azure
-Monitor's OTLP ingestion endpoints are HTTP-only, so its tokens have no gRPC
-backend to authenticate against. Use it with the
-[OTLP HTTP exporter](../otlp_http_exporter/README.md) instead.
 
 The bearer token is applied per request, so it takes precedence over both a
 statically configured `authorization` entry and any propagated `authorization`

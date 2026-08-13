@@ -402,7 +402,7 @@ route.
   error and is retried per the exporter's existing object-store retry policy,
   rather than as inbox backpressure.
 
-### OTLP exporters
+### OTLP HTTP exporter
 
 The OTLP HTTP (`urn:otel:exporter:otlp_http`) exporter today supports only
 static request headers (e.g. a fixed `Authorization` header) and performs no
@@ -420,15 +420,6 @@ first token the exporter applies backpressure with a retryable NACK rather than
 sending an unauthenticated request. Its factory already receives a
 `capabilities` argument, so this is additive and does not change the default
 (no-auth) behavior.
-
-The OTLP gRPC (`urn:otel:exporter:otlp_grpc`) exporter consumes
-`BearerTokenProvider` the same way, sharing the adapter with the HTTP exporter.
-It is **not** intended to be bound to `azure_identity_auth`, though: Azure
-Monitor's OTLP ingestion endpoints are HTTP-only (per-signal `.../otlp/v1/{logs,
-metrics,traces}` URLs, consumed by the collector's `otlphttp` exporter), so an
-Azure-scoped token has no gRPC backend to authenticate against. The gRPC
-exporter's intended pairing is `oauth2_client_auth` or another non-Azure
-provider.
 
 ## Telemetry
 

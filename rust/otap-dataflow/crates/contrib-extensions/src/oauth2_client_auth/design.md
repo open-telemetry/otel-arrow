@@ -448,7 +448,7 @@ backs the capability, and can consume it two ways: a cached fast-path read via
 token.
 
 The primary consumers are the **OTLP HTTP and gRPC exporters**. The OTLP HTTP
-exporter (integration in progress) subscribes to `token_stream()` and caches a
+exporter subscribes to `token_stream()` and caches a
 pre-built `Authorization: Bearer <token>` header that it clones onto each
 outgoing request, so credential work stays off the export hot path and tokens
 rotate without a restart. The refreshed bearer **overrides** any statically
