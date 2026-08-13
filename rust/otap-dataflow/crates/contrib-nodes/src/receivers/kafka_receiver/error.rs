@@ -157,6 +157,31 @@ pub enum KafkaReceiverError {
         /// The name of the offending field.
         field: String,
     },
+
+    /// A field that must not be negative was set to a negative value.
+    ///
+    /// Distinct from [`ConfigNonPositiveValue`](Self::ConfigNonPositiveValue):
+    /// this is used when zero is a valid setting but negatives are not.
+    #[error("invalid kafka receiver configuration: {field} must be >= 0")]
+    ConfigNegativeValue {
+        /// The name of the offending field.
+        field: String,
+    },
+
+    /// `heartbeat_interval_ms` was not strictly less than `session_timeout_ms`.
+    /// Kafka requires the heartbeat interval to be lower than the session
+    /// timeout (typically no more than one third of it); librdkafka otherwise
+    /// rejects the configuration at consumer creation.
+    #[error(
+        "invalid kafka receiver configuration: heartbeat_interval_ms ({heartbeat}) \
+         must be < session_timeout_ms ({session})"
+    )]
+    ConfigInvalidHeartbeat {
+        /// The configured `heartbeat_interval_ms`.
+        heartbeat: u64,
+        /// The configured `session_timeout_ms`.
+        session: u64,
+    },
 }
 
 impl KafkaReceiverError {
@@ -184,7 +209,9 @@ mod tests {
 
     // ==================== Decode Error Tests ====================
 
-    /// Scenario: each decode variant is constructed with an inner EngineError.
+    // ---- Construction and configuration ----
+
+    /// Scenario (construction and configuration): each decode variant is constructed with an inner EngineError.
     /// Guarantees: inner() returns the wrapped EngineError for decode variants.
     #[test]
     fn decode_error_inner_returns_engine_error() {
@@ -214,7 +241,7 @@ mod tests {
 
     // ==================== Configuration Error Tests ====================
 
-    /// Scenario: config variants carry no EngineError source.
+    /// Scenario (construction and configuration): config variants carry no EngineError source.
     /// Guarantees: inner() returns None for configuration variants.
     #[test]
     fn config_error_has_no_inner_engine_error() {
@@ -224,7 +251,7 @@ mod tests {
         assert!(err.inner().is_none());
     }
 
-    /// Scenario: an empty required field is reported.
+    /// Scenario (construction and configuration): an empty required field is reported.
     /// Guarantees: the Display string names the field and keeps the invalid prefix.
     #[test]
     fn config_empty_field_message() {
@@ -237,7 +264,7 @@ mod tests {
         );
     }
 
-    /// Scenario: topics overlap across signals.
+    /// Scenario (construction and configuration): topics overlap across signals.
     /// Guarantees: the Display string mentions overlap for operator diagnosis.
     #[test]
     fn config_overlapping_topics_message() {
@@ -245,7 +272,7 @@ mod tests {
         assert!(err.to_string().contains("overlap"));
     }
 
-    /// Scenario: no signal has topics configured.
+    /// Scenario (construction and configuration): no signal has topics configured.
     /// Guarantees: the Display string mentions the at-least-one-signal rule.
     #[test]
     fn config_no_signal_topics_message() {
@@ -253,7 +280,7 @@ mod tests {
         assert!(err.to_string().contains("at least one signal"));
     }
 
-    /// Scenario: max_fetch_bytes is smaller than min_fetch_bytes.
+    /// Scenario (construction and configuration): max_fetch_bytes is smaller than min_fetch_bytes.
     /// Guarantees: the Display string reports both configured values.
     #[test]
     fn config_invalid_fetch_bytes_message() {
@@ -264,7 +291,7 @@ mod tests {
         );
     }
 
-    /// Scenario: a positive-only field is set to zero.
+    /// Scenario (construction and configuration): a positive-only field is set to zero.
     /// Guarantees: the Display string names the field and the > 0 rule.
     #[test]
     fn config_non_positive_value_message() {
@@ -277,9 +304,24 @@ mod tests {
         );
     }
 
+    /// Scenario (construction and configuration): a field that allows zero but not
+    /// negatives is set to a negative value.
+    /// Guarantees: the Display string names the field and the >= 0 rule, keeping
+    /// it distinct from the strictly-positive (> 0) error.
+    #[test]
+    fn config_negative_value_message() {
+        let err = KafkaReceiverError::ConfigNegativeValue {
+            field: "max_fetch_bytes".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid kafka receiver configuration: max_fetch_bytes must be >= 0"
+        );
+    }
+
     // ==================== Trait Tests ====================
 
-    /// Scenario: KafkaReceiverError is used across Send and !Send contexts.
+    /// Scenario (construction and configuration): KafkaReceiverError is used across Send and !Send contexts.
     /// Guarantees: the error type is Send + Sync.
     #[test]
     fn error_is_send_sync() {
@@ -287,7 +329,7 @@ mod tests {
         assert_send_sync::<KafkaReceiverError>();
     }
 
-    /// Scenario: the error is treated as a std error for source chaining.
+    /// Scenario (construction and configuration): the error is treated as a std error for source chaining.
     /// Guarantees: KafkaReceiverError implements std::error::Error.
     #[test]
     fn error_implements_std_error() {
