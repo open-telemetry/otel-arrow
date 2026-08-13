@@ -39,6 +39,8 @@
     getChannelPoint as getChannelPointFromSeries,
     getPointAtTime as getPointAtTimeFromSeries,
     getSeriesWindow as getSeriesWindowFromRange,
+    summarizeChannelReceiverMetrics,
+    summarizeChannelSenderMetrics,
     updateChannelSeries as updateChannelSeriesFromMetrics,
     updateNodeSeries as updateNodeSeriesFromMetrics,
   } from "./charts-controller.js";
@@ -2907,28 +2909,26 @@
 
     let inCount = 0;
     let outCount = 0;
-    let inErrors = 0;
     let outErrors = 0;
     edges.forEach((edge) => {
       if (edge.source === nodeId) {
-        const senderMetrics = metricMap(edge.data.sender?.metrics || []);
-        outCount += senderMetrics["send.count"] ?? 0;
-        outErrors +=
-          (senderMetrics["send.error_full"] ?? 0) +
-          (senderMetrics["send.error_closed"] ?? 0);
+        const senderMetrics = summarizeChannelSenderMetrics(
+          edge.data.sender?.metrics || []
+        );
+        outCount += senderMetrics.send;
+        outErrors += senderMetrics.sendErrorFull + senderMetrics.sendErrorClosed;
       }
       if (edge.target === nodeId) {
-        const receiverMetrics = metricMap(edge.data.receiver?.metrics || []);
-        inCount += receiverMetrics["recv.count"] ?? 0;
-        inErrors +=
-          (receiverMetrics["recv.error_empty"] ?? 0) +
-          (receiverMetrics["recv.error_closed"] ?? 0);
+        const receiverMetrics = summarizeChannelReceiverMetrics(
+          edge.data.receiver?.metrics || []
+        );
+        inCount += receiverMetrics.recv;
       }
     });
     return {
       inRate: calcRate(inCount, lastSampleSeconds),
       outRate: calcRate(outCount, lastSampleSeconds),
-      errorRate: calcRate(inErrors + outErrors, lastSampleSeconds),
+      errorRate: calcRate(outErrors, lastSampleSeconds),
       inCount,
       outCount,
     };
@@ -2995,7 +2995,13 @@
         ${filtered
           .map(
             (metric) => {
-              const safeMetricName = escapeHtml(metric.name);
+              const measurementAttrs = Object.entries(
+                normalizeAttributes(metric.attributes || {})
+              ).sort(([a], [b]) => a.localeCompare(b));
+              const measurementLabel = measurementAttrs.length
+                ? `{${measurementAttrs.map(([key, value]) => `${key}=${value}`).join(", ")}}`
+                : "";
+              const safeMetricName = escapeHtml(`${metric.name}${measurementLabel}`);
               const safeValue = escapeHtml(formatValueWithUnit(metric.value, metric.unit));
               return `
               <div class="flex items-start justify-between gap-3">
@@ -3289,7 +3295,6 @@
     renderAttributes,
     renderMetricTable,
     renderNodeMetricTable,
-    metricMap,
     calcRate,
     buildNodeSummary,
     escapeHtml,
@@ -3514,15 +3519,6 @@
     selectionDetailsController.renderNodeDetails(node);
   }
 
-  function metricMap(metrics) {
-    const out = {};
-    metrics.forEach((metric) => {
-      if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) return;
-      out[metric.name] = metric.value;
-    });
-    return out;
-  }
-
   function computeEdgeRates(edges, displayTimeMs, sampleSeconds) {
     return computeEdgeRatesFromSeries({
       edges,
@@ -3533,7 +3529,6 @@
       getWindowMs,
       getDisplayTimeMs,
       calcRate,
-      metricMap,
       getSeriesWindowFn: getSeriesWindowFromRange,
       getPointAtTimeFn: getPointAtTimeFromSeries,
     });

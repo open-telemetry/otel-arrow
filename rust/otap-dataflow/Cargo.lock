@@ -3432,15 +3432,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "des"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffdd80ce8ce993de27e9f063a444a4d53ce8e8db4c1f00cc03af5ad5a9867a1e"
-dependencies = [
- "cipher",
-]
-
-[[package]]
 name = "dhat"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4059,7 +4050,7 @@ dependencies = [
 [[package]]
 name = "geneva-uploader"
 version = "0.5.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=24d1f73fe8d44aa8820471b1ddd3d57c20e4a8bd#24d1f73fe8d44aa8820471b1ddd3d57c20e4a8bd"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=f101f2a7bc48a1ca214c2432931e0f253a51a963#f101f2a7bc48a1ca214c2432931e0f253a51a963"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
@@ -7348,6 +7339,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tracing-subscriber",
  "wiremock",
 ]
 
@@ -7504,6 +7496,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
 ]
@@ -7918,6 +7912,7 @@ dependencies = [
 name = "otap-df-telemetry"
 version = "0.50.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "chrono",
  "criterion",
@@ -8039,16 +8034,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffb9bf5222606eb712d3bb30e01bc9420545b00859970897e70c682353a034f2"
 dependencies = [
  "base64",
- "cbc",
  "cms",
  "der 0.7.10",
- "des",
  "hex",
  "hmac 0.12.1",
  "pkcs12",
  "pkcs5",
  "rand 0.10.2",
- "rc2",
  "sha1 0.10.7",
  "sha2 0.10.9",
  "thiserror 2.0.19",
@@ -9112,15 +9104,6 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
-]
-
-[[package]]
-name = "rc2"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62c64daa8e9438b84aaae55010a93f396f8e60e3911590fcba770d04643fc1dd"
-dependencies = [
- "cipher",
 ]
 
 [[package]]

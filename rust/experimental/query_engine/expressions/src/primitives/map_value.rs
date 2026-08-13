@@ -20,48 +20,21 @@ pub trait MapValue: Debug {
     // of support for this method
     fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
-    fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool;
+    fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool;
 
     fn to_string(&self) -> ValueString<'_> {
         let mut values = serde_json::Map::new();
 
-        self.get_items(&mut KeyValueClosureCallback::new(|key, value| {
+        self.get_items(&mut |key, value| {
             values.insert(key.into(), value.to_json_value());
             true
-        }));
+        });
 
         ValueString::Owned(serde_json::Value::Object(values).to_string())
     }
 }
 
-pub trait KeyValueCallback {
-    fn next(&mut self, key: &str, value: Value) -> bool;
-}
-
-pub struct KeyValueClosureCallback<F>
-where
-    F: FnMut(&str, Value) -> bool,
-{
-    callback: F,
-}
-
-impl<F> KeyValueClosureCallback<F>
-where
-    F: FnMut(&str, Value) -> bool,
-{
-    pub fn new(callback: F) -> KeyValueClosureCallback<F> {
-        Self { callback }
-    }
-}
-
-impl<F> KeyValueCallback for KeyValueClosureCallback<F>
-where
-    F: FnMut(&str, Value) -> bool,
-{
-    fn next(&mut self, key: &str, value: Value) -> bool {
-        (self.callback)(key, value)
-    }
-}
+pub type MapValueIteratorCallback<'a, 'b> = dyn FnMut(&str, Value<'a>) -> bool + 'b;
 
 pub(crate) fn equal_to(
     query_location: &QueryLocation,
@@ -75,25 +48,23 @@ pub(crate) fn equal_to(
 
     let mut e = None;
 
-    let completed = left.get_items(&mut KeyValueClosureCallback::new(
-        |k, left_value| match right.get(k) {
-            Some(right_value) => {
-                let r = Value::are_values_equal(
-                    query_location,
-                    &left_value,
-                    &right_value.to_value(),
-                    case_insensitive,
-                );
-                if let Err(exp_e) = r {
-                    e = Some(exp_e);
-                    false
-                } else {
-                    r.unwrap()
-                }
+    let completed = left.get_items(&mut |k, left_value| match right.get(k) {
+        Some(right_value) => {
+            let r = Value::are_values_equal(
+                query_location,
+                &left_value,
+                &right_value.to_value(),
+                case_insensitive,
+            );
+            if let Err(exp_e) = r {
+                e = Some(exp_e);
+                false
+            } else {
+                r.unwrap()
             }
-            None => false,
-        },
-    ));
+        }
+        None => false,
+    });
 
     if let Some(exp_e) = e {
         Err(exp_e)
