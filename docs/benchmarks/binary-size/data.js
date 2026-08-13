@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786651783170,
+  "lastUpdate": 1786655825541,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -13754,6 +13754,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otap_df_core_nodes",
             "value": 3.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 113.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 100.41,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "161134993+Dipanshusinghh@users.noreply.github.com",
+            "name": "Dipanshu singh",
+            "username": "Dipanshusinghh"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9c61238165574ffb114fe531d700fcd8bfc5d686",
+          "message": "refactor(metrics): migrate signal_type_router telemetry to MeasurementMetricSet (#3716)\n\n**Description :-**\n\nThis PR contributes to the \"Heavyweight\" Metric Migrations (part of\n#3530) by focusing strictly on refactoring the `signal_type_router`\nprocessor to use the standardized enum-attribute macros.\n\nAs requested by maintainers, this is a clean, split PR containing only\nthe `signal_type_router` changes to ensure ease of review and proper\nchangelog attribution.\n\nChanges Made:\n\n`signal_type_router`:\n- Migrated metrics in `SignalTypeRouterMetrics` to utilize the new\n`MeasurementMetricSet` macro.\n- Eliminated duplicated, signal-specific metric properties (e.g.,\n`signals_received_logs`, `signals_received_metrics`) in favor of dynamic\n`SignalAttributes` (e.g., `signals.received signal=logs`).\n- Updated telemetry unit tests to correctly format and assert against\nthe new metric attribute formats.\n\nMetric Outcomes Table:\nThe `signals.decision` metric includes `signal`, `outcome`, and `reason`\nattributes to describe the terminal routing result.\n\n| Terminal routing result | `outcome` | `reason` |\n| --- | --- | --- |\n| Named signal output accepted | `success` | `named_route` |\n| Default accepted because the named output is unwired | `success` |\n`default_route_unwired` |\n| Selected output is full | `refused` | `route_full` |\n| Selected output is closed | `refused` | `route_closed` |\n| Neither the named nor default output exists | `failure` |\n`no_available_route` |\n| Shutdown cancels parked work | `failure` | `node_shutdown` |\n\nRelated Links\n\nPart of Enum-attribute instrumentation migration #3530",
+          "timestamp": "2026-08-13T20:00:51Z",
+          "tree_id": "a99e7738ff3ed966e2851e191713002286691844",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9c61238165574ffb114fe531d700fcd8bfc5d686"
+        },
+        "date": 1786655810660,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 81.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 68.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.26,
             "unit": "MB"
           },
           {
