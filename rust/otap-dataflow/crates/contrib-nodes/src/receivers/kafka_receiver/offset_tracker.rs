@@ -114,6 +114,26 @@ impl PartitionTracker {
         self.pending.contains(&offset) || self.high_water_mark.is_some_and(|hwm| offset <= hwm)
     }
 
+    /// Generation-aware form of [`is_known`](Self::is_known).
+    ///
+    /// A message whose `generation` is **newer** than this partition's tracked
+    /// generation belongs to a new ownership period (the partition was revoked
+    /// and reassigned to this consumer). Its offset -- even if numerically equal
+    /// to one already seen under the old period -- must NOT be treated as a
+    /// known duplicate: the old period's `pending`/`high_water_mark` say nothing
+    /// about the new period. So a newer-generation offset is always "unknown"
+    /// (allowed through); the caller then tracks it, which resets this
+    /// partition's state to the new generation via [`track`](Self::track).
+    ///
+    /// For a same-or-older generation the ordinary [`is_known`](Self::is_known)
+    /// dedupe applies.
+    fn is_known_for_generation(&self, offset: i64, generation: u64) -> bool {
+        if generation > self.generation {
+            return false;
+        }
+        self.is_known(offset)
+    }
+
     /// The offset that should be committed for this partition.
     ///
     /// Returns the lowest pending offset if any are in-flight, otherwise
@@ -124,7 +144,6 @@ impl PartitionTracker {
     }
 
     /// Number of pending (un-acked) offsets.
-    #[cfg(test)]
     fn pending_count(&self) -> usize {
         self.pending.len()
     }
@@ -297,6 +316,31 @@ impl OffsetTracker {
             .unwrap_or(false)
     }
 
+    /// Generation-aware form of [`is_known_offset`](Self::is_known_offset), used
+    /// by the idempotency dedupe on the receive path.
+    ///
+    /// Returns `false` for an offset whose `generation` is newer than the
+    /// partition's tracked generation, so a message redelivered under a new
+    /// ownership period (same offset, newer generation after a revoke+reassign)
+    /// is never skipped as a duplicate -- it is reprocessed, and tracking it
+    /// resets the partition to the new generation. For a same-or-older
+    /// generation the ordinary known-offset dedupe applies. An untracked
+    /// partition is not known.
+    #[must_use]
+    pub fn is_known_offset_for_generation(
+        &self,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+        generation: u64,
+    ) -> bool {
+        self.partitions
+            .get(topic)
+            .and_then(|parts| parts.get(&partition))
+            .map(|tracker| tracker.is_known_for_generation(offset, generation))
+            .unwrap_or(false)
+    }
+
     /// Update the persistent [`TopicPartitionList`] with current committable
     /// offsets and return a reference suitable for passing to
     /// `consumer.commit()`.
@@ -353,8 +397,12 @@ impl OffsetTracker {
             .unwrap_or(0)
     }
 
-    /// Total number of pending offsets across all partitions.
-    #[cfg(test)]
+    /// Total number of pending (tracked but un-committed) offsets across all
+    /// partitions.
+    ///
+    /// This is the receiver's in-flight depth: records that have been delivered
+    /// downstream and are awaiting an Ack/Nack whose commit has not yet advanced
+    /// past them. Exposed for the `records_in_flight` up/down counter.
     #[must_use]
     pub fn total_pending(&self) -> usize {
         self.partitions
@@ -375,6 +423,8 @@ impl Default for OffsetTracker {
 mod tests {
     use super::*;
 
+    // ---- Shared test helpers ----
+
     /// Committable offsets as a deterministic, sorted `Vec`, derived from the
     /// production [`OffsetTracker::committable_snapshot`]. Sorting makes
     /// single-entry indexed assertions (`offsets[0]`) order-independent.
@@ -388,8 +438,28 @@ mod tests {
         offsets
     }
 
-    // ---- PartitionTracker tests ----
+    /// Collect the `(topic, partition)` membership of the committable TPL.
+    fn tpl_membership(tracker: &mut OffsetTracker) -> BTreeSet<(String, i32)> {
+        tracker
+            .committable_tpl()
+            .to_topic_map()
+            .into_keys()
+            .collect()
+    }
 
+    /// Collect the tracked `(topic, partition)` set from committable offsets.
+    fn tracked_membership(tracker: &OffsetTracker) -> BTreeSet<(String, i32)> {
+        committable_sorted(tracker)
+            .into_iter()
+            .map(|(t, p, _)| (t, p))
+            .collect()
+    }
+
+    // ---- Offset guarantees ----
+
+    /// Scenario (offset guarantees): a single partition tracks then acks a record.
+    /// Guarantees: the committable offset advances past the acked offset, so the basic
+    /// per-partition watermark works.
     #[test]
     fn partition_basic_track_and_ack() {
         let mut pt = PartitionTracker::new(0);
@@ -408,6 +478,9 @@ mod tests {
         assert_eq!(pt.high_water_mark(), Some(100));
     }
 
+    /// Scenario (offset guarantees): a partition acks records out of offset order.
+    /// Guarantees: the committable offset only advances to the lowest contiguous acked
+    /// offset, so out-of-order acks never skip an un-acked offset.
     #[test]
     fn partition_out_of_order_acks() {
         let mut pt = PartitionTracker::new(0);
@@ -438,6 +511,9 @@ mod tests {
         assert_eq!(pt.high_water_mark(), Some(104));
     }
 
+    /// Scenario (offset guarantees): the same offset is tracked twice on a partition.
+    /// Guarantees: the duplicate track is a no-op, so re-tracking cannot corrupt the
+    /// pending set.
     #[test]
     fn partition_duplicate_track_is_idempotent() {
         let mut pt = PartitionTracker::new(0);
@@ -451,6 +527,8 @@ mod tests {
         assert_eq!(pt.pending_count(), 0);
     }
 
+    /// Scenario (offset guarantees): an unknown offset is acked on a partition.
+    /// Guarantees: nothing changes, so a spurious ack cannot advance the watermark.
     #[test]
     fn partition_ack_unknown_offset_is_noop() {
         let mut pt = PartitionTracker::new(0);
@@ -464,6 +542,9 @@ mod tests {
         assert_eq!(pt.high_water_mark(), None);
     }
 
+    /// Scenario (offset guarantees): every pending offset on a partition is acked.
+    /// Guarantees: the committable offset becomes the high-water mark, so a fully-drained
+    /// partition commits past its last record.
     #[test]
     fn partition_high_water_mark_after_all_acked() {
         let mut pt = PartitionTracker::new(0);
@@ -480,14 +561,10 @@ mod tests {
         assert_eq!(pt.high_water_mark(), Some(102));
     }
 
-    // Scenario: a partition owned in one generation is fully acked, then
-    // reacquired in a later generation where it fetches a lower offset than the
-    // prior high-water mark (the group's committed position advanced elsewhere
-    // while this member did not own the partition).
-    // Guarantees: crossing into the newer generation resets the partition's
-    // offset state, so the committable offset reflects only the current
-    // ownership period's records and never regresses below what a prior owner
-    // committed (no backward commit / offset rollback on reacquisition).
+    /// Scenario (offset guarantees): a partition tracks a record under a newer ownership
+    /// generation.
+    /// Guarantees: the pending state is reset for the new generation, so ownership periods
+    /// do not bleed offsets across a reassignment.
     #[test]
     fn partition_track_resets_state_on_newer_generation() {
         let mut pt = PartitionTracker::new(1);
@@ -512,13 +589,10 @@ mod tests {
         assert_eq!(pt.committable_offset(), Some(50));
     }
 
-    // Scenario: after a partition has been (re)tracked under a newer generation,
-    // a `track` call arrives carrying an older (stale) generation -- as could
-    // happen from a reordered or buggy caller feeding a past ownership period.
-    // Guarantees: the stale call is a complete no-op: the stored generation,
-    // pending set, high-water mark, and lowest-pending watermark are all left
-    // exactly as the current ownership period established, so an offset from a
-    // period this consumer no longer owns can never pollute committable state.
+    /// Scenario (offset guarantees): a partition tracks a record stamped with an older
+    /// generation than it currently holds.
+    /// Guarantees: the stale track is ignored, so a late record from a prior ownership
+    /// period cannot mutate current state.
     #[test]
     fn partition_track_ignores_stale_generation() {
         let mut pt = PartitionTracker::new(1);
@@ -545,8 +619,9 @@ mod tests {
         assert_eq!(pt.committable_offset(), Some(200));
     }
 
-    // ---- OffsetTracker tests ----
-
+    /// Scenario (offset guarantees): the multi-partition tracker tracks and acks a record.
+    /// Guarantees: the committable TPL advances for that partition, so the tracker composes
+    /// per-partition watermarks correctly.
     #[test]
     fn tracker_basic_track_and_ack() {
         let mut tracker = OffsetTracker::new();
@@ -568,6 +643,9 @@ mod tests {
         assert_eq!(offsets[0], ("traces".to_string(), 0, 101));
     }
 
+    /// Scenario (offset guarantees): records are acked out of order across the tracker.
+    /// Guarantees: the committable offset holds at the lowest un-acked offset, preserving
+    /// at-least-once across out-of-order completion.
     #[test]
     fn tracker_out_of_order_acks() {
         let mut tracker = OffsetTracker::new();
@@ -592,6 +670,10 @@ mod tests {
         assert_eq!(offsets[0], ("traces".to_string(), 0, 103)); // hwm=102, commit 103
     }
 
+    /// Scenario (offset guarantees): records are tracked and acked across several
+    /// partitions.
+    /// Guarantees: each partition's committable offset advances independently, so
+    /// partitions do not interfere.
     #[test]
     fn tracker_multiple_partitions() {
         let mut tracker = OffsetTracker::new();
@@ -618,6 +700,9 @@ mod tests {
         assert!(sorted.contains(&("traces".to_string(), 1, 201)));
     }
 
+    /// Scenario (offset guarantees): all tracked records across the tracker are acked.
+    /// Guarantees: each partition commits at its high-water mark, so fully-drained
+    /// partitions commit past their last record.
     #[test]
     fn tracker_all_acked_uses_high_water_mark() {
         let mut tracker = OffsetTracker::new();
@@ -636,12 +721,17 @@ mod tests {
         assert_eq!(offsets[0], ("traces".to_string(), 0, 102));
     }
 
+    /// Scenario (offset guarantees): the tracker has no tracked records.
+    /// Guarantees: it reports nothing committable, so an idle tracker commits nothing.
     #[test]
     fn tracker_empty_returns_no_committable() {
         let tracker = OffsetTracker::new();
         assert!(committable_sorted(&tracker).is_empty());
     }
 
+    /// Scenario (offset guarantees): an ack arrives for a partition the tracker does not
+    /// know.
+    /// Guarantees: nothing changes, so an ack for an untracked partition is safely ignored.
     #[test]
     fn tracker_ack_unknown_partition_is_noop() {
         let mut tracker = OffsetTracker::new();
@@ -652,6 +742,9 @@ mod tests {
         assert_eq!(tracker.pending_count("traces", 0), 1);
     }
 
+    /// Scenario (offset guarantees): a partition receives an interleaved ack/nack pattern.
+    /// Guarantees: the watermark advances only across contiguous completed offsets, so
+    /// mixed ack/nack still preserves at-least-once.
     #[test]
     fn tracker_mixed_ack_nack_pattern() {
         let mut tracker = OffsetTracker::new();
@@ -674,6 +767,9 @@ mod tests {
         assert_eq!(offsets[0], ("traces".to_string(), 0, 103));
     }
 
+    /// Scenario (offset guarantees): records are tracked across multiple topics.
+    /// Guarantees: each (topic, partition) is tracked independently, so topics do not share
+    /// offset state.
     #[test]
     fn tracker_multiple_topics() {
         let mut tracker = OffsetTracker::new();
@@ -699,6 +795,9 @@ mod tests {
         assert!(sorted.contains(&("traces".to_string(), 0, 100))); // lowest pending
     }
 
+    /// Scenario (offset guarantees): the committable TPL is requested with nothing tracked.
+    /// Guarantees: an empty TPL is returned, so no commit is issued when there is nothing
+    /// to commit.
     #[test]
     fn committable_tpl_returns_empty_when_no_partitions() {
         let mut tracker = OffsetTracker::new();
@@ -706,6 +805,9 @@ mod tests {
         assert_eq!(tpl.count(), 0);
     }
 
+    /// Scenario (offset guarantees): the committable TPL is requested with pending offsets.
+    /// Guarantees: the TPL carries each partition's committable offset, so the receiver
+    /// commits the correct positions.
     #[test]
     fn committable_tpl_returns_tpl_with_offsets() {
         let mut tracker = OffsetTracker::new();
@@ -723,6 +825,10 @@ mod tests {
         );
     }
 
+    /// Scenario (offset guarantees): the committable TPL is rebuilt after an ack advances a
+    /// watermark.
+    /// Guarantees: the TPL reflects the advanced offset, so successive commits move
+    /// forward.
     #[test]
     fn committable_tpl_updates_in_place_after_ack() {
         let mut tracker = OffsetTracker::new();
@@ -748,8 +854,9 @@ mod tests {
         assert_eq!(map[&("traces".to_string(), 0)], Offset::Offset(102));
     }
 
-    // ---- revoke tests ----
-
+    /// Scenario (offset guarantees): a partition is revoked from the tracker.
+    /// Guarantees: its pending state is dropped, so a revoked partition's offsets are no
+    /// longer committable.
     #[test]
     fn revoke_removes_pending_state() {
         let mut tracker = OffsetTracker::new();
@@ -767,6 +874,10 @@ mod tests {
         assert_eq!(tracker.total_pending(), 1);
     }
 
+    /// Scenario (offset guarantees): a revoked partition is checked against the committable
+    /// TPL.
+    /// Guarantees: the revoked partition is absent from the TPL, so it is never committed
+    /// after revocation.
     #[test]
     fn revoke_excludes_partition_from_committable_tpl() {
         let mut tracker = OffsetTracker::new();
@@ -786,6 +897,10 @@ mod tests {
         assert_eq!(map[&("traces".to_string(), 1)], Offset::Offset(200));
     }
 
+    /// Scenario (offset guarantees): a revoked partition is checked against the
+    /// committable-offsets snapshot.
+    /// Guarantees: the revoked partition is excluded, so the snapshot never reports a
+    /// revoked partition's offset.
     #[test]
     fn revoke_excludes_partition_from_committable_offsets() {
         let mut tracker = OffsetTracker::new();
@@ -799,6 +914,8 @@ mod tests {
         assert_eq!(offsets[0], ("metrics".to_string(), 0, 300));
     }
 
+    /// Scenario (offset guarantees): an unknown partition is revoked.
+    /// Guarantees: nothing changes, so a spurious revocation is safe.
     #[test]
     fn revoke_unknown_partition_is_noop() {
         let mut tracker = OffsetTracker::new();
@@ -810,6 +927,9 @@ mod tests {
         assert_eq!(tracker.pending_count("traces", 0), 1);
     }
 
+    /// Scenario (offset guarantees): the last tracked partition of a topic is revoked.
+    /// Guarantees: the topic entry is removed, so the tracker does not retain empty topic
+    /// state.
     #[test]
     fn revoke_dropping_last_partition_clears_topic() {
         let mut tracker = OffsetTracker::new();
@@ -821,25 +941,10 @@ mod tests {
         assert_eq!(tracker.committable_tpl().count(), 0);
     }
 
-    // ---- TPL membership invariant tests ----
-
-    /// Collect the `(topic, partition)` membership of the committable TPL.
-    fn tpl_membership(tracker: &mut OffsetTracker) -> BTreeSet<(String, i32)> {
-        tracker
-            .committable_tpl()
-            .to_topic_map()
-            .into_keys()
-            .collect()
-    }
-
-    /// Collect the tracked `(topic, partition)` set from committable offsets.
-    fn tracked_membership(tracker: &OffsetTracker) -> BTreeSet<(String, i32)> {
-        committable_sorted(tracker)
-            .into_iter()
-            .map(|(t, p, _)| (t, p))
-            .collect()
-    }
-
+    /// Scenario (offset guarantees): the committable TPL's membership is compared to the
+    /// tracked set after tracks and revokes.
+    /// Guarantees: the TPL membership exactly matches the tracked partitions, so the commit
+    /// set never drifts from tracked state.
     #[test]
     fn tpl_membership_matches_tracked_after_track_and_revoke() {
         let mut tracker = OffsetTracker::new();
@@ -860,6 +965,10 @@ mod tests {
         assert_eq!(tpl_membership(&mut tracker), expected);
     }
 
+    /// Scenario (offset guarantees): the committable TPL is queried repeatedly across a
+    /// sequence of acks.
+    /// Guarantees: each query reflects the latest advanced offsets in place, so commits
+    /// always use current watermarks.
     #[test]
     fn committable_tpl_updates_offsets_in_place_across_acks() {
         let mut tracker = OffsetTracker::new();
@@ -880,6 +989,10 @@ mod tests {
         assert_eq!(map.len(), 1);
     }
 
+    /// Scenario (offset guarantees): a partition is revoked and the TPL is queried
+    /// afterwards.
+    /// Guarantees: the revoked partition never reappears in the TPL, protecting the
+    /// invariant that revoked partitions are not committed.
     #[test]
     fn revoked_partition_never_reappears_in_tpl() {
         let mut tracker = OffsetTracker::new();
@@ -894,6 +1007,10 @@ mod tests {
         assert!(map.contains_key(&("traces".to_string(), 1)));
     }
 
+    /// Scenario (offset guarantees): a previously-revoked partition is tracked again
+    /// (reassigned).
+    /// Guarantees: it re-registers in the committable TPL, so a reacquired partition
+    /// resumes committing.
     #[test]
     fn retrack_revoked_partition_re_registers_in_tpl() {
         let mut tracker = OffsetTracker::new();
@@ -907,8 +1024,9 @@ mod tests {
         assert_eq!(map[&("traces".to_string(), 0)], Offset::Offset(150));
     }
 
-    // ---- committable_snapshot tests ----
-
+    /// Scenario (offset guarantees): a committable snapshot is taken with pending offsets.
+    /// Guarantees: the snapshot reports each partition's lowest un-acked offset, so
+    /// pre-rebalance commits use the safe watermark.
     #[test]
     fn committable_snapshot_reflects_lowest_pending() {
         let mut tracker = OffsetTracker::new();
@@ -921,6 +1039,10 @@ mod tests {
         assert_eq!(snap.get(&("metrics".to_string(), 1)), Some(&200));
     }
 
+    /// Scenario (offset guarantees): a committable snapshot is taken after all records are
+    /// acked.
+    /// Guarantees: the snapshot reports the high-water mark, so a fully-drained partition's
+    /// snapshot commits past its last record.
     #[test]
     fn committable_snapshot_uses_hwm_after_all_acked() {
         let mut tracker = OffsetTracker::new();
@@ -932,59 +1054,17 @@ mod tests {
         assert_eq!(snap.get(&("traces".to_string(), 0)), Some(&101));
     }
 
+    /// Scenario (offset guarantees): a committable snapshot is taken with nothing tracked.
+    /// Guarantees: the snapshot is empty, so no stale offsets feed a pre-rebalance commit.
     #[test]
     fn committable_snapshot_empty_when_no_partitions() {
         let tracker = OffsetTracker::new();
         assert!(tracker.committable_snapshot().is_empty());
     }
 
-    // ---- is_known_offset tests ----
-
-    #[test]
-    fn is_known_returns_false_for_unknown_partition() {
-        let tracker = OffsetTracker::new();
-        assert!(!tracker.is_known_offset("traces", 0, 100));
-    }
-
-    #[test]
-    fn is_known_returns_true_for_pending_offset() {
-        let mut tracker = OffsetTracker::new();
-        tracker.track("traces", 0, 100, 0);
-        tracker.track("traces", 0, 101, 0);
-
-        assert!(tracker.is_known_offset("traces", 0, 100));
-        assert!(tracker.is_known_offset("traces", 0, 101));
-        assert!(!tracker.is_known_offset("traces", 0, 102));
-    }
-
-    #[test]
-    fn is_known_returns_true_for_offset_at_or_below_hwm() {
-        let mut tracker = OffsetTracker::new();
-        tracker.track("traces", 0, 100, 0);
-        tracker.track("traces", 0, 101, 0);
-
-        // Ack both -> hwm = 101
-        let _ = tracker.acknowledge("traces", 0, 100);
-        let _ = tracker.acknowledge("traces", 0, 101);
-
-        // Offsets at or below hwm are known (already processed).
-        assert!(tracker.is_known_offset("traces", 0, 99));
-        assert!(tracker.is_known_offset("traces", 0, 100));
-        assert!(tracker.is_known_offset("traces", 0, 101));
-    }
-
-    #[test]
-    fn is_known_returns_false_for_offset_above_hwm() {
-        let mut tracker = OffsetTracker::new();
-        tracker.track("traces", 0, 100, 0);
-        let _ = tracker.acknowledge("traces", 0, 100);
-
-        // hwm = 100, offset 101 has never been seen.
-        assert!(!tracker.is_known_offset("traces", 0, 101));
-    }
-
-    // ---- assignment-generation tests ----
-
+    /// Scenario (offset guarantees): a record is tracked with an ownership generation.
+    /// Guarantees: the partition's tracked generation is recorded, so acks can be matched
+    /// to their ownership period.
     #[test]
     fn track_records_partition_generation() {
         let mut tracker = OffsetTracker::new();
@@ -994,6 +1074,10 @@ mod tests {
         assert_eq!(tracker.partition_generation("metrics", 0), None);
     }
 
+    /// Scenario (offset guarantees): a record is tracked under a newer generation than the
+    /// partition currently holds.
+    /// Guarantees: the tracked generation advances, so state follows the latest ownership
+    /// period.
     #[test]
     fn track_advances_partition_generation_when_newer() {
         let mut tracker = OffsetTracker::new();
@@ -1006,6 +1090,10 @@ mod tests {
         assert_eq!(tracker.partition_generation("traces", 0), Some(3));
     }
 
+    /// Scenario (offset guarantees): a generation-aware revoke targets a partition at the
+    /// same or an older generation than tracked.
+    /// Guarantees: the state is removed, so a revocation of the current-or-prior ownership
+    /// period purges correctly.
     #[test]
     fn revoke_if_older_removes_same_or_older_generation() {
         let mut tracker = OffsetTracker::new();
@@ -1020,6 +1108,10 @@ mod tests {
         assert_eq!(tracker.pending_count("traces", 0), 0);
     }
 
+    /// Scenario (offset guarantees): a generation-aware revoke targets a partition whose
+    /// tracked generation is newer than the revocation.
+    /// Guarantees: the newer state is preserved, so a stale revocation cannot drop
+    /// freshly-reacquired state.
     #[test]
     fn revoke_if_older_preserves_newer_generation_state() {
         // Regression for the revoke/reassign race: a stale revocation
@@ -1039,18 +1131,20 @@ mod tests {
         assert_eq!(tracker.partition_generation("traces", 0), Some(2));
     }
 
+    /// Scenario (offset guarantees): a generation-aware revoke targets an unknown
+    /// partition.
+    /// Guarantees: nothing changes, so a stale revocation of an untracked partition is
+    /// safe.
     #[test]
     fn revoke_if_older_unknown_partition_is_noop() {
         let mut tracker = OffsetTracker::new();
         assert!(!tracker.revoke_if_older("traces", 0, 5));
     }
 
-    // Scenario: a partition has several pending (and some acked) offsets, then
-    // it is revoked during a rebalance.
-    // Guarantees: `revoke` drops ALL of the partition's state -- every pending
-    // offset, the high-water mark, and its committable offset -- so a revoked
-    // partition contributes nothing to a subsequent commit and the new owner
-    // resumes solely from the group's committed position (at-least-once).
+    /// Scenario (offset guarantees): a partition with pending offsets and a high-water mark
+    /// is revoked.
+    /// Guarantees: both the pending set and the high-water mark are dropped, so no residual
+    /// state can be committed for a revoked partition.
     #[test]
     fn revoke_drops_all_pending_and_hwm() {
         let mut tracker = OffsetTracker::new();
@@ -1080,13 +1174,10 @@ mod tests {
         );
     }
 
-    // Scenario: a partition is tracked and acked under generation 1, revoked,
-    // then reassigned to this consumer under generation 2 where new records are
-    // tracked. Some records were only fetched/acked during generation 1.
-    // Guarantees: after reassignment the committable offset reflects only
-    // generation-2 records. Offsets fetched or acked under generation 1 do not
-    // contribute to (and cannot roll back) the generation-2 commit, so no
-    // stale-generation offset is ever committed under the new assignment.
+    /// Scenario (offset guarantees): a partition is revoked and reassigned, then acked
+    /// under the new generation.
+    /// Guarantees: only the new generation's offset is committable, so an old-generation
+    /// ack cannot advance the reassigned partition.
     #[test]
     fn revoke_reassign_commits_only_new_generation() {
         let mut tracker = OffsetTracker::new();
@@ -1138,5 +1229,191 @@ mod tests {
             vec![("traces".to_string(), 0, 200)],
             "only generation-2 records drive the commit after reassignment",
         );
+    }
+
+    // ---- Routing and payload correctness ----
+
+    /// Scenario (routing and payload correctness): `is_known_offset` is queried for a
+    /// partition the tracker has never seen.
+    /// Guarantees: it returns false, so a record on an unknown partition is not treated as
+    /// a duplicate.
+    #[test]
+    fn is_known_returns_false_for_unknown_partition() {
+        let tracker = OffsetTracker::new();
+        assert!(!tracker.is_known_offset("traces", 0, 100));
+    }
+
+    /// Scenario (routing and payload correctness): `is_known_offset` is queried for an
+    /// offset currently pending.
+    /// Guarantees: it returns true, so a redelivered pending offset is recognized as
+    /// already-seen (idempotency dedupe).
+    #[test]
+    fn is_known_returns_true_for_pending_offset() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100, 0);
+        tracker.track("traces", 0, 101, 0);
+
+        assert!(tracker.is_known_offset("traces", 0, 100));
+        assert!(tracker.is_known_offset("traces", 0, 101));
+        assert!(!tracker.is_known_offset("traces", 0, 102));
+    }
+
+    /// Scenario (routing and payload correctness): `is_known_offset` is queried for an
+    /// offset at or below the high-water mark.
+    /// Guarantees: it returns true, so an offset already processed is recognized as a
+    /// duplicate.
+    #[test]
+    fn is_known_returns_true_for_offset_at_or_below_hwm() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100, 0);
+        tracker.track("traces", 0, 101, 0);
+
+        // Ack both -> hwm = 101
+        let _ = tracker.acknowledge("traces", 0, 100);
+        let _ = tracker.acknowledge("traces", 0, 101);
+
+        // Offsets at or below hwm are known (already processed).
+        assert!(tracker.is_known_offset("traces", 0, 99));
+        assert!(tracker.is_known_offset("traces", 0, 100));
+        assert!(tracker.is_known_offset("traces", 0, 101));
+    }
+
+    /// Scenario (routing and payload correctness): `is_known_offset` is queried for an
+    /// offset above the high-water mark.
+    /// Guarantees: it returns false, so a genuinely new offset is not skipped as a
+    /// duplicate.
+    #[test]
+    fn is_known_returns_false_for_offset_above_hwm() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100, 0);
+        let _ = tracker.acknowledge("traces", 0, 100);
+
+        // hwm = 100, offset 101 has never been seen.
+        assert!(!tracker.is_known_offset("traces", 0, 101));
+    }
+
+    /// Scenario (routing and payload correctness): a partition's offsets are
+    /// tracked and acked under generation 1 (so they are "known" via the pending
+    /// set and high-water mark), then a record of generation 2 is tracked for the
+    /// same partition -- the in-place reset path taken when a partition is
+    /// reassigned to this consumer under a newer generation.
+    /// Guarantees: the newer-generation `track` clears the old pending set and
+    /// high-water mark, so the old-generation offsets are no longer reported as
+    /// known. A redelivered old offset after a generation bump is therefore
+    /// treated as new (reprocessed) rather than idempotently skipped, while the
+    /// new-generation offset is known. This proves the idempotency dedupe memory
+    /// is correctly cleared by a generation change (via the `track` reset path).
+    #[test]
+    fn is_known_offset_false_for_old_offset_after_newer_generation_track() {
+        let mut tracker = OffsetTracker::new();
+
+        // Generation 1: track and ack 100, 101 so both are "known" (100 <= hwm,
+        // 101 <= hwm after acking).
+        tracker.track("traces", 0, 100, 1);
+        tracker.track("traces", 0, 101, 1);
+        let _ = tracker.acknowledge("traces", 0, 100);
+        let _ = tracker.acknowledge("traces", 0, 101);
+        assert!(tracker.is_known_offset("traces", 0, 100));
+        assert!(tracker.is_known_offset("traces", 0, 101));
+
+        // Generation 2: the partition was revoked and reassigned; a new record is
+        // tracked under the newer generation, which resets the partition state.
+        tracker.track("traces", 0, 200, 2);
+        assert_eq!(tracker.partition_generation("traces", 0), Some(2));
+
+        // The old-generation offsets are no longer known: their pending/hwm state
+        // was cleared, so a redelivery of them would be reprocessed, not skipped.
+        assert!(
+            !tracker.is_known_offset("traces", 0, 100),
+            "an old-generation offset must not remain known after a newer-generation track",
+        );
+        assert!(!tracker.is_known_offset("traces", 0, 101));
+        assert!(!tracker.is_known_offset("traces", 0, 50));
+
+        // The new-generation offset is known (it is pending under generation 2).
+        assert!(tracker.is_known_offset("traces", 0, 200));
+    }
+
+    /// Scenario (routing and payload correctness): a partition's offsets are
+    /// tracked and acked under generation 1 (so they are "known"), the partition
+    /// is then revoked via the generation-aware purge (`revoke_if_older`), and
+    /// finally reassigned with a new record tracked under generation 2.
+    /// Guarantees: the revoke purges the partition's entire state (pending set and
+    /// high-water mark), so the old-generation offsets are no longer known; after
+    /// reassignment only the new-generation offset is known. This proves the
+    /// idempotency dedupe memory is also cleared by the revoke/reassign purge
+    /// path, so an old offset redelivered after a new generation is reprocessed
+    /// rather than skipped.
+    #[test]
+    fn is_known_offset_false_for_old_offset_after_revoke_reassign() {
+        let mut tracker = OffsetTracker::new();
+
+        // Generation 1: track and ack 100..=104 so they are known.
+        for offset in 100..=104 {
+            tracker.track("traces", 0, offset, 1);
+        }
+        for offset in 100..=104 {
+            let _ = tracker.acknowledge("traces", 0, offset);
+        }
+        assert!(tracker.is_known_offset("traces", 0, 104));
+
+        // The partition is revoked (revocation carries generation 1). The purge
+        // removes all of its state, including the known-offset memory.
+        assert!(tracker.revoke_if_older("traces", 0, 1));
+        assert!(
+            !tracker.is_known_offset("traces", 0, 104),
+            "a revoked partition's offsets must no longer be known",
+        );
+
+        // Generation 2: the partition is reassigned and a new record is tracked.
+        tracker.track("traces", 0, 200, 2);
+        assert!(
+            !tracker.is_known_offset("traces", 0, 104),
+            "an old-generation offset must not become known again after reassignment",
+        );
+        assert!(tracker.is_known_offset("traces", 0, 200));
+    }
+
+    /// Scenario (routing and payload correctness): an offset is tracked and acked
+    /// under generation 1 (so it is a known duplicate within that generation),
+    /// and `is_known_offset_for_generation` is then queried with the same offset
+    /// under an older, equal, and newer generation.
+    /// Guarantees: within the same (or an older) ownership generation the offset
+    /// is still reported as known (idempotent dedupe applies within a
+    /// generation), but under a NEWER generation it is reported as NOT known --
+    /// so a message redelivered under a new ownership period (same offset, newer
+    /// generation after a revoke+reassign) is never skipped as a duplicate and is
+    /// reprocessed instead. This is the generation-aware idempotency contract.
+    #[test]
+    fn is_known_offset_for_generation_allows_newer_generation_same_offset() {
+        let mut tracker = OffsetTracker::new();
+
+        // Generation 1: track+ack offset 100 so it is "known" within generation 1.
+        tracker.track("traces", 0, 100, 1);
+        let _ = tracker.acknowledge("traces", 0, 100);
+        assert_eq!(tracker.partition_generation("traces", 0), Some(1));
+
+        // Same generation: the offset is a known duplicate (idempotent dedupe
+        // applies within the ownership period).
+        assert!(
+            tracker.is_known_offset_for_generation("traces", 0, 100, 1),
+            "offset 100 must be known within its own generation (same-period dedupe)",
+        );
+
+        // Newer generation: the same offset belongs to a new ownership period and
+        // must NOT be treated as a known duplicate -- it is allowed through so the
+        // new owner reprocesses it.
+        assert!(
+            !tracker.is_known_offset_for_generation("traces", 0, 100, 2),
+            "offset 100 under a newer generation must not be known (reprocessed)",
+        );
+        assert!(
+            !tracker.is_known_offset_for_generation("traces", 0, 100, 5),
+            "any generation newer than the tracked one makes the offset unknown",
+        );
+
+        // An untracked partition is never known, regardless of generation.
+        assert!(!tracker.is_known_offset_for_generation("traces", 9, 100, 1));
+        assert!(!tracker.is_known_offset_for_generation("traces", 9, 100, 2));
     }
 }
