@@ -69,7 +69,7 @@ pub struct RuntimeLogFilterHandle {
     shared: Arc<SharedState>,
 }
 
-/// Restores the previous filter state unless the candidate update is committed.
+/// Restores the previous filter directives unless the candidate update is committed.
 pub struct RuntimeLogFilterUpdateGuard {
     shared: Arc<SharedState>,
     previous: Option<FilterSnapshot>,
@@ -532,6 +532,32 @@ mod tests {
             });
 
             assert_eq!(handle.configured_level().as_str(), "warn");
+        });
+    }
+
+    /// Scenario: a candidate level replaces the filter while a matching span remains entered.
+    /// Guarantees: rollback restores directives but cannot reconstruct the existing span's dynamic filter state.
+    #[test]
+    fn transactional_update_rollback_does_not_reconstruct_active_span_state() {
+        crate::with_cleared_rust_log(|| {
+            let count = Arc::new(AtomicUsize::new(0));
+            let (filter, handle) = RuntimeLogFilter::new(&level("warn,[rollback_span]=debug"));
+            let subscriber = Registry::default()
+                .with(filter.layer())
+                .with(CountingLayer(Arc::clone(&count)));
+
+            tracing::subscriber::with_default(subscriber, || {
+                let span = tracing::info_span!("rollback_span");
+                let _entered = span.enter();
+                tracing::debug!("original span directive permits this event");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 1);
+
+                let update = handle.apply_transactionally(&level("warn"));
+                drop(update);
+
+                tracing::debug!("restored directives have no state for the existing span");
+                assert_eq!(count.load(Ordering::SeqCst), 0);
+            });
         });
     }
 

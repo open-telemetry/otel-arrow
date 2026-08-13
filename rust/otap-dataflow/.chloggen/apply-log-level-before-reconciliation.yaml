@@ -2,4 +2,4 @@ change_type: enhancement
 component: observability
 note: Apply reconciled internal log levels before pipeline rewiring begins.
 issues: [3387]
-subtext: Pipeline startup, readiness, draining, and cutover use the requested verbosity. Failed reconciliation restores the previous filter.
+subtext: Pipeline startup, readiness, draining, and cutover use the requested verbosity. Failed reconciliation restores the previous directives.

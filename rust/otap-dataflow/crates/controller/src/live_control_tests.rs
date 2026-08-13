@@ -4098,7 +4098,7 @@ fn reconcile_engine_config_applies_runtime_log_level() {
 }
 
 /// Scenario: full-config reconciliation raises the log level while pipeline construction is blocked and then fails.
-/// Guarantees: the candidate level is active during rollout, then the prior filter and committed config are restored.
+/// Guarantees: the candidate level is active during rollout, then the prior directives and committed config are restored.
 #[test]
 fn reconcile_engine_config_rolls_back_log_level_after_pipeline_failure() {
     let mut config = empty_engine_config();

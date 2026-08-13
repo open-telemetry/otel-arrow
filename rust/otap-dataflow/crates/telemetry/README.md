@@ -120,7 +120,7 @@ The `engine.telemetry.logs.level` field accepts either a severity such as
 preflight succeed, reconciliation applies the requested level before pipeline
 rewiring starts. This lets an OpAMP or admin control plane observe pipeline
 startup, readiness, draining, and cutover without restarting the engine. If the
-pipeline work fails, reconciliation restores the previous filter.
+pipeline work fails, reconciliation restores the previous filter directives.
 
 `EnvFilter` target directives use prefix matching. A directive for
 `<namespace>.<kind>.<name>` also matches another component whose target begins
@@ -155,7 +155,9 @@ never pushes them onto its scope stack. A reconciled span directive applies to
 matching spans created after the update, including spans created by replacement
 pipeline threads. Events inside a long-lived `pipeline_thread` span that was
 already entered fall back to the new filter's non-span directives until that
-pipeline thread and its span are recreated.
+pipeline thread and its span are recreated. This also applies when a failed
+reconciliation restores the previous directives: active span state is not
+reconstructed during rollback.
 The non-span part of the reconciled `logs.level` takes effect immediately.
 
 There are four aspects that can be configured:
