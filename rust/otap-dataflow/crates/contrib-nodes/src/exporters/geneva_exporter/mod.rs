@@ -733,34 +733,72 @@ impl Config {
     /// destinations from runtime values. We only warn when a key matches none of
     /// the names we *can* enumerate.
     fn warn_unmatched_obo_events(&self) {
+        for event_name in self.unmatched_obo_events() {
+            otel_warn!(
+                "geneva_exporter.obo.unmatched_event",
+                event_name = event_name.clone(),
+                message = "OBO is configured for an event/table name that no configured \
+                           routing destination or default_event_name produces; OBO keys must \
+                           be the destination table name (after event_name_mapping), not the \
+                           source value. This OBO entry may never apply."
+            );
+        }
+    }
+
+    /// Return the OBO event keys that cannot match any statically reachable
+    /// destination table name. A key is considered reachable if it is a
+    /// configured mapping destination, a passthrough source, an explicit
+    /// `default_event_name`, or, when the corresponding `default_event_name` is
+    /// unset, the uploader's literal default table name ("Log"/"Span").
+    /// Attribute-based routing can still produce destinations not listed here,
+    /// so this is best-effort typo detection.
+    fn unmatched_obo_events(&self) -> Vec<String> {
         let Some(obo) = &self.obo else {
-            return;
+            return Vec::new();
         };
 
         let mut known = std::collections::HashSet::new();
+
+        let logs_default = self
+            .logs
+            .as_ref()
+            .and_then(|l| l.default_event_name.as_deref());
+        let spans_default = self
+            .spans
+            .as_ref()
+            .and_then(|s| s.default_event_name.as_deref());
+
+        // When `default_event_name` is unset, the uploader falls back to its
+        // literal default table names ("Log" for logs, "Span" for spans), so
+        // OBO entries keyed on those are valid and must not warn. When the user
+        // overrides the default, that literal is never a reachable destination,
+        // so it must not be seeded (an OBO key on it is likely a typo).
+        if logs_default.is_none() {
+            let _ = known.insert("Log".to_owned());
+        }
+        if spans_default.is_none() {
+            let _ = known.insert("Span".to_owned());
+        }
         collect_known_destinations(
-            self.logs.as_ref().and_then(|l| l.default_event_name.as_deref()),
-            self.logs.as_ref().and_then(|l| l.event_name_mapping.as_ref().map(|m| &m.events)),
+            logs_default,
+            self.logs
+                .as_ref()
+                .and_then(|l| l.event_name_mapping.as_ref().map(|m| &m.events)),
             &mut known,
         );
         collect_known_destinations(
-            self.spans.as_ref().and_then(|s| s.default_event_name.as_deref()),
-            self.spans.as_ref().and_then(|s| s.event_name_mapping.as_ref().map(|m| &m.events)),
+            spans_default,
+            self.spans
+                .as_ref()
+                .and_then(|s| s.event_name_mapping.as_ref().map(|m| &m.events)),
             &mut known,
         );
 
-        for event_name in obo.events.keys() {
-            if !known.contains(event_name.as_str()) {
-                otel_warn!(
-                    "geneva_exporter.obo.unmatched_event",
-                    event_name = event_name.clone(),
-                    message = "OBO is configured for an event/table name that no configured \
-                               routing destination or default_event_name produces; OBO keys must \
-                               be the destination table name (after event_name_mapping), not the \
-                               source value. This OBO entry may never apply."
-                );
-            }
-        }
+        obo.events
+            .keys()
+            .filter(|event_name| !known.contains(event_name.as_str()))
+            .cloned()
+            .collect()
     }
 
     /// Build the `geneva-uploader` `GenevaClientConfig` from this exporter
@@ -4010,6 +4048,119 @@ mod tests {
                 .to_string()
                 .contains("empty annotations value"),
             "error should explain empty annotations are rejected"
+        );
+    }
+
+    /// Scenario: OBO is keyed on the uploader's literal default table names
+    /// ("Log"/"Span") while `logs`/`spans` (and their `default_event_name`) are
+    /// omitted, so the destinations exist only via the uploader's fallback.
+    /// Guarantees: These keys are treated as reachable and produce no unmatched
+    /// warning, so valid configs relying on the literal defaults stay quiet.
+    #[test]
+    fn test_obo_literal_default_names_are_matched() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": {
+                "events": {
+                    "Log": { "identity": "Microsoft.LogService" },
+                    "Span": { "identity": "Microsoft.SpanService" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let config: Config = serde_json::from_value(config).expect("config should deserialize");
+        assert!(
+            config.unmatched_obo_events().is_empty(),
+            "OBO keyed on the literal default table names must not be flagged as unmatched"
+        );
+    }
+
+    /// Scenario: OBO is keyed on a name that neither a mapping destination nor a
+    /// `default_event_name` nor the literal defaults can produce.
+    /// Guarantees: The typo-catching path reports that key as unmatched so the
+    /// warning still fires for genuinely unreachable OBO entries.
+    #[test]
+    fn test_obo_unreachable_name_is_unmatched() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": {
+                "events": {
+                    "TypoTable": { "identity": "Microsoft.SomeService" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let config: Config = serde_json::from_value(config).expect("config should deserialize");
+        assert_eq!(
+            config.unmatched_obo_events(),
+            vec!["TypoTable".to_string()],
+            "an OBO key matching no reachable destination must be reported as unmatched"
+        );
+    }
+
+    /// Scenario: The user overrides logs `default_event_name` (e.g. "MyLog") and
+    /// keys OBO on the literal "Log", which the uploader would only produce when
+    /// no default is set.
+    /// Guarantees: The literal "Log" is not treated as reachable once the
+    /// default is overridden, so the typo-prone key is reported as unmatched
+    /// while the overridden default itself is accepted.
+    #[test]
+    fn test_obo_literal_default_not_matched_when_overridden() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": { "default_event_name": "MyLog" },
+            "obo": {
+                "events": {
+                    "Log": { "identity": "Microsoft.LogService" },
+                    "MyLog": { "identity": "Microsoft.MyLogService" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let config: Config = serde_json::from_value(config).expect("config should deserialize");
+        assert_eq!(
+            config.unmatched_obo_events(),
+            vec!["Log".to_string()],
+            "the literal default must not be reachable once default_event_name is overridden"
         );
     }
 
