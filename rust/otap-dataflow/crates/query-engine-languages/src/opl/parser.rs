@@ -371,8 +371,8 @@ mod test {
     }
 
     /// Scenario: Parse OPL pipelines that use plural concrete metric types as source.
-     /// Guarantees: The parser produces a query plan that only processes rows that have the
-     /// selected metric type
+    /// Guarantees: The parser produces a query plan that only processes rows that have the
+    /// selected metric type
     #[test]
     fn test_parses_program_for_metrics_types() {
         let test_cases = [
