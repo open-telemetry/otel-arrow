@@ -3962,16 +3962,17 @@ groups:
         };
         assert_eq!(second_message_id, message_id);
 
-        let outcome = tokio::spawn(receipt.wait_for_outcome());
+        let mut outcome = Box::pin(receipt.wait_for_outcome());
         sub1.ack(message_id).expect("first Ack should succeed");
-        tokio::task::yield_now().await;
         assert!(
-            !outcome.is_finished(),
+            tokio::time::timeout(Duration::from_millis(10), outcome.as_mut())
+                .await
+                .is_err(),
             "upstream resolved before all configured subscribers Acked"
         );
         sub2.ack(message_id).expect("second Ack should succeed");
         assert_eq!(
-            outcome.await.expect("outcome task should join"),
+            outcome.await,
             otap_df_engine::topic::TrackedPublishOutcome::Ack
         );
     }
