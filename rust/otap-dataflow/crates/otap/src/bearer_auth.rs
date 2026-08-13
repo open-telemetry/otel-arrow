@@ -7,9 +7,10 @@
 //! with a bearer token, so the exporter itself stays auth-agnostic: it drives
 //! [`BearerAuth::poll_refresh`] in its `select!` loop, asks
 //! [`BearerAuth::is_ready`] before admitting data, and stamps
-//! [`BearerAuth::header`] onto each request. Shared by the OTLP HTTP and OTLP
-//! gRPC exporters; the cached credential is an `http::HeaderValue`, which both
-//! transports accept (tonic's `MetadataMap` is backed by an `http::HeaderMap`).
+//! [`BearerAuth::header`] onto each request. The cached credential is an
+//! `http::HeaderValue`, which both transports accept (tonic's `MetadataMap` is
+//! backed by an `http::HeaderMap`), so core and contrib nodes on either
+//! protocol can share this adapter.
 //!
 //! The division of labor mirrors the capability design: the **provider**
 //! (extension) owns credential acquisition, background refresh, and startup
@@ -39,12 +40,12 @@ const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 /// emitters as function pointers satisfies that without making the adapter
 /// generic over an exporter marker type.
 #[derive(Clone, Copy)]
-pub(crate) struct BearerAuthEvents {
+pub struct BearerAuthEvents {
     /// A published token could not be turned into an `Authorization` header.
-    pub(crate) invalid_token: fn(&InvalidHeaderValue),
+    pub invalid_token: fn(&InvalidHeaderValue),
 
     /// The provider closed its token stream; no further refreshes will arrive.
-    pub(crate) token_stream_closed: fn(),
+    pub token_stream_closed: fn(),
 }
 
 /// Consumer-side bearer-token authenticator: subscribes to a provider's token
@@ -52,7 +53,7 @@ pub(crate) struct BearerAuthEvents {
 ///
 /// All token/expiry/stream state lives here, so an exporter holds one of these
 /// and never touches a token directly.
-pub(crate) struct BearerAuth {
+pub struct BearerAuth {
     /// Subscription to the provider's token refreshes.
     stream: TokenStream,
     /// Whether the stream is still live and worth polling.
@@ -76,7 +77,8 @@ impl BearerAuth {
     /// subscription created after a token has been published immediately yields
     /// that current token, so the exporter needs no separate `get_token()`
     /// seeding step.
-    pub(crate) fn new(provider: Box<dyn BearerTokenProvider>, events: BearerAuthEvents) -> Self {
+    #[must_use]
+    pub fn new(provider: Box<dyn BearerTokenProvider>, events: BearerAuthEvents) -> Self {
         Self {
             stream: provider.token_stream(),
             stream_active: true,
@@ -90,13 +92,13 @@ impl BearerAuth {
     /// Whether the token stream is still live and worth polling. Once the
     /// provider closes it, this returns `false` and the last cached token (if
     /// any) keeps being used.
-    pub(crate) fn is_active(&self) -> bool {
+    pub fn is_active(&self) -> bool {
         self.stream_active
     }
 
     /// Whether a usable token is cached: present and, if it expires, comfortably
     /// before expiry. The exporter admits data only when this is `true`.
-    pub(crate) fn is_ready(&self) -> bool {
+    pub fn is_ready(&self) -> bool {
         match (self.cached_header.is_some(), self.cached_expiry) {
             (false, _) => false,
             (true, None) => true, // non-expiring token
@@ -106,7 +108,7 @@ impl BearerAuth {
 
     /// A human-readable reason [`is_ready`](Self::is_ready) is false, for NACK
     /// messages.
-    pub(crate) fn not_ready_reason(&self) -> &'static str {
+    pub fn not_ready_reason(&self) -> &'static str {
         if self.cached_header.is_some() {
             "bearer token at/near expiry; awaiting refresh"
         } else {
@@ -118,7 +120,7 @@ impl BearerAuth {
     /// generation of the token it was built from, cloned for the per-request send
     /// (a cheap refcount bump). `None` when no token is cached; callers
     /// should gate on [`is_ready`](Self::is_ready) first.
-    pub(crate) fn header(&self) -> Option<(HeaderValue, u64)> {
+    pub fn header(&self) -> Option<(HeaderValue, u64)> {
         self.cached_header
             .clone()
             .map(|header| (header, self.generation))
@@ -129,7 +131,7 @@ impl BearerAuth {
     /// `None` when no usable token is cached or the token never expires, so the
     /// caller arms no timer in those cases. When `Some`, it is always in the
     /// future: a usable token is by definition still beyond the margin.
-    pub(crate) fn refresh_deadline(&self) -> Option<Instant> {
+    pub fn refresh_deadline(&self) -> Option<Instant> {
         if !self.is_ready() {
             return None;
         }
@@ -146,7 +148,7 @@ impl BearerAuth {
     /// cached (or the rejected token already cleared) after the failing request
     /// was sent, `generation` no longer matches the current one and the
     /// still-valid token is kept, avoiding a needless back-pressure stall.
-    pub(crate) fn invalidate(&mut self, generation: u64) {
+    pub fn invalidate(&mut self, generation: u64) {
         if generation == self.generation && self.cached_header.is_some() {
             self.cached_header = None;
             self.cached_expiry = None;
@@ -157,7 +159,7 @@ impl BearerAuth {
     /// while [`is_active`](Self::is_active); on stream close it flips inactive
     /// and keeps the last cached token. Malformed tokens and stream closure are
     /// logged internally.
-    pub(crate) async fn poll_refresh(&mut self) {
+    pub async fn poll_refresh(&mut self) {
         match self.stream.next().await {
             Some(token) => {
                 match HeaderValue::from_str(&format!("Bearer {}", token.expose_token())) {
@@ -196,19 +198,16 @@ impl BearerAuth {
 /// once. A no-op when no provider is bound (`rejected_generation` is `None`) or
 /// the rejection is stale (a newer token was already cached), per
 /// [`BearerAuth::invalidate`]'s generation guard.
-pub(crate) fn apply_auth_rejection(
-    auth: &mut Option<BearerAuth>,
-    rejected_generation: Option<u64>,
-) {
+pub fn apply_auth_rejection(auth: &mut Option<BearerAuth>, rejected_generation: Option<u64>) {
     if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
         adapter.invalidate(generation);
     }
 }
 
-#[cfg(test)]
-pub(crate) mod test_support {
-    //! Test doubles shared by the exporters that consume this adapter, so both
-    //! exporter test suites drive the same provider behavior instead of each
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_support {
+    //! Test doubles shared by the nodes that consume this adapter, so every
+    //! consumer's test suite drives the same provider behavior instead of each
     //! maintaining its own copy.
 
     use async_trait::async_trait;
@@ -220,21 +219,23 @@ pub(crate) mod test_support {
     use std::time::Instant;
 
     /// Test double for the `BearerTokenProvider` capability with configurable
-    /// stream behavior. `tokens` are published on the stream in order; when
-    /// `keep_open` is true the stream stays pending after draining them (never
-    /// ends), and when false it ends once they are drained (simulating a
-    /// provider that closes its stream).
-    pub(crate) struct MockTokenProvider {
-        pub(crate) tokens: Vec<String>,
-        pub(crate) keep_open: bool,
+    /// stream behavior.
+    pub struct MockTokenProvider {
+        /// Tokens published on the stream, in order.
+        pub tokens: Vec<String>,
+        /// Whether the stream stays pending after the tokens are drained
+        /// (never ends) rather than closing, which would simulate a provider
+        /// that stops refreshing.
+        pub keep_open: bool,
         /// Expiry applied to every published token (`None` = non-expiring).
-        pub(crate) expires_on: Option<Instant>,
+        pub expires_on: Option<Instant>,
     }
 
     impl MockTokenProvider {
         /// A provider that publishes a single non-expiring token and keeps its
         /// stream open.
-        pub(crate) fn new(token: &str) -> Self {
+        #[must_use]
+        pub fn new(token: &str) -> Self {
             Self {
                 tokens: vec![token.to_string()],
                 keep_open: true,
@@ -245,7 +246,8 @@ pub(crate) mod test_support {
         /// A provider that is bound but never publishes a token, with its stream
         /// held open so the consumer keeps waiting rather than treating the
         /// silence as a closed stream.
-        pub(crate) fn never_publishes() -> Self {
+        #[must_use]
+        pub fn never_publishes() -> Self {
             Self {
                 tokens: vec![],
                 keep_open: true,

@@ -58,9 +58,9 @@ use reqwest::{Client, Response};
 use secrecy::ExposeSecret;
 
 use self::config::Config;
-use crate::exporters::common::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
 use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use otap_df_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
@@ -1084,7 +1084,7 @@ mod test {
 
     use super::*;
 
-    use crate::exporters::common::bearer_auth::test_support::MockTokenProvider;
+    use otap_df_otap::bearer_auth::test_support::MockTokenProvider;
     use otap_df_otap::otap_grpc::common::AckRegistry;
     use otap_df_otap::otlp_http::client_settings::HttpClientSettings;
     use otap_df_otap::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};

@@ -54,7 +54,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 
-use crate::exporters::common::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
+use otap_df_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
 
 /// The URN for the OTLP gRPC exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
@@ -1381,8 +1381,8 @@ struct CompletedExport {
 mod tests {
     use super::*;
 
-    use crate::exporters::common::bearer_auth::test_support::MockTokenProvider;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_otap::bearer_auth::test_support::MockTokenProvider;
     use std::collections::HashMap;
 
     use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
