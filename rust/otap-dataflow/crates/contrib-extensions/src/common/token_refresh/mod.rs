@@ -25,4 +25,4 @@ mod provider;
 mod tests;
 
 pub use metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
-pub use provider::{TOKEN_USABLE_MARGIN, TokenProviderExtension, TokenSource};
+pub use provider::{TokenProviderExtension, TokenSource};

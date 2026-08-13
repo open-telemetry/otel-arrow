@@ -386,7 +386,7 @@ Tuning constants:
 | Constant | Value | Purpose |
 | --- | --- | --- |
 | `expiry_buffer` (config) | `5m` default | Background loop refreshes this far before `expires_on`. |
-| `TOKEN_USABLE_MARGIN` | 30s | Fast path treats a token within this margin of expiry as unusable. Much smaller than `expiry_buffer` so a still-valid token keeps being served while a background refresh is failing, and the slow path is not stampeded during a transient outage. |
+| `TOKEN_USABLE_MARGIN` | 30s | Defined by the `BearerTokenProvider` capability contract in the engine, so this provider and every consumer enforce the same window. The fast path treats a token within this margin of expiry as unusable. Much smaller than `expiry_buffer` so a still-valid token keeps being served while a background refresh is failing, and the slow path is not stampeded during a transient outage. |
 | `MIN_TOKEN_REFRESH_INTERVAL_SECS` | 10 | Floor between successful refreshes; also the earliest a jittered refresh may land. Avoids busy-looping on near-expired tokens. |
 | `TOKEN_REFRESH_RETRY_SECS` | 10 | Base reschedule delay after a failed acquisition; doubles per consecutive failure. Also the slow-path negative-cache cooldown that throttles `get_token()` retries after a failure. |
 | `MAX_TOKEN_REFRESH_RETRY_SECS` | 300 (5m) | Ceiling for the exponential retry backoff. |

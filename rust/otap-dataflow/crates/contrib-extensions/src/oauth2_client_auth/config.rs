@@ -11,7 +11,7 @@ use otap_df_config::tls::TlsClientConfig;
 use secrecy::SecretString;
 use serde::Deserialize;
 
-use crate::common::token_refresh::TOKEN_USABLE_MARGIN;
+use otap_df_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
 
 /// Default duration ahead of expiry at which a token is refreshed.
 fn default_expiry_buffer() -> Duration {

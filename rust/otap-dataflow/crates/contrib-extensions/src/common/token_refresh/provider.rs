@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use otap_df_engine::capability::auth::BearerToken;
 use otap_df_engine::capability::auth::bearer_token_provider::{
-    BearerTokenProvider as BearerTokenProviderCap, TokenStream,
+    BearerTokenProvider as BearerTokenProviderCap, TOKEN_USABLE_MARGIN, TokenStream,
 };
 use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
 use otap_df_engine::control::ExtensionControlMsg;
@@ -27,18 +27,6 @@ use tokio_stream::wrappers::WatchStream;
 
 use super::metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
 
-/// Safety margin before actual expiry within which a cached token is treated as
-/// no longer usable. Deliberately much smaller than the refresh `expiry_buffer`:
-/// the background loop refreshes well ahead of expiry, but if that refresh is
-/// failing a still-valid token should keep being served (not treated as unusable
-/// early), which also avoids stampeding the token endpoint during a transient
-/// outage.
-///
-/// An extension whose `expiry_buffer` is user-configurable must reject a value
-/// that does not clear this margin: the refresh would then be scheduled inside
-/// the window in which the cached token is already unusable, so every token
-/// cycle would stall until the refresh landed.
-pub const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 /// Floor between successful refreshes; avoids busy-looping on near-expired
 /// tokens.
 const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
