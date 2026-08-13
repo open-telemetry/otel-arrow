@@ -3,6 +3,7 @@
 
 //! Console exporter that prints OTLP data in human-readable or structured formats.
 
+mod metrics;
 mod record_json;
 
 use async_trait::async_trait;
@@ -31,22 +32,24 @@ use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::otel_error;
 use otap_df_telemetry::output_service::{Frame, OutputService, StreamHandle};
 use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
+use otap_df_telemetry::{otel_error, otel_warn};
+use otap_df_telemetry_macros::AttributeEnum;
 use std::io::Write;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
+use self::metrics::{ConsoleExportErrorType, ConsoleExporterMetrics};
 use self::record_json::RecordJsonFormatter;
 
 /// The URN for the console exporter
 pub const CONSOLE_EXPORTER_URN: &str = "urn:otel:exporter:console";
 
 /// Output formats supported by the console exporter.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, AttributeEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum ConsoleOutputFormat {
     /// Human-readable hierarchical output intended for interactive inspection.
@@ -168,6 +171,7 @@ const fn default_record_json_scope() -> bool {
 /// Console exporter that prints OTLP data to stdout.
 pub struct ConsoleExporter {
     formatter: ConsoleFormatter,
+    metrics: ConsoleExporterMetrics,
     /// Overrides the resolved stream; only tests supply one.
     #[cfg(test)]
     output: Option<TestOutput>,
@@ -184,7 +188,8 @@ struct TestOutput {
 impl ConsoleExporter {
     /// Create a new console exporter with the given configuration.
     #[must_use]
-    pub const fn new(config: ConsoleExporterConfig) -> Self {
+    pub fn new(pipeline_ctx: &PipelineContext, config: ConsoleExporterConfig) -> Self {
+        let metrics = ConsoleExporterMetrics::register(pipeline_ctx, config.format);
         let formatter = match config.format {
             ConsoleOutputFormat::Pretty => {
                 ConsoleFormatter::Pretty(HierarchicalFormatter::new(config.color, config.unicode))
@@ -195,22 +200,32 @@ impl ConsoleExporter {
         };
         Self {
             formatter,
+            metrics,
             #[cfg(test)]
             output: None,
         }
     }
 
+    fn terminal_state(&mut self, deadline: Instant) -> TerminalState {
+        TerminalState::new(deadline, self.metrics.terminal_snapshots())
+    }
+
     /// Creates an exporter bound to a caller-supplied output stream.
     #[cfg(test)]
     #[must_use]
-    fn with_output(config: ConsoleExporterConfig, output: StreamHandle) -> Self {
-        Self::with_counted_output(config, output).0
+    fn with_output(
+        pipeline_ctx: &PipelineContext,
+        config: ConsoleExporterConfig,
+        output: StreamHandle,
+    ) -> Self {
+        Self::with_counted_output(pipeline_ctx, config, output).0
     }
 
     /// Creates an exporter bound to a test stream, returning the resolution counter.
     #[cfg(test)]
     #[must_use]
     fn with_counted_output(
+        pipeline_ctx: &PipelineContext,
         config: ConsoleExporterConfig,
         output: StreamHandle,
     ) -> (Self, Arc<AtomicUsize>) {
@@ -220,7 +235,7 @@ impl ConsoleExporter {
                 handle: output,
                 resolutions: Arc::clone(&resolutions),
             }),
-            ..Self::new(config)
+            ..Self::new(pipeline_ctx, config)
         };
         (exporter, resolutions)
     }
@@ -253,7 +268,7 @@ impl ConsoleExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: CONSOLE_EXPORTER_URN,
-    create: |_pipeline: PipelineContext,
+    create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig,
@@ -264,7 +279,7 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             })?;
         require_structured_stdout_claim(config.format, OutputService::structured_stdout())?;
         Ok(ExporterWrapper::local(
-            ConsoleExporter::new(config),
+            ConsoleExporter::new(&pipeline, config),
             node,
             node_config,
             exporter_config,
@@ -332,18 +347,29 @@ fn require_structured_stdout_claim(
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for ConsoleExporter {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         loop {
             match msg_chan.recv().await? {
-                Message::Control(NodeControlMsg::Shutdown { .. }) => break,
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
+                    _ = self.metrics.report(&mut metrics_reporter);
+                }
+                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    return Ok(self.terminal_state(deadline));
+                }
                 Message::PData(data) => {
                     // Resolved per payload: another pipeline can claim stdout for
                     // records after this exporter has already started.
                     let output = self.output_handle();
-                    self.export(data.payload_ref(), &output).await;
+                    let signal = data.signal_type();
+                    match self.export(data.payload_ref(), &output).await {
+                        Ok(()) => self.metrics.record_success(signal),
+                        Err(error_type) => self.metrics.record_failure(signal, error_type),
+                    }
                     effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }
                 _ => {
@@ -351,55 +377,52 @@ impl Exporter<OtapPdata> for ConsoleExporter {
                 }
             }
         }
-
-        Ok(TerminalState::default())
     }
 }
 
 impl ConsoleExporter {
-    async fn export(&self, payload: &OtapPayload, output: &StreamHandle) {
+    async fn export(
+        &self,
+        payload: &OtapPayload,
+        output: &StreamHandle,
+    ) -> Result<(), ConsoleExportErrorType> {
         match payload.signal_type() {
             SignalType::Logs => self.export_logs(payload, output).await,
-            SignalType::Traces => self.export_traces(payload).await,
-            SignalType::Metrics => self.export_metrics(payload).await,
+            SignalType::Traces => self.unsupported_signal("traces"),
+            SignalType::Metrics => self.unsupported_signal("metrics"),
         }
     }
 
-    async fn export_logs(&self, payload: &OtapPayload, output: &StreamHandle) {
+    async fn export_logs(
+        &self,
+        payload: &OtapPayload,
+        output: &StreamHandle,
+    ) -> Result<(), ConsoleExportErrorType> {
         match payload {
             OtapPayload::OtlpBytes(bytes) => match RawLogsData::try_from(bytes) {
-                Ok(logs_view) => {
-                    self.formatter.print_logs_data(&logs_view, output).await;
-                }
+                Ok(logs_view) => self.formatter.print_logs_data(&logs_view, output).await,
                 Err(e) => {
                     otel_error!("console.logs_view.otlp_create_failed", error = ?e, message = "Failed to create OTLP logs view");
+                    Err(ConsoleExportErrorType::OtlpViewCreation)
                 }
             },
             OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
-                Ok(logs_view) => {
-                    self.formatter.print_logs_data(&logs_view, output).await;
-                }
+                Ok(logs_view) => self.formatter.print_logs_data(&logs_view, output).await,
                 Err(e) => {
                     otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
+                    Err(ConsoleExportErrorType::OtapViewCreation)
                 }
             },
         }
     }
 
-    async fn export_traces(&self, _payload: &OtapPayload) {
-        // TODO: Implement traces formatting.
-        otel_error!(
-            "console.traces.not_implemented",
-            message = "Traces formatting not yet implemented"
+    fn unsupported_signal(&self, signal: &'static str) -> Result<(), ConsoleExportErrorType> {
+        otel_warn!(
+            "console.message.unsupported_signal",
+            signal = signal,
+            message = "Console exporter supports logs only; use processor:debug followed by exporter:noop to inspect metrics or traces"
         );
-    }
-
-    async fn export_metrics(&self, _payload: &OtapPayload) {
-        // TODO: Implement metrics formatting.
-        otel_error!(
-            "console.metrics.not_implemented",
-            message = "Metrics formatting not yet implemented"
-        );
+        Err(ConsoleExportErrorType::UnsupportedSignal)
     }
 }
 
@@ -411,7 +434,11 @@ enum ConsoleFormatter {
 
 impl ConsoleFormatter {
     /// Format logs and hand the complete payload to the process-wide writer.
-    async fn print_logs_data<L: LogsDataView>(&self, logs_data: &L, output: &StreamHandle) {
+    async fn print_logs_data<L: LogsDataView>(
+        &self,
+        logs_data: &L,
+        output: &StreamHandle,
+    ) -> Result<(), ConsoleExportErrorType> {
         let mut buffer = Vec::new();
         let format_result = match self {
             Self::Pretty(formatter) => {
@@ -427,7 +454,7 @@ impl ConsoleFormatter {
                 error = ?err,
                 message = "Could not format console output"
             );
-            return;
+            return Err(ConsoleExportErrorType::Formatting);
         }
 
         // One frame per payload: the writer holds the stdout lock for the whole
@@ -438,7 +465,10 @@ impl ConsoleFormatter {
         };
         if let Err(err) = output.submit(frame).await {
             otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
+            return Err(ConsoleExportErrorType::Write);
         }
+
+        Ok(())
     }
 }
 
@@ -672,7 +702,9 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::control::PipelineCompletionMsg;
-    use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
+    use otap_df_engine::testing::exporter::{
+        TestRuntime, create_exporter_from_factory, create_test_pipeline_context,
+    };
     use otap_df_engine::testing::test_node;
     use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack};
     use otap_df_pdata::OtlpProtoBytes;
@@ -1224,7 +1256,10 @@ mod tests {
                     runtime.block_on(async {
                         for _ in 0..PAYLOADS_PER_EXPORTER {
                             let logs_view = RawLogsData::try_from(&bytes).expect("logs");
-                            formatter.print_logs_data(&logs_view, &handle).await;
+                            formatter
+                                .print_logs_data(&logs_view, &handle)
+                                .await
+                                .expect("frame is accepted");
                         }
                     });
                 })
@@ -1266,7 +1301,11 @@ mod tests {
         let formatter =
             ConsoleFormatter::RecordJson(RecordJsonFormatter::new(RecordJsonConfig::default()));
         let logs_view = RawLogsData::try_from(&bytes).expect("logs");
-        formatter.print_logs_data(&logs_view, &handle).await;
+        let handoff = formatter.print_logs_data(&logs_view, &handle).await;
+        assert!(
+            handoff.is_err(),
+            "a closed writer must report the failed handoff"
+        );
 
         assert!(sink.contents().is_empty());
         assert_eq!(handle.stats().frames_enqueue_failed, 1);
@@ -1296,6 +1335,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(CONSOLE_EXPORTER_URN));
         let exporter = ExporterWrapper::local(
             ConsoleExporter::with_output(
+                &create_test_pipeline_context(),
                 ConsoleExporterConfig {
                     format: ConsoleOutputFormat::RecordJson,
                     ..ConsoleExporterConfig::default()
@@ -1364,6 +1404,7 @@ mod tests {
         let handle = stream.handle();
 
         let (exporter, resolutions) = ConsoleExporter::with_counted_output(
+            &create_test_pipeline_context(),
             ConsoleExporterConfig {
                 format: ConsoleOutputFormat::RecordJson,
                 ..ConsoleExporterConfig::default()
@@ -1494,11 +1535,15 @@ mod tests {
     #[test]
     fn pretty_output_steps_aside_once_stdout_carries_records() {
         // Built before the claim: a construction-time binding would keep stdout.
-        let pretty = ConsoleExporter::new(ConsoleExporterConfig::default());
-        let records = ConsoleExporter::new(ConsoleExporterConfig {
-            format: ConsoleOutputFormat::RecordJson,
-            ..ConsoleExporterConfig::default()
-        });
+        let pipeline_ctx = create_test_pipeline_context();
+        let pretty = ConsoleExporter::new(&pipeline_ctx, ConsoleExporterConfig::default());
+        let records = ConsoleExporter::new(
+            &pipeline_ctx,
+            ConsoleExporterConfig {
+                format: ConsoleOutputFormat::RecordJson,
+                ..ConsoleExporterConfig::default()
+            },
+        );
 
         // The latch is process-wide and monotonic, matching a record JSON exporter
         // having been created anywhere in this process.

@@ -20,7 +20,7 @@ pub trait MapValue: Debug {
     // of support for this method
     fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
-    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(&str, Value<'a>) -> bool) -> bool;
+    fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool;
 
     fn to_string(&self) -> ValueString<'_> {
         let mut values = serde_json::Map::new();
@@ -33,6 +33,8 @@ pub trait MapValue: Debug {
         ValueString::Owned(serde_json::Value::Object(values).to_string())
     }
 }
+
+pub type MapValueIteratorCallback<'a, 'b> = dyn FnMut(&str, Value<'a>) -> bool + 'b;
 
 pub(crate) fn equal_to(
     query_location: &QueryLocation,

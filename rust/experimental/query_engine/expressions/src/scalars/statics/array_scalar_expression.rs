@@ -55,7 +55,7 @@ impl ArrayValue for ArrayScalarExpression {
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
             if !(item_callback)(index, value.to_value()) {
