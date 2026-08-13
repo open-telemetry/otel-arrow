@@ -59,25 +59,19 @@ use crate::exporters::common::bearer_auth::{BearerAuth, BearerAuthEvents, apply_
 /// The URN for the OTLP gRPC exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
 
-/// Emits the shared bearer-auth warnings under this exporter's event namespace.
-struct GrpcBearerAuthEvents;
-
-impl BearerAuthEvents for GrpcBearerAuthEvents {
-    fn invalid_token(error: &http::header::InvalidHeaderValue) {
+/// Raises the shared bearer-auth warnings under this exporter's event namespace.
+const GRPC_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
+    invalid_token: |error| {
         otel_warn!("otlp.exporter.grpc.invalid_bearer_token", error = %error);
-    }
-
-    fn token_stream_closed() {
+    },
+    token_stream_closed: || {
         otel_warn!(
             "otlp.exporter.grpc.token_stream_closed",
             message = "bearer token provider closed its stream; \
                 no further token refreshes will arrive"
         );
-    }
-}
-
-/// The bearer-token adapter as used by this exporter.
-type GrpcBearerAuth = BearerAuth<GrpcBearerAuthEvents>;
+    },
+};
 
 /// Configuration for the OTLP Exporter
 #[derive(Debug, Deserialize)]
@@ -268,7 +262,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
         // the token subscription, the cached `authorization` header, and token
         // usability; the loop below stays auth-agnostic -- it only asks whether
         // it may send and stamps the header the adapter hands back.
-        let mut auth = self.token_provider.take().map(GrpcBearerAuth::new);
+        let mut auth = self
+            .token_provider
+            .take()
+            .map(|provider| BearerAuth::new(provider, GRPC_BEARER_AUTH_EVENTS));
 
         // Timer that fires when the cached token crosses its usability margin.
         // Hoisted out of the loop and re-armed only when the deadline actually
@@ -316,13 +313,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // the extension's readiness probe holds data-path startup until the
             // first publish, and its watch stream stays live while we hold the
             // provider handle -- so waiting (not dropping) is always correct here.
-            let accepting_pdata = auth.as_ref().is_none_or(GrpcBearerAuth::is_ready);
+            let accepting_pdata = auth.as_ref().is_none_or(BearerAuth::is_ready);
 
             // Instant at which a currently-usable token crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let token_margin_deadline = auth.as_ref().and_then(GrpcBearerAuth::refresh_deadline);
+            let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
             if token_margin_deadline != armed_margin_deadline {
                 if let Some(deadline) = token_margin_deadline {
                     margin_sleep
@@ -371,7 +368,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             Some(a) => a.poll_refresh().await,
                             None => std::future::pending().await,
                         }
-                    }, if auth.as_ref().is_some_and(GrpcBearerAuth::is_active) => {
+                    }, if auth.as_ref().is_some_and(BearerAuth::is_active) => {
                         // A refresh was drained (the adapter caches it and logs any
                         // anomaly); loop to re-evaluate intake readiness.
                         continue;
@@ -429,7 +426,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         );
                         let reason = auth
                             .as_ref()
-                            .map_or("no usable bearer token", GrpcBearerAuth::not_ready_reason);
+                            .map_or("no usable bearer token", BearerAuth::not_ready_reason);
                         nack_without_usable_token(
                             pdata,
                             reason,
@@ -503,7 +500,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // completion so an UNAUTHENTICATED response can be matched to the
                     // exact token used and a stale rejection ignored.
                     let (auth_header, token_generation) =
-                        match auth.as_ref().and_then(GrpcBearerAuth::header) {
+                        match auth.as_ref().and_then(BearerAuth::header) {
                             Some((header, generation)) => (Some(header), Some(generation)),
                             None => (None, None),
                         };

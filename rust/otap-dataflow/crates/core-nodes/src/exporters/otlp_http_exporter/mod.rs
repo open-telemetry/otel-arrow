@@ -71,25 +71,19 @@ mod config;
 /// The URN for the OTLP HTTP exporter
 pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
 
-/// Emits the shared bearer-auth warnings under this exporter's event namespace.
-struct HttpBearerAuthEvents;
-
-impl BearerAuthEvents for HttpBearerAuthEvents {
-    fn invalid_token(error: &http::header::InvalidHeaderValue) {
+/// Raises the shared bearer-auth warnings under this exporter's event namespace.
+const HTTP_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
+    invalid_token: |error| {
         otel_warn!("otlp.exporter.http.invalid_bearer_token", error = %error);
-    }
-
-    fn token_stream_closed() {
+    },
+    token_stream_closed: || {
         otel_warn!(
             "otlp.exporter.http.token_stream_closed",
             message = "bearer token provider closed its stream; \
                 no further token refreshes will arrive"
         );
-    }
-}
-
-/// The bearer-token adapter as used by this exporter.
-type HttpBearerAuth = BearerAuth<HttpBearerAuthEvents>;
+    },
+};
 
 /// Exporter that sends OTLP data via HTTP
 pub struct OtlpHttpExporter {
@@ -250,7 +244,7 @@ struct CompletedExport {
     /// Generation of the bearer token stamped on this request (`None` when no
     /// provider is bound). Echoed back so a 401 invalidates exactly the token
     /// that was used, not a newer one already cached (see
-    /// [`HttpBearerAuth::invalidate`]).
+    /// [`BearerAuth::invalidate`]).
     token_generation: Option<u64>,
 }
 
@@ -323,7 +317,10 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         // the token subscription, the cached `Authorization` header, and token
         // usability; the loop below stays auth-agnostic -- it only asks whether
         // it may send and stamps the header the adapter hands back.
-        let mut auth = self.token_provider.take().map(HttpBearerAuth::new);
+        let mut auth = self
+            .token_provider
+            .take()
+            .map(|provider| BearerAuth::new(provider, HTTP_BEARER_AUTH_EVENTS));
 
         // Timer that fires when the cached token crosses its usability margin.
         // Hoisted out of the loop and re-armed only when the deadline actually
@@ -344,14 +341,14 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             // holds data-path startup until the first publish, and its watch stream
             // stays live while we hold the provider handle -- so waiting (not
             // dropping) is always correct here.
-            let accepting_pdata = auth.as_ref().is_none_or(HttpBearerAuth::is_ready)
+            let accepting_pdata = auth.as_ref().is_none_or(BearerAuth::is_ready)
                 && inflight_exports.len() < max_in_flight;
 
             // Instant at which a currently-usable token crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let token_margin_deadline = auth.as_ref().and_then(HttpBearerAuth::refresh_deadline);
+            let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
             if token_margin_deadline != armed_margin_deadline {
                 if let Some(deadline) = token_margin_deadline {
                     margin_sleep
@@ -384,7 +381,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         Some(a) => a.poll_refresh().await,
                         None => std::future::pending().await,
                     }
-                }, if auth.as_ref().is_some_and(HttpBearerAuth::is_active) => {
+                }, if auth.as_ref().is_some_and(BearerAuth::is_active) => {
                     // A refresh was drained (the adapter caches it and logs any
                     // anomaly); loop to re-evaluate intake readiness.
                     continue;
@@ -478,7 +475,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // generation is echoed back on completion so a 401 can be matched
                     // to the exact token used and a stale rejection ignored.
                     let (auth_header, token_generation) =
-                        match auth.as_ref().and_then(HttpBearerAuth::header) {
+                        match auth.as_ref().and_then(BearerAuth::header) {
                             Some((header, generation)) => (Some(header), Some(generation)),
                             None => (None, None),
                         };

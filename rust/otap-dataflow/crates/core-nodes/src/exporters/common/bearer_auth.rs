@@ -17,7 +17,6 @@
 //! stream, caches the built `Authorization` header, and tracks whether that
 //! cached token is still usable. The exporter is the "dumb caller".
 
-use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -33,16 +32,19 @@ use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenP
 /// cached token genuinely near expiry).
 const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 
-/// The warnings this adapter can raise, emitted by the owning exporter so each
+/// The warnings this adapter can raise, supplied by the owning exporter so each
 /// event name is namespaced to that exporter (e.g. `otlp.exporter.grpc.*`)
 /// rather than to the shared adapter. `otel_warn!` const-validates its event
-/// name, so the name has to be a literal at the emitting call site.
-pub(crate) trait BearerAuthEvents {
+/// name, so the name has to be a literal at the emitting call site; passing the
+/// emitters as function pointers satisfies that without making the adapter
+/// generic over an exporter marker type.
+#[derive(Clone, Copy)]
+pub(crate) struct BearerAuthEvents {
     /// A published token could not be turned into an `Authorization` header.
-    fn invalid_token(error: &InvalidHeaderValue);
+    pub(crate) invalid_token: fn(&InvalidHeaderValue),
 
     /// The provider closed its token stream; no further refreshes will arrive.
-    fn token_stream_closed();
+    pub(crate) token_stream_closed: fn(),
 }
 
 /// Consumer-side bearer-token authenticator: subscribes to a provider's token
@@ -50,7 +52,7 @@ pub(crate) trait BearerAuthEvents {
 ///
 /// All token/expiry/stream state lives here, so an exporter holds one of these
 /// and never touches a token directly.
-pub(crate) struct BearerAuth<E: BearerAuthEvents> {
+pub(crate) struct BearerAuth {
     /// Subscription to the provider's token refreshes.
     stream: TokenStream,
     /// Whether the stream is still live and worth polling.
@@ -64,23 +66,24 @@ pub(crate) struct BearerAuth<E: BearerAuthEvents> {
     /// each request so a later 401 can be matched to the exact token generation
     /// it used, letting a rejection for an already-replaced token be ignored.
     generation: u64,
-    /// Selects the exporter-specific event names; carries no state.
-    _events: PhantomData<E>,
+    /// The owning exporter's namespaced warning emitters.
+    events: BearerAuthEvents,
 }
 
-impl<E: BearerAuthEvents> BearerAuth<E> {
-    /// Subscribes to `provider`'s token stream. Per the
-    /// `BearerTokenProvider::token_stream` contract, a subscription created
-    /// after a token has been published immediately yields that current token,
-    /// so the exporter needs no separate `get_token()` seeding step.
-    pub(crate) fn new(provider: Box<dyn BearerTokenProvider>) -> Self {
+impl BearerAuth {
+    /// Subscribes to `provider`'s token stream, raising warnings through
+    /// `events`. Per the `BearerTokenProvider::token_stream` contract, a
+    /// subscription created after a token has been published immediately yields
+    /// that current token, so the exporter needs no separate `get_token()`
+    /// seeding step.
+    pub(crate) fn new(provider: Box<dyn BearerTokenProvider>, events: BearerAuthEvents) -> Self {
         Self {
             stream: provider.token_stream(),
             stream_active: true,
             cached_header: None,
             cached_expiry: None,
             generation: 0,
-            _events: PhantomData,
+            events,
         }
     }
 
@@ -169,7 +172,7 @@ impl<E: BearerAuthEvents> BearerAuth<E> {
                     }
                     Err(e) => {
                         // Malformed token: keep the previous cached token (if any).
-                        E::invalid_token(&e);
+                        (self.events.invalid_token)(&e);
                     }
                 }
             }
@@ -178,7 +181,7 @@ impl<E: BearerAuthEvents> BearerAuth<E> {
                 // Keep using the last cached token. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
-                E::token_stream_closed();
+                (self.events.token_stream_closed)();
             }
         }
     }
@@ -193,8 +196,8 @@ impl<E: BearerAuthEvents> BearerAuth<E> {
 /// once. A no-op when no provider is bound (`rejected_generation` is `None`) or
 /// the rejection is stale (a newer token was already cached), per
 /// [`BearerAuth::invalidate`]'s generation guard.
-pub(crate) fn apply_auth_rejection<E: BearerAuthEvents>(
-    auth: &mut Option<BearerAuth<E>>,
+pub(crate) fn apply_auth_rejection(
+    auth: &mut Option<BearerAuth>,
     rejected_generation: Option<u64>,
 ) {
     if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
@@ -293,20 +296,13 @@ mod tests {
         static STREAM_CLOSURES: Cell<usize> = const { Cell::new(0) };
     }
 
-    /// Recording implementation of the event hooks. The trait methods are
-    /// associated functions (no `self`), so the counters are thread-local; the
-    /// test harness gives each test its own thread, and every test resets them
-    /// before use.
-    struct TestEvents;
-
-    impl BearerAuthEvents for TestEvents {
-        fn invalid_token(_error: &InvalidHeaderValue) {
-            INVALID_TOKENS.set(INVALID_TOKENS.get() + 1);
-        }
-        fn token_stream_closed() {
-            STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1);
-        }
-    }
+    /// Recording event hooks. The hooks take no receiver, so the counters are
+    /// thread-local; the test harness gives each test its own thread, and every
+    /// test resets them before use.
+    const TEST_EVENTS: BearerAuthEvents = BearerAuthEvents {
+        invalid_token: |_error| INVALID_TOKENS.set(INVALID_TOKENS.get() + 1),
+        token_stream_closed: || STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
+    };
 
     fn reset_events() {
         INVALID_TOKENS.set(0);
@@ -315,21 +311,21 @@ mod tests {
 
     /// Builds an adapter holding a usable, non-expiring token at `generation`,
     /// with an inert (empty) stream so only `invalidate` behavior is exercised.
-    fn auth_with_cached_token(generation: u64) -> BearerAuth<TestEvents> {
+    fn auth_with_cached_token(generation: u64) -> BearerAuth {
         BearerAuth {
             stream: stream::empty().boxed_local(),
             stream_active: false,
             cached_header: Some(HeaderValue::from_static("Bearer test-token")),
             cached_expiry: None,
             generation,
-            _events: PhantomData,
+            events: TEST_EVENTS,
         }
     }
 
     /// Builds a token-less adapter subscribed to a finite stream that publishes
     /// `tokens` in order and then ends, so a test can drive `poll_refresh` one
     /// publication at a time and also reach the stream-closed branch.
-    fn auth_over(tokens: Vec<BearerToken>) -> BearerAuth<TestEvents> {
+    fn auth_over(tokens: Vec<BearerToken>) -> BearerAuth {
         reset_events();
         BearerAuth {
             stream: stream::iter(tokens).boxed_local(),
@@ -337,7 +333,7 @@ mod tests {
             cached_header: None,
             cached_expiry: None,
             generation: 0,
-            _events: PhantomData,
+            events: TEST_EVENTS,
         }
     }
 
@@ -565,7 +561,7 @@ mod tests {
     // completion.
     #[test]
     fn apply_auth_rejection_without_a_bound_provider_is_a_no_op() {
-        let mut auth: Option<BearerAuth<TestEvents>> = None;
+        let mut auth: Option<BearerAuth> = None;
 
         apply_auth_rejection(&mut auth, Some(1));
 
