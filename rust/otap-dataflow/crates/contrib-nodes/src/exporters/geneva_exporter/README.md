@@ -181,9 +181,7 @@ attaches the customer identity (`onbehalfid`) and an optional annotations recipe
 (`onbehalfannotations`) as GIG query parameters on the upload.
 
 OBO entries are keyed by the **destination** event/table name -- the name
-*after* `event_name_mapping` resolves it, not the pre-mapping source value. This
-matches the Geneva agents (MA, mdsd, AMACA), which all associate OBO with the
-routed/renamed target event.
+*after* `event_name_mapping` resolves it, not the pre-mapping source value.
 
 The following example both renames tables via `event_name_mapping` and enables
 OBO on the resolved destinations:

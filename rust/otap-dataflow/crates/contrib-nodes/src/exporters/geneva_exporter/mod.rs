@@ -543,9 +543,8 @@ pub struct TracesConfig {
 ///
 /// Keys are the *destination* event/table name -- the name after
 /// `logs`/`spans` `event_name_mapping` has resolved it, not the pre-mapping
-/// source value. The uploader looks up OBO by the resolved destination name
-/// (matching MA/mdsd/AMACA, which associate OBO with the routed/renamed target
-/// event). For example, if `event_name_mapping` routes source `audit` to table
+/// source value. The uploader looks up OBO by the resolved destination name.
+/// For example, if `event_name_mapping` routes source `audit` to table
 /// `AuditLogs`, the OBO entry must be keyed `AuditLogs`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "OboConfigRaw")]
