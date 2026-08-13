@@ -4,7 +4,7 @@
 use super::OtlpProtoBytes;
 use crate::error::{Error, Result};
 use crate::proto::consts::wire_types;
-use crate::views::otlp::bytes::decode::{read_len_delim, read_varint};
+use crate::views::otlp::bytes::decode::{field_value_range, read_varint};
 use otap_df_config::SignalType;
 use std::num::NonZeroU64;
 
@@ -80,35 +80,23 @@ fn wrapped_len(field: u64, payload_len: usize) -> usize {
 /// types `payload_start == field_end`. Returns `None` when the field cannot be
 /// parsed (truncated or invalid), which signals the caller to treat the rest of
 /// the buffer as an opaque unit (matching the previous skip-to-EOF behavior).
+///
+/// The field-boundary computation is delegated to the shared
+/// [`field_value_range`] decoder so the wire-format logic lives in one place;
+/// this wrapper only re-derives the historical `payload_start` convention
+/// (value start for LEN, `field_end` otherwise -- callers only read
+/// `payload_start` under a `wire == LEN` guard).
 fn next_field(buf: &[u8], pos: usize) -> Option<(u64, u64, usize, usize)> {
     let (tag, after_tag) = read_varint(buf, pos)?;
     let field = tag >> 3;
     let wire = tag & wire_types::PROTOBUF_TAG_BITMASK;
-    match wire {
-        wire_types::LEN => {
-            let (payload, end) = read_len_delim(buf, after_tag)?;
-            Some((field, wire, end - payload.len(), end))
-        }
-        wire_types::VARINT => {
-            let (_, end) = read_varint(buf, after_tag)?;
-            Some((field, wire, end, end))
-        }
-        wire_types::FIXED64 => {
-            let end = after_tag.checked_add(8)?;
-            if end > buf.len() {
-                return None;
-            }
-            Some((field, wire, end, end))
-        }
-        wire_types::FIXED32 => {
-            let end = after_tag.checked_add(4)?;
-            if end > buf.len() {
-                return None;
-            }
-            Some((field, wire, end, end))
-        }
-        _ => None,
-    }
+    let (value_start, field_end) = field_value_range(buf, wire, after_tag)?;
+    let payload_start = if wire == wire_types::LEN {
+        value_start
+    } else {
+        field_end
+    };
+    Some((field, wire, payload_start, field_end))
 }
 
 /// Returns `true` when every field in `buf` parses cleanly through to the end

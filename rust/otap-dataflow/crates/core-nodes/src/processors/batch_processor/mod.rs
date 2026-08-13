@@ -312,8 +312,13 @@ const fn default_batching_format() -> BatchingFormat {
 /// Default cap on the number of fragments a single oversize resource entry may
 /// split into. Bounds worst-case fan-out when `max_size` is tiny relative to an
 /// indivisible input; entries projected to exceed this are emitted whole.
+///
+/// This is a pathological-fan-out backstop, not a tuning knob: it is meant to
+/// almost never fire under normal load and is deliberately set well above the
+/// fan-out any legitimate large resource entry produces. Chosen as a round
+/// power of two (2^16) rather than a hard performance limit.
 const fn default_max_split_fragments() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(100_000)
+    NonZeroUsize::new(65_536)
 }
 
 /// Default cap on the duplicated wrapper bytes a single oversize resource entry
@@ -328,9 +333,10 @@ const fn default_max_split_overhead_bytes() -> Option<NonZeroUsize> {
 /// Default cap on the number of output batches a single flush may build from
 /// byte splitting before further oversize entries are emitted whole. Bounds the
 /// in-memory output allocation for a flush with many large entries, independent
-/// of Ack/Nack slot accounting; over-limit entries are emitted whole.
+/// of Ack/Nack slot accounting; over-limit entries are emitted whole. Chosen as
+/// a round power of two (2^16) backstop, not a hard performance limit.
 const fn default_max_split_fragments_per_flush() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(100_000)
+    NonZeroUsize::new(65_536)
 }
 
 const fn default_otap() -> FormatConfig {
@@ -3815,8 +3821,8 @@ mod tests {
     /// Scenario: an OTLP config omits `max_split_fragments`,
     /// `max_split_overhead_bytes`, and `max_split_fragments_per_flush`.
     ///
-    /// Guarantees: serde applies the documented defaults (100k fragments, 8 MiB
-    /// overhead, 100k fragments per flush) rather than leaving the fields `None`
+    /// Guarantees: serde applies the documented defaults (64k fragments, 8 MiB
+    /// overhead, 64k fragments per flush) rather than leaving the fields `None`
     /// (unbounded), so an omitted config is bounded, not unlimited.
     #[test]
     fn test_split_budget_defaults_applied_when_omitted() {
@@ -3833,8 +3839,8 @@ mod tests {
 
         assert_eq!(
             config.otlp.max_split_fragments,
-            NonZeroUsize::new(100_000),
-            "omitted max_split_fragments must default to 100k, not None (unbounded)"
+            NonZeroUsize::new(65_536),
+            "omitted max_split_fragments must default to 64k, not None (unbounded)"
         );
         assert_eq!(
             config.otlp.max_split_overhead_bytes,
@@ -3843,8 +3849,8 @@ mod tests {
         );
         assert_eq!(
             config.otlp.max_split_fragments_per_flush,
-            NonZeroUsize::new(100_000),
-            "omitted max_split_fragments_per_flush must default to 100k, not None (unbounded)"
+            NonZeroUsize::new(65_536),
+            "omitted max_split_fragments_per_flush must default to 64k, not None (unbounded)"
         );
     }
 

@@ -49,9 +49,9 @@ config:
     min_size: 1048576
     max_size: null
     sizer: bytes
-    max_split_fragments: 100000  # Cap on fragments per oversize entry (OTLP only).
+    max_split_fragments: 65536  # Cap on fragments per oversize entry (OTLP only).
     max_split_overhead_bytes: 8388608  # Cap on duplicated wrapper bytes per oversize entry (OTLP only).
-    max_split_fragments_per_flush: 100000  # Greedy per-flush split threshold (OTLP only).
+    max_split_fragments_per_flush: 65536  # Greedy per-flush split threshold (OTLP only).
 
   # Maximum time before flushing pending data (default: 200ms).
   max_batch_duration: 500ms
@@ -70,8 +70,9 @@ Each format object contains:
 - `max_size`: optional non-zero upper bound, or `null`.
 - `sizer`: one of `requests`, `items`, or `bytes`.
 - `max_split_fragments` (OTLP bytes only): non-zero cap on how many fragments a
-  single oversize resource entry may split into, or `null` for unbounded.
-  Splitting an entry that exceeds `max_size` re-encodes the resource/scope
+  single oversize resource entry may split into, or `null` for unbounded
+  (default 65536, a power-of-two backstop). Splitting an entry that exceeds
+  `max_size` re-encodes the resource/scope
   headers around each fragment, so a tiny `max_size` relative to one indivisible
   input could fan out into very many fragments. When the projected fragment
   count exceeds this budget the entry is emitted whole (best-effort, possibly
@@ -92,7 +93,7 @@ Each format object contains:
   `max_split_fragments`, it is not projected up front.
 - `max_split_fragments_per_flush` (OTLP bytes only): non-zero greedy threshold on
   the number of output batches a single flush may build from splitting, or `null`
-  for unbounded (default 100000). The two budgets above bound each entry
+  for unbounded (default 65536). The two budgets above bound each entry
   individually, but a flush containing many large entries builds its entire
   output vector in memory before anything is sent, so their combined split
   fan-out could still amplify into a very large allocation. Once a flush has
