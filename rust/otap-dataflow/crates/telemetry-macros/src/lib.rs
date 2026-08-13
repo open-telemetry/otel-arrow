@@ -27,36 +27,47 @@ struct ComponentTelemetryScopeArgs {
 
 impl syn::parse::Parse for ComponentTelemetryScopeArgs {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
-        let urn_key: syn::Ident = input.parse()?;
-        if urn_key != "urn" {
-            return Err(syn::Error::new(urn_key.span(), "expected `urn`"));
-        }
-        let _ = input.parse::<Token![=]>()?;
-        let urn = input.parse()?;
-        let _ = input.parse::<Token![,]>()?;
+        let mut urn = None;
+        let mut kind = None;
+        let mut name = None;
 
-        let kind_key: syn::Ident = input.parse()?;
-        if kind_key != "kind" {
-            return Err(syn::Error::new(kind_key.span(), "expected `kind`"));
-        }
-        let _ = input.parse::<Token![=]>()?;
-        let kind = input.parse()?;
-        let _ = input.parse::<Token![,]>()?;
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            let _ = input.parse::<Token![=]>()?;
 
-        let name_key: syn::Ident = input.parse()?;
-        if name_key != "name" {
-            return Err(syn::Error::new(name_key.span(), "expected `name`"));
-        }
-        let _ = input.parse::<Token![=]>()?;
-        let name = input.parse()?;
-        if input.peek(Token![,]) {
+            if key == "urn" {
+                if urn.is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `urn` argument"));
+                }
+                urn = Some(input.parse()?);
+            } else if key == "kind" {
+                if kind.is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `kind` argument"));
+                }
+                kind = Some(input.parse()?);
+            } else if key == "name" {
+                if name.is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `name` argument"));
+                }
+                name = Some(input.parse()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "unsupported argument; expected `urn`, `kind`, or `name`",
+                ));
+            }
+
+            if input.is_empty() {
+                break;
+            }
             let _ = input.parse::<Token![,]>()?;
         }
-        if !input.is_empty() {
-            return Err(input.error("unexpected component telemetry scope input"));
-        }
 
-        Ok(Self { urn, kind, name })
+        Ok(Self {
+            urn: urn.ok_or_else(|| input.error("missing `urn` argument"))?,
+            kind: kind.ok_or_else(|| input.error("missing `kind` argument"))?,
+            name: name.ok_or_else(|| input.error("missing `name` argument"))?,
+        })
     }
 }
 
@@ -1435,6 +1446,40 @@ fn parse_attribute_field_attr(attr: &Attribute) -> syn::Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: component telemetry scope arguments are supplied in every possible order.
+    /// Guarantees: named arguments parse independently of their source order.
+    #[test]
+    fn component_telemetry_scope_arguments_accept_any_order() {
+        let permutations = [
+            r#"urn = COMPONENT_URN, kind = "processor", name = "transform""#,
+            r#"urn = COMPONENT_URN, name = "transform", kind = "processor""#,
+            r#"kind = "processor", urn = COMPONENT_URN, name = "transform""#,
+            r#"kind = "processor", name = "transform", urn = COMPONENT_URN"#,
+            r#"name = "transform", urn = COMPONENT_URN, kind = "processor""#,
+            r#"name = "transform", kind = "processor", urn = COMPONENT_URN"#,
+        ];
+
+        for arguments in permutations {
+            let parsed = syn::parse_str::<ComponentTelemetryScopeArgs>(arguments)
+                .expect("named component telemetry scope arguments should parse in any order");
+            assert_eq!(parsed.kind.value(), "processor");
+            assert_eq!(parsed.name.value(), "transform");
+        }
+    }
+
+    /// Scenario: a component telemetry scope repeats one named argument.
+    /// Guarantees: duplicate arguments are rejected instead of silently replacing a value.
+    #[test]
+    fn component_telemetry_scope_arguments_reject_duplicates() {
+        let err = syn::parse_str::<ComponentTelemetryScopeArgs>(
+            r#"urn = COMPONENT_URN, kind = "processor", name = "transform", kind = "exporter""#,
+        )
+        .err()
+        .expect("duplicate component telemetry scope arguments should fail");
+
+        assert_eq!(err.to_string(), "duplicate `kind` argument");
+    }
 
     /// Scenario: A metric field declares the supported name and unit arguments.
     /// Guarantees: The parser returns both values without an error.
