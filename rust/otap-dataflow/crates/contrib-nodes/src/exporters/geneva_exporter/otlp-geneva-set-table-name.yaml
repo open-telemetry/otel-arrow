@@ -47,9 +47,8 @@ groups:
               role_name: "role_name"
               role_instance: "role_instance"
               auth:
-                type: "certificate"
-                path: "/path/to/your/certificate.p12"
-                password: "your-cert-password"
+                type: "systemmanagedidentity"
+                msi_resource: "https://monitor.azure.com/"
               max_buffer_size: 1000
               max_concurrent_uploads: 4
               logs:
