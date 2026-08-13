@@ -2,6 +2,146 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Direct transformation of serialized OTLP logs into ClickHouse Arrow columns.
+//!
+//! # Purpose
+//!
+//! The legacy raw-OTLP path first converts an `ExportLogsServiceRequest` into the canonical OTAP
+//! Arrow representation and then runs the generic ClickHouse transformation plan. This module
+//! avoids both intermediate stages. It reads the serialized protobuf through borrowed
+//! [`RawLogsData`] views and builds the final ClickHouse-compatible [`RecordBatch`] directly.
+//! Protobuf messages are not decoded into an owned Rust object tree and no intermediate OTAP
+//! batches are created.
+//!
+//! Unlike the specialized OTAP transformer in `logs_fast`, this path cannot share input arrays
+//! with its output because its input is a byte buffer rather than Arrow data. Its main savings
+//! come from traversing the protobuf once, materializing only the final arrays, and reusing
+//! allocation and schema state between requests.
+//!
+//! # Applicability and routing
+//!
+//! The ClickHouse exporter attempts this transformer only for raw
+//! `OtlpProtoBytes::ExportLogsRequest` payloads. It is not used for OTAP records, OTLP traces,
+//! OTLP metrics, or already transformed Arrow batches. The routing and fallback policy lives in
+//! the parent `clickhouse_exporter` module:
+//!
+//! - a successful non-empty transformation is written as the logs payload
+//! - a valid request with no log records returns `None`, so no empty insert is issued
+//! - invalid protobuf wire framing is rejected and is not sent through the legacy path
+//! - other conversion or Arrow errors are returned to the caller, which may attempt the legacy
+//!   OTLP-to-OTAP transformation
+//!
+//! This module does not perform fallback itself. Keeping that decision at the exporter boundary
+//! makes direct-path and fallback telemetry account for the complete request.
+//!
+//! # Processing model
+//!
+//! `OtlpLogsTransformer::transform` follows the OTLP ownership hierarchy. Resource and scope data
+//! is collected once and replayed for each child log, while log-local fields are appended directly
+//! to the Arrow builders:
+//!
+//! ```text
+//! ExportLogsServiceRequest bytes
+//!                 |
+//!                 v
+//!       RawLogsData::try_new
+//!       - validate wire framing
+//!       - expose borrowed views
+//!                 |
+//!                 v
+//!       ResourceLogs (0..n)
+//!       - resource schema URL
+//!       - resource attributes + service.name
+//!                 |
+//!                 v
+//!         ScopeLogs (0..n)
+//!         - scope name/version/attributes
+//!                 |
+//!                 v
+//!         LogRecord (0..n) --------> append one output row
+//!                                     - scalar fields
+//!                                     - body and attributes
+//!                                     - trace/span IDs
+//!                                               |
+//!                                               v
+//!                                   sort columns by name
+//!                                   build/reuse Arrow schema
+//!                                               |
+//!                                               v
+//!                                   ClickHouse RecordBatch
+//! ```
+//!
+//! Traversal order is resource, then scope, then log order. That order is the output row order and
+//! must remain stable. Resource and scope attributes are copied into every child log row because
+//! the ClickHouse logs table stores flattened rows rather than the nested OTLP hierarchy.
+//!
+//! # Column mapping
+//!
+//! One output row represents one OTLP `LogRecord`. The transformer currently builds these
+//! columns, then sorts them lexically to preserve the generic transformer's stable output order:
+//!
+//! ```text
+//! +--------------------+--------------------------------------+-----------------------+
+//! | Output column      | Raw OTLP source / operation          | Arrow representation  |
+//! +--------------------+--------------------------------------+-----------------------+
+//! | Timestamp          | LogRecord.time_unix_nano             | TimestampNanosecond   |
+//! | ResourceSchemaUrl  | ResourceLogs.schema_url              | Utf8                  |
+//! | ResourceAttributes | Resource.attributes -> string map    | Map(Utf8, Utf8)       |
+//! | ServiceName        | first resource attr `service.name`   | Utf8                  |
+//! | ScopeName          | InstrumentationScope.name            | Utf8                  |
+//! | ScopeVersion       | InstrumentationScope.version         | Utf8                  |
+//! | ScopeAttributes    | InstrumentationScope.attributes      | Map(Utf8, Utf8)       |
+//! | LogAttributes      | LogRecord.attributes                 | Map(Utf8, Utf8)       |
+//! | Body               | LogRecord.body -> string             | Utf8                  |
+//! | EventName          | LogRecord.event_name                 | Utf8                  |
+//! | SeverityNumber     | LogRecord.severity_number -> UInt8   | UInt8                 |
+//! | SeverityText       | LogRecord.severity_text              | Utf8                  |
+//! | TraceId            | LogRecord.trace_id -> lowercase hex  | Utf8                  |
+//! | SpanId             | LogRecord.span_id -> lowercase hex   | Utf8                  |
+//! +--------------------+--------------------------------------+-----------------------+
+//! ```
+//!
+//! Fields not listed in this table are not emitted by this transformer. In particular, the
+//! current implementation does not emit `ScopeSchemaUrl` or `TraceFlags`; extending the mapping
+//! requires updating the builders, presence tracking, parity tests, and live ClickHouse binding
+//! test together.
+//!
+//! # Value conversion
+//!
+//! ClickHouse attribute columns are maps of strings, so OTLP `AnyValue` values use the same
+//! logical conversion as the legacy transformer:
+//!
+//! - strings remain strings; booleans, integers, and doubles use their textual form
+//! - a top-level byte value is standard base64 text
+//! - arrays and key-value lists are JSON; byte values nested in JSON use the serializer's byte
+//!   array representation
+//! - a missing attribute value becomes an empty string
+//! - an empty or missing body becomes null
+//! - trace and span IDs become lowercase hexadecimal strings
+//!
+//! String-bearing OTLP fields must contain valid UTF-8, and a severity number must fit in `UInt8`.
+//! Violations are conversion errors rather than silent truncation or replacement.
+//!
+//! # Optional columns and defaults
+//!
+//! [`ColumnPresence`] records whether an optional field appears anywhere in the request. A column
+//! is omitted from the batch when it is absent from every row, matching the generic transformer's
+//! use of ClickHouse defaults. When a column is present for only some rows, its builders retain
+//! nulls or empty maps at the other row positions. `Timestamp` is always emitted and a missing
+//! OTLP timestamp becomes zero. `ResourceAttributes` and `ServiceName` are emitted together when
+//! at least one resource attribute exists; an absent `service.name` becomes an empty string.
+//!
+//! # Reused state and allocation bounds
+//!
+//! [`OtlpLogsTransformer`] is owned by one exporter task and is reused sequentially. It retains:
+//!
+//! - the previous request's row count as the next request's builder-capacity hint, capped at 16K
+//!   rows to prevent one unusually large request from causing persistent over-allocation
+//! - a scratch byte buffer used for `AnyValue` text/JSON conversion and ID encoding
+//! - a one-entry schema cache keyed by the sorted output column names and Arrow data types
+//!
+//! The Arrow builders themselves are request-local and are finalized into the returned batch.
+//! Changes to conversion, column presence, or sorting must preserve logical parity with the
+//! legacy path; the tests below compare names, row order, null placement, and values.
 
 use std::sync::Arc;
 
@@ -24,24 +164,56 @@ use serde::ser::{Error as SerError, SerializeMap, SerializeSeq, Serializer};
 use crate::exporters::clickhouse_exporter::consts as ch_consts;
 use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
 
+/// Raw resource-attribute key whose first value populates the dedicated `ServiceName` column.
 const SERVICE_NAME_KEY: &[u8] = b"service.name";
+
+/// Initial payload-byte estimate used for each row in an Arrow string builder.
+///
+/// Builders grow automatically, so this affects allocation behavior but never truncates values.
 const INITIAL_STRING_BYTES_PER_ROW: usize = 16;
+
+/// Maximum number of rows for which a new request speculatively reserves builder capacity.
+///
+/// The output itself is not capped. Requests larger than this value continue growing their
+/// builders normally; only the capacity hint learned for the next request is bounded.
 const MAX_PREALLOCATED_ROWS: usize = 16 * 1024;
 
+/// Clamp a previous request's row count before using it as the next capacity hint.
 fn bounded_row_capacity(row_count: usize) -> usize {
     row_count.min(MAX_PREALLOCATED_ROWS)
 }
 
-/// Direct OTLP logs transformer with reusable sizing and serialization state.
+/// Stateful converter from serialized OTLP log requests to ClickHouse Arrow batches.
+///
+/// The exporter keeps one instance per task and calls it sequentially. Only allocation hints,
+/// serialization scratch space, and the most recently used schema survive between calls; no
+/// payload data is retained after [`Self::transform`] returns.
 #[derive(Default)]
 pub(crate) struct OtlpLogsTransformer {
+    /// Last schema and the ordered `(name, data_type)` key that uniquely describes it.
     cached_schema: Option<(Vec<(&'static str, DataType)>, Arc<Schema>)>,
+    /// Reusable buffer for scalar text, JSON, base64, and hexadecimal representations.
     json_scratch: Vec<u8>,
+    /// Completed row count from the previous request, used only as a capacity estimate.
     previous_row_count: usize,
 }
 
 impl OtlpLogsTransformer {
     /// Transform serialized `ExportLogsServiceRequest` bytes directly to a ClickHouse batch.
+    ///
+    /// The method validates the protobuf framing, walks resources/scopes/logs in wire order, and
+    /// appends one Arrow row for each log record. Parent resource and scope values are flattened
+    /// into every child row. Output columns are selected from request-wide presence information
+    /// and sorted by name before schema construction.
+    ///
+    /// Returns `Ok(None)` when the request is valid but contains no log records. The caller treats
+    /// that as a successful no-op rather than issuing an empty ClickHouse insert.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid protobuf framing, invalid UTF-8, unsupported value coercions,
+    /// or Arrow builder/schema failures. The exporter, not this method, decides whether an error
+    /// is rejected or offered to the legacy transformation path.
     pub(crate) fn transform(
         &mut self,
         request: &[u8],
@@ -164,6 +336,10 @@ impl OtlpLogsTransformer {
         Ok(Some(RecordBatch::try_new(schema, arrays)?))
     }
 
+    /// Return a cached schema when column names and types match, or build and cache a new one.
+    ///
+    /// Column order is part of the cache key. Callers must sort columns before invoking this
+    /// method so equivalent request shapes produce the same schema identity.
     fn schema_for(&mut self, columns: &[(&'static str, ArrayRef)]) -> Arc<Schema> {
         let key = columns
             .iter()
@@ -185,6 +361,11 @@ impl OtlpLogsTransformer {
     }
 }
 
+/// Request-wide presence flags controlling which optional arrays enter the output batch.
+///
+/// Builders append a value or null for every row even before a field is known to occur. At
+/// finalization, these flags discard arrays that were absent from all rows, preserving the legacy
+/// transformer's conditional-column behavior and allowing ClickHouse defaults to apply.
 #[derive(Default)]
 struct ColumnPresence {
     body: bool,
@@ -201,6 +382,10 @@ struct ColumnPresence {
     trace_id: bool,
 }
 
+/// Request-local Arrow builders kept in row lockstep while the protobuf hierarchy is flattened.
+///
+/// Every builder receives exactly one logical entry per output row. [`Self::finish`] may omit an
+/// optional array, but any array it returns must have the same length as `timestamp`.
 struct LogsBuilders {
     body: StringBuilder,
     event_name: StringBuilder,
@@ -219,6 +404,11 @@ struct LogsBuilders {
 }
 
 impl LogsBuilders {
+    /// Create all builders using a bounded estimate of the request's eventual row count.
+    ///
+    /// String payload capacity uses a small per-row estimate. Map child builders intentionally
+    /// start without a value-count estimate because attribute cardinality is independent of log
+    /// row count.
     fn new(row_capacity: usize) -> Self {
         let row_capacity = bounded_row_capacity(row_capacity);
         let string_capacity = row_capacity.saturating_mul(INITIAL_STRING_BYTES_PER_ROW);
@@ -249,6 +439,11 @@ impl LogsBuilders {
         }
     }
 
+    /// Finalize required arrays and only those optional arrays observed in the request.
+    ///
+    /// `Timestamp` is unconditional. `ResourceAttributes` and `ServiceName` are a pair because
+    /// the service name is derived while scanning the resource map. Sorting is deliberately left
+    /// to the caller so this method can focus on presence policy and builder finalization.
     fn finish(mut self, presence: ColumnPresence) -> Vec<(&'static str, ArrayRef)> {
         let mut columns = Vec::with_capacity(14);
         if presence.body {
@@ -332,6 +527,11 @@ impl LogsBuilders {
     }
 }
 
+/// Materialize one resource's string map and extract its first `service.name` value.
+///
+/// Resource attributes must be replayed for every descendant log, so they are owned here rather
+/// than repeatedly traversed through borrowed protobuf views. Attribute order and duplicate keys
+/// are preserved. The first `service.name` wins to match the generic ClickHouse transformation.
 fn collect_resource_attributes<R: ResourceView>(
     resource: R,
     scratch: &mut Vec<u8>,
@@ -351,6 +551,10 @@ fn collect_resource_attributes<R: ResourceView>(
     Ok((attributes, service_name.unwrap_or_default()))
 }
 
+/// Materialize a reusable string-map representation of parent-level attributes.
+///
+/// This is used for scope attributes, which are converted once per scope and copied into every
+/// descendant log row. Attribute order and duplicate keys are preserved.
 fn collect_attributes<I, A>(
     attributes: I,
     scratch: &mut Vec<u8>,
@@ -368,6 +572,10 @@ where
     Ok(collected)
 }
 
+/// Append one borrowed attribute to the current map row without an intermediate owned pair.
+///
+/// Callers are responsible for closing the map row with `MapBuilder::append` after all of that
+/// log record's attributes have been added.
 fn append_attribute<A: AttributeView>(
     builder: &mut MapBuilder<StringBuilder, StringBuilder>,
     attribute: A,
@@ -379,6 +587,11 @@ fn append_attribute<A: AttributeView>(
     Ok(())
 }
 
+/// Replay a materialized parent attribute map and close exactly one Arrow map row.
+///
+/// Calling this with an empty slice appends a valid empty map, not a null map. That distinction
+/// keeps all builders aligned while request-wide presence tracking decides whether the complete
+/// column is emitted.
 fn append_attribute_map(
     builder: &mut MapBuilder<StringBuilder, StringBuilder>,
     attributes: &[(String, String)],
@@ -391,6 +604,10 @@ fn append_attribute_map(
     Ok(())
 }
 
+/// Replace `scratch` with the string-map representation of an optional OTLP value.
+///
+/// A missing value intentionally produces an empty string because ClickHouse attribute maps use
+/// string values and this matches the legacy transformer's coercion.
 fn stringify_optional_any_value<'a, V: AnyValueView<'a> + 'a>(
     value: Option<V>,
     scratch: &mut Vec<u8>,
@@ -402,6 +619,11 @@ fn stringify_optional_any_value<'a, V: AnyValueView<'a> + 'a>(
     Ok(())
 }
 
+/// Replace `scratch` with the ClickHouse string representation of an OTLP `AnyValue`.
+///
+/// Scalar values avoid general-purpose JSON serialization. Arrays and key-value lists delegate
+/// to serde so nesting is preserved. A top-level byte value is base64, whereas a byte value
+/// nested inside JSON follows serde's byte-sequence representation.
 fn stringify_any_value<'a, V: AnyValueView<'a> + 'a>(
     value: V,
     scratch: &mut Vec<u8>,
@@ -457,12 +679,16 @@ fn stringify_any_value<'a, V: AnyValueView<'a> + 'a>(
     Ok(())
 }
 
+/// Describe an inconsistent view whose declared `ValueType` has no matching payload accessor.
 fn invalid_any_value(expected: &str) -> ClickhouseExporterError {
     ClickhouseExporterError::CoercionError {
         error: format!("OTLP AnyValue declared {expected} but did not contain a valid value"),
     }
 }
 
+/// Adapter that lets a borrowed [`AnyValueView`] participate in recursive serde serialization.
+///
+/// Keeping the view borrowed avoids building a second owned tree solely for nested JSON values.
 struct AnyValueSerializerWrapper<T>(T);
 
 impl<'a, T> Serialize for AnyValueSerializerWrapper<T>
@@ -477,6 +703,11 @@ where
     }
 }
 
+/// Recursively serialize an OTLP value with JSON-compatible scalar, sequence, and map semantics.
+///
+/// This function is serializer-generic so recursion can use normal serde APIs; production calls
+/// it through `serde_json::to_writer` in [`stringify_any_value`]. Missing nested attribute values
+/// become JSON nulls, unlike missing top-level string-map values, which become empty strings.
 fn serialize_any_value<'a, T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
 where
     T: AnyValueView<'a> + 'a,
@@ -541,18 +772,21 @@ where
     }
 }
 
+/// Validate and own an optional protobuf string that must outlive its borrowed parent view.
 fn optional_utf8(value: Option<&[u8]>) -> Result<Option<String>, ClickhouseExporterError> {
     value
         .map(|value| utf8(value).map(ToOwned::to_owned))
         .transpose()
 }
 
+/// Interpret protobuf string bytes as UTF-8 and normalize failures to an exporter coercion error.
 fn utf8(value: &[u8]) -> Result<&str, ClickhouseExporterError> {
     std::str::from_utf8(value).map_err(|error| ClickhouseExporterError::CoercionError {
         error: format!("invalid UTF-8 in OTLP string: {error}"),
     })
 }
 
+/// Append an optional validated string while preserving a null for an absent row value.
 fn append_optional_string(builder: &mut StringBuilder, value: Option<&str>) {
     match value {
         Some(value) => builder.append_value(value),
@@ -560,6 +794,10 @@ fn append_optional_string(builder: &mut StringBuilder, value: Option<&str>) {
     }
 }
 
+/// Validate and append an optional protobuf string, recording request-wide column presence.
+///
+/// The presence flag changes only for `Some`, even when the present string is empty. This lets an
+/// explicitly empty OTLP value remain distinguishable from a field omitted in every row.
 fn append_optional_bytes_as_string(
     builder: &mut StringBuilder,
     value: Option<&[u8]>,
@@ -575,6 +813,10 @@ fn append_optional_bytes_as_string(
     Ok(())
 }
 
+/// Append optional binary identifier bytes as lowercase hexadecimal text.
+///
+/// Hex output is written into the shared scratch buffer without allocating a temporary `String`.
+/// As with other optional helpers, `present` records field presence across the entire request.
 fn append_optional_hex(
     builder: &mut StringBuilder,
     value: Option<&[u8]>,
