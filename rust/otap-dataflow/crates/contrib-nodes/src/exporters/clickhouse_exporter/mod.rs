@@ -46,6 +46,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
@@ -199,6 +200,13 @@ fn transform_raw_otlp_logs(
     }
 }
 
+fn is_invalid_protobuf(error: &error::ClickhouseExporterError) -> bool {
+    matches!(
+        error,
+        error::ClickhouseExporterError::Child(PdataError::InvalidProtobufWireFormat)
+    )
+}
+
 /// Register Clickhouse exporter with the OTAP exporter factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
@@ -324,6 +332,21 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                             })
                                             .unwrap_or_default(),
                                     )
+                                }
+                                Err(error) if is_invalid_protobuf(&error) => {
+                                    self.pdata_metrics
+                                        .with(SignalOutcomeAttributes {
+                                            signal: signal_type,
+                                            outcome: Outcome::Failure,
+                                        })
+                                        .messages
+                                        .inc();
+                                    otap_df_telemetry::otel_warn!(
+                                        "clickhouse.exporter.otlp.invalid_protobuf",
+                                        message = "Rejecting malformed raw OTLP logs.",
+                                        error = error.to_string(),
+                                    );
+                                    continue;
                                 }
                                 Err(error) => {
                                     self.ch_metrics.record_log_otlp_transform_fallback();
@@ -465,5 +488,21 @@ mod tests {
 
         assert!(transform_raw_otlp_logs(&logs, &mut transformer).is_some());
         assert!(transform_raw_otlp_logs(&traces, &mut transformer).is_none());
+    }
+
+    /// Scenario: a raw OTLP logs request has malformed nested protobuf framing.
+    /// Guarantees: the routing layer classifies it as invalid instead of using legacy fallback.
+    #[test]
+    fn malformed_raw_otlp_logs_are_not_fallback_candidates() {
+        let logs =
+            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(&[
+                0x0a, 0x03, 0x1a, 0x05, 0x00,
+            ])));
+        let mut transformer = OtlpLogsTransformer::default();
+        let error = transform_raw_otlp_logs(&logs, &mut transformer)
+            .expect("raw logs should select direct transformation")
+            .expect_err("malformed nested protobuf must fail");
+
+        assert!(is_invalid_protobuf(&error));
     }
 }

@@ -26,6 +26,11 @@ use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
 
 const SERVICE_NAME_KEY: &[u8] = b"service.name";
 const INITIAL_STRING_BYTES_PER_ROW: usize = 16;
+const MAX_PREALLOCATED_ROWS: usize = 16 * 1024;
+
+fn bounded_row_capacity(row_count: usize) -> usize {
+    row_count.min(MAX_PREALLOCATED_ROWS)
+}
 
 /// Direct OTLP logs transformer with reusable sizing and serialization state.
 #[derive(Default)]
@@ -215,6 +220,7 @@ struct LogsBuilders {
 
 impl LogsBuilders {
     fn new(row_capacity: usize) -> Self {
+        let row_capacity = bounded_row_capacity(row_capacity);
         let string_capacity = row_capacity.saturating_mul(INITIAL_STRING_BYTES_PER_ROW);
         let string_builder = || StringBuilder::with_capacity(row_capacity, string_capacity);
         let map_builder = || {
@@ -854,14 +860,37 @@ mod tests {
     }
 
     /// Scenario: a raw OTLP request has invalid top-level protobuf framing.
-    /// Guarantees: the direct path returns an error so exporter routing can use the legacy path.
+    /// Guarantees: the direct path returns an error so exporter routing can reject the request.
     #[test]
-    fn malformed_request_is_rejected_for_legacy_fallback() {
+    fn malformed_request_is_rejected() {
         let error = OtlpLogsTransformer::default()
             .transform(b"\xff")
             .expect_err("malformed protobuf must be rejected");
 
         assert!(matches!(error, ClickhouseExporterError::Child(_)));
+    }
+
+    /// Scenario: a nested OTLP field declares a length beyond its enclosing message.
+    /// Guarantees: the direct transformer returns an error before traversing malformed ranges.
+    #[test]
+    fn malformed_nested_request_is_rejected() {
+        let error = OtlpLogsTransformer::default()
+            .transform(&[0x0a, 0x03, 0x1a, 0x05, 0x00])
+            .expect_err("malformed nested protobuf must be rejected");
+
+        assert!(matches!(error, ClickhouseExporterError::Child(_)));
+    }
+
+    /// Scenario: the previous OTLP request reports an arbitrarily large row count.
+    /// Guarantees: speculative Arrow builder capacity remains capped at a bounded row count.
+    #[test]
+    fn reusable_row_preallocation_is_bounded() {
+        assert_eq!(bounded_row_capacity(8_192), 8_192);
+        assert_eq!(
+            bounded_row_capacity(MAX_PREALLOCATED_ROWS),
+            MAX_PREALLOCATED_ROWS
+        );
+        assert_eq!(bounded_row_capacity(usize::MAX), MAX_PREALLOCATED_ROWS);
     }
 
     #[derive(clickhouse::Row, serde::Deserialize)]

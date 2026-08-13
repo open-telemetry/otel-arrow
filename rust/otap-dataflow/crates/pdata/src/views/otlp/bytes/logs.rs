@@ -17,6 +17,7 @@ use crate::proto::consts::field_num::logs::{
     RESOURCE_LOGS_SCHEMA_URL, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOG_SCOPE, SCOPE_LOGS_LOG_RECORDS,
     SCOPE_LOGS_SCHEMA_URL,
 };
+use crate::proto::consts::field_num::{common as common_fields, resource as resource_fields};
 use crate::proto::consts::wire_types;
 use crate::schema::{SpanId, TraceId};
 use crate::views::otlp::bytes::common::{
@@ -31,6 +32,113 @@ use crate::views::otlp::bytes::resource::RawResource;
 use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
+
+const MAX_NESTED_MESSAGE_DEPTH: usize = 64;
+
+#[derive(Clone, Copy)]
+enum MessageKind {
+    LogsData,
+    ResourceLogs,
+    Resource,
+    ScopeLogs,
+    InstrumentationScope,
+    LogRecord,
+    KeyValue,
+    AnyValue,
+    ArrayValue,
+    KeyValueList,
+}
+
+impl MessageKind {
+    fn field_spec(self, field_num: u64) -> Option<(u64, Option<Self>)> {
+        use MessageKind::{
+            AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, LogRecord,
+            Resource, ResourceLogs, ScopeLogs,
+        };
+
+        let spec = match (self, field_num) {
+            (Self::LogsData, LOGS_DATA_RESOURCE) => (wire_types::LEN, Some(ResourceLogs)),
+            (ResourceLogs, RESOURCE_LOGS_RESOURCE) => (wire_types::LEN, Some(Resource)),
+            (ResourceLogs, RESOURCE_LOGS_SCOPE_LOGS) => (wire_types::LEN, Some(ScopeLogs)),
+            (ResourceLogs, RESOURCE_LOGS_SCHEMA_URL) => (wire_types::LEN, None),
+            (Resource, resource_fields::RESOURCE_ATTRIBUTES) => (wire_types::LEN, Some(KeyValue)),
+            (Resource, resource_fields::RESOURCE_DROPPED_ATTRIBUTES_COUNT) => {
+                (wire_types::VARINT, None)
+            }
+            (ScopeLogs, SCOPE_LOG_SCOPE) => (wire_types::LEN, Some(InstrumentationScope)),
+            (ScopeLogs, SCOPE_LOGS_LOG_RECORDS) => (wire_types::LEN, Some(LogRecord)),
+            (ScopeLogs, SCOPE_LOGS_SCHEMA_URL) => (wire_types::LEN, None),
+            (InstrumentationScope, common_fields::INSTRUMENTATION_SCOPE_NAME)
+            | (InstrumentationScope, common_fields::INSTRUMENTATION_SCOPE_VERSION) => {
+                (wire_types::LEN, None)
+            }
+            (InstrumentationScope, common_fields::INSTRUMENTATION_SCOPE_ATTRIBUTES) => {
+                (wire_types::LEN, Some(KeyValue))
+            }
+            (InstrumentationScope, common_fields::INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT) => {
+                (wire_types::VARINT, None)
+            }
+            (LogRecord, LOG_RECORD_TIME_UNIX_NANO)
+            | (LogRecord, LOG_RECORD_OBSERVED_TIME_UNIX_NANO) => (wire_types::FIXED64, None),
+            (LogRecord, LOG_RECORD_SEVERITY_NUMBER)
+            | (LogRecord, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT) => (wire_types::VARINT, None),
+            (LogRecord, LOG_RECORD_SEVERITY_TEXT)
+            | (LogRecord, LOG_RECORD_TRACE_ID)
+            | (LogRecord, LOG_RECORD_SPAN_ID)
+            | (LogRecord, LOG_RECORD_EVENT_NAME) => (wire_types::LEN, None),
+            (LogRecord, LOG_RECORD_BODY) => (wire_types::LEN, Some(AnyValue)),
+            (LogRecord, LOG_RECORD_ATTRIBUTES) => (wire_types::LEN, Some(KeyValue)),
+            (LogRecord, LOG_RECORD_FLAGS) => (wire_types::FIXED32, None),
+            (KeyValue, common_fields::KEY_VALUE_KEY) => (wire_types::LEN, None),
+            (KeyValue, common_fields::KEY_VALUE_VALUE) => (wire_types::LEN, Some(AnyValue)),
+            (AnyValue, common_fields::ANY_VALUE_STRING_VALUE)
+            | (AnyValue, common_fields::ANY_VALUE_BYTES_VALUE) => (wire_types::LEN, None),
+            (AnyValue, common_fields::ANY_VALUE_BOOL_VALUE)
+            | (AnyValue, common_fields::ANY_VALUE_INT_VALUE) => (wire_types::VARINT, None),
+            (AnyValue, common_fields::ANY_VALUE_DOUBLE_VALUE) => (wire_types::FIXED64, None),
+            (AnyValue, common_fields::ANY_VALUE_ARRAY_VALUE) => (wire_types::LEN, Some(ArrayValue)),
+            (AnyValue, common_fields::ANY_VALUE_KVLIST_VALUE) => {
+                (wire_types::LEN, Some(KeyValueList))
+            }
+            (ArrayValue, common_fields::ARRAY_VALUE_VALUES) => (wire_types::LEN, Some(AnyValue)),
+            (KeyValueList, common_fields::KEY_VALUE_LIST_VALUES) => {
+                (wire_types::LEN, Some(KeyValue))
+            }
+            _ => return None,
+        };
+        Some(spec)
+    }
+}
+
+fn validate_message(buf: &[u8], message: MessageKind, depth: usize) -> Result<(), Error> {
+    if depth > MAX_NESTED_MESSAGE_DEPTH {
+        return Err(Error::InvalidProtobufWireFormat);
+    }
+
+    let mut pos = 0;
+    while pos < buf.len() {
+        let (tag, next) = read_varint(buf, pos).ok_or(Error::InvalidProtobufWireFormat)?;
+        let field_num = tag >> 3;
+        let wire_type = tag & 7;
+        if field_num == 0 {
+            return Err(Error::InvalidProtobufWireFormat);
+        }
+
+        let (start, end) =
+            crate::views::otlp::bytes::decode::field_value_range(buf, wire_type, next)
+                .ok_or(Error::InvalidProtobufWireFormat)?;
+        if let Some((expected_wire_type, nested_message)) = message.field_spec(field_num) {
+            if wire_type != expected_wire_type {
+                return Err(Error::InvalidProtobufWireFormat);
+            }
+            if let Some(nested_message) = nested_message {
+                validate_message(&buf[start..end], nested_message, depth + 1)?;
+            }
+        }
+        pos = end;
+    }
+    Ok(())
+}
 
 /// Implementation of `LogsDataView` backed by protobuf serialized `LogsData` message
 ///
@@ -47,64 +155,13 @@ impl<'a> RawLogsData<'a> {
         Self { buf }
     }
 
-    /// Construct a [`RawLogsData`] after validating top-level protobuf wire framing.
+    /// Construct a [`RawLogsData`] after validating protobuf wire framing.
     ///
-    /// Cost: a single linear walk of `buf` with no allocations. Each field tag is decoded,
-    /// and each length-delimited or fixed-width field is bounds-checked against the end of
-    /// `buf`. Length-delimited payloads are not recursively decoded as messages; nested
-    /// `ResourceLogs`, `ScopeLogs`, and `LogRecord` content is interpreted lazily on access
-    /// via the view APIs.
+    /// Cost: a recursive, allocation-free walk of the known OTLP logs message hierarchy. Unknown
+    /// fields remain opaque but their wire framing is validated. Nesting is capped to keep
+    /// validation stack usage bounded.
     pub fn try_new(buf: &'a [u8]) -> Result<Self, Error> {
-        let mut pos = 0;
-        while pos < buf.len() {
-            let (tag, next) = read_varint(buf, pos).ok_or(Error::InvalidProtobufWireFormat)?;
-            let field_num = tag >> 3;
-            let wire_type = tag & 7;
-
-            if field_num == 0 {
-                return Err(Error::InvalidProtobufWireFormat);
-            }
-
-            pos = match wire_type {
-                wire_types::VARINT => {
-                    let (_, p) = read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
-                    p
-                }
-                wire_types::LEN => {
-                    let (len, p) =
-                        read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
-                    let end = p
-                        .checked_add(
-                            usize::try_from(len).map_err(|_| Error::InvalidProtobufWireFormat)?,
-                        )
-                        .ok_or(Error::InvalidProtobufWireFormat)?;
-                    if end > buf.len() {
-                        return Err(Error::InvalidProtobufWireFormat);
-                    }
-                    end
-                }
-                wire_types::FIXED64 => {
-                    let end = next
-                        .checked_add(8)
-                        .ok_or(Error::InvalidProtobufWireFormat)?;
-                    if end > buf.len() {
-                        return Err(Error::InvalidProtobufWireFormat);
-                    }
-                    end
-                }
-                wire_types::FIXED32 => {
-                    let end = next
-                        .checked_add(4)
-                        .ok_or(Error::InvalidProtobufWireFormat)?;
-                    if end > buf.len() {
-                        return Err(Error::InvalidProtobufWireFormat);
-                    }
-                    end
-                }
-                _ => return Err(Error::InvalidProtobufWireFormat),
-            };
-        }
-
+        validate_message(buf, MessageKind::LogsData, 0)?;
         Ok(Self { buf })
     }
 }
@@ -569,12 +626,34 @@ impl LogRecordView for RawLogRecord<'_> {
 mod tests {
     use super::*;
 
+    fn length_delimited_field(tag: u8, payload: &[u8]) -> Vec<u8> {
+        let mut encoded = vec![tag];
+        let mut len = payload.len();
+        loop {
+            let mut byte = (len & 0x7f) as u8;
+            len >>= 7;
+            if len != 0 {
+                byte |= 0x80;
+            }
+            encoded.push(byte);
+            if len == 0 {
+                break;
+            }
+        }
+        encoded.extend_from_slice(payload);
+        encoded
+    }
+
+    /// Scenario: an empty byte slice represents an empty OTLP logs request.
+    /// Guarantees: validation accepts the request and exposes no resources.
     #[test]
     fn try_new_accepts_valid_empty_request() {
         let logs = RawLogsData::try_new(&[]).expect("empty request is valid protobuf");
         assert_eq!(logs.resources().count(), 0);
     }
 
+    /// Scenario: a top-level protobuf tag is an unterminated varint.
+    /// Guarantees: validation rejects malformed top-level wire framing.
     #[test]
     fn try_new_rejects_malformed_varint() {
         assert!(matches!(
@@ -583,6 +662,8 @@ mod tests {
         ));
     }
 
+    /// Scenario: a top-level length-delimited field extends beyond the request buffer.
+    /// Guarantees: validation rejects the truncated field before a view can traverse it.
     #[test]
     fn try_new_rejects_truncated_length_delimited_field() {
         assert!(matches!(
@@ -591,6 +672,8 @@ mod tests {
         ));
     }
 
+    /// Scenario: a top-level varint value is truncated at the end of the request.
+    /// Guarantees: validation rejects trailing partial values.
     #[test]
     fn try_new_rejects_trailing_partial_varint() {
         assert!(matches!(
@@ -599,6 +682,8 @@ mod tests {
         ));
     }
 
+    /// Scenario: a protobuf tag uses the reserved field number zero.
+    /// Guarantees: validation rejects invalid field numbers.
     #[test]
     fn try_new_rejects_field_number_zero() {
         assert!(matches!(
@@ -607,8 +692,46 @@ mod tests {
         ));
     }
 
+    /// Scenario: a valid unknown top-level length-delimited field is present.
+    /// Guarantees: validation preserves protobuf forward compatibility for unknown fields.
     #[test]
     fn try_new_accepts_unknown_fields() {
         assert!(RawLogsData::try_new(&[0xa2, 0x06, 0x00]).is_ok());
+    }
+
+    /// Scenario: a ResourceLogs string declares a length beyond its nested message boundary.
+    /// Guarantees: validation rejects malformed nested framing instead of exposing unsafe ranges.
+    #[test]
+    fn try_new_rejects_truncated_nested_field() {
+        assert!(matches!(
+            RawLogsData::try_new(&[0x0a, 0x03, 0x1a, 0x05, 0x00]),
+            Err(Error::InvalidProtobufWireFormat)
+        ));
+    }
+
+    /// Scenario: a known nested ResourceLogs field uses the wrong protobuf wire type.
+    /// Guarantees: validation rejects data that the typed raw view cannot interpret faithfully.
+    #[test]
+    fn try_new_rejects_wrong_wire_type_for_known_field() {
+        assert!(matches!(
+            RawLogsData::try_new(&[0x0a, 0x02, 0x08, 0x01]),
+            Err(Error::InvalidProtobufWireFormat)
+        ));
+    }
+
+    /// Scenario: recursive AnyValue arrays exceed the validation nesting limit.
+    /// Guarantees: validation rejects excessive nesting before stack use can grow without bound.
+    #[test]
+    fn validation_rejects_excessive_message_nesting() {
+        let mut any_value = Vec::new();
+        for _ in 0..=MAX_NESTED_MESSAGE_DEPTH {
+            let array_value = length_delimited_field(0x0a, &any_value);
+            any_value = length_delimited_field(0x2a, &array_value);
+        }
+
+        assert!(matches!(
+            validate_message(&any_value, MessageKind::AnyValue, 0),
+            Err(Error::InvalidProtobufWireFormat)
+        ));
     }
 }

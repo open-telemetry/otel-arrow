@@ -187,15 +187,15 @@ pub(crate) fn field_value_range(buf: &[u8], wire_type: u64, pos: usize) -> Optio
 
         wire_types::LEN => {
             let (len, p) = read_varint(buf, pos)?;
-            let end = p.checked_add(len as usize)?;
+            let end = p.checked_add(usize::try_from(len).ok()?)?;
             (p, end)
         }
-        wire_types::FIXED64 => (pos, pos + 8),
-        wire_types::FIXED32 => (pos, pos + 4),
+        wire_types::FIXED64 => (pos, pos.checked_add(8)?),
+        wire_types::FIXED32 => (pos, pos.checked_add(4)?),
         _ => return None,
     };
 
-    Some(range)
+    (range.1 <= buf.len()).then_some(range)
 }
 
 /// `RepeatedFieldProtoBytesParser` is an iterator over byte slices for some field (represented by
