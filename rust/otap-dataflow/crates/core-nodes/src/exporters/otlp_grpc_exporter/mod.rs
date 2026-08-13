@@ -943,12 +943,14 @@ async fn notify_prepare_error(
 /// token it carried.
 ///
 /// With a bearer token provider bound, `UNAUTHENTICATED` usually means the
-/// cached token lapsed or a refresh raced, so the batch can succeed once a fresh
-/// token is in use; callers therefore treat it as retryable and invalidate the
-/// token generation that was used. `PERMISSION_DENIED` is intentionally
-/// excluded: it signals a scope or permission problem that a refresh will not
-/// fix. Always false when no provider is bound, since a statically configured
-/// credential cannot be refreshed.
+/// cached token lapsed or a refresh raced, so the batch can succeed once the
+/// provider publishes its next token; callers therefore treat it as retryable and
+/// invalidate the token generation that was used. Recovery waits for that
+/// provider's own refresh schedule - invalidating only drops the exporter's
+/// cached copy, it does not make the provider refresh early. `PERMISSION_DENIED`
+/// is intentionally excluded: it signals a scope or permission problem that a
+/// refresh will not fix. Always false when no provider is bound, since a
+/// statically configured credential cannot be refreshed.
 fn is_auth_failure(result: &Result<(), tonic::Status>, auth_bound: bool) -> bool {
     auth_bound && matches!(result, Err(status) if status.code() == Code::Unauthenticated)
 }

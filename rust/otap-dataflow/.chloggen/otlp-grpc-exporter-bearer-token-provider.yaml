@@ -21,5 +21,5 @@ issues: [3479]
 subtext: |
   Binding is optional; without it behavior is unchanged. The token overrides any
   configured `authorization` header. The exporter back-pressures while no usable
-  token is cached, and with a provider bound an `UNAUTHENTICATED` response is
-  retried with a fresh token instead of being dropped.
+  token is cached, and an `UNAUTHENTICATED` response drops the rejected token and
+  retries once the provider publishes its next one.

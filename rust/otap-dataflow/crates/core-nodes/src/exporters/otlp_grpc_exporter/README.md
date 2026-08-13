@@ -132,11 +132,14 @@ rebuilding it only when the provider refreshes the token, so credential work
 stays off the per-request path. The value is marked sensitive, which keeps the
 credential out of the HTTP/2 HPACK dynamic table.
 
-When no usable token is cached yet -- before the provider's first publish, or in
-a degraded window where a refresh is failing and the cached token is within a
-small safety margin of expiring -- the exporter **stops accepting new batches**
-(back-pressures upstream) rather than sending an unauthenticated or soon-to-lapse
-request. It resumes as soon as a usable token arrives; nothing is dropped. (If
+When no usable token is cached yet -- before the provider's first publish, in a
+degraded window where a refresh is failing and the cached token is within a small
+safety margin of expiring, or after the server rejects the cached token -- the
+exporter **stops accepting new batches** (back-pressures upstream) rather than
+sending an unauthenticated or soon-to-lapse request. It resumes when the provider
+publishes a usable token; nothing is dropped. Note that a rejection only drops
+the exporter's own copy -- it does not make the provider refresh early -- so
+recovery waits for that provider's next scheduled publication. (If
 buffered batches are force-drained during shutdown while no token is available,
 they are NACK'd as **retryable**.) A token is guaranteed to eventually arrive:
 the bound extension holds data-path startup until its first token publish, and

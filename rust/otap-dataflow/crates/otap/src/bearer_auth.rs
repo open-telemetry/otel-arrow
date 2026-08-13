@@ -18,20 +18,13 @@
 //! stream, caches the built `Authorization` header, and tracks whether that
 //! cached token is still usable. The exporter is the "dumb caller".
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures::StreamExt;
 use http::HeaderValue;
 use http::header::InvalidHeaderValue;
-use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
+use otap_df_engine::capability::auth::bearer_token_provider::{TOKEN_USABLE_MARGIN, TokenStream};
 use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
-
-/// Safety margin before a cached token's expiry within which it is treated as
-/// unusable, so the exporter back-pressures (awaiting a fresh token) rather than
-/// sending a request that could outlive its token. The provider refreshes well
-/// ahead of expiry, so this only bites in a degraded window (refresh failing,
-/// cached token genuinely near expiry).
-const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 
 /// The warnings this adapter can raise, supplied by the owning exporter so each
 /// event name is namespaced to that exporter (e.g. `otlp.exporter.grpc.*`)
@@ -140,9 +133,9 @@ impl BearerAuth {
     }
 
     /// Drops the cached token *if* `generation` is still the one currently cached,
-    /// so [`is_ready`](Self::is_ready) returns false until the next refresh
-    /// delivers a new one. Called when the server rejects a token (HTTP 401) so a
-    /// retry waits for a fresh token rather than reusing the rejected one.
+    /// so [`is_ready`](Self::is_ready) returns false until the provider publishes a
+    /// replacement. Called when the server rejects a token (HTTP 401, or gRPC
+    /// `UNAUTHENTICATED`) so the rejected credential is not sent again.
     ///
     /// The generation guard makes a stale 401 harmless: if a newer token was
     /// cached (or the rejected token already cleared) after the failing request
@@ -190,8 +183,8 @@ impl BearerAuth {
 }
 
 /// Applies a token rejection reported by a completed export to the bearer
-/// adapter: drops the rejected token generation so a retry waits for a fresh
-/// token instead of reusing the rejected one.
+/// adapter: drops the rejected token generation so it is not sent again, leaving
+/// the consumer back-pressured until the provider's next publication.
 ///
 /// Takes the exporter's `Option<BearerAuth>` directly so the common
 /// "rejection reported, provider may or may not be bound" shape is expressed
@@ -340,8 +333,8 @@ mod tests {
     }
 
     // Scenario: a 401 names the token generation currently cached.
-    // Guarantees: the rejected token is dropped so intake back-pressures until a
-    // fresh token arrives, instead of the retry reusing the rejected token.
+    // Guarantees: the rejected token is dropped so intake back-pressures until the
+    // provider's next publication, instead of the rejected token being sent again.
     #[test]
     fn invalidate_drops_the_matching_generation() {
         let mut auth = auth_with_cached_token(7);
@@ -533,8 +526,8 @@ mod tests {
 
     // Scenario: a completed export reports the generation the server rejected.
     // Guarantees: the exporter's rejection hand-off drops exactly that token, so
-    // the retry waits for a fresh one instead of replaying the rejected
-    // credential.
+    // the retry waits for the provider's next publication instead of replaying
+    // the rejected credential.
     #[test]
     fn apply_auth_rejection_drops_the_reported_generation() {
         let mut auth = Some(auth_with_cached_token(3));

@@ -771,9 +771,12 @@ impl ServiceRequestError {
 
     /// Whether this is an HTTP 401 Unauthorized response. When a bearer token
     /// provider is bound this is treated as retryable, because it usually means
-    /// the cached token lapsed or a refresh raced; the batch can succeed once a
-    /// fresh token is in use. 403 Forbidden is intentionally excluded: it
-    /// signals a scope or permission problem that a token refresh will not fix.
+    /// the cached token lapsed or a refresh raced; the batch can succeed once the
+    /// provider publishes its next token. Recovery waits for that provider's own
+    /// refresh schedule - rejecting a token only drops the exporter's cached
+    /// copy, it does not make the provider refresh early. 403 Forbidden is
+    /// intentionally excluded: it signals a scope or permission problem that a
+    /// token refresh will not fix.
     fn is_auth_failure(&self) -> bool {
         matches!(
             self,
@@ -1376,7 +1379,7 @@ mod test {
     fn test_auth_failure_is_retryable_when_provider_bound() {
         // With a bearer token provider bound, a 401 from the backend (e.g. the
         // cached token lapsed) must be NACK'd as retryable, not permanently
-        // dropped, so the batch can succeed once a fresh token is in use.
+        // dropped, so the batch can succeed once the provider publishes again.
         otap_df_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
         let port = otap_df_test_net::pick_unused_loopback_tcp_port();
