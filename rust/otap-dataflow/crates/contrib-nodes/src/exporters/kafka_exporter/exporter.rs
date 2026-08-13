@@ -175,14 +175,6 @@ impl<'a> AckNackReporter for EffectHandlerReporter<'a> {
     }
 }
 
-/// The resolved outcome of an awaited delivery future.
-///
-/// `Ok(Ok(..))` is a successful delivery; `Ok(Err(..))` is a delivery failure
-/// carrying a [`rdkafka::error::KafkaError`]; `Err(Canceled)` means the
-/// delivery future was cancelled because the producer was dropped or purged
-/// (treated as a transient failure, matching the purge-on-shutdown semantics).
-type ResolvedDelivery = Result<OwnedDeliveryResult, Canceled>;
-
 /// Metadata carried alongside a pipelined delivery so its completion can be
 /// reported as an ack or nack.
 ///
@@ -196,28 +188,38 @@ struct SendMeta {
     pdata: OtapPdata,
 }
 
-/// Bounded set of in-flight Kafka deliveries.
+/// Bounded, self-managing set of in-flight Kafka deliveries.
 ///
 /// Wraps a [`FuturesUnordered`] of boxed futures that each await a delivery and
-/// yield its [`SendMeta`] paired with the [`ResolvedDelivery`]. The event loop
-/// caps the number of concurrently outstanding deliveries at `max_in_flight`
-/// (see [`KafkaExporter`] module docs); this type only tracks the futures and
-/// yields them as they resolve.
+/// yield its [`SendMeta`] paired with the delivery outcome. The delivery
+/// outcome flattens as: `Ok(Ok(..))` delivered successfully; `Ok(Err(..))`
+/// delivery failed carrying a [`rdkafka::error::KafkaError`]; `Err(Canceled)`
+/// the delivery future was cancelled because the producer was dropped or purged
+/// (treated as a transient failure, matching the purge-on-shutdown semantics).
+///
+/// The set is constructed with the configured `max_in_flight` bound and owns
+/// it: [`Self::push`] enforces the bound directly (draining one outstanding
+/// delivery when the set is already full), so the number of concurrently
+/// outstanding deliveries never exceeds the bound (see [`KafkaExporter`] module
+/// docs). Callers still use [`Self::is_full`] to gate upstream admission, but
+/// they no longer need to pre-drain to keep `push` correct.
 struct InFlightSends {
-    futures: FuturesUnordered<Pin<Box<dyn Future<Output = (SendMeta, ResolvedDelivery)>>>>,
+    #[allow(clippy::type_complexity)]
+    futures: FuturesUnordered<
+        Pin<Box<dyn Future<Output = (SendMeta, Result<OwnedDeliveryResult, Canceled>)>>>,
+    >,
+    /// Maximum number of deliveries allowed to be outstanding at once. Set from
+    /// the `max_in_flight` config and enforced via [`Self::is_full`].
+    max_in_flight: usize,
 }
 
 impl InFlightSends {
-    fn new() -> Self {
+    /// Creates an empty set bounded at `max_in_flight` concurrent deliveries.
+    fn new(max_in_flight: usize) -> Self {
         Self {
             futures: FuturesUnordered::new(),
+            max_in_flight,
         }
-    }
-
-    /// Number of currently outstanding deliveries.
-    #[inline]
-    fn len(&self) -> usize {
-        self.futures.len()
     }
 
     /// Whether there are no outstanding deliveries.
@@ -226,14 +228,40 @@ impl InFlightSends {
         self.futures.is_empty()
     }
 
-    /// Track an in-flight delivery. Its future is polled by
-    /// [`Self::next_completion`] until it resolves, at which point `meta` is
-    /// paired with the delivery outcome.
-    fn push(&mut self, delivery: ExporterDeliveryFuture, meta: SendMeta) {
+    /// Whether the set has reached its `max_in_flight` bound and must drain a
+    /// completion before accepting another delivery.
+    #[inline]
+    fn is_full(&self) -> bool {
+        self.futures.len() >= self.max_in_flight
+    }
+
+    /// Track an in-flight delivery, enforcing the `max_in_flight` bound.
+    ///
+    /// When the set is already [`Self::is_full`], this first awaits one
+    /// outstanding delivery and returns its completion (which the caller must
+    /// finalize) before storing the new delivery. This guarantees the number of
+    /// concurrently outstanding deliveries never exceeds `max_in_flight` without
+    /// the caller having to pre-drain. The stored delivery's future is then
+    /// polled by [`Self::next_completion`] until it resolves, at which point
+    /// `meta` is paired with the delivery outcome.
+    async fn push(
+        &mut self,
+        delivery: ExporterDeliveryFuture,
+        meta: SendMeta,
+    ) -> Option<(SendMeta, Result<OwnedDeliveryResult, Canceled>)> {
+        // At capacity: drain exactly one completion to make room. The set is
+        // non-empty here (is_full implies len >= max_in_flight >= 1), so
+        // `next()` yields `Some`.
+        let completed = if self.is_full() {
+            self.futures.next().await
+        } else {
+            None
+        };
         self.futures.push(Box::pin(async move {
             let result = delivery.await;
             (meta, result)
         }));
+        completed
     }
 
     /// Await the next resolved delivery, returning its metadata and outcome.
@@ -242,7 +270,7 @@ impl InFlightSends {
     /// to `None`), so it can be used directly in a `select` without busy
     /// looping. Callers must guard with [`Self::is_empty`] where a definite
     /// answer is required (e.g. the shutdown drain loop).
-    async fn next_completion(&mut self) -> (SendMeta, ResolvedDelivery) {
+    async fn next_completion(&mut self) -> (SendMeta, Result<OwnedDeliveryResult, Canceled>) {
         if self.futures.is_empty() {
             std::future::pending().await
         } else {
@@ -690,7 +718,7 @@ impl KafkaExporter {
     async fn finalize_send_completion(
         &mut self,
         meta: SendMeta,
-        result: ResolvedDelivery,
+        result: Result<OwnedDeliveryResult, Canceled>,
         reporter: &dyn AckNackReporter,
         effect_handler: Option<&EffectHandler<OtapPdata>>,
     ) {
@@ -700,20 +728,14 @@ impl KafkaExporter {
             pdata,
         } = meta;
 
-        // Flatten the two error layers into a single optional KafkaError:
-        // `Ok(Ok(..))`  -> delivered successfully
-        // `Ok(Err(..))` -> delivery failed with a KafkaError
+        // Match the two delivery layers directly:
+        // `Ok(Ok(..))`  -> delivered successfully; ack.
+        // `Ok(Err(..))` -> delivery failed with a KafkaError; nack.
         // `Err(Canceled)` -> producer dropped/purged before delivery resolved;
-        //                    treat as a transient failure (matches purge-error
-        //                    semantics) so the batch can be retried.
-        let delivery_error: Option<rdkafka::error::KafkaError> = match result {
-            Ok(Ok(_delivery)) => None,
-            Ok(Err((kafka_err, _owned_message))) => Some(kafka_err),
-            Err(_canceled) => Some(rdkafka::error::KafkaError::Canceled),
-        };
-
-        match delivery_error {
-            None => {
+        //                    treat as a transient `Canceled` failure (matches
+        //                    purge-error semantics) so the batch can be retried.
+        let kafka_err = match result {
+            Ok(Ok(_delivery)) => {
                 self.metrics.inc_exported(signal_type);
                 if let Err(e) = reporter.ack(pdata).await {
                     if let Some(eh) = effect_handler {
@@ -724,39 +746,41 @@ impl KafkaExporter {
                         .await;
                     }
                 }
+                return;
             }
-            Some(kafka_err) => {
-                self.metrics.inc_failed(signal_type);
-                // Classify the delivery failure: some Kafka errors (e.g. a
-                // record that exceeds `message.max.bytes`, or an authorization
-                // failure) can never succeed on retry, so they are permanently
-                // nacked and dropped at the source rather than retried by an
-                // upstream `processor:retry`. Everything else stays transient.
-                let permanent = is_permanent_send_error(&kafka_err);
-                // `topic` may be a client-supplied (header-routed) value, so
-                // bound/escape it before logging to avoid log injection.
-                otap_df_telemetry::otel_warn!(
-                    "kafka.exporter.send.failed",
-                    topic = %crate::common::kafka::sanitize_for_log(&topic),
-                    signal_type = ?signal_type,
-                    permanent = permanent,
-                    error = %kafka_err,
-                );
-                let reason = kafka_err.to_string();
-                let nack_result = if permanent {
-                    reporter.nack_permanent(reason, pdata).await
-                } else {
-                    reporter.nack(reason, pdata).await
-                };
-                if let Err(e) = nack_result {
-                    if let Some(eh) = effect_handler {
-                        eh.info(&format!(
-                            "Failed to report nack for Kafka export failure: {}",
-                            e
-                        ))
-                        .await;
-                    }
-                }
+            Ok(Err((kafka_err, _owned_message))) => kafka_err,
+            Err(_canceled) => rdkafka::error::KafkaError::Canceled,
+        };
+
+        self.metrics.inc_failed(signal_type);
+        // Classify the delivery failure: some Kafka errors (e.g. a record that
+        // exceeds `message.max.bytes`, or an authorization failure) can never
+        // succeed on retry, so they are permanently nacked and dropped at the
+        // source rather than retried by an upstream `processor:retry`.
+        // Everything else stays transient.
+        let permanent = is_permanent_send_error(&kafka_err);
+        // `topic` may be a client-supplied (header-routed) value, so
+        // bound/escape it before logging to avoid log injection.
+        otap_df_telemetry::otel_warn!(
+            "kafka.exporter.send.failed",
+            topic = %crate::common::kafka::sanitize_for_log(&topic),
+            signal_type = ?signal_type,
+            permanent = permanent,
+            error = %kafka_err,
+        );
+        let reason = kafka_err.to_string();
+        let nack_result = if permanent {
+            reporter.nack_permanent(reason, pdata).await
+        } else {
+            reporter.nack(reason, pdata).await
+        };
+        if let Err(e) = nack_result {
+            if let Some(eh) = effect_handler {
+                eh.info(&format!(
+                    "Failed to report nack for Kafka export failure: {}",
+                    e
+                ))
+                .await;
             }
         }
     }
@@ -962,58 +986,28 @@ impl Exporter<OtapPdata> for KafkaExporter {
 
         let ack_nack_reporter = EffectHandlerReporter::new(&effect_handler);
 
-        // Bounded set of pipelined deliveries. `max_in_flight` caps how many
-        // deliveries may be outstanding before the loop stops accepting new
-        // pdata, which bounds in-flight memory and propagates backpressure
-        // upstream. The default of 1 preserves the historical serial behavior.
-        let max_in_flight = self.config.max_in_flight();
-        let mut in_flight = InFlightSends::new();
-        // A pdata received while the in-flight set is full is parked here until
-        // capacity frees up. At most one pdata is ever parked because the loop
-        // stops receiving while `pending_pdata` is `Some`.
-        let mut pending_pdata: Option<OtapPdata> = None;
+        // Bounded, self-managing set of pipelined deliveries. It owns the
+        // `max_in_flight` bound: while it reports `is_full()` the loop stops
+        // admitting new pdata (via `recv_when`), which bounds in-flight memory
+        // and propagates backpressure upstream. The default of 1 preserves the
+        // historical serial behavior.
+        let mut in_flight = InFlightSends::new(self.config.max_in_flight());
 
-        // Main loop: 1) drain ready completions, 2) biased-wait for either a
-        // completion or the next message, 3) enqueue while respecting the
-        // in-flight budget.
+        // Main loop: biased-wait for either an in-flight completion or the next
+        // inbound message, admitting new pdata only while the in-flight set has
+        // spare capacity.
         loop {
-            // Backpressure guard: when the in-flight set is full and a pdata is
-            // already parked, only drain completions until capacity frees up.
-            if in_flight.len() >= max_in_flight && pending_pdata.is_some() {
-                let (meta, result) = in_flight.next_completion().await;
-                self.finalize_send_completion(
-                    meta,
-                    result,
-                    &ack_nack_reporter,
-                    Some(&effect_handler),
-                )
-                .await;
-                continue;
-            }
-
-            // Opportunistically finalize any already-resolved completions
-            // before parking on a recv, so acks/nacks are not delayed behind an
-            // idle recv.
-            while let Some((meta, result)) = in_flight.next_completion().now_or_never() {
-                self.finalize_send_completion(
-                    meta,
-                    result,
-                    &ack_nack_reporter,
-                    Some(&effect_handler),
-                )
-                .await;
-            }
-
-            // Prefer a parked pdata; otherwise biased-select between the next
-            // completion and the next inbound message (completions win ties so
-            // acks/nacks drain promptly and in-flight memory is released).
-            let msg = if let Some(pdata) = pending_pdata.take() {
-                Message::PData(pdata)
-            } else if in_flight.is_empty() {
-                inbox.recv().await?
+            // Gate pdata admission on spare capacity: while the set is full only
+            // control messages (and shutdown-time force-drained pdata) can
+            // arrive, so the `max_in_flight` bound is respected. Completions win
+            // ties so acks/nacks drain promptly and in-flight memory is
+            // released.
+            let accepting_pdata = !in_flight.is_full();
+            let msg = if in_flight.is_empty() {
+                inbox.recv_when(accepting_pdata).await?
             } else {
                 let completion_fut = in_flight.next_completion().fuse();
-                let recv_fut = inbox.recv().fuse();
+                let recv_fut = inbox.recv_when(accepting_pdata).fuse();
                 futures::pin_mut!(completion_fut, recv_fut);
 
                 futures::select_biased! {
@@ -1034,21 +1028,30 @@ impl Exporter<OtapPdata> for KafkaExporter {
 
             match msg {
                 Message::PData(pdata) => {
-                    // Respect the in-flight budget: park the pdata if the set is
-                    // full and drain a completion on the next iteration.
-                    if in_flight.len() >= max_in_flight {
-                        pending_pdata = Some(pdata);
-                        continue;
-                    }
                     // On `Ok(Some((delivery, meta)))` track the delivery; an
                     // enqueue failure or a synchronous pre-send nack (`Ok(None)`
                     // / `Err(_)`) was already reported, so there is nothing to
                     // track.
+                    //
+                    // `push` enforces the `max_in_flight` bound itself: if the
+                    // set is already full (which can happen when shutdown
+                    // draining force-drains buffered pdata past the admission
+                    // gate), it drains one completion and returns it so we can
+                    // finalize its ack/nack here.
                     if let Ok(Some((delivery, meta))) = self
                         .enqueue_pdata(pdata, &ack_nack_reporter, Some(&effect_handler))
                         .await
                     {
-                        in_flight.push(delivery, meta);
+                        if let Some((done_meta, done_result)) = in_flight.push(delivery, meta).await
+                        {
+                            self.finalize_send_completion(
+                                done_meta,
+                                done_result,
+                                &ack_nack_reporter,
+                                Some(&effect_handler),
+                            )
+                            .await;
+                        }
                     }
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -2698,6 +2701,75 @@ pub mod test_support {
                 },
             )
             .await;
+        }
+
+        // ---- InFlightSends bound enforcement (unit) ----
+
+        /// Builds a delivery future that resolves immediately to a successful
+        /// delivery, plus a matching [`SendMeta`], for driving `InFlightSends`
+        /// bookkeeping without a live producer.
+        fn ready_send(topic: &str) -> (ExporterDeliveryFuture, SendMeta) {
+            let delivery = ExporterDeliveryFuture::ready_for_test(Ok(
+                rdkafka::producer::future_producer::Delivery {
+                    partition: 0,
+                    offset: 0,
+                    timestamp: rdkafka::Timestamp::NotAvailable,
+                },
+            ));
+            let meta = SendMeta {
+                signal_type: SignalType::Logs,
+                topic: topic.to_string(),
+                pdata: sample_pdata(SignalType::Logs),
+            };
+            (delivery, meta)
+        }
+
+        /// Scenario (backpressure): with `max_in_flight = 1`, a second `push` is issued while one
+        /// delivery is already outstanding.
+        /// Guarantees: `InFlightSends::push` enforces the bound itself -- the
+        /// over-limit push first drains and returns the prior completion, and the
+        /// set never holds more than `max_in_flight` outstanding deliveries.
+        #[tokio::test]
+        async fn in_flight_push_enforces_bound_by_draining() {
+            let mut in_flight = InFlightSends::new(1);
+            assert!(in_flight.is_empty());
+            assert!(!in_flight.is_full());
+
+            // First push fits under the bound: nothing is drained.
+            let (d1, m1) = ready_send("t1");
+            let drained = in_flight.push(d1, m1).await;
+            assert!(
+                drained.is_none(),
+                "push below the bound must not drain a completion"
+            );
+            assert!(in_flight.is_full(), "one outstanding delivery hits max=1");
+
+            // Second push is at capacity: push must drain and return exactly one
+            // completion (the first delivery) so the caller can finalize it,
+            // while the set still holds a single outstanding delivery.
+            let (d2, m2) = ready_send("t2");
+            let drained = in_flight
+                .push(d2, m2)
+                .await
+                .expect("at-capacity push must drain one completion");
+            assert_eq!(
+                drained.0.topic, "t1",
+                "drained completion is the first send"
+            );
+            assert!(matches!(drained.1, Ok(Ok(_))), "first delivery succeeded");
+            assert!(
+                in_flight.is_full(),
+                "still exactly one outstanding delivery after the swap"
+            );
+
+            // Draining the remaining completion empties the set.
+            let (final_meta, final_result) = in_flight.next_completion().await;
+            assert_eq!(final_meta.topic, "t2");
+            assert!(matches!(final_result, Ok(Ok(_))));
+            assert!(
+                in_flight.is_empty(),
+                "set is empty after draining both sends"
+            );
         }
 
         // ---- Backpressure & delivery-future pipelining ----

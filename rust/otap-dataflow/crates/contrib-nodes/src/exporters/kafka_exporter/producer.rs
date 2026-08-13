@@ -606,6 +606,23 @@ impl Future for ExporterDeliveryFuture {
     }
 }
 
+#[cfg(any(test, feature = "test-helpers"))]
+impl ExporterDeliveryFuture {
+    /// Builds a delivery future that resolves immediately with `result`.
+    ///
+    /// Test-only helper: production code only constructs delivery futures via
+    /// [`ExporterFutureProducer::send_result`]. This lets tests drive the
+    /// in-flight bookkeeping (e.g. the `max_in_flight` bound) deterministically
+    /// without a live producer or broker.
+    #[must_use]
+    pub fn ready_for_test(result: OwnedDeliveryResult) -> Self {
+        let (tx, rx) = oneshot::channel();
+        // The receiver is not yet polled, so this send always succeeds.
+        let _ = tx.send(result);
+        ExporterDeliveryFuture { rx }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
