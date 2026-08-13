@@ -1087,6 +1087,7 @@ mod test {
 
     use super::*;
 
+    use crate::exporters::common::bearer_auth::test_support::MockTokenProvider;
     use otap_df_otap::otap_grpc::common::AckRegistry;
     use otap_df_otap::otlp_http::client_settings::HttpClientSettings;
     use otap_df_otap::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
@@ -1566,61 +1567,6 @@ mod test {
                 .unwrap(),
             PROTOBUF_CONTENT_TYPE
         );
-    }
-
-    /// Test double for the `BearerTokenProvider` capability with configurable
-    /// stream behavior. `tokens` are published on the stream in order; when
-    /// `keep_open` is true the stream stays pending after draining them (never
-    /// ends), and when false it ends once they are drained (simulating a
-    /// provider that closes its stream).
-    struct MockTokenProvider {
-        tokens: Vec<String>,
-        keep_open: bool,
-        /// Expiry applied to every published token (`None` = non-expiring).
-        expires_on: Option<Instant>,
-    }
-
-    impl MockTokenProvider {
-        /// A provider that publishes a single non-expiring token and keeps its
-        /// stream open.
-        fn new(token: &str) -> Self {
-            Self {
-                tokens: vec![token.to_string()],
-                keep_open: true,
-                expires_on: None,
-            }
-        }
-    }
-
-    #[async_trait(?Send)]
-    impl BearerTokenProvider for MockTokenProvider {
-        async fn get_token(
-            &self,
-        ) -> Result<
-            otap_df_engine::capability::auth::BearerToken,
-            otap_df_engine::capability::CapabilityError,
-        > {
-            // Not exercised by the exporter (it consumes `token_stream`); return
-            // the first configured token for completeness.
-            Ok(otap_df_engine::capability::auth::BearerToken::with_expiry(
-                self.tokens.first().cloned().unwrap_or_default(),
-                None,
-            ))
-        }
-
-        fn token_stream(
-            &self,
-        ) -> otap_df_engine::capability::auth::bearer_token_provider::TokenStream {
-            let expires_on = self.expires_on;
-            let published = futures::stream::iter(self.tokens.clone().into_iter().map(move |t| {
-                otap_df_engine::capability::auth::BearerToken::with_expiry(t, expires_on)
-            }));
-            if self.keep_open {
-                published.chain(futures::stream::pending()).boxed()
-            } else {
-                published.boxed()
-            }
-        }
     }
 
     /// Build an `OtlpHttpExporter` wrapped for the test runtime with a bound

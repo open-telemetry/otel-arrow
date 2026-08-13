@@ -203,15 +203,114 @@ pub(crate) fn apply_auth_rejection<E: BearerAuthEvents>(
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    //! Test doubles shared by the exporters that consume this adapter, so both
+    //! exporter test suites drive the same provider behavior instead of each
+    //! maintaining its own copy.
+
+    use async_trait::async_trait;
+    use futures::StreamExt;
+    use otap_df_engine::capability::CapabilityError;
+    use otap_df_engine::capability::auth::BearerToken;
+    use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
+    use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
+    use std::time::Instant;
+
+    /// Test double for the `BearerTokenProvider` capability with configurable
+    /// stream behavior. `tokens` are published on the stream in order; when
+    /// `keep_open` is true the stream stays pending after draining them (never
+    /// ends), and when false it ends once they are drained (simulating a
+    /// provider that closes its stream).
+    pub(crate) struct MockTokenProvider {
+        pub(crate) tokens: Vec<String>,
+        pub(crate) keep_open: bool,
+        /// Expiry applied to every published token (`None` = non-expiring).
+        pub(crate) expires_on: Option<Instant>,
+    }
+
+    impl MockTokenProvider {
+        /// A provider that publishes a single non-expiring token and keeps its
+        /// stream open.
+        pub(crate) fn new(token: &str) -> Self {
+            Self {
+                tokens: vec![token.to_string()],
+                keep_open: true,
+                expires_on: None,
+            }
+        }
+
+        /// A provider that is bound but never publishes a token, with its stream
+        /// held open so the consumer keeps waiting rather than treating the
+        /// silence as a closed stream.
+        pub(crate) fn never_publishes() -> Self {
+            Self {
+                tokens: vec![],
+                keep_open: true,
+                expires_on: None,
+            }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl BearerTokenProvider for MockTokenProvider {
+        async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
+            // Not exercised by the exporters (they consume `token_stream`);
+            // return the first configured token for completeness.
+            Ok(BearerToken::with_expiry(
+                self.tokens.first().cloned().unwrap_or_default(),
+                None,
+            ))
+        }
+
+        fn token_stream(&self) -> TokenStream {
+            let expires_on = self.expires_on;
+            let published = futures::stream::iter(
+                self.tokens
+                    .clone()
+                    .into_iter()
+                    .map(move |t| BearerToken::with_expiry(t, expires_on)),
+            );
+            if self.keep_open {
+                published.chain(futures::stream::pending()).boxed()
+            } else {
+                published.boxed()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use futures::stream;
+    use otap_df_engine::capability::auth::BearerToken;
+    use std::cell::Cell;
 
+    thread_local! {
+        /// Number of `invalid_token` notifications raised on this test thread.
+        static INVALID_TOKENS: Cell<usize> = const { Cell::new(0) };
+        /// Number of `token_stream_closed` notifications raised on this test thread.
+        static STREAM_CLOSURES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Recording implementation of the event hooks. The trait methods are
+    /// associated functions (no `self`), so the counters are thread-local; the
+    /// test harness gives each test its own thread, and every test resets them
+    /// before use.
     struct TestEvents;
 
     impl BearerAuthEvents for TestEvents {
-        fn invalid_token(_error: &InvalidHeaderValue) {}
-        fn token_stream_closed() {}
+        fn invalid_token(_error: &InvalidHeaderValue) {
+            INVALID_TOKENS.set(INVALID_TOKENS.get() + 1);
+        }
+        fn token_stream_closed() {
+            STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1);
+        }
+    }
+
+    fn reset_events() {
+        INVALID_TOKENS.set(0);
+        STREAM_CLOSURES.set(0);
     }
 
     /// Builds an adapter holding a usable, non-expiring token at `generation`,
@@ -223,6 +322,21 @@ mod tests {
             cached_header: Some(HeaderValue::from_static("Bearer test-token")),
             cached_expiry: None,
             generation,
+            _events: PhantomData,
+        }
+    }
+
+    /// Builds a token-less adapter subscribed to a finite stream that publishes
+    /// `tokens` in order and then ends, so a test can drive `poll_refresh` one
+    /// publication at a time and also reach the stream-closed branch.
+    fn auth_over(tokens: Vec<BearerToken>) -> BearerAuth<TestEvents> {
+        reset_events();
+        BearerAuth {
+            stream: stream::iter(tokens).boxed_local(),
+            stream_active: true,
+            cached_header: None,
+            cached_expiry: None,
+            generation: 0,
             _events: PhantomData,
         }
     }
@@ -257,5 +371,204 @@ mod tests {
             auth.is_ready(),
             "a 401 for a superseded generation must not clear the newer token"
         );
+    }
+
+    // Scenario: the provider publishes its first token on the subscription.
+    // Guarantees: the adapter caches an `Authorization: Bearer <token>` header,
+    // marks it sensitive so it is redacted in `Debug` and excluded from the
+    // HPACK dynamic table, reports readiness, and stamps a non-zero generation
+    // so a later rejection can name exactly this token.
+    #[tokio::test]
+    async fn poll_refresh_caches_the_published_token_as_a_sensitive_header() {
+        let mut auth = auth_over(vec![BearerToken::without_expiry("first")]);
+
+        auth.poll_refresh().await;
+
+        assert!(
+            auth.is_ready(),
+            "a published token must make the adapter ready"
+        );
+        let (header, generation) = auth.header().expect("a cached token must yield a header");
+        assert_eq!(header.to_str().unwrap(), "Bearer first");
+        assert!(
+            header.is_sensitive(),
+            "the credential must be marked sensitive so it is never HPACK-indexed"
+        );
+        assert_eq!(
+            generation, 1,
+            "the first cached token must not reuse the \
+            'no token yet' generation, so a rejection can be attributed"
+        );
+    }
+
+    // Scenario: a refresh publishes a token whose bytes cannot form a header
+    // value, while a usable token is already cached.
+    // Guarantees: the malformed publication is reported and dropped, and the
+    // previously cached token keeps being used at its own generation, so a
+    // single bad refresh cannot stall exports.
+    #[tokio::test]
+    async fn a_malformed_refresh_is_reported_and_leaves_the_cached_token_intact() {
+        let mut auth = auth_over(vec![
+            BearerToken::without_expiry("good"),
+            BearerToken::without_expiry("bad\nvalue"),
+        ]);
+
+        auth.poll_refresh().await;
+        auth.poll_refresh().await;
+
+        assert_eq!(
+            INVALID_TOKENS.get(),
+            1,
+            "a token that cannot become a header value must be reported"
+        );
+        let (header, generation) = auth.header().expect("the earlier token must be kept");
+        assert_eq!(header.to_str().unwrap(), "Bearer good");
+        assert_eq!(
+            generation, 1,
+            "a rejected publication must not advance the generation"
+        );
+    }
+
+    // Scenario: the provider closes its token stream after publishing a token.
+    // Guarantees: the closure is reported, the adapter stops advertising itself
+    // as pollable so the exporter's `select!` arm goes quiet instead of
+    // busy-looping on a dead stream, and the last token stays usable.
+    #[tokio::test]
+    async fn a_closed_stream_is_reported_and_the_last_token_stays_usable() {
+        let mut auth = auth_over(vec![BearerToken::without_expiry("last")]);
+
+        auth.poll_refresh().await;
+        auth.poll_refresh().await;
+
+        assert_eq!(
+            STREAM_CLOSURES.get(),
+            1,
+            "the provider closing its stream must be reported"
+        );
+        assert!(
+            !auth.is_active(),
+            "a closed stream must not be polled again"
+        );
+        assert!(
+            auth.is_ready(),
+            "closing the stream must not discard the last usable token"
+        );
+    }
+
+    // Scenario: no token has been published yet.
+    // Guarantees: the adapter is not ready, hands back no header to stamp, arms
+    // no refresh timer, and reports the reason that distinguishes "never
+    // arrived" from "expiring", so the NACK text tells an operator which it is.
+    #[test]
+    fn an_adapter_without_a_token_is_unusable_and_says_why() {
+        let auth = auth_over(vec![]);
+
+        assert!(!auth.is_ready());
+        assert!(auth.header().is_none());
+        assert!(auth.refresh_deadline().is_none());
+        assert_eq!(auth.not_ready_reason(), "bearer token unavailable");
+    }
+
+    // Scenario: the cached token is still valid but expires inside the
+    // usability margin.
+    // Guarantees: it is treated as unusable so the exporter back-pressures
+    // rather than sending a request that could outlive its token, no refresh
+    // timer is armed for an already-lapsed margin, and the reason names expiry.
+    #[tokio::test]
+    async fn a_token_inside_the_usability_margin_is_not_usable() {
+        let mut auth = auth_over(vec![BearerToken::with_expiry(
+            "expiring",
+            Some(Instant::now() + TOKEN_USABLE_MARGIN / 2),
+        )]);
+
+        auth.poll_refresh().await;
+
+        assert!(
+            !auth.is_ready(),
+            "a token inside the usability margin must gate intake"
+        );
+        assert!(
+            auth.refresh_deadline().is_none(),
+            "an already-lapsed margin must arm no timer"
+        );
+        assert_eq!(
+            auth.not_ready_reason(),
+            "bearer token at/near expiry; awaiting refresh"
+        );
+    }
+
+    // Scenario: the cached token expires comfortably beyond the usability
+    // margin.
+    // Guarantees: it is usable now, and the reported deadline is exactly the
+    // instant readiness flips, so the exporter wakes to gate intake before a
+    // near-expiry batch is admitted rather than after.
+    #[tokio::test]
+    async fn refresh_deadline_is_the_instant_readiness_lapses() {
+        let expires_on = Instant::now() + TOKEN_USABLE_MARGIN * 10;
+        let mut auth = auth_over(vec![BearerToken::with_expiry(
+            "long-lived",
+            Some(expires_on),
+        )]);
+
+        auth.poll_refresh().await;
+
+        assert!(auth.is_ready());
+        assert_eq!(
+            auth.refresh_deadline(),
+            Some(expires_on - TOKEN_USABLE_MARGIN),
+            "the timer must fire when the token enters the usability margin"
+        );
+    }
+
+    // Scenario: the provider publishes a token with no known expiry.
+    // Guarantees: it is usable and arms no refresh timer, so the exporter does
+    // not register a timer that can never be justified by an expiry.
+    #[tokio::test]
+    async fn a_non_expiring_token_arms_no_refresh_deadline() {
+        let mut auth = auth_over(vec![BearerToken::without_expiry("forever")]);
+
+        auth.poll_refresh().await;
+
+        assert!(auth.is_ready());
+        assert!(auth.refresh_deadline().is_none());
+    }
+
+    // Scenario: a completed export reports the generation the server rejected.
+    // Guarantees: the exporter's rejection hand-off drops exactly that token, so
+    // the retry waits for a fresh one instead of replaying the rejected
+    // credential.
+    #[test]
+    fn apply_auth_rejection_drops_the_reported_generation() {
+        let mut auth = Some(auth_with_cached_token(3));
+
+        apply_auth_rejection(&mut auth, Some(3));
+
+        assert!(!auth.expect("the adapter is retained").is_ready());
+    }
+
+    // Scenario: an export completes without naming a rejected generation (it
+    // succeeded, or failed for a non-auth reason).
+    // Guarantees: the cached token survives, so ordinary transport failures do
+    // not stall intake behind an unnecessary refresh.
+    #[test]
+    fn apply_auth_rejection_keeps_the_token_when_nothing_was_rejected() {
+        let mut auth = Some(auth_with_cached_token(3));
+
+        apply_auth_rejection(&mut auth, None);
+
+        assert!(auth.expect("the adapter is retained").is_ready());
+    }
+
+    // Scenario: no provider is bound, so the exporter holds no adapter.
+    // Guarantees: the shared rejection hand-off is a no-op rather than a panic,
+    // which is what lets the exporter call it unconditionally on every
+    // completion.
+    #[test]
+    fn apply_auth_rejection_without_a_bound_provider_is_a_no_op() {
+        let mut auth: Option<BearerAuth<TestEvents>> = None;
+
+        apply_auth_rejection(&mut auth, Some(1));
+
+        assert!(auth.is_none());
     }
 }

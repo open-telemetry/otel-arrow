@@ -1384,6 +1384,7 @@ struct CompletedExport {
 mod tests {
     use super::*;
 
+    use crate::exporters::common::bearer_auth::test_support::MockTokenProvider;
     use otap_df_config::node::NodeUserConfig;
     use std::collections::HashMap;
 
@@ -1797,6 +1798,330 @@ mod tests {
             captured.as_deref(),
             Some("Bearer secret-token-123"),
             "the configured authorization header must reach the gRPC server"
+        );
+    }
+
+    /// Drives the real `OTLPExporter` end to end against a mock gRPC server with
+    /// `provider` bound and `static_headers` configured, running the standard
+    /// three-export-then-shutdown scenario and asserting every export is Ack'd.
+    /// Returns every `authorization` metadata value the server observed, in
+    /// arrival order, so a test can assert both which credential arrived and
+    /// that exactly one did per request.
+    fn run_bearer_wire_test(
+        provider: MockTokenProvider,
+        static_headers: &[(&str, &str)],
+    ) -> Vec<String> {
+        let test_runtime = TestRuntime::new();
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
+        let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let tokio_rt = Runtime::new().unwrap();
+
+        let captured_auth: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_auth_srv = captured_auth.clone();
+
+        _ = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let _ = ready_sender.send(());
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+
+            let interceptor =
+                move |req: tonic::Request<()>| -> Result<tonic::Request<()>, tonic::Status> {
+                    let values: Vec<String> = req
+                        .metadata()
+                        .get_all("authorization")
+                        .iter()
+                        .filter_map(|v| v.to_str().ok().map(str::to_string))
+                        .collect();
+                    captured_auth_srv.lock().unwrap().extend(values);
+                    Ok(req)
+                };
+
+            let mock_logs_service = LogsServiceServer::with_interceptor(
+                LogsServiceMock::new(sender.clone()),
+                interceptor.clone(),
+            );
+            let mock_metrics_service = MetricsServiceServer::with_interceptor(
+                MetricsServiceMock::new(sender.clone()),
+                interceptor.clone(),
+            );
+            let mock_trace_service = TraceServiceServer::with_interceptor(
+                TraceServiceMock::new(sender.clone()),
+                interceptor,
+            );
+            Server::builder()
+                .add_service(mock_logs_service)
+                .add_service(mock_metrics_service)
+                .add_service(mock_trace_service)
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = shutdown_signal.await;
+                })
+                .await
+                .expect("Test gRPC server has failed");
+        });
+
+        tokio_rt
+            .block_on(ready_receiver)
+            .expect("Server failed to start");
+
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let headers: HashMap<String, _> = static_headers
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), (*value).into()))
+            .collect();
+
+        let exporter = ExporterWrapper::local(
+            OTLPExporter {
+                config: Config {
+                    grpc: GrpcClientSettings {
+                        grpc_endpoint: grpc_endpoint.clone(),
+                        headers,
+                        ..Default::default()
+                    },
+                    max_in_flight: 32,
+                    num_connections: default_num_connections(),
+                },
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                token_provider: Some(Box::new(provider)),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(scenario())
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    for i in 0..3 {
+                        wait_for_ack_or_nack(
+                            &mut pipeline_completion_rx,
+                            true,
+                            123,
+                            &format!("for export #{}", i + 1),
+                        )
+                        .await
+                        .expect("Failed to receive Ack");
+                    }
+                    validation_procedure(receiver)(ctx, result).await;
+                })
+            });
+
+        _ = shutdown_sender.send("Shutdown");
+
+        captured_auth.lock().unwrap().clone()
+    }
+
+    /// Scenario: a `bearer_token_provider` is bound and has published a token,
+    /// while the config also carries a static `authorization` header.
+    /// Guarantees: every outbound export carries the provider's refreshed token
+    /// as its only `authorization` metadata, so a stale configured credential
+    /// can neither override the live token nor be sent alongside it.
+    #[test]
+    fn bearer_token_reaches_the_grpc_server_and_overrides_a_static_header() {
+        let captured = run_bearer_wire_test(
+            MockTokenProvider::new("provider-token"),
+            &[("authorization", "Basic static")],
+        );
+
+        assert_eq!(
+            captured,
+            vec!["Bearer provider-token".to_string(); 3],
+            "each export must carry the provider's token as its only authorization"
+        );
+    }
+
+    /// Scenario: the provider's first publication cannot form a header value
+    /// (it contains a newline) and a valid token follows on the same stream.
+    /// Guarantees: the malformed token is skipped rather than aborting the
+    /// exporter or being sent, and exports proceed with the next valid token, so
+    /// one bad publication costs a refresh rather than the pipeline.
+    #[test]
+    fn an_invalid_bearer_token_is_skipped_and_the_next_valid_one_is_used() {
+        let captured = run_bearer_wire_test(
+            MockTokenProvider {
+                tokens: vec!["bad\nvalue".to_string(), "good-token".to_string()],
+                keep_open: true,
+                expires_on: None,
+            },
+            &[],
+        );
+
+        assert_eq!(
+            captured,
+            vec!["Bearer good-token".to_string(); 3],
+            "the malformed token must be skipped and the next valid one used"
+        );
+    }
+
+    /// Scenario: the provider publishes one token and then closes its stream, so
+    /// no further refreshes can arrive.
+    /// Guarantees: the exporter keeps using the last token instead of treating
+    /// the closure as a loss of credentials, so a provider that stops refreshing
+    /// degrades to a static credential rather than stalling the pipeline.
+    #[test]
+    fn the_last_bearer_token_is_reused_after_the_provider_closes_its_stream() {
+        let captured = run_bearer_wire_test(
+            MockTokenProvider {
+                tokens: vec!["final-token".to_string()],
+                keep_open: false,
+                expires_on: None,
+            },
+            &[],
+        );
+
+        assert_eq!(
+            captured,
+            vec!["Bearer final-token".to_string(); 3],
+            "the last token must keep being used after the stream closes"
+        );
+    }
+
+    /// Scenario: a `bearer_token_provider` is bound but never publishes a token,
+    /// then the pipeline shuts down with a batch still buffered.
+    /// Guarantees: nothing is sent unauthenticated -- intake stays gated so the
+    /// server sees no request at all -- and the batch shutdown force-drains is
+    /// NACK'd retryably with its payload intact, so it is deferred rather than
+    /// dropped.
+    #[test]
+    fn an_unavailable_token_gates_intake_and_shutdown_nacks_retryably() {
+        let test_runtime = TestRuntime::new();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
+        let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
+        let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let tokio_rt = Runtime::new().unwrap();
+
+        _ = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let _ = ready_sender.send(());
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            Server::builder()
+                .add_service(LogsServiceServer::new(LogsServiceMock::new(sender)))
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = shutdown_signal.await;
+                })
+                .await
+                .expect("Test gRPC server has failed");
+        });
+
+        tokio_rt
+            .block_on(ready_receiver)
+            .expect("Server failed to start");
+
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let exporter = ExporterWrapper::local(
+            OTLPExporter {
+                config: Config {
+                    grpc: GrpcClientSettings {
+                        grpc_endpoint: grpc_endpoint.clone(),
+                        ..Default::default()
+                    },
+                    max_in_flight: 32,
+                    num_connections: default_num_connections(),
+                },
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                token_provider: Some(Box::new(MockTokenProvider::never_publishes())),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        // A non-empty request so the NACK'd payload is distinguishable from an
+        // empty one.
+        let req = ExportLogsServiceRequest {
+            resource_logs: vec![Default::default()],
+        };
+        let mut req_bytes = vec![];
+        req.encode(&mut req_bytes).unwrap();
+        let sent_bytes = Bytes::from(req_bytes);
+        let expected_bytes = sent_bytes.clone();
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    let logs_pdata = OtapPdata::new_default(
+                        OtlpProtoBytes::ExportLogsRequest(sent_bytes).into(),
+                    )
+                    .test_subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        TestCallData::default().into(),
+                        123,
+                    );
+                    ctx.send_pdata(logs_pdata)
+                        .await
+                        .expect("Failed to send log message");
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .expect("Failed to send Shutdown");
+                })
+            })
+            .run_validation(move |mut ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    let msg = timeout(Duration::from_secs(3), pipeline_completion_rx.recv())
+                        .await
+                        .expect("timed out waiting for a completion")
+                        .expect("completion channel closed");
+                    match msg {
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert!(
+                                !nack.permanent,
+                                "a batch refused for a missing token must stay retryable"
+                            );
+                            assert!(
+                                nack.reason.contains("bearer token unavailable"),
+                                "unexpected NACK reason: {}",
+                                nack.reason
+                            );
+                            let (_context, payload) = (*nack.refused).into_parts();
+                            match payload {
+                                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+                                    bytes,
+                                )) => assert_eq!(
+                                    bytes, expected_bytes,
+                                    "the refused batch must be returned intact so it can be retried"
+                                ),
+                                other => panic!("unexpected refused payload: {other:?}"),
+                            }
+                        }
+                        PipelineCompletionMsg::DeliverAck { .. } => {
+                            panic!("unexpected Ack: no request should have been sent")
+                        }
+                    }
+                })
+            });
+
+        _ = shutdown_sender.send("Shutdown");
+
+        assert!(
+            receiver.try_recv().is_err(),
+            "no export may reach the server while no usable token is cached"
         );
     }
 
@@ -2370,6 +2695,17 @@ mod tests {
     /// backed by a mock server returning the given status code. Returns the
     /// `NackMsg.permanent` value observed.
     fn run_grpc_error_status_test(code: Code, detail_bytes: Option<Bytes>) -> bool {
+        run_grpc_error_status_test_with_provider(code, detail_bytes, None)
+    }
+
+    /// As [`run_grpc_error_status_test`], but with an optional bound bearer
+    /// token provider, so a status code whose classification depends on whether
+    /// the credential is refreshable can be exercised both ways.
+    fn run_grpc_error_status_test_with_provider(
+        code: Code,
+        detail_bytes: Option<Bytes>,
+        token_provider: Option<Box<dyn BearerTokenProvider>>,
+    ) -> bool {
         use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
 
         let grpc_addr = "127.0.0.1";
@@ -2398,7 +2734,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
-                token_provider: None,
+                token_provider,
             },
             node_id.clone(),
             node_config,
@@ -2605,6 +2941,38 @@ mod tests {
         assert!(
             !permanent,
             "RESOURCE_EXHAUSTED with RetryInfo should produce a non-permanent (retryable) NACK"
+        );
+    }
+
+    /// Scenario: the server rejects an export with `UNAUTHENTICATED` while no
+    /// bearer token provider is bound, so the credential is static config.
+    /// Guarantees: the NACK is permanent, because no refresh can occur and
+    /// retrying would replay the same rejected credential forever.
+    #[test]
+    fn unauthenticated_without_a_bound_provider_produces_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::Unauthenticated, None);
+        assert!(
+            permanent,
+            "UNAUTHENTICATED with a static credential should produce a permanent NACK"
+        );
+    }
+
+    /// Scenario: the server rejects an export with `UNAUTHENTICATED` while a
+    /// bearer token provider is bound and has published a token.
+    /// Guarantees: the token generation stamped into the request metadata
+    /// survives all the way to the completion, so the failure is classified as
+    /// refreshable and the batch is NACK'd retryably instead of being dropped
+    /// because a token lapsed or a refresh raced.
+    #[test]
+    fn unauthenticated_with_a_bound_provider_produces_retryable_nack() {
+        let permanent = run_grpc_error_status_test_with_provider(
+            Code::Unauthenticated,
+            None,
+            Some(Box::new(MockTokenProvider::new("provider-token"))),
+        );
+        assert!(
+            !permanent,
+            "UNAUTHENTICATED with a refreshable token should produce a retryable NACK"
         );
     }
 
@@ -3026,6 +3394,32 @@ mod tests {
             values,
             vec!["Bearer refreshed"],
             "the refreshed bearer token must be the only authorization sent"
+        );
+    }
+
+    /// Scenario: the cached bearer header (which the adapter marks sensitive) is
+    /// carried into gRPC request metadata, which is built by round-tripping an
+    /// `http::HeaderMap` through `MetadataMap::from_headers`.
+    /// Guarantees: the sensitivity flag survives that round-trip, so tonic keeps
+    /// the credential out of the HPACK dynamic table and out of `Debug` output
+    /// instead of silently indexing it on every request.
+    #[test]
+    fn build_grpc_metadata_keeps_the_bearer_token_sensitive() {
+        let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
+        let context = context_without_headers();
+
+        let mut token = HeaderValue::from_static("Bearer refreshed");
+        token.set_sensitive(true);
+
+        let metadata = build_grpc_metadata(&handler, &context, None, Some(token))
+            .expect("a cached bearer token must produce request metadata");
+
+        assert!(
+            metadata
+                .get("authorization")
+                .expect("the token must be present")
+                .is_sensitive(),
+            "the bearer token must stay sensitive so it is never HPACK-indexed"
         );
     }
 
