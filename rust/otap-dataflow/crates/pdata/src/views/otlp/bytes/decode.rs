@@ -175,7 +175,10 @@ where
 }
 
 /// return the range of the positions in the byte slice containing values. The range is determined
-/// from the wire type.
+/// from the wire type. Returns `None` for truncated/invalid fields (out-of-range
+/// LEN payloads or fixed-width fields with too few bytes remaining) and for
+/// unknown wire types, so callers can treat malformed input as an absent field
+/// rather than producing an out-of-bounds range.
 #[inline]
 pub(crate) fn field_value_range(buf: &[u8], wire_type: u64, pos: usize) -> Option<(usize, usize)> {
     let range = match wire_type {
@@ -186,12 +189,17 @@ pub(crate) fn field_value_range(buf: &[u8], wire_type: u64, pos: usize) -> Optio
         }
 
         wire_types::LEN => {
-            let (len, p) = read_varint(buf, pos)?;
-            let end = p.checked_add(len as usize)?;
-            (p, end)
+            let (slice, end) = read_len_delim(buf, pos)?;
+            (end - slice.len(), end)
         }
-        wire_types::FIXED64 => (pos, pos + 8),
-        wire_types::FIXED32 => (pos, pos + 4),
+        wire_types::FIXED64 => {
+            let (_, end) = read_fixed64(buf, pos)?;
+            (pos, end)
+        }
+        wire_types::FIXED32 => {
+            let (_, end) = read_fixed32(buf, pos)?;
+            (pos, end)
+        }
         _ => return None,
     };
 

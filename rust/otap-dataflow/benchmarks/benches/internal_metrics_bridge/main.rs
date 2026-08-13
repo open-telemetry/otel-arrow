@@ -132,8 +132,7 @@ impl BridgeBenchmark {
         )
         .expect("benchmark telemetry system should initialize");
         let resource_bytes = telemetry.internal_telemetry_settings().resource_field_bytes;
-        let encoder = MetricsOtlpEncoder::new_with_views(&resource_bytes, views)
-            .expect("resource bytes should be valid");
+        let encoder = MetricsOtlpEncoder::new_with_views(&resource_bytes, views);
         let collector = telemetry.collector();
         let reporter = telemetry.reporter();
         let metric_sets = (0..entity_count)
