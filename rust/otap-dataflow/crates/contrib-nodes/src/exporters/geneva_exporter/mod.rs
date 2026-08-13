@@ -573,6 +573,14 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), String> {
+        if matches!(self.auth, AuthConfig::Certificate { .. })
+            && !cfg!(feature = "geneva-certificate-auth")
+        {
+            return Err(
+                "certificate authentication requires the 'geneva-certificate-auth' build feature"
+                    .to_owned(),
+            );
+        }
         let is_agent_fed = matches!(self.auth, AuthConfig::AgentFed);
         if is_agent_fed && self.account.trim().is_empty() {
             return Err("account must not be empty".to_owned());
@@ -1929,6 +1937,62 @@ mod tests {
             }
             _ => panic!("Expected Certificate auth variant"),
         }
+    }
+
+    /// Scenario: Certificate authentication is configured without its opt-in build feature.
+    /// Guarantees: Configuration validation rejects the unsupported authentication mode early.
+    #[cfg(not(feature = "geneva-certificate-auth"))]
+    #[test]
+    fn certificate_auth_requires_opt_in_feature() {
+        let config = serde_json::json!({
+            "endpoint": "https://geneva.example.com",
+            "environment": "production",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "westus2",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let error = Config::parse(&config).expect_err("certificate auth should be disabled");
+        assert!(
+            error
+                .to_string()
+                .contains("requires the 'geneva-certificate-auth' build feature")
+        );
+    }
+
+    /// Scenario: Certificate authentication is configured with its opt-in build feature.
+    /// Guarantees: Configuration validation accepts the certificate authentication mode.
+    #[cfg(feature = "geneva-certificate-auth")]
+    #[test]
+    fn certificate_auth_is_accepted_when_feature_is_enabled() {
+        let config = serde_json::json!({
+            "endpoint": "https://geneva.example.com",
+            "environment": "production",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "westus2",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed = Config::parse(&config).expect("certificate auth should be enabled");
+        assert!(matches!(parsed.auth, AuthConfig::Certificate { .. }));
     }
 
     /// Scenario: Agent-fed configuration omits GCS-only endpoint and region fields.
