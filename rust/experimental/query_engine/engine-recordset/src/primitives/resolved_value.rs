@@ -440,7 +440,7 @@ impl ArrayValue for List<'_> {
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
             if !(item_callback)(index, value.to_value()) {
@@ -517,7 +517,7 @@ impl ArrayValue for ArraySlice<'_> {
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool {
         let start = range
             .get_start_range_inclusize()
@@ -674,7 +674,7 @@ impl ArrayValue for Sequence<'_> {
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool {
         let len = self.len();
 
@@ -1044,7 +1044,7 @@ impl ArrayValue for ResolvedArrayValue<'_> {
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool {
         self.get_array().get_item_range(range, item_callback)
     }
@@ -1204,7 +1204,7 @@ impl MapValue for ResolvedMapValue<'_> {
         self.get_map().get_static(key)
     }
 
-    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(&str, Value<'a>) -> bool) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool {
         self.get_map().get_items(item_callback)
     }
 }
