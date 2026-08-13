@@ -1756,6 +1756,42 @@ mod tests {
     }
 
     #[test]
+    pub fn test_convert_to_regex() {
+        let run_test_success = |value: Value, expected: &str| {
+            assert_eq!(
+                expected,
+                value
+                    .convert_to_regex()
+                    .expect("has regex")
+                    .as_ref()
+                    .as_str()
+            )
+        };
+
+        run_test_success(
+            Value::Regex(&RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(".*").expect("valid regex"),
+            )),
+            ".*",
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                ".*",
+            )),
+            ".*",
+        );
+
+        assert!(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "(",))
+                .convert_to_regex()
+                .is_err()
+        )
+    }
+
+    #[test]
     pub fn test_are_values_equal() {
         let run_test_success =
             |left: Value, right: Value, case_insensitive: bool, expected: bool| {
