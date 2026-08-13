@@ -859,10 +859,13 @@ mod tests {
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::testing::fixtures;
+    use otap_df_pdata::testing::{fixtures, round_trip::encode_logs};
     use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
     use prost::Message;
 
+    use crate::exporters::clickhouse_exporter::transform::logs_fast::{
+        LogsFastTransform, LogsFastTransformer,
+    };
     use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
     use crate::exporters::clickhouse_exporter::{
         config::Config,
@@ -890,6 +893,22 @@ mod tests {
             .apply_plan(records)
             .expect("apply legacy ClickHouse transform")
             .remove(&ArrowPayloadType::Logs)
+    }
+
+    fn otap_fast_batch(logs: &LogsData) -> RecordBatch {
+        let mut records = encode_logs(logs);
+        records
+            .decode_transport_optimized_ids()
+            .expect("decode transport optimized IDs");
+        match LogsFastTransformer::default()
+            .try_apply(&records)
+            .expect("transform canonical OTAP logs through the fast path")
+        {
+            LogsFastTransform::Applied(batch) => batch,
+            LogsFastTransform::NotApplicable(reason) => {
+                panic!("nested canonical logs unexpectedly declined: {reason}")
+            }
+        }
     }
 
     fn logical_values(array: &dyn Array) -> Vec<Option<String>> {
@@ -1002,13 +1021,14 @@ mod tests {
                         .time_unix_nano(123_u64)
                         .severity_number(SeverityNumber::Error)
                         .severity_text("ERROR")
-                        .body(nested)
+                        .body(nested.clone())
                         .attributes(vec![
                             KeyValue::new("empty", AnyValue::default()),
                             KeyValue::new("string", AnyValue::new_string("text")),
                             KeyValue::new("int", AnyValue::new_int(-42)),
                             KeyValue::new("double", AnyValue::new_double(3.25)),
                             KeyValue::new("bool", AnyValue::new_bool(true)),
+                            KeyValue::new("nested", nested),
                         ])
                         .trace_id([0x11; 16])
                         .span_id([0x22; 8])
@@ -1047,6 +1067,33 @@ mod tests {
     #[test]
     fn nested_value_types_match_legacy_transform() {
         assert_matches_legacy(logs_with_all_value_types());
+    }
+
+    /// Scenario: identical nested OTLP values take the direct and canonical OTAP fast paths.
+    /// Guarantees: every direct-path ClickHouse column has the same rows and logical values.
+    #[test]
+    fn nested_values_match_otap_fast_path() {
+        let logs = logs_with_all_value_types();
+        let bytes = request_bytes(logs.clone());
+        let direct = OtlpLogsTransformer::default()
+            .transform(&bytes)
+            .expect("transform raw OTLP logs directly")
+            .expect("direct logs batch");
+        let fast = otap_fast_batch(&logs);
+
+        assert_eq!(direct.num_rows(), fast.num_rows());
+        for field in direct.schema().fields() {
+            let name = field.name();
+            let direct_column = direct.column_by_name(name).expect("direct column");
+            let fast_column = fast
+                .column_by_name(name)
+                .unwrap_or_else(|| panic!("OTAP fast-path batch is missing {name}"));
+            assert_eq!(
+                logical_values(direct_column.as_ref()),
+                logical_values(fast_column.as_ref()),
+                "direct and OTAP fast-path values differ for {name}",
+            );
+        }
     }
 
     /// Scenario: a raw OTLP log attribute contains an arbitrary byte sequence.

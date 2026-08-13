@@ -1,8 +1,54 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module contains the implementation of the pdata View traits for serialized OTLP protobuf
-//! bytes for messages defined in logs.proto
+//! Borrowed pdata views over serialized OTLP log protobuf messages.
+//!
+//! # Purpose
+//!
+//! The types in this module expose the pdata log view traits without first decoding the protobuf
+//! into an owned Prost object tree. Field values remain slices of the caller-owned byte buffer,
+//! and nested messages are represented by lightweight borrowed views. This is useful on paths
+//! that only need selected fields or want to transform OTLP bytes directly into another format.
+//!
+//! The view hierarchy follows the OTLP logs schema:
+//!
+//! ```text
+//! RawLogsData
+//!   `- ResourceLogsIter -> RawResourceLogs
+//!        `- ScopeLogsIter -> RawScopeLogs
+//!             `- LogRecordsIter -> RawLogRecord
+//! ```
+//!
+//! Resource, instrumentation-scope, attribute, and `AnyValue` submessages reuse the raw views in
+//! the sibling `resource` and `common` modules.
+//!
+//! # Validation and lazy access
+//!
+//! [`RawLogsData::try_new`] performs an allocation-free validation pass before exposing the view.
+//! It validates protobuf framing, the wire types of known fields, and the complete known nested
+//! logs hierarchy. Unknown fields retain protobuf forward compatibility: their framing is checked,
+//! but length-delimited unknown payloads remain opaque. Semantic constraints such as UTF-8 and ID
+//! lengths are left to typed accessors and consumers.
+//!
+//! After validation, child views use [`ProtoBytesParser`] to discover fields lazily. Parser clones
+//! and repeated-field iterators share scan progress and cached byte ranges through `Rc<Cell<_>>`.
+//! This avoids eagerly indexing every field, but means these views are intentionally not `Send`
+//! and are not designed for concurrent access. A validated request therefore incurs one framing
+//! scan followed by lazy field scans, while still avoiding an owned decoded representation.
+//!
+//! [`RawLogsData::new`] and [`RawLogRecord::new`] are unchecked constructors for trusted or
+//! already validated internal bytes. Untrusted serialized requests should enter through
+//! [`RawLogsData::try_new`]; otherwise malformed nested fields can appear indistinguishable from
+//! absent fields to the optional view accessors.
+//!
+//! # Schema-aware wire validation
+//!
+//! Protobuf's length-delimited wire type is shared by strings, bytes, and embedded messages, so
+//! wire framing alone cannot determine which payloads require recursive validation.
+//! [`MessageKind`] supplies that schema context. For each known field it records the expected wire
+//! type and, for embedded messages, the kind to validate recursively. This table duplicates the
+//! portion of the OTLP protobuf schema traversed by these raw views and must stay synchronized with
+//! `logs.proto`, `common.proto`, `resource.proto`, and the accessors below.
 
 use std::cell::Cell;
 use std::num::NonZeroUsize;
@@ -33,23 +79,45 @@ use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 
+/// Maximum number of embedded known messages accepted by recursive wire validation.
 const MAX_NESTED_MESSAGE_DEPTH: usize = 64;
 
+/// Schema context for one protobuf message reachable from an OTLP logs request.
+///
+/// This is not a protobuf field value or an OTLP signal discriminator. It tells
+/// [`validate_message`] how to interpret field numbers whose wire representation alone is
+/// ambiguous. See [`Self::field_spec`] for the schema table.
 #[derive(Clone, Copy)]
 enum MessageKind {
+    /// `LogsData` or the wire-compatible `ExportLogsServiceRequest` envelope.
     LogsData,
+    /// One `ResourceLogs` message.
     ResourceLogs,
+    /// One `Resource` message from `resource.proto`.
     Resource,
+    /// One `ScopeLogs` message.
     ScopeLogs,
+    /// One `InstrumentationScope` message from `common.proto`.
     InstrumentationScope,
+    /// One `LogRecord` message.
     LogRecord,
+    /// One attribute `KeyValue` message from `common.proto`.
     KeyValue,
+    /// One `AnyValue` message from `common.proto`.
     AnyValue,
+    /// The embedded message used by the `AnyValue.array_value` variant.
     ArrayValue,
+    /// The embedded message used by the `AnyValue.kvlist_value` variant.
     KeyValueList,
 }
 
 impl MessageKind {
+    /// Return the expected wire type and optional nested message kind for a known field.
+    ///
+    /// `None` means the field number is unknown in this message and is accepted after generic
+    /// framing validation. `Some((wire_type, None))` identifies a known scalar, string, or byte
+    /// field. `Some((wire_type, Some(kind)))` identifies an embedded message whose contents must
+    /// be recursively validated as `kind`.
     fn field_spec(self, field_num: u64) -> Option<(u64, Option<Self>)> {
         use MessageKind::{
             AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, LogRecord,
@@ -110,6 +178,11 @@ impl MessageKind {
     }
 }
 
+/// Recursively validate framing and known-field wire types for one serialized message.
+///
+/// The walk allocates no heap data and rejects invalid tags, truncated values, unsupported wire
+/// types, known fields encoded with the wrong wire type, and excessive known-message nesting.
+/// Unknown fields are skipped according to their encoded wire type.
 fn validate_message(buf: &[u8], message: MessageKind, depth: usize) -> Result<(), Error> {
     if depth > MAX_NESTED_MESSAGE_DEPTH {
         return Err(Error::InvalidProtobufWireFormat);
@@ -140,16 +213,20 @@ fn validate_message(buf: &[u8], message: MessageKind, depth: usize) -> Result<()
     Ok(())
 }
 
-/// Implementation of `LogsDataView` backed by protobuf serialized `LogsData` message
+/// Root borrowed view over a serialized OTLP logs request.
 ///
-/// TODO: Rename OtlpLogsView similar to OtapLogsView for consistency?
+/// `LogsData` and `ExportLogsServiceRequest` have the same top-level repeated resource-logs field,
+/// so this view accepts either wire representation. It owns no payload data.
 pub struct RawLogsData<'a> {
-    /// bytes of the serialized message
+    /// Bytes of the serialized message.
     buf: &'a [u8],
 }
 
 impl<'a> RawLogsData<'a> {
-    /// Create a new instance of `RawLogsData`
+    /// Create a root view without validating the serialized message.
+    ///
+    /// This constructor is intended only for trusted or already validated internal data. Prefer
+    /// [`Self::try_new`] at an ingestion boundary.
     #[must_use]
     pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
@@ -157,9 +234,9 @@ impl<'a> RawLogsData<'a> {
 
     /// Construct a [`RawLogsData`] after validating protobuf wire framing.
     ///
-    /// Cost: a recursive, allocation-free walk of the known OTLP logs message hierarchy. Unknown
-    /// fields remain opaque but their wire framing is validated. Nesting is capped to keep
-    /// validation stack usage bounded.
+    /// The recursive, allocation-free validation walk covers the known OTLP logs hierarchy.
+    /// Unknown fields remain opaque but their wire framing is validated. Nesting is capped to
+    /// keep stack usage bounded.
     pub fn try_new(buf: &'a [u8]) -> Result<Self, Error> {
         validate_message(buf, MessageKind::LogsData, 0)?;
         Ok(Self { buf })
@@ -177,12 +254,14 @@ impl<'a> TryFrom<&'a OtlpProtoBytes> for RawLogsData<'a> {
     }
 }
 
-/// Implementation of `ResourceLogsView` backed by protobuf serialized `ResourceLogs` message
+/// Borrowed `ResourceLogsView` backed by a serialized `ResourceLogs` message.
 pub struct RawResourceLogs<'a> {
     byte_parser: ProtoBytesParser<'a, ResourceLogsFieldOffsets>,
 }
 
-/// Known field offsets within byte buffer for fields in ResourceLogs message
+/// Lazily cached byte ranges for fields used from a `ResourceLogs` message.
+///
+/// Only the first repeated `scope_logs` range is cached; its iterator scans subsequent values.
 pub struct ResourceLogsFieldOffsets {
     resource: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     schema_url: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
@@ -228,12 +307,14 @@ impl FieldRanges for ResourceLogsFieldOffsets {
     }
 }
 
-/// Implementation of `ScopeLogsView` backed by protobuf serialized `ScopeLogs` message
+/// Borrowed `ScopeLogsView` backed by a serialized `ScopeLogs` message.
 pub struct RawScopeLogs<'a> {
     byte_parser: ProtoBytesParser<'a, ScopeLogsFieldOffsets>,
 }
 
-/// Known field offsets within byte buffer for fields in ResourceLogs message
+/// Lazily cached byte ranges for fields used from a `ScopeLogs` message.
+///
+/// Only the first repeated log-record range is cached; its iterator scans subsequent values.
 pub struct ScopeLogsFieldOffsets {
     scope: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     schema_url: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
@@ -278,15 +359,17 @@ impl FieldRanges for ScopeLogsFieldOffsets {
     }
 }
 
-/// Implementation of `LogRecordView` backed by protobuf serialized `LogRecord` message
+/// Borrowed `LogRecordView` backed by a serialized `LogRecord` message.
 pub struct RawLogRecord<'a> {
     bytes_parser: ProtoBytesParser<'a, LogFieldOffsets>,
 }
 
 impl<'a> RawLogRecord<'a> {
-    /// Create a new instance of `RawLogRecord`. This is exposed
-    /// specifically for interpreting internally generated log records
-    /// which encode body and attributes as OTLP bytes.
+    /// Create an unchecked view of an internally generated serialized log record.
+    ///
+    /// This is exposed specifically for records that encode body and attributes as OTLP bytes.
+    /// External request bytes should be validated through [`RawLogsData::try_new`] before child
+    /// views are constructed.
     #[must_use]
     pub fn new(buf: &'a [u8]) -> Self {
         Self {
@@ -295,7 +378,10 @@ impl<'a> RawLogRecord<'a> {
     }
 }
 
-/// Known field offsets within byte buffer for fields in ResourceLogs message
+/// Lazily cached byte ranges for fields used from a `LogRecord` message.
+///
+/// Scalar ranges share a field-number-indexed array. Only the first attribute range is cached;
+/// the attribute iterator continues scanning subsequent values as needed.
 pub struct LogFieldOffsets {
     scalar_fields: [Cell<Option<(NonZeroUsize, NonZeroUsize)>>; 13],
     first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
@@ -359,8 +445,7 @@ impl FieldRanges for LogFieldOffsets {
 
 /* ----------------------------- ADAPTER ITERATORS ----------------------- */
 
-/// Iterator of ResourceLogs - produces implementation of `ResourceLogs` view from byte array
-/// containing a serialized LogsData message
+/// Iterator of borrowed resource-log views in their protobuf wire order.
 pub struct ResourceLogsIter<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -388,8 +473,7 @@ impl<'a> Iterator for ResourceLogsIter<'a> {
     }
 }
 
-/// Iterator of ScopeLogs - produces implementation of `ScopeLogs` view from byte array
-/// containing a serialized ResourceLogs message
+/// Iterator of borrowed scope-log views in their parent resource's protobuf wire order.
 pub struct ScopeLogsIter<'a> {
     byte_parser: RepeatedFieldProtoBytesParser<'a, ResourceLogsFieldOffsets>,
 }
@@ -406,8 +490,7 @@ impl<'a> Iterator for ScopeLogsIter<'a> {
     }
 }
 
-/// Iterator of LogsRecord - produces implementation of `LogRecord` view from byte array
-/// containing a serialized ScopeLogs message
+/// Iterator of borrowed log-record views in their parent scope's protobuf wire order.
 pub struct LogRecordsIter<'a> {
     byte_parser: RepeatedFieldProtoBytesParser<'a, ScopeLogsFieldOffsets>,
 }
