@@ -701,6 +701,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                     NodeControlMsg::DelayedData {
                                         when: now,
                                         data,
+                                        resume_id: None,
                                     },
                                 );
                                 self.runtime_control_metrics
@@ -845,6 +846,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 NodeControlMsg::DelayedData {
                     when,
                     data: delayed.data,
+                    resume_id: None,
                 },
             );
             flushed += 1;
@@ -894,6 +896,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 NodeControlMsg::DelayedData {
                     when: delayed.when,
                     data: delayed.data,
+                    resume_id: None,
                 },
             ));
             delayed_data_count += 1;
@@ -2314,6 +2317,10 @@ mod tests {
         assert!(delayed_heap.is_empty());
     }
 
+    /// Scenario: runtime-global delayed data reaches its target after the
+    /// requested deadline.
+    /// Guarantees: global delivery preserves the deadline and payload and does
+    /// not claim a node-local resume identity.
     #[tokio::test]
     async fn test_delay_data_integration() {
         let local = LocalSet::new();
@@ -2342,9 +2349,14 @@ mod tests {
                 let delayed_result = async { receiver.recv().await };
 
                 match delayed_result.await {
-                    Ok(NodeControlMsg::DelayedData { when, data }) => {
+                    Ok(NodeControlMsg::DelayedData {
+                        when,
+                        data,
+                        resume_id,
+                    }) => {
                         assert_eq!(*data, *test_data);
                         assert_eq!(when, delay_time);
+                        assert_eq!(resume_id, None);
                     }
                     Ok(other) => panic!("Expected DelayedData, got {other:?}"),
                     Err(e) => panic!("Failed to receive message: {e:?}"),
@@ -3022,9 +3034,10 @@ mod tests {
             .await;
     }
 
-    // DelayData submitted after draining begins represents retry work that
-    // should not stay hidden behind the delayed-data heap. The manager returns
-    // it to the origin node immediately so the node can decide what to do next.
+    /// Scenario: runtime-global delayed data is submitted after draining has
+    /// started.
+    /// Guarantees: the payload is returned immediately with a rewritten
+    /// deadline and without a node-local resume identity.
     #[tokio::test]
     async fn test_new_delay_data_returned_immediately_during_draining() {
         let local = LocalSet::new();
@@ -3068,8 +3081,13 @@ mod tests {
                     .expect("processor control channel should stay open");
 
                 match msg {
-                    NodeControlMsg::DelayedData { when, data } => {
+                    NodeControlMsg::DelayedData {
+                        when,
+                        data,
+                        resume_id,
+                    } => {
                         assert_eq!(*data, "drain_retry");
+                        assert_eq!(resume_id, None);
                         assert!(
                             when < original_when,
                             "DelayedData should be returned immediately, not at its original wake time"
@@ -3085,9 +3103,9 @@ mod tests {
             .await;
     }
 
-    // Draining must also flush retry work that was already queued before
-    // shutdown. Once draining starts, delayed data is returned immediately
-    // rather than waiting for its original wake time.
+    /// Scenario: runtime-global delayed data is queued before draining starts.
+    /// Guarantees: drain flushes the payload immediately with a rewritten
+    /// deadline and without a node-local resume identity.
     #[tokio::test]
     async fn test_queued_delayed_data_flushed_when_draining_begins() {
         let local = LocalSet::new();
@@ -3125,8 +3143,13 @@ mod tests {
                     .expect("Queued delayed data should flush when draining begins")
                     .expect("processor control channel should stay open");
                 match msg {
-                    NodeControlMsg::DelayedData { when, data } => {
+                    NodeControlMsg::DelayedData {
+                        when,
+                        data,
+                        resume_id,
+                    } => {
                         assert_eq!(*data, "queued_retry");
+                        assert_eq!(resume_id, None);
                         assert!(
                             when < original_when,
                             "Queued delayed data should be flushed immediately during shutdown"

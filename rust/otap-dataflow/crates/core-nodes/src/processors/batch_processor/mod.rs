@@ -1245,7 +1245,7 @@ impl local::Processor<OtapPdata> for BatchProcessor {
 
                         Ok(())
                     }
-                    NodeControlMsg::DelayedData { data, when } => {
+                    NodeControlMsg::DelayedData { data, when, .. } => {
                         let signal = data.signal_type();
 
                         match self.format_for_signal_format(data.signal_format()) {

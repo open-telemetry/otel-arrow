@@ -609,7 +609,11 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Requeue retained pdata onto this node later.
-    pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+    pub fn requeue_later(
+        &self,
+        when: Instant,
+        data: Box<PData>,
+    ) -> Result<crate::control::LocalResumeId, PData> {
         self.core.requeue_later(when, data)
     }
 

@@ -8,8 +8,8 @@ use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 #[cfg(any(test, feature = "test-utils"))]
 use crate::control::WakeupRevision;
 use crate::control::{
-    AckMsg, NackMsg, PipelineCompletionMsg, PipelineCompletionMsgSender, RuntimeControlMsg,
-    RuntimeCtrlMsgSender, WakeupSlot,
+    AckMsg, LocalResumeId, NackMsg, PipelineCompletionMsg, PipelineCompletionMsgSender,
+    RuntimeControlMsg, RuntimeCtrlMsgSender, WakeupSlot,
 };
 use crate::error::Error;
 use crate::node::NodeId;
@@ -422,7 +422,10 @@ impl<PData> EffectHandlerCore<PData> {
     }
 
     /// Requeue retained pdata onto this node later.
-    pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+    ///
+    /// Returns the scheduler-assigned identity that will accompany the
+    /// corresponding [`crate::control::NodeControlMsg::DelayedData`].
+    pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<LocalResumeId, PData> {
         self.local_scheduler
             .as_ref()
             // Safety: processor runtime preparation installs the node-local scheduler

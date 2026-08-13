@@ -22,7 +22,7 @@
 //! the older runtime-global delayed-data path for processor-local retry work.
 
 use crate::clock;
-use crate::control::{NodeControlMsg, WakeupRevision, WakeupSlot};
+use crate::control::{LocalResumeId, NodeControlMsg, WakeupRevision, WakeupSlot};
 use crate::entity_context::current_node_telemetry_handle;
 use crate::indexed_min_heap::IndexedMinHeap;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -230,7 +230,7 @@ impl<PData> NodeLocalScheduler<PData> {
     /// Allocates the next delayed-resume FIFO sequence number.
     fn next_sequence(&mut self) -> u64 {
         let next = self.next_sequence;
-        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.next_sequence += 1;
         next
     }
 
@@ -251,10 +251,18 @@ impl<PData> NodeLocalScheduler<PData> {
 
     /// Stores a retained payload for later delivery to this processor.
     ///
-    /// Returns the original payload on capacity pressure or after shutdown is
+    /// Returns the scheduler-assigned identity on success. Returns the original
+    /// payload on capacity pressure, identity exhaustion, or after shutdown is
     /// latched so callers never lose ownership on rejection.
-    fn requeue_later(&mut self, when: Instant, data: Box<PData>) -> Result<(), Box<PData>> {
-        if self.shutting_down || self.delayed_resumes.len() >= self.delayed_resume_capacity {
+    fn requeue_later(
+        &mut self,
+        when: Instant,
+        data: Box<PData>,
+    ) -> Result<LocalResumeId, Box<PData>> {
+        if self.shutting_down
+            || self.delayed_resumes.len() >= self.delayed_resume_capacity
+            || self.next_sequence == u64::MAX
+        {
             return Err(data);
         }
 
@@ -264,7 +272,7 @@ impl<PData> NodeLocalScheduler<PData> {
             sequence,
             data,
         });
-        Ok(())
+        Ok(LocalResumeId::new(sequence))
     }
 
     /// Inserts or replaces a lightweight keyed wakeup.
@@ -391,6 +399,7 @@ impl<PData> NodeLocalScheduler<PData> {
             return Some(NodeControlMsg::DelayedData {
                 when: resume.when,
                 data: resume.data,
+                resume_id: Some(LocalResumeId::new(resume.sequence)),
             });
         }
 
@@ -448,6 +457,7 @@ impl<PData> NodeLocalScheduler<PData> {
             self.due_now.push_back(NodeControlMsg::DelayedData {
                 when: now,
                 data: resume.data,
+                resume_id: Some(LocalResumeId::new(resume.sequence)),
             });
         }
 
@@ -515,7 +525,11 @@ impl<PData> NodeLocalSchedulerHandle<PData> {
         f(&mut guard)
     }
 
-    pub(crate) fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), Box<PData>> {
+    pub(crate) fn requeue_later(
+        &self,
+        when: Instant,
+        data: Box<PData>,
+    ) -> Result<LocalResumeId, Box<PData>> {
         let result = self.with_scheduler(|scheduler| scheduler.requeue_later(when, data));
         if result.is_ok() {
             self.notify.notify_one();
@@ -596,11 +610,17 @@ mod tests {
         msg: Option<NodeControlMsg<i32>>,
         expected_when: Instant,
         expected_data: i32,
+        expected_resume_id: LocalResumeId,
     ) {
         match msg {
-            Some(NodeControlMsg::DelayedData { when, data }) => {
+            Some(NodeControlMsg::DelayedData {
+                when,
+                data,
+                resume_id,
+            }) => {
                 assert_eq!(when, expected_when);
                 assert_eq!(*data, expected_data);
+                assert_eq!(resume_id, Some(expected_resume_id));
             }
             _ => panic!("expected delayed data"),
         }
@@ -629,21 +649,24 @@ mod tests {
     /// Scenario: a retained payload is scheduled through the processor-local
     /// delayed-resume queue and then becomes due.
     /// Guarantees: the scheduler emits the original payload as
-    /// `NodeControlMsg::DelayedData` and clears the delayed-resume deadline.
+    /// `NodeControlMsg::DelayedData` with the returned resume id and clears the
+    /// delayed-resume deadline.
     #[test]
     fn requeue_later_emits_the_stored_payload() {
         let mut scheduler = NodeLocalScheduler::<i32>::new(2, 2);
         let when = Instant::now() + Duration::from_secs(1);
 
-        assert_eq!(scheduler.requeue_later(when, Box::new(17)), Ok(()));
-        expect_delayed(scheduler.pop_due(when), when, 17);
+        let resume_id = scheduler
+            .requeue_later(when, Box::new(17))
+            .expect("delayed resume should schedule");
+        expect_delayed(scheduler.pop_due(when), when, 17, resume_id);
         assert_eq!(scheduler.next_expiry(), None);
     }
 
     /// Scenario: multiple delayed resumes are scheduled at different times,
     /// including two with the same due time.
     /// Guarantees: due resumes are emitted by due time, with FIFO ordering for
-    /// equal deadlines.
+    /// equal deadlines and distinct resume ids for distinct payloads.
     #[test]
     fn delayed_resumes_preserve_due_time_ordering() {
         let mut scheduler = NodeLocalScheduler::new(4, 2);
@@ -653,15 +676,26 @@ mod tests {
         let same_time_a = now + Duration::from_secs(2);
         let same_time_b = same_time_a;
 
-        assert_eq!(scheduler.requeue_later(later, Box::new(3)), Ok(()));
-        assert_eq!(scheduler.requeue_later(same_time_a, Box::new(1)), Ok(()));
-        assert_eq!(scheduler.requeue_later(same_time_b, Box::new(2)), Ok(()));
-        assert_eq!(scheduler.requeue_later(sooner, Box::new(0)), Ok(()));
+        let later_id = scheduler.requeue_later(later, Box::new(3)).unwrap();
+        let same_time_a_id = scheduler.requeue_later(same_time_a, Box::new(1)).unwrap();
+        let same_time_b_id = scheduler.requeue_later(same_time_b, Box::new(2)).unwrap();
+        let sooner_id = scheduler.requeue_later(sooner, Box::new(0)).unwrap();
 
-        expect_delayed(scheduler.pop_due(sooner), sooner, 0);
-        expect_delayed(scheduler.pop_due(same_time_a), same_time_a, 1);
-        expect_delayed(scheduler.pop_due(same_time_b), same_time_b, 2);
-        expect_delayed(scheduler.pop_due(later), later, 3);
+        assert_ne!(same_time_a_id, same_time_b_id);
+        expect_delayed(scheduler.pop_due(sooner), sooner, 0, sooner_id);
+        expect_delayed(
+            scheduler.pop_due(same_time_a),
+            same_time_a,
+            1,
+            same_time_a_id,
+        );
+        expect_delayed(
+            scheduler.pop_due(same_time_b),
+            same_time_b,
+            2,
+            same_time_b_id,
+        );
+        expect_delayed(scheduler.pop_due(later), later, 3, later_id);
     }
 
     /// Scenario: the delayed-resume heap has reached its configured capacity.
@@ -672,7 +706,9 @@ mod tests {
         let mut scheduler = NodeLocalScheduler::new(1, 1);
         let when = Instant::now() + Duration::from_secs(1);
 
-        assert_eq!(scheduler.requeue_later(when, Box::new(1)), Ok(()));
+        let _accepted_id = scheduler
+            .requeue_later(when, Box::new(1))
+            .expect("first delayed resume should schedule");
         let rejected = scheduler
             .requeue_later(when, Box::new(2))
             .expect_err("capacity should reject");
@@ -695,26 +731,43 @@ mod tests {
         assert_eq!(*rejected, 99);
     }
 
+    /// Scenario: the node-local scheduler has exhausted its resume-id space.
+    /// Guarantees: a new delayed resume is rejected with its original payload
+    /// instead of accepting work with a reused identity.
+    #[test]
+    fn exhausted_resume_ids_reject_the_original_payload() {
+        let mut scheduler = NodeLocalScheduler::new(2, 1);
+        scheduler.next_sequence = u64::MAX;
+
+        let rejected = scheduler
+            .requeue_later(Instant::now(), Box::new(99))
+            .expect_err("exhausted resume ids should reject");
+        assert_eq!(*rejected, 99);
+        assert!(scheduler.delayed_resumes.is_empty());
+    }
+
     /// Scenario: shutdown begins while future delayed resumes are still pending
     /// in the processor-local scheduler.
     /// Guarantees: pending delayed resumes are converted into immediate
-    /// `DelayedData` delivery using the shutdown-start timestamp.
+    /// `DelayedData` delivery using the shutdown-start timestamp while
+    /// preserving their assigned resume ids.
     #[test]
     fn shutdown_makes_pending_delayed_resumes_due_immediately() {
         let mut scheduler = NodeLocalScheduler::new(4, 2);
         let now = Instant::now();
         let later = now + Duration::from_secs(30);
 
-        assert_eq!(scheduler.requeue_later(later, Box::new(11)), Ok(()));
-        assert_eq!(
-            scheduler.requeue_later(later + Duration::from_secs(1), Box::new(12)),
-            Ok(())
-        );
+        let first_id = scheduler
+            .requeue_later(later, Box::new(11))
+            .expect("first delayed resume should schedule");
+        let second_id = scheduler
+            .requeue_later(later + Duration::from_secs(1), Box::new(12))
+            .expect("second delayed resume should schedule");
 
         scheduler.begin_shutdown(now);
 
-        expect_delayed(scheduler.pop_due(now), now, 11);
-        expect_delayed(scheduler.pop_due(now), now, 12);
+        expect_delayed(scheduler.pop_due(now), now, 11, first_id);
+        expect_delayed(scheduler.pop_due(now), now, 12, second_id);
         assert!(scheduler.pop_due(now).is_none());
     }
 
