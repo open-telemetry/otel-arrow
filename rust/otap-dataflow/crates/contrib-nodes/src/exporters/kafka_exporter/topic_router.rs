@@ -22,8 +22,9 @@
 // TODO: Consider adding an operator-controlled restriction (e.g., allowlist, prefix constraint, or regex)
 
 use super::config::SignalConfig;
-use super::metrics::KafkaExporterMetrics;
+use super::metrics::{KafkaExporterMetrics, KafkaTopicSource};
 use crate::common::kafka::validate_kafka_topic;
+use otap_df_config::SignalType;
 use otap_df_config::transport_headers::TransportHeader;
 use otap_df_otap::pdata::Context;
 use std::borrow::Cow;
@@ -68,10 +69,9 @@ impl TopicRoutingError {
 /// and the pdata context's transport headers. No fields, no construction,
 /// no heap allocation.
 ///
-/// The router increments topic routing metrics (`topic_from_header`,
-/// `topic_from_static_config`) at the point where the topic source is
-/// determined, so callers only need to know the resolved topic -- not how
-/// it was resolved.
+/// The router records `exporter.kafka.routing.messages` with the bounded
+/// `topic.source` value at the point where the source is determined, so callers
+/// only need to know the resolved topic -- not how it was resolved.
 pub struct TopicRouter;
 
 impl TopicRouter {
@@ -96,6 +96,7 @@ impl TopicRouter {
     pub fn resolve<'a>(
         signal_config: &'a SignalConfig,
         context: &Context,
+        signal: SignalType,
         metrics: &mut KafkaExporterMetrics,
     ) -> Result<Cow<'a, str>, TopicRoutingError> {
         // Priority 1: topic from a transport header, if configured and present.
@@ -114,12 +115,12 @@ impl TopicRouter {
             validate_kafka_topic(topic)
                 .map_err(|reason| TopicRoutingError::invalid_header_topic(topic, reason))?;
 
-            metrics.inc_topic_from_header();
+            metrics.record_routing(signal, KafkaTopicSource::Header);
             return Ok(Cow::Owned(topic.to_owned()));
         }
 
         // Priority 2: static per-signal topic (zero-allocation borrow).
-        metrics.inc_topic_from_static_config();
+        metrics.record_routing(signal, KafkaTopicSource::StaticConfig);
         Ok(Cow::Borrowed(signal_config.topic()))
     }
 
@@ -179,6 +180,14 @@ mod tests {
         }
     }
 
+    fn routing_count(
+        metrics: &KafkaExporterMetrics,
+        signal: SignalType,
+        source: KafkaTopicSource,
+    ) -> u64 {
+        metrics.routing_for(signal, source).messages.get()
+    }
+
     // ---- Transport header resolution tests ----
 
     /// Scenario: A valid target topic header is present.
@@ -194,12 +203,16 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
+        let topic = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("valid topic");
         assert_eq!(&*topic, "tenant-a-logs");
         assert!(matches!(topic, Cow::Owned(_)));
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            1
+        );
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             0
         );
     }
@@ -214,12 +227,16 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
+        let topic = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("static topic");
         assert_eq!(&*topic, "fallback-logs");
         assert!(matches!(topic, Cow::Borrowed(_)));
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            0
+        );
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             1
         );
     }
@@ -234,11 +251,12 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
+        let topic = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("static topic");
         assert_eq!(&*topic, "fallback-logs");
         assert!(matches!(topic, Cow::Borrowed(_)));
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             1
         );
     }
@@ -253,11 +271,12 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
+        let topic = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("static topic");
         assert_eq!(&*topic, "fallback-logs");
         assert!(matches!(topic, Cow::Borrowed(_)));
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             1
         );
     }
@@ -275,11 +294,15 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
+        let topic = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("valid topic");
         assert_eq!(&*topic, "header-topic");
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            1
+        );
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             0
         );
     }
@@ -294,7 +317,8 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
+        let topic = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("static topic");
         assert_eq!(&*topic, "my-topic");
         assert!(
             matches!(topic, Cow::Borrowed(_)),
@@ -312,7 +336,8 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
+        let topic = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("valid topic");
         assert_eq!(&*topic, "dynamic");
         assert!(
             matches!(topic, Cow::Owned(_)),
@@ -337,21 +362,31 @@ mod tests {
         );
 
         // Traces: header present -> dynamic topic
-        let topic = TopicRouter::resolve(&traces_config, &ctx, &mut metrics).expect("valid topic");
+        let topic = TopicRouter::resolve(&traces_config, &ctx, SignalType::Traces, &mut metrics)
+            .expect("valid topic");
         assert_eq!(&*topic, "custom-traces");
 
         // Metrics: no header key configured -> static fallback
-        let topic =
-            TopicRouter::resolve(&metrics_config, &ctx, &mut metrics).expect("static topic");
+        let topic = TopicRouter::resolve(&metrics_config, &ctx, SignalType::Metrics, &mut metrics)
+            .expect("static topic");
         assert_eq!(&*topic, "otlp_metrics");
 
         // Logs: header present -> dynamic topic
-        let topic = TopicRouter::resolve(&logs_config, &ctx, &mut metrics).expect("valid topic");
+        let topic = TopicRouter::resolve(&logs_config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("valid topic");
         assert_eq!(&*topic, "custom-logs");
 
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 2);
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Traces, KafkaTopicSource::Header)
+                + routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            2
+        );
+        assert_eq!(
+            routing_count(
+                &metrics,
+                SignalType::Metrics,
+                KafkaTopicSource::StaticConfig
+            ),
             1
         );
     }
@@ -366,13 +401,17 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
+        let topic = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("static topic");
         assert_eq!(&*topic, "fallback-logs");
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             1
         );
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            0
+        );
     }
 
     // ---- Invalid header topic returns an error (no static fallback) ----
@@ -387,17 +426,20 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
+        let result = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics);
         assert!(matches!(
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
         // No fallback to static topic, and no topic routing metric incremented.
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             0
         );
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            0
+        );
     }
 
     /// Scenario: The transport header topic is "." which is invalid for Kafka.
@@ -410,16 +452,19 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
+        let result = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics);
         assert!(matches!(
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             0
         );
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            0
+        );
     }
 
     /// Scenario: The transport header topic is ".." which is invalid for Kafka.
@@ -432,13 +477,13 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
+        let result = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics);
         assert!(matches!(
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             0
         );
     }
@@ -453,16 +498,19 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
+        let result = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics);
         assert!(matches!(
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             0
         );
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            0
+        );
     }
 
     /// Scenario: The transport header topic exceeds maximum length.
@@ -476,16 +524,19 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
+        let result = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics);
         assert!(matches!(
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             0
         );
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            0
+        );
     }
 
     /// Scenario: The transport header topic is not valid UTF-8.
@@ -507,17 +558,20 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
+        let result = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics);
         assert!(matches!(
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
         // No fallback to static topic, and no topic routing metric incremented.
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             0
         );
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            0
+        );
     }
 
     /// Scenario: A valid transport header topic is provided.
@@ -530,12 +584,16 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
+        let topic = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("valid topic");
         assert_eq!(&*topic, "valid-topic-123");
         assert!(matches!(topic, Cow::Owned(_)));
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            1
+        );
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             0
         );
     }
@@ -557,11 +615,15 @@ mod tests {
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
-        let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
+        let topic = TopicRouter::resolve(&config, &ctx, SignalType::Logs, &mut metrics)
+            .expect("valid topic");
         assert_eq!(&*topic, "tenant-a-logs");
-        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
         assert_eq!(
-            metrics.operational_metrics.topic_from_static_config.get(),
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            1
+        );
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
             0
         );
     }

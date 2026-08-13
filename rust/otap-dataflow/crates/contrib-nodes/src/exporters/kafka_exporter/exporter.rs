@@ -10,7 +10,7 @@ use super::producer::{ExporterFutureProducer, ExporterFutureRecord};
 
 use super::config::{KafkaExporterConfig, SignalConfig};
 use super::encoder::{self, EncodingError};
-use super::metrics::KafkaExporterMetrics;
+use super::metrics::{KafkaExporterErrorType, KafkaExporterMetrics, KafkaExporterOperation};
 use super::partitioner;
 use super::topic_router::{TopicRouter, TopicRoutingError};
 #[cfg(feature = "aws")]
@@ -38,12 +38,13 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer as PdataProducer;
+use otap_df_telemetry::common_attributes::Outcome;
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::FromClientConfigAndContext;
 use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::Producer;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// URN for the Kafka exporter factory registration.
 pub const KAFKA_EXPORTER_URN: &str = "urn:otel:exporter:kafka";
@@ -335,6 +336,7 @@ impl KafkaExporter {
         reporter: &dyn AckNackReporter,
         effect_handler: Option<&EffectHandler<OtapPdata>>,
     ) -> Result<(), KafkaExporterError> {
+        let export_start = Instant::now();
         let signal_type = pdata.signal_type();
 
         // Extract context and payload first so we can nack if config lookup fails.
@@ -351,6 +353,14 @@ impl KafkaExporter {
                     signal_type = ?signal_type,
                     error = %e,
                 );
+                self.metrics
+                    .record_failure(signal_type, KafkaExporterErrorType::UnconfiguredSignal);
+                self.metrics.record_export(
+                    signal_type,
+                    Outcome::Failure,
+                    export_start.elapsed().as_secs_f64(),
+                    None,
+                );
                 let _ = reporter
                     .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
                     .await;
@@ -363,16 +373,24 @@ impl KafkaExporter {
         // Resolve topic via the dynamic topic router *before* doing any encoding
         // work. If a transport header supplied an invalid topic,
         // permanently nack the batch
-        let topic = match TopicRouter::resolve(signal_config, &context, &mut self.metrics) {
-            Ok(t) => t,
-            Err(e) => {
-                self.metrics.inc_failed(signal_type);
-                let _ = reporter
-                    .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
-                    .await;
-                return Err(KafkaExporterError::TopicRouting(e));
-            }
-        };
+        let topic =
+            match TopicRouter::resolve(signal_config, &context, signal_type, &mut self.metrics) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.metrics
+                        .record_failure(signal_type, KafkaExporterErrorType::InvalidTopic);
+                    self.metrics.record_export(
+                        signal_type,
+                        Outcome::Failure,
+                        export_start.elapsed().as_secs_f64(),
+                        None,
+                    );
+                    let _ = reporter
+                        .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
+                        .await;
+                    return Err(KafkaExporterError::TopicRouting(e));
+                }
+            };
 
         let partition_key = partitioner::partition_key_for_signal(signal_config, &context);
 
@@ -384,6 +402,7 @@ impl KafkaExporter {
         // Encode payload to bytes using the per-signal encoding.
         // This block borrows &mut self.pdata_producer so it must complete
         // before we borrow self.config again for the topic reference below.
+        let encoding_start = Instant::now();
         let encode_result = match encoding {
             MessageFormat::OtlpProto => encoder::encode_to_otlp_bytes(payload.clone()),
             MessageFormat::OtapProto => encoder::encode_to_batch_arrow_record_bytes(
@@ -394,14 +413,35 @@ impl KafkaExporter {
 
         // nack on failed encoding bytes
         let payload_bytes = match encode_result {
-            Ok(bytes) => bytes,
+            Ok(bytes) => {
+                self.metrics.record_operation(
+                    signal_type,
+                    KafkaExporterOperation::Encoding,
+                    Outcome::Success,
+                    encoding_start.elapsed().as_secs_f64(),
+                );
+                bytes
+            }
             Err(e) => {
                 otap_df_telemetry::otel_error!(
                     "kafka.exporter.encode.failed",
                     signal_type = ?signal_type,
                     error = %e,
                 );
-                self.metrics.inc_failed(signal_type);
+                self.metrics.record_operation(
+                    signal_type,
+                    KafkaExporterOperation::Encoding,
+                    Outcome::Failure,
+                    encoding_start.elapsed().as_secs_f64(),
+                );
+                self.metrics
+                    .record_failure(signal_type, KafkaExporterErrorType::Encoding);
+                self.metrics.record_export(
+                    signal_type,
+                    Outcome::Failure,
+                    export_start.elapsed().as_secs_f64(),
+                    None,
+                );
                 let _ = reporter
                     .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
                     .await;
@@ -423,9 +463,21 @@ impl KafkaExporter {
         // always bounded and can never block shutdown indefinitely: a `0` would
         // otherwise map to librdkafka's infinite `message.timeout.ms`.
         let timeout = Duration::from_millis(self.config.timeout_ms());
+        let delivery_start = Instant::now();
         match self.producer.send(record, timeout).await {
             Ok(_delivery) => {
-                self.metrics.inc_exported(signal_type);
+                self.metrics.record_operation(
+                    signal_type,
+                    KafkaExporterOperation::Delivery,
+                    Outcome::Success,
+                    delivery_start.elapsed().as_secs_f64(),
+                );
+                self.metrics.record_export(
+                    signal_type,
+                    Outcome::Success,
+                    export_start.elapsed().as_secs_f64(),
+                    Some(payload_bytes.len()),
+                );
                 // Ack reporting is best-effort; Kafka send succeeded so don't fail on ack errors
                 if let Err(e) = reporter.ack(OtapPdata::new(context, payload)).await {
                     if let Some(eh) = effect_handler {
@@ -439,7 +491,22 @@ impl KafkaExporter {
                 Ok(())
             }
             Err((kafka_err, _original_record)) => {
-                self.metrics.inc_failed(signal_type);
+                self.metrics.record_operation(
+                    signal_type,
+                    KafkaExporterOperation::Delivery,
+                    Outcome::Failure,
+                    delivery_start.elapsed().as_secs_f64(),
+                );
+                self.metrics.record_failure(
+                    signal_type,
+                    KafkaExporterErrorType::from_kafka_error(&kafka_err),
+                );
+                self.metrics.record_export(
+                    signal_type,
+                    Outcome::Failure,
+                    export_start.elapsed().as_secs_f64(),
+                    Some(payload_bytes.len()),
+                );
                 otap_df_telemetry::otel_warn!(
                     "kafka.exporter.send.failed",
                     topic = %topic,
@@ -472,7 +539,7 @@ impl KafkaExporter {
     /// deadline.
     async fn drain_and_flush(
         &mut self,
-        deadline: std::time::Instant,
+        deadline: Instant,
         effect_handler: &EffectHandler<OtapPdata>,
     ) {
         effect_handler.info("Flushing Kafka producer").await;
@@ -481,7 +548,7 @@ impl KafkaExporter {
         // at zero if it has already passed), matching the parquet exporter's
         // deadline-bounded shutdown flush.
         let flush_timeout = deadline
-            .checked_duration_since(std::time::Instant::now())
+            .checked_duration_since(Instant::now())
             .unwrap_or(Duration::ZERO);
 
         if let Err(e) = self.producer.flush(flush_timeout) {
@@ -535,12 +602,10 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     _ = self.metrics.report(&mut metrics_reporter);
                 }
                 Message::Control(NodeControlMsg::Ack(_ack)) => {
-                    // Track ack receipt without spamming logs
-                    self.metrics.inc_ack();
+                    // Exporters terminate pdata delivery and do not route downstream acks.
                 }
                 Message::Control(NodeControlMsg::Nack(nack)) => {
-                    // Nack reached end of pipeline, track and log the failure reason
-                    self.metrics.inc_nack();
+                    // A nack reached the end of the pipeline; log the reason for diagnosis.
                     effect_handler
                         .info(&format!("Kafka exporter: received Nack - {}", nack.reason))
                         .await;
@@ -1036,6 +1101,34 @@ pub mod test_support {
                 "permanent nack reason should mention the signal type, got: {}",
                 permanent_reasons[0]
             );
+            assert_eq!(
+                exporter
+                    .metrics
+                    .pdata
+                    .get(
+                        otap_df_telemetry::common_attributes::SignalOutcomeAttributes {
+                            signal: SignalType::Traces,
+                            outcome: Outcome::Failure,
+                        }
+                    )
+                    .messages
+                    .get(),
+                1,
+            );
+            assert_eq!(
+                exporter
+                    .metrics
+                    .failures
+                    .get(
+                        crate::exporters::kafka_exporter::metrics::KafkaExporterFailureAttributes {
+                            signal: SignalType::Traces,
+                            error_type: KafkaExporterErrorType::UnconfiguredSignal,
+                        }
+                    )
+                    .messages
+                    .get(),
+                1,
+            );
         }
 
         #[tokio::test]
@@ -1079,6 +1172,20 @@ pub mod test_support {
                 permanent_reasons[0].contains("bad topic/name"),
                 "permanent nack reason should mention the offending topic, got: {}",
                 permanent_reasons[0]
+            );
+            assert_eq!(
+                exporter
+                    .metrics
+                    .failures
+                    .get(
+                        crate::exporters::kafka_exporter::metrics::KafkaExporterFailureAttributes {
+                            signal: SignalType::Logs,
+                            error_type: KafkaExporterErrorType::InvalidTopic,
+                        }
+                    )
+                    .messages
+                    .get(),
+                1,
             );
         }
 

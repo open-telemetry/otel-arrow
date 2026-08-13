@@ -278,12 +278,12 @@ pub struct KafkaReceiverConfigBuilder {
 
     /// Interval, in milliseconds, between consumer-lag refreshes.
     ///
-    /// Enables the `consumer_lag` gauge (consumer-group lag, measured against
-    /// broker-committed offsets). Each refresh runs off the receive loop in a
-    /// bounded background task, so it never blocks message processing; it queries
-    /// the broker-committed offsets and one high watermark per owned partition,
-    /// so raise the interval under large partition fan-out or broker slowness.
-    /// Recommended: `60000` (60s).
+    /// Enables `receiver.kafka.consumer.group.lag` (consumer-group lag measured
+    /// against broker-committed offsets). Each refresh runs off the receive loop
+    /// in a bounded background task, so it never blocks message processing; it
+    /// queries the broker-committed offsets and one high watermark per owned
+    /// partition, so raise the interval under large partition fan-out or broker
+    /// slowness. Recommended: `60000` (60s).
     ///
     /// Manual commit mode only; ignored under auto-commit. Defaults to `None`
     /// (disabled). Must be `> 0` when set.

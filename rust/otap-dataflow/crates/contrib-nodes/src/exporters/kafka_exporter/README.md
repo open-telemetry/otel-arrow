@@ -514,24 +514,75 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `exporter.kafka`
+#### `exporter.pdata.exports`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `exporter.kafka.acks_received` | `{batch}` | Number of acks received from downstream. |
-| `exporter.kafka.nacks_received` | `{batch}` | Number of nacks received from downstream. |
-| `exporter.kafka.topic_from_header` | `{batch}` | Batches where topic was resolved from a transport header. |
-| `exporter.kafka.topic_from_static_config` | `{batch}` | Batches where topic was resolved from static per-signal config. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Pdata messages whose Kafka export reached a terminal outcome. |
+
+`signal` is one of `traces`, `metrics`, or `logs`. The Kafka exporter emits the
+terminal `outcome` values `success` and `failure`.
 
 #### `exporter.kafka.exports`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `exporter.kafka.exports.messages` | `{message}` | Number of exported messages partitioned by `signal` and `outcome` (`success` or `failure`). |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.kafka.exports.duration` | `s` | `signal`, `outcome` | End-to-end time from receiving pdata through the terminal Kafka delivery result. |
+| `exporter.kafka.exports.payload.size` | `By` | `signal`, `outcome` | Encoded payload size for attempts that reached the Kafka producer. |
+
+Both measurements use bounded exponential histograms. Payload size is absent
+for attempts that fail before encoding completes.
+
+#### `exporter.kafka.operations`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.kafka.operations.duration` | `s` | `signal`, `operation`, `outcome` | Time spent encoding or awaiting Kafka delivery. |
+
+`operation` is `encoding` or `delivery`; `outcome` is `success` or `failure`.
+This separates local serialization cost from producer queueing and broker
+acknowledgement latency.
+
+#### `exporter.kafka.failures`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.kafka.failures.messages` | `{message}` | `signal`, `error.type` | Failed export attempts classified by actionable reason. |
+
+`error.type` is one of `unconfigured_signal`, `invalid_topic`, `encoding`,
+`queue_full`, `timeout`, `message_too_large`, `authentication`, `authorization`,
+`unknown_topic_or_partition`, `insufficient_replicas`, `transport`, or `other`.
+
+#### `exporter.kafka.routing`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.kafka.routing.messages` | `{message}` | `signal`, `topic.source` | Messages routed by a transport header or static configuration. |
+
+`topic.source` is `header` or `static_config`. Destination topic names are not
+metric attributes, which keeps cardinality bounded for dynamic tenant routing.
+
+### Legacy Metric Migration
+
+| Legacy metric | Replacement |
+| --- | --- |
+| `exporter.kafka.exports.messages` | `exporter.pdata.exports.messages`, preserving the `signal` and `outcome` attributes. |
+| `exporter.kafka.topic_from_header` | `exporter.kafka.routing.messages{topic.source="header"}`, now also partitioned by `signal`. |
+| `exporter.kafka.topic_from_static_config` | `exporter.kafka.routing.messages{topic.source="static_config"}`, now also partitioned by `signal`. |
+| `exporter.kafka.acks_received` | Removed. An exporter is a terminal node, so downstream acknowledgement controls are not an export outcome. |
+| `exporter.kafka.nacks_received` | Removed. Use `exporter.pdata.exports.messages{outcome="failure"}` for terminal export failures. |
 
 ### Events
 
-This node does not emit structured events.
+| Event | Severity | Description |
+| --- | --- | --- |
+| `kafka.exporter.producer_config.overridden_key` | `warn` | A `producer_config` key is also managed by a first-class setting and may be overwritten. |
+| `kafka.exporter.signal.unconfigured` | `warn` | Pdata arrived for a signal without exporter configuration and was permanently nacked. |
+| `kafka.exporter.topic.invalid_header` | `warn` | A transport header supplied an invalid destination topic and the message was permanently nacked. |
+| `kafka.exporter.encode.failed` | `error` | Pdata encoding failed and the message was permanently nacked. |
+| `kafka.exporter.send.failed` | `warn` | Kafka delivery failed and the message was nacked for upstream retry handling. |
+| `kafka.exporter.shutdown.flush_failed` | `warn` | Shutdown flushing failed or timed out; queued and in-flight messages were purged. |
+| `kafka.exporter.producer.poll_thread_join_failed` | `warn` | The producer polling thread could not be joined during teardown. |
 
 ## Limits
 

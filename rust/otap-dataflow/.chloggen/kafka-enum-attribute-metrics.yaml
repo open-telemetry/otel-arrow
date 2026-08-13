@@ -1,0 +1,8 @@
+# Use this changelog template to create an entry for release notes.
+
+change_type: breaking
+component: pipeline
+note: Align Kafka receiver and exporter metrics with bounded attributes and operational latency distributions.
+issues: [3300]
+subtext: |
+  Migration: Replace legacy `receiver.kafka.*` and `exporter.kafka.*` queries with the documented metric sets and bounded attributes. Kafka export durations now use seconds (`s`).

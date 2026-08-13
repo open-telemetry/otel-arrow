@@ -49,7 +49,7 @@ config:
 | `logs` | object | `{}` | Per-signal config for logs. |
 | `auto_offset_reset` | string | `latest` | Where to start consuming when no committed offset exists. |
 | `commit` | object | `{mode: manual}` | Commit configuration (see [Commit Configuration](#commit-configuration)). |
-| `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. Enables the `consumer_lag` gauge (consumer-group lag against broker-committed offsets; see [Metric Sets](#metric-sets)). Manual commit mode only; runs off the receive loop so it never blocks processing. Off by default; recommended `60000` (60s), higher under large partition fan-out; must be > 0 when set. |
+| `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. Enables `receiver.kafka.consumer.group.lag` (consumer-group lag against broker-committed offsets; see [Metric Sets](#metric-sets)). Manual commit mode only; runs off the receive loop so it never blocks processing. Off by default; recommended `60000` (60s), higher under large partition fan-out; must be > 0 when set. |
 | `session_timeout_ms` | integer | `10000` | Session timeout in milliseconds. Must be > 0. |
 | `heartbeat_interval_ms` | integer | `3000` | Heartbeat interval in milliseconds. Must be > 0 and strictly less than `session_timeout_ms`. |
 | `min_fetch_bytes` | integer | `1` | Minimum number of bytes to fetch. Must be > 0 (zero is rejected). |
@@ -264,11 +264,11 @@ log events. (Header values can still be surfaced via
 
 The Go receiver exposes an opt-in `telemetry.metrics.kafka_receiver_records_delay`
 gauge (consumer lag/delay) and per-metric enable toggles. This receiver exposes
-an opt-in `consumer_lag` gauge -- consumer-group lag measured against
+an opt-in `receiver.kafka.consumer.group.lag` gauge -- consumer-group lag measured against
 broker-committed offsets (see [Metric Sets](#metric-sets)) -- enabled via
 `lag_refresh_interval_ms` (manual commit only), plus always-on counters; it has
 no histograms and no per-metric toggles. The consumer-group rebalance metrics
-and the `consumer_lag` gauge are emitted only in manual commit mode
+and the `receiver.kafka.consumer.group.lag` gauge are emitted only in manual commit mode
 (`commit.mode: manual`) -- under auto-commit librdkafka owns offset management
 and rebalance handling, so those instruments and the `kafka.rebalance.*` /
 `kafka.assignment.*` events stay silent.
@@ -883,42 +883,95 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `receiver.kafka`
+#### `receiver.kafka.messages`
 
-> **Note:** The consumer-group rebalance metrics (`rebalances_total`,
-> `partitions_assigned`, `partition_assignments`, `partition_revocations`,
-> `rebalance_commit_errors`) and the `consumer_lag` gauge are emitted only in
-> manual commit mode (`commit.mode: manual`). Under `commit.mode: auto` they
-> stay at zero because librdkafka owns offset management and rebalance handling.
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.kafka.messages.started` | `{message}` | `signal` | Decoded messages admitted to the pipeline send path. |
+| `receiver.kafka.messages.completed` | `{message}` | `signal` | Admitted messages whose receiver work terminated. |
+| `receiver.kafka.messages.payload_size` | `By` | `signal` | Encoded Kafka payload bytes admitted to the pipeline send path. |
+
+`signal` is one of `traces`, `metrics`, or `logs`. Comparing `started` with
+`completed` exposes receiver work abandoned by an interrupted pipeline send.
+
+#### `receiver.kafka.acknowledgements`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.kafka.acknowledgements.responses` | `{response}` | `signal`, `outcome` | Downstream acknowledgement responses for admitted messages. |
+
+The receiver emits the terminal `outcome` values `success` for an ack and
+`refused` for a nack.
+
+#### `receiver.kafka.rejections`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.kafka.rejections.messages` | `{message}` | `signal`, `error.type`, `reason` | Messages rejected before pipeline admission. |
+
+`signal` is `traces`, `metrics`, `logs`, or `unknown` when topic routing did not
+establish a signal. `error.type` uses the shared receiver categories
+`invalid_request` and `internal`. The Kafka-specific `reason` is one of
+`empty_payload`, `unknown_topic`, `decode`, `topic_id_exhausted`, or `internal`.
+These values are bounded; topic names and payload details remain in events
+instead of metrics.
+
+#### `receiver.kafka.offset_commits`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.kafka.offset_commits.commits` | `{commit}` | `outcome` | Offset commit results reported by librdkafka. |
+
+The `outcome` is `success` or `failure`. This metric is emitted only in manual
+commit mode because librdkafka owns offset management in auto-commit mode.
+
+#### `receiver.kafka.consumer`
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `receiver.kafka.messages_received` | `{msg}` | Total messages received from Kafka across all signal types. |
-| `receiver.kafka.bytes_received` | `{byte}` | Total payload bytes consumed from Kafka. |
-| `receiver.kafka.log_msgs_received` | `{msg}` | Number of log messages received from the Kafka broker. |
-| `receiver.kafka.metric_msgs_received` | `{msg}` | Number of metric messages received from the Kafka broker. |
-| `receiver.kafka.trace_msgs_received` | `{msg}` | Number of trace messages received from the Kafka broker. |
-| `receiver.kafka.acks_received` | `{ack}` | Number of acks received from downstream. |
-| `receiver.kafka.nacks_received` | `{nack}` | Number of nacks received from downstream. |
-| `receiver.kafka.records_in_flight` | `{message}` | Current in-flight records: offsets delivered downstream and tracked but not yet committed (awaiting an ack/nack). Non-monotonic up/down counter (rises and falls), scoped to the latest ownership generation per partition -- old-generation in-flight offsets are dropped on revoke/reassign and not counted. Manual commit mode only; stays `0` under auto-commit. |
-| `receiver.kafka.processing_errors` | `{msg}` | Number of messages that failed processing and were skipped. |
-| `receiver.kafka.unmarshal_failed_traces` | `{msg}` | Trace messages that failed to unmarshal. |
-| `receiver.kafka.unmarshal_failed_metrics` | `{msg}` | Metric messages that failed to unmarshal. |
-| `receiver.kafka.unmarshal_failed_logs` | `{msg}` | Log messages that failed to unmarshal. |
-| `receiver.kafka.empty_payloads` | `{msg}` | Messages with empty payload. |
-| `receiver.kafka.unknown_topic_errors` | `{error}` | Messages from topics that do not match any configured signal. |
-| `receiver.kafka.transport_errors` | `{error}` | Number of Kafka transport errors encountered (non-fatal). |
-| `receiver.kafka.offset_commits` | `{commit}` | Number of offset commits performed. |
-| `receiver.kafka.offset_commit_errors` | `{error}` | Number of offset commit failures. |
-| `receiver.kafka.idempotent_skips` | `{msg}` | Messages skipped due to idempotency check (duplicate detection). |
-| `receiver.kafka.topic_id_exhausted` | `{msg}` | Messages dropped because the topic ID space was exhausted (overflow guard). |
-| `receiver.kafka.rebalances_total` | `{rebalance}` | Total consumer-group rebalance (assign) events observed by this consumer. Manual commit mode only. |
-| `receiver.kafka.partitions_assigned` | `{partition}` | Current number of partitions owned by this consumer (non-monotonic up/down counter). Manual commit mode only. |
-| `receiver.kafka.partition_assignments` | `{partition}` | Cumulative partitions newly acquired across rebalances (retained partitions not re-counted). Manual commit mode only. |
-| `receiver.kafka.partition_revocations` | `{partition}` | Cumulative genuinely-owned partitions revoked across rebalances. Manual commit mode only. |
-| `receiver.kafka.consumer_lag` | `{message}` | Mean consumer-group lag across all owned partitions: `max(0, high_watermark - broker_committed_offset)`, using offsets Kafka has acknowledged for this group. Manual commit mode only and opt-in via `lag_refresh_interval_ms`. A refresh that cannot measure every owned partition (a failed broker read, an owned partition with no committed offset yet) is abandoned and the previous value is retained; the gauge is reset to `0` when ownership drops to zero. |
-| `receiver.kafka.rebalance_commit_errors` | `{error}` | Offset commit failures during the pre-rebalance revoke. Manual commit mode only. |
-| `receiver.kafka.acks_for_revoked_partition` | `{ack}` | Acks/nacks skipped because the partition was no longer assigned. |
+| `receiver.kafka.consumer.records.inflight` | `{message}` | Current delivered records awaiting acknowledgement and commit progress. |
+| `receiver.kafka.consumer.records.duplicates` | `{message}` | Records skipped because their offsets were already tracked in the current ownership generation. |
+| `receiver.kafka.consumer.group.rebalances` | `{rebalance}` | Consumer-group assignment events observed by this consumer. |
+| `receiver.kafka.consumer.group.partitions` | `{partition}` | Current partitions owned by this consumer. |
+| `receiver.kafka.consumer.group.partition.assignments` | `{partition}` | Partitions newly acquired across rebalances. |
+| `receiver.kafka.consumer.group.partition.revocations` | `{partition}` | Owned partitions revoked across rebalances. |
+| `receiver.kafka.consumer.group.rebalance.commit_failures` | `{error}` | Synchronous commit calls that failed while partitions were being revoked. |
+| `receiver.kafka.consumer.group.lag` | `{message}` | Mean broker-committed consumer-group lag across every owned partition. |
+| `receiver.kafka.consumer.group.feedback.after_revocation` | `{response}` | Ack or nack responses ignored because their partition ownership was stale. |
+
+Consumer-group metrics are active only in manual commit mode. Lag is also
+opt-in via `lag_refresh_interval_ms`; incomplete refreshes retain the previous
+value, and an empty assignment resets it to zero.
+
+#### `receiver.kafka.transport`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.kafka.transport.errors` | `{error}` | `error.type` | Non-EOF errors returned by the Kafka consumer. |
+
+`error.type` is one of `transport`, `timeout`, `authentication`, `authorization`,
+`unknown_topic_or_partition`, `offset`, `poll_exceeded`, or `other`.
+
+### Legacy Metric Migration
+
+| Legacy metric | Replacement |
+| --- | --- |
+| `receiver.kafka.messages_received` | Sum `receiver.kafka.messages.started` across `signal`. |
+| `receiver.kafka.bytes_received` | Sum `receiver.kafka.messages.payload_size` across `signal`. |
+| `receiver.kafka.log_msgs_received`, `metric_msgs_received`, `trace_msgs_received` | `receiver.kafka.messages.started` filtered by `signal`. |
+| `receiver.kafka.acks_received`, `nacks_received` | `receiver.kafka.acknowledgements.responses` with `outcome="success"` or `outcome="refused"`. |
+| `receiver.kafka.processing_errors` | Sum `receiver.kafka.rejections.messages` across its bounded attributes. |
+| `receiver.kafka.unmarshal_failed_traces`, `unmarshal_failed_metrics`, `unmarshal_failed_logs` | `receiver.kafka.rejections.messages{reason="decode"}` filtered by `signal`. |
+| `receiver.kafka.empty_payloads`, `unknown_topic_errors`, `topic_id_exhausted` | `receiver.kafka.rejections.messages` filtered by the corresponding `reason`. |
+| `receiver.kafka.transport_errors` | Sum `receiver.kafka.transport.errors` across `error.type`. |
+| `receiver.kafka.offset_commits`, `offset_commit_errors` | `receiver.kafka.offset_commits.commits` with `outcome="success"` or `outcome="failure"`. |
+| `receiver.kafka.idempotent_skips` | `receiver.kafka.consumer.records.duplicates`. |
+| `receiver.kafka.rebalances_total` | `receiver.kafka.consumer.group.rebalances`. |
+| `receiver.kafka.partitions_assigned` | `receiver.kafka.consumer.group.partitions`. |
+| `receiver.kafka.partition_assignments`, `partition_revocations` | `receiver.kafka.consumer.group.partition.assignments` and `receiver.kafka.consumer.group.partition.revocations`. |
+| `receiver.kafka.rebalance_commit_errors` | `receiver.kafka.consumer.group.rebalance.commit_failures`. |
+| `receiver.kafka.consumer_lag` | `receiver.kafka.consumer.group.lag`. |
+| `receiver.kafka.acks_for_revoked_partition` | `receiver.kafka.consumer.group.feedback.after_revocation`. |
 
 ### Events
 
@@ -930,7 +983,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `kafka.message.empty_payload` | `error` | A consumed message had an empty payload. |
 | `kafka.message.unknown_topic` | `error` | A consumed message came from a topic not mapped to any signal. |
 | `kafka.message.unmarshal_failed` | `error` | A consumed message failed to unmarshal (includes `signal` field: traces, metrics, or logs). |
-| `kafka.message.decode_failed` | `error` | A consumed message failed to decode (e.g. an OTAP Arrow decode error); the message is skipped and `processing_errors` is incremented. |
+| `kafka.message.decode_failed` | `error` | A consumed message failed to decode and was skipped. |
 | `kafka.partition_eof` | `info` | Consumer reached end of a partition. |
 | `kafka.transport_error` | `error` | A Kafka transport-level error occurred (non-fatal, consumer continues). |
 | `kafka.capture_policy.limits_exceeded` | `error` | Transport header capture exceeded configured limits. |
@@ -945,11 +998,11 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `kafka.rebalance.error` | `warn` | librdkafka reported a rebalance error. |
 | `kafka.assignment.became_non_empty` | `info` | The owned-partition set transitioned from empty to non-empty. This is an assignment-size transition, not a consumer-group membership event: an eager rebalance revokes all partitions before reassigning, so this fires on ordinary rebalances. |
 | `kafka.assignment.became_empty` | `info` | The owned-partition set dropped back to zero partitions. Assignment-size transition only (see `kafka.assignment.became_non_empty`); it does not imply the consumer left the group. |
-| `kafka.lag.assignment_failed` | `error` | Querying the consumer assignment during a consumer-lag refresh failed; the previous `consumer_lag` value is retained. |
-| `kafka.lag.committed_offsets_failed` | `error` | Querying broker-committed offsets during a consumer-lag refresh failed; the previous `consumer_lag` value is retained. |
+| `kafka.lag.assignment_failed` | `error` | Querying the consumer assignment during a consumer-lag refresh failed; the previous `receiver.kafka.consumer.group.lag` value is retained. |
+| `kafka.lag.committed_offsets_failed` | `error` | Querying broker-committed offsets during a consumer-lag refresh failed; the previous `receiver.kafka.consumer.group.lag` value is retained. |
 | `kafka.lag.fetch_watermarks_failed` | `error` | Broker high-watermark lookup for a partition failed during consumer-lag refresh. |
-| `kafka.lag.refresh_incomplete` | `warn` | A consumer-lag refresh could not measure every owned partition -- either it exceeded its total deadline (`reason=deadline_exceeded`) or an owned partition had no committed offset yet (`reason=uncommitted_partition`); the previous `consumer_lag` value is retained. |
-| `kafka.lag.refresh_task_failed` | `error` | The off-loop consumer-lag refresh task failed to run to completion (e.g. panicked); the previous `consumer_lag` value is retained. |
+| `kafka.lag.refresh_incomplete` | `warn` | A consumer-lag refresh could not measure every owned partition -- either it exceeded its total deadline (`reason=deadline_exceeded`) or an owned partition had no committed offset yet (`reason=uncommitted_partition`); the previous `receiver.kafka.consumer.group.lag` value is retained. |
+| `kafka.lag.refresh_task_failed` | `error` | The off-loop consumer-lag refresh task failed to run to completion (e.g. panicked); the previous `receiver.kafka.consumer.group.lag` value is retained. |
 | `kafka.header.attribute.invalid_utf8` | `error` | A Kafka header value was not valid UTF-8 during resource-attribute extraction; the attribute is skipped. |
 | `kafka.header.attribute.parse_bool_failed` | `error` | A Kafka header value could not be parsed as a boolean attribute. |
 | `kafka.header.attribute.parse_float_failed` | `error` | A Kafka header value could not be parsed as a float attribute. |

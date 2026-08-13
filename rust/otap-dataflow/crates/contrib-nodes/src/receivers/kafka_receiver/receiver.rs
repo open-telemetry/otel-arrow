@@ -9,7 +9,7 @@
 use super::config::{HeaderExtraction, KafkaReceiverConfig};
 use super::error::KafkaReceiverError;
 use super::headers::HeaderExtractions;
-use super::metrics::KafkaReceiverMetrics;
+use super::metrics::{KafkaReceiverMetrics, KafkaReceiverRejectionReason};
 use super::offset_tracker::OffsetTracker;
 use super::rebalance::{RebalanceState, RebalancingConsumerContext};
 #[cfg(feature = "aws")]
@@ -18,6 +18,7 @@ use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
+use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::transport_headers::TransportHeaders;
@@ -38,7 +39,7 @@ use otap_df_pdata::Consumer as PdataConsumer;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
 use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use prost::Message;
 use rdkafka::Message as _;
@@ -192,7 +193,7 @@ impl TopicRegistry {
 /// offset skipping when acknowledgements arrive out-of-order from the downstream pipeline.
 pub struct KafkaReceiver {
     config: KafkaReceiverConfig,
-    metrics: MetricSet<KafkaReceiverMetrics>,
+    metrics: KafkaReceiverMetrics,
     /// Per-offset tracker. Only active when auto-commit is disabled.
     offset_tracker: OffsetTracker,
     /// Shared consumer-group rebalance state. Updated by the consumer
@@ -282,7 +283,7 @@ impl KafkaReceiver {
         let metrics_exclude_regexes = compile_exclude_regexes(config.metrics_exclude_topics())?;
         let logs_exclude_regexes = compile_exclude_regexes(config.logs_exclude_topics())?;
 
-        let metrics = pipeline_ctx.register_metrics::<KafkaReceiverMetrics>();
+        let metrics = KafkaReceiverMetrics::register(&pipeline_ctx);
 
         let rebalance_state = Arc::new(RebalanceState::new(config.is_auto_commit()));
 
@@ -309,6 +310,31 @@ impl KafkaReceiver {
                 error: e.to_string(),
             })?,
         )
+    }
+
+    /// Returns the signal selected by the configured include and exclude rules.
+    fn signal_type_for_topic(&self, topic: &str) -> Option<SignalType> {
+        if matches_any_topic(
+            self.config.traces_topics(),
+            &self.traces_topic_regexes,
+            topic,
+        ) && !matches_any_exclude(&self.traces_exclude_regexes, topic)
+        {
+            Some(SignalType::Traces)
+        } else if matches_any_topic(
+            self.config.metrics_topics(),
+            &self.metrics_topic_regexes,
+            topic,
+        ) && !matches_any_exclude(&self.metrics_exclude_regexes, topic)
+        {
+            Some(SignalType::Metrics)
+        } else if matches_any_topic(self.config.logs_topics(), &self.logs_topic_regexes, topic)
+            && !matches_any_exclude(&self.logs_exclude_regexes, topic)
+        {
+            Some(SignalType::Logs)
+        } else {
+            None
+        }
     }
 
     /// Process a Kafka message into [`OtapPdata`].
@@ -339,75 +365,63 @@ impl KafkaReceiver {
         // Route the topic to the correct signal decoder. Supports both literal
         // topic names and regex patterns (prefixed with `^`), exclude patterns,
         // per-signal encoding, and multiple topics per signal type.
-        let mut pdata = if matches_any_topic(
-            self.config.traces_topics(),
-            &self.traces_topic_regexes,
-            topic,
-        ) && !matches_any_exclude(&self.traces_exclude_regexes, topic)
-        {
-            let message_format = detect_message_format(
-                &kafka_message,
-                self.config.message_format_header(),
-                self.config.traces_encoding(),
-            );
-            self.metrics.trace_msgs_received.add(1);
-            decode_with_extractions(
-                &kafka_message,
-                extractors,
-                data,
-                message_format,
-                HeaderExtractions::apply_otlp_traces,
-                HeaderExtractions::apply_otap_traces,
-                decode_traces_payload,
-            )
-            .map_err(KafkaReceiverError::TracesDecode)
-        } else if matches_any_topic(
-            self.config.metrics_topics(),
-            &self.metrics_topic_regexes,
-            topic,
-        ) && !matches_any_exclude(&self.metrics_exclude_regexes, topic)
-        {
-            let message_format = detect_message_format(
-                &kafka_message,
-                self.config.message_format_header(),
-                self.config.metrics_encoding(),
-            );
-            self.metrics.metric_msgs_received.add(1);
-            decode_with_extractions(
-                &kafka_message,
-                extractors,
-                data,
-                message_format,
-                HeaderExtractions::apply_otlp_metrics,
-                HeaderExtractions::apply_otap_metrics,
-                decode_metrics_payload,
-            )
-            .map_err(KafkaReceiverError::MetricsDecode)
-        } else if matches_any_topic(self.config.logs_topics(), &self.logs_topic_regexes, topic)
-            && !matches_any_exclude(&self.logs_exclude_regexes, topic)
-        {
-            let message_format = detect_message_format(
-                &kafka_message,
-                self.config.message_format_header(),
-                self.config.logs_encoding(),
-            );
-            self.metrics.log_msgs_received.add(1);
-            decode_with_extractions(
-                &kafka_message,
-                extractors,
-                data,
-                message_format,
-                HeaderExtractions::apply_otlp_logs,
-                HeaderExtractions::apply_otap_logs,
-                decode_logs_payload,
-            )
-            .map_err(KafkaReceiverError::LogsDecode)
-        } else {
-            Err(KafkaReceiverError::UnknownTopicDecode(
+        let mut pdata = match self.signal_type_for_topic(topic) {
+            Some(SignalType::Traces) => {
+                let message_format = detect_message_format(
+                    &kafka_message,
+                    self.config.message_format_header(),
+                    self.config.traces_encoding(),
+                );
+                decode_with_extractions(
+                    &kafka_message,
+                    extractors,
+                    data,
+                    message_format,
+                    HeaderExtractions::apply_otlp_traces,
+                    HeaderExtractions::apply_otap_traces,
+                    decode_traces_payload,
+                )
+                .map_err(KafkaReceiverError::TracesDecode)
+            }
+            Some(SignalType::Metrics) => {
+                let message_format = detect_message_format(
+                    &kafka_message,
+                    self.config.message_format_header(),
+                    self.config.metrics_encoding(),
+                );
+                decode_with_extractions(
+                    &kafka_message,
+                    extractors,
+                    data,
+                    message_format,
+                    HeaderExtractions::apply_otlp_metrics,
+                    HeaderExtractions::apply_otap_metrics,
+                    decode_metrics_payload,
+                )
+                .map_err(KafkaReceiverError::MetricsDecode)
+            }
+            Some(SignalType::Logs) => {
+                let message_format = detect_message_format(
+                    &kafka_message,
+                    self.config.message_format_header(),
+                    self.config.logs_encoding(),
+                );
+                decode_with_extractions(
+                    &kafka_message,
+                    extractors,
+                    data,
+                    message_format,
+                    HeaderExtractions::apply_otlp_logs,
+                    HeaderExtractions::apply_otap_logs,
+                    decode_logs_payload,
+                )
+                .map_err(KafkaReceiverError::LogsDecode)
+            }
+            None => Err(KafkaReceiverError::UnknownTopicDecode(
                 EngineError::PdataConversionError {
                     error: "Unknown kafka topic received unable to convert to PData".to_string(),
                 },
-            ))
+            )),
         }?;
 
         capture_transport_headers(&kafka_message, capture_policy, &mut pdata);
@@ -429,9 +443,8 @@ impl KafkaReceiver {
     /// outcome is observed via
     /// [`RebalancingConsumerContext::commit_callback`](super::rebalance::RebalancingConsumerContext),
     /// which folds success/failure counts into
-    /// [`offset_commits`](KafkaReceiverMetrics::offset_commits) /
-    /// [`offset_commit_errors`](KafkaReceiverMetrics::offset_commit_errors) via
-    /// the shared rebalance state. A rare *enqueue* failure is returned here so
+    /// `receiver.kafka.offset_commits` with `outcome=success` or `outcome=failure`
+    /// via the shared rebalance state. A rare *enqueue* failure is returned here so
     /// callers can log it; the offsets stay tracked and are retried on the next
     /// ack/nack/timer-tick.
     ///
@@ -517,35 +530,40 @@ impl KafkaReceiver {
         // an Ack/Nack. Refreshed every iteration since it changes with ordinary
         // ack/commit activity, not only on rebalances.
         self.metrics
+            .consumer
             .records_in_flight
             .observe(self.offset_tracker.total_pending() as u64);
 
         let delta = self.rebalance_state.drain_metrics();
         if !delta.is_empty() {
-            self.metrics.rebalances_total.add(delta.rebalances_total);
+            self.metrics.consumer.rebalances.add(delta.rebalances_total);
             self.metrics
+                .consumer
                 .partition_assignments
                 .add(delta.partition_assignments);
             self.metrics
+                .consumer
                 .partition_revocations
                 .add(delta.partition_revocations);
-            // `partitions_assigned` is an observed up/down counter: observe the
-            // current owned count snapshot rather than accumulating. Folded only
-            // when a rebalance actually occurred (guarded by `is_empty`, which
-            // ignores this observe-only field) to avoid redundant writes on idle
-            // ticks.
             self.metrics
-                .partitions_assigned
-                .observe(delta.partitions_owned);
-            self.metrics
-                .rebalance_commit_errors
+                .consumer
+                .rebalance_commit_failures
                 .add(delta.rebalance_commit_errors);
+            // `receiver.kafka.consumer.group.partitions` is an observed up/down
+            // counter: observe the current owned count snapshot rather than
+            // accumulating. Folded only when a rebalance actually occurred
+            // (guarded by `is_empty`, which ignores this observe-only field) to
+            // avoid redundant writes on idle ticks.
+            self.metrics
+                .consumer
+                .partitions
+                .observe(delta.partitions_owned);
             // Commit outcomes are observed asynchronously on the consumer commit
             // callback and folded in here (see `commit_offsets`).
-            self.metrics.offset_commits.add(delta.offset_commits);
             self.metrics
-                .offset_commit_errors
-                .add(delta.offset_commit_errors);
+                .record_offset_commits(Outcome::Success, delta.offset_commits);
+            self.metrics
+                .record_offset_commits(Outcome::Failure, delta.offset_commit_errors);
         }
     }
 
@@ -669,10 +687,10 @@ impl KafkaReceiver {
                 self.advance_offset_and_commit(&name, partition, offset, consumer, receiver_id);
             }
             OffsetFeedbackAction::DropStale => {
-                self.metrics.acks_for_revoked_partition.add(1);
+                self.metrics.consumer.feedback_after_revocation.inc();
             }
             OffsetFeedbackAction::DropLateAck { purge } => {
-                self.metrics.acks_for_revoked_partition.add(1);
+                self.metrics.consumer.feedback_after_revocation.inc();
                 if purge {
                     self.offset_tracker.revoke(&name, partition);
                 }
@@ -831,7 +849,6 @@ impl KafkaReceiver {
                             // `shutdown_bounded_drain_can_leave_lag_worker_clone_alive_refcount_two`,
                             // and the bounded-termination guarantee by
                             // `shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline`.
-                            let snapshot = self.metrics.snapshot();
                             _ = telemetry_cancel_handle.cancel().await;
                             let close_handle = tokio::task::spawn_blocking(move || {
                                 consumer.unsubscribe();
@@ -842,7 +859,10 @@ impl KafkaReceiver {
                                 close_handle,
                             )
                             .await;
-                            return Ok(TerminalState::new(deadline, [snapshot]));
+                            return Ok(TerminalState::new(
+                                deadline,
+                                self.metrics.terminal_snapshots(),
+                            ));
                         },
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             // Receiver-first shutdown: the engine sends
@@ -879,7 +899,10 @@ impl KafkaReceiver {
                             }
                         },
                         Ok(NodeControlMsg::Ack(ack_msg)) => {
-                            self.metrics.acks_received.add(1);
+                            self.metrics.record_acknowledgement(
+                                ack_msg.accepted.signal_type(),
+                                Outcome::Success,
+                            );
                             if manual_commit && !ack_msg.unwind.route.calldata.is_empty() {
                                 self.handle_offset_feedback(
                                     &ack_msg.unwind.route.calldata,
@@ -889,7 +912,10 @@ impl KafkaReceiver {
                             }
                         },
                         Ok(NodeControlMsg::Nack(nack_msg)) => {
-                            self.metrics.nacks_received.add(1);
+                            self.metrics.record_acknowledgement(
+                                nack_msg.refused.signal_type(),
+                                Outcome::Refused,
+                            );
                             // Treat nack as ack (advance past failed message).
                             // TODO: future work -- retry logic, DLQ
                             if manual_commit && !nack_msg.unwind.route.calldata.is_empty() {
@@ -903,7 +929,7 @@ impl KafkaReceiver {
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             self.reconcile_rebalance_state();
                             // Report current receiver metrics.
-                            _ = metrics_reporter.report(&mut self.metrics);
+                            _ = self.metrics.report(&mut metrics_reporter);
                         },
                         Ok(NodeControlMsg::TimerTick { .. }) => {
                             // Periodic safety-net commit: flush any committable
@@ -955,7 +981,7 @@ impl KafkaReceiver {
                         Ok(join_result) => {
                             lag_refresh_in_flight = None;
                             match join_result {
-                                Ok(Some(value)) => self.metrics.consumer_lag.set(value),
+                                Ok(Some(value)) => self.metrics.consumer.lag.set(value),
                                 Ok(None) => {}
                                 Err(join_err) => {
                                     otel_error!("kafka.lag.refresh_task_failed", error = %join_err)
@@ -976,12 +1002,7 @@ impl KafkaReceiver {
                             let partition = data.partition();
                             let offset = data.offset();
 
-                            // Throughput metrics: count every received
-                            // message and its payload size.
-                            self.metrics.messages_received.add(1);
-                            if let Some(payload) = data.payload() {
-                                self.metrics.bytes_received.add(payload.len() as u64);
-                            }
+                            let payload_bytes = data.payload().map_or(0, |payload| payload.len() as u64);
 
                             // Assign a compact u32 ID for this actual topic name.
                             // The registry remembers the mapping for Ack/Nack lookup.
@@ -993,7 +1014,12 @@ impl KafkaReceiver {
                             let topic_id = match self.topic_registry.get_or_assign(&topic) {
                                 Some(id) => id,
                                 None => {
-                                    self.metrics.topic_id_exhausted.add(1);
+                                    let rejection_signal = self.signal_type_for_topic(&topic);
+                                    self.metrics.record_rejection(
+                                        rejection_signal,
+                                        ReceiverRejectionErrorType::Internal,
+                                        KafkaReceiverRejectionReason::TopicIdExhausted,
+                                    );
                                     otel_error!(
                                         "kafka.topic_id.exhausted",
                                         topic = %topic,
@@ -1020,12 +1046,15 @@ impl KafkaReceiver {
                                     &topic, partition, offset, generation,
                                 )
                             {
-                                self.metrics.idempotent_skips.add(1);
+                                self.metrics.consumer.duplicate_records.inc();
                                 continue;
                             }
 
                             match self.process_kafka(data, capture_policy) {
                                 Ok(mut otap_data) => {
+                                    let signal = otap_data.signal_type();
+                                    self.metrics
+                                        .record_message_admitted(signal, payload_bytes);
                                     if manual_commit {
                                         // Stamp the record with this partition's
                                         // ownership generation so a stale revocation
@@ -1046,18 +1075,54 @@ impl KafkaReceiver {
                                             &mut otap_data,
                                         );
                                     }
-                                    effect_handler.send_message(otap_data).await?;
+                                    let send_result = effect_handler.send_message(otap_data).await;
+                                    self.metrics.record_message_completed(signal);
+                                    send_result?;
                                 }
                                 Err(decode_err) => {
-                                    // Increment aggregate error counters.
-                                    self.metrics.processing_errors.add(1);
+                                    let (rejection_signal, rejection_error_type, rejection_reason) =
+                                        match &decode_err {
+                                        KafkaReceiverError::EmptyPayloadDecode(_) => (
+                                            self.signal_type_for_topic(&topic),
+                                            ReceiverRejectionErrorType::InvalidRequest,
+                                            KafkaReceiverRejectionReason::EmptyPayload,
+                                        ),
+                                        KafkaReceiverError::UnknownTopicDecode(_) => (
+                                            None,
+                                            ReceiverRejectionErrorType::InvalidRequest,
+                                            KafkaReceiverRejectionReason::UnknownTopic,
+                                        ),
+                                        KafkaReceiverError::TracesDecode(_) => (
+                                            Some(SignalType::Traces),
+                                            ReceiverRejectionErrorType::InvalidRequest,
+                                            KafkaReceiverRejectionReason::Decode,
+                                        ),
+                                        KafkaReceiverError::MetricsDecode(_) => (
+                                            Some(SignalType::Metrics),
+                                            ReceiverRejectionErrorType::InvalidRequest,
+                                            KafkaReceiverRejectionReason::Decode,
+                                        ),
+                                        KafkaReceiverError::LogsDecode(_) => (
+                                            Some(SignalType::Logs),
+                                            ReceiverRejectionErrorType::InvalidRequest,
+                                            KafkaReceiverRejectionReason::Decode,
+                                        ),
+                                        _ => (
+                                            None,
+                                            ReceiverRejectionErrorType::Internal,
+                                            KafkaReceiverRejectionReason::Internal,
+                                        ),
+                                    };
+                                    self.metrics.record_rejection(
+                                        rejection_signal,
+                                        rejection_error_type,
+                                        rejection_reason,
+                                    );
 
-                                    // Increment per-signal counter and emit
-                                    // a descriptive error so operators can
-                                    // identify what went wrong and where.
+                                    // Emit a descriptive event so operators can
+                                    // identify the specific invalid input and signal.
                                     match &decode_err {
                                         KafkaReceiverError::EmptyPayloadDecode(e) => {
-                                            self.metrics.empty_payloads.add(1);
                                             otel_error!(
                                                 "kafka.message.empty_payload",
                                                 error = %e,
@@ -1067,7 +1132,6 @@ impl KafkaReceiver {
                                             );
                                         }
                                         KafkaReceiverError::UnknownTopicDecode(e) => {
-                                            self.metrics.unknown_topic_errors.add(1);
                                             otel_error!(
                                                 "kafka.message.unknown_topic",
                                                 error = %e,
@@ -1077,7 +1141,6 @@ impl KafkaReceiver {
                                             );
                                         }
                                         KafkaReceiverError::TracesDecode(e) => {
-                                            self.metrics.unmarshal_failed_traces.add(1);
                                             otel_error!(
                                                 "kafka.message.unmarshal_failed",
                                                 signal = "traces",
@@ -1088,7 +1151,6 @@ impl KafkaReceiver {
                                             );
                                         }
                                         KafkaReceiverError::MetricsDecode(e) => {
-                                            self.metrics.unmarshal_failed_metrics.add(1);
                                             otel_error!(
                                                 "kafka.message.unmarshal_failed",
                                                 signal = "metrics",
@@ -1099,7 +1161,6 @@ impl KafkaReceiver {
                                             );
                                         }
                                         KafkaReceiverError::LogsDecode(e) => {
-                                            self.metrics.unmarshal_failed_logs.add(1);
                                             otel_error!(
                                                 "kafka.message.unmarshal_failed",
                                                 signal = "logs",
@@ -1112,7 +1173,6 @@ impl KafkaReceiver {
                                         // Config variants are never produced on
                                         // the per-message decode path.
                                         _ => {
-                                            self.metrics.processing_errors.add(1);
                                             otel_error!(
                                                 "kafka.message.decode_failed",
                                                 error = %decode_err,
@@ -1161,7 +1221,7 @@ impl KafkaReceiver {
                                         "kafka.transport_error",
                                         error = %e,
                                     );
-                                    self.metrics.transport_errors.add(1);
+                                    self.metrics.record_transport_error(&e);
                                 }
                             }
                         }
@@ -1620,7 +1680,7 @@ mod tests {
 
     use crate::common::kafka::MessageFormat;
     use crate::common::kafka::node_harness::KafkaReceiverHarness;
-    use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+    use crate::common::kafka::node_harness::node_metrics::{FoldedMetrics, metric_value};
     use crate::common::kafka::test::cluster::KafkaTestCluster;
     use crate::common::kafka::test::consumer::{RebalanceTrigger, committed_offset};
     use crate::common::kafka::test::producer::SendRecord;
@@ -1658,6 +1718,24 @@ mod tests {
     const REBALANCE_RECORDS_PER_PARTITION: i32 = 5;
 
     // ---- Shared test helpers ----
+
+    fn measurement_counter(
+        snapshots: &[otap_df_telemetry::metrics::MetricSetSnapshot],
+        metric_set: &str,
+        attributes: &[(&str, &str)],
+        metric: &str,
+    ) -> u64 {
+        snapshots
+            .iter()
+            .filter(|snapshot| snapshot.descriptor().name == metric_set)
+            .filter(|snapshot| {
+                attributes
+                    .iter()
+                    .all(|(key, value)| snapshot.measurement_attribute_value(key) == Some(*value))
+            })
+            .filter_map(|snapshot| metric_value(snapshot, metric))
+            .sum()
+    }
 
     fn create_logs_service_request() -> ExportLogsServiceRequest {
         ExportLogsServiceRequest {
@@ -2449,9 +2527,8 @@ mod tests {
 
     /// Scenario (offset guarantees): commit-callback successes and failures accumulate on
     /// the poll thread and are then reconciled.
-    /// Guarantees: reconcile folds them into `offset_commits` / `offset_commit_errors`
-    /// exactly once and drains the counters, so a commit failure is surfaced and never
-    /// double-counted.
+    /// Guarantees: reconcile folds them into success and failure outcome buckets exactly
+    /// once and drains the counters, so a commit failure is surfaced and never double-counted.
     #[test]
     fn reconcile_folds_commit_callback_metrics() {
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
@@ -2468,13 +2545,41 @@ mod tests {
 
         receiver.reconcile_rebalance_state();
 
-        assert_eq!(receiver.metrics.offset_commits.get(), 2);
-        assert_eq!(receiver.metrics.offset_commit_errors.get(), 1);
+        assert_eq!(
+            receiver
+                .metrics
+                .offset_commits_for(Outcome::Success)
+                .commits
+                .get(),
+            2
+        );
+        assert_eq!(
+            receiver
+                .metrics
+                .offset_commits_for(Outcome::Failure)
+                .commits
+                .get(),
+            1
+        );
 
         // Counters were drained; a second reconcile adds nothing.
         receiver.reconcile_rebalance_state();
-        assert_eq!(receiver.metrics.offset_commits.get(), 2);
-        assert_eq!(receiver.metrics.offset_commit_errors.get(), 1);
+        assert_eq!(
+            receiver
+                .metrics
+                .offset_commits_for(Outcome::Success)
+                .commits
+                .get(),
+            2
+        );
+        assert_eq!(
+            receiver
+                .metrics
+                .offset_commits_for(Outcome::Failure)
+                .commits
+                .get(),
+            1
+        );
     }
 
     /// Scenario (offset guarantees): a commit request times out at the broker,
@@ -2485,8 +2590,8 @@ mod tests {
     /// timeout is not delivered to the callback within a test window (verified),
     /// so the timeout outcome cannot be observed end-to-end.
     /// Guarantees: a timed-out (failed) commit outcome is surfaced as
-    /// `offset_commit_errors` on the next reconcile and does not increment
-    /// `offset_commits` -- so a commit timeout is reported and never silently
+    /// the failure outcome on the next reconcile and does not increment the
+    /// success outcome -- so a commit timeout is reported and never silently
     /// counted as a successful commit or allowed to advance committed state.
     #[test]
     fn commit_timeout_outcome_surfaces_as_offset_commit_error() {
@@ -2507,14 +2612,22 @@ mod tests {
         // The timeout is surfaced as a commit error, not folded into the success
         // counter -- a timed-out commit is never mistaken for a successful one.
         assert_eq!(
-            receiver.metrics.offset_commit_errors.get(),
+            receiver
+                .metrics
+                .offset_commits_for(Outcome::Failure)
+                .commits
+                .get(),
             1,
-            "a timed-out commit outcome must be surfaced as offset_commit_errors",
+            "a timed-out commit outcome must be surfaced as a failed commit",
         );
         assert_eq!(
-            receiver.metrics.offset_commits.get(),
+            receiver
+                .metrics
+                .offset_commits_for(Outcome::Success)
+                .commits
+                .get(),
             1,
-            "only the successful commit should count toward offset_commits",
+            "only the successful commit should count toward the success outcome",
         );
     }
 
@@ -2760,18 +2873,19 @@ mod tests {
 
                 receiver.shutdown(Duration::from_secs(5));
                 let terminal = receiver.await_terminal_state().await;
-                let mut m = FoldedMetrics::new();
-                m.fold_all(terminal.metrics());
-                assert!(
-                    m.value("processing_errors") >= 1,
-                    "the poison record must be counted as a processing error, got {}",
-                    m.value("processing_errors"),
+                let decode_rejections = measurement_counter(
+                    terminal.metrics(),
+                    "receiver.kafka.rejections",
+                    &[
+                        ("signal", "traces"),
+                        ("error.type", "invalid_request"),
+                        ("reason", "decode"),
+                    ],
+                    "messages",
                 );
                 assert!(
-                    m.value("unmarshal_failed_traces") >= 1,
-                    "the poison record must increment the per-signal traces \
-                     unmarshal counter, got {}",
-                    m.value("unmarshal_failed_traces"),
+                    decode_rejections >= 1,
+                    "the poison record must be counted as a decode rejection, got {decode_rejections}",
                 );
             },
         )
@@ -2783,8 +2897,8 @@ mod tests {
     /// and auto-commits them periodically.
     /// Guarantees: the broker-side committed offset still advances to the full
     /// record count purely from librdkafka's auto-commit, while the receiver's
-    /// manual tracker/rebalance-commit paths stay inert (`acks_received` and
-    /// `offset_commit_errors` remain 0) -- proving auto-commit mode is a true
+    /// manual tracker/rebalance-commit paths stay inert (successful acknowledgement
+    /// responses and failed offset commits remain 0) -- proving auto-commit mode is a true
     /// no-op for the manual offset machinery.
     #[tokio::test]
     async fn auto_commit_mode_lets_librdkafka_own_offsets() {
@@ -2845,20 +2959,26 @@ mod tests {
 
                 receiver.shutdown(Duration::from_secs(5));
                 let terminal = receiver.await_terminal_state().await;
-                let mut m = FoldedMetrics::new();
-                m.fold_all(terminal.metrics());
                 assert_eq!(
-                    m.value("acks_received"),
+                    measurement_counter(
+                        terminal.metrics(),
+                        "receiver.kafka.acknowledgements",
+                        &[("signal", "traces"), ("outcome", "success")],
+                        "responses",
+                    ),
                     0,
-                    "auto-commit mode must not receive acks, got {}",
-                    m.value("acks_received"),
+                    "auto-commit mode must not receive acknowledgements",
                 );
                 assert_eq!(
-                    m.value("offset_commit_errors"),
+                    measurement_counter(
+                        terminal.metrics(),
+                        "receiver.kafka.offset_commits",
+                        &[("outcome", "failure")],
+                        "commits",
+                    ),
                     0,
                     "the manual commit path is inert under auto-commit, so no \
-                     offset_commit_errors should be recorded, got {}",
-                    m.value("offset_commit_errors"),
+                     failed offset commits should be recorded",
                 );
             },
         )
@@ -3432,9 +3552,9 @@ mod tests {
 
     /// Scenario (consumer-group rebalancing): a rebalance assigns partitions and the receive loop reconciles.
     /// Guarantees: `reconcile_rebalance_state` folds the rebalance deltas into
-    /// the metric set - counting the rebalance event and cumulative
-    /// acquisitions, and observing the `partitions_assigned` up/down counter as
-    /// the current owned count rather than accumulating it.
+    /// the metric set - counting the rebalance event and cumulative acquisitions,
+    /// and observing `receiver.kafka.consumer.group.partitions` as the current
+    /// owned count rather than accumulating it.
     #[test]
     fn reconcile_folds_consumer_group_metrics() {
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
@@ -3452,15 +3572,15 @@ mod tests {
 
         // Observed up/down counter reflects current ownership; cumulative
         // counter reflects the acquisitions.
-        assert_eq!(receiver.metrics.partitions_assigned.get(), 2);
-        assert_eq!(receiver.metrics.partition_assignments.get(), 2);
+        assert_eq!(receiver.metrics.consumer.partitions.get(), 2);
+        assert_eq!(receiver.metrics.consumer.partition_assignments.get(), 2);
 
         // A second reconcile with no further rebalance activity must not change
         // the observed value (it is folded only when a rebalance occurred) or
         // double count the counter.
         receiver.reconcile_rebalance_state();
-        assert_eq!(receiver.metrics.partitions_assigned.get(), 2);
-        assert_eq!(receiver.metrics.partition_assignments.get(), 2);
+        assert_eq!(receiver.metrics.consumer.partitions.get(), 2);
+        assert_eq!(receiver.metrics.consumer.partition_assignments.get(), 2);
     }
 
     /// Scenario (operational visibility): a manual-commit receiver tracks several
@@ -3490,7 +3610,7 @@ mod tests {
         }
         receiver.reconcile_rebalance_state();
         assert_eq!(
-            receiver.metrics.records_in_flight.get(),
+            receiver.metrics.consumer.records_in_flight.get(),
             3,
             "the counter must report all three tracked in-flight offsets",
         );
@@ -3500,7 +3620,7 @@ mod tests {
         let _ = receiver.offset_tracker.acknowledge("traces", 0, 1);
         receiver.reconcile_rebalance_state();
         assert_eq!(
-            receiver.metrics.records_in_flight.get(),
+            receiver.metrics.consumer.records_in_flight.get(),
             1,
             "the counter must drop as offsets are acked and the watermark advances",
         );
@@ -3511,7 +3631,7 @@ mod tests {
             .push_revoked_for_test("traces", 0, generation);
         receiver.reconcile_rebalance_state();
         assert_eq!(
-            receiver.metrics.records_in_flight.get(),
+            receiver.metrics.consumer.records_in_flight.get(),
             0,
             "the counter must drop to zero once the partition's state is purged",
         );
@@ -3927,14 +4047,14 @@ mod tests {
     /// Guarantees: (1) both replicas own a partition at some point, so the
     /// partitions distribute across the group (B consumes records that only its
     /// assigned partition can deliver, and both replicas' terminal metrics show
-    /// `partitions_assigned >= 1`); (2) a rebalance is observed on scale-up/down
-    /// (`partition_revocations >= 1` across the two replicas); (3) no message is
+    /// `group.partitions >= 1`); (2) a rebalance is observed on scale-up/down
+    /// (`group.partition.revocations >= 1` across the two replicas); (3) no message is
     /// lost or double-committed -- every produced record is delivered at least
     /// once and durably retained on the broker, each partition's committed
     /// offset stays within `[wave-1 count, total produced count]` (the lower
     /// bound proves committed progress is never rolled back across a rebalance,
     /// the upper bound proves nothing is committed past the produced data), and
-    /// neither replica reports `offset_commit_errors`.
+    /// neither replica reports failed offset commits.
     ///
     /// This is the in-process analogue of running 2+ replicas with the same
     /// `group_id` against a multi-partition topic and scaling the replica count
@@ -4111,17 +4231,18 @@ mod tests {
                 // lifetimes and together cover the topic. B's deliveries above
                 // already prove it owned a partition; metrics corroborate it.
                 assert!(
-                    fa.value("partition_assignments") >= 1,
+                    fa.value("group.partition.assignments") >= 1,
                     "replica A should have acquired at least one partition, got {}",
-                    fa.value("partition_assignments"),
+                    fa.value("group.partition.assignments"),
                 );
                 assert!(
-                    fb.value("partition_assignments") >= 1,
+                    fb.value("group.partition.assignments") >= 1,
                     "replica B should have acquired at least one partition on scale-up, got {}",
-                    fb.value("partition_assignments"),
+                    fb.value("group.partition.assignments"),
                 );
                 assert!(
-                    fa.value("partition_assignments") + fb.value("partition_assignments")
+                    fa.value("group.partition.assignments")
+                        + fb.value("group.partition.assignments")
                         >= REBALANCE_TEST_PARTITIONS as u64,
                     "the group should have acquired all {REBALANCE_TEST_PARTITIONS} partitions \
                      across the two replicas' lifetimes",
@@ -4129,26 +4250,38 @@ mod tests {
                 // After scale-down A re-owns its partitions, a deterministic
                 // current-ownership check.
                 assert!(
-                    fa.value("partitions_assigned") >= 1,
+                    fa.value("group.partitions") >= 1,
                     "replica A should currently own at least one partition at shutdown, got {}",
-                    fa.value("partitions_assigned"),
+                    fa.value("group.partitions"),
                 );
 
                 // (2) Rebalance observed: at least one owned partition was revoked
                 // across scale-up/down.
                 assert!(
-                    fa.value("partition_revocations") + fb.value("partition_revocations") >= 1,
+                    fa.value("group.partition.revocations")
+                        + fb.value("group.partition.revocations")
+                        >= 1,
                     "a partition revoke should have been observed across scale-up/down",
                 );
 
                 // (3a) No commit failures on either replica.
                 assert_eq!(
-                    fa.value("offset_commit_errors"),
+                    measurement_counter(
+                        terminal_a.metrics(),
+                        "receiver.kafka.offset_commits",
+                        &[("outcome", "failure")],
+                        "commits",
+                    ),
                     0,
                     "replica A should have no offset commit errors",
                 );
                 assert_eq!(
-                    fb.value("offset_commit_errors"),
+                    measurement_counter(
+                        terminal_b.metrics(),
+                        "receiver.kafka.offset_commits",
+                        &[("outcome", "failure")],
+                        "commits",
+                    ),
                     0,
                     "replica B should have no offset commit errors",
                 );
@@ -4287,17 +4420,28 @@ mod tests {
                 // Distribution: together the two members acquired every partition
                 // over their lifetimes.
                 assert!(
-                    fa.value("partition_assignments") + fb.value("partition_assignments")
+                    fa.value("group.partition.assignments")
+                        + fb.value("group.partition.assignments")
                         >= REBALANCE_TEST_PARTITIONS as u64,
                     "under {strategy:?} the group should acquire all {REBALANCE_TEST_PARTITIONS} \
                      partitions across the two members (A={}, B={})",
-                    fa.value("partition_assignments"),
-                    fb.value("partition_assignments"),
+                    fa.value("group.partition.assignments"),
+                    fb.value("group.partition.assignments"),
                 );
 
                 // No commit failures on either member.
                 assert_eq!(
-                    fa.value("offset_commit_errors") + fb.value("offset_commit_errors"),
+                    measurement_counter(
+                        terminal_a.metrics(),
+                        "receiver.kafka.offset_commits",
+                        &[("outcome", "failure")],
+                        "commits",
+                    ) + measurement_counter(
+                        terminal_b.metrics(),
+                        "receiver.kafka.offset_commits",
+                        &[("outcome", "failure")],
+                        "commits",
+                    ),
                     0,
                     "no offset commit errors expected under {strategy:?}",
                 );
@@ -4352,11 +4496,12 @@ mod tests {
     /// group member (a `RebalanceTrigger`), after which the test acks the now
     /// stale record.
     /// Guarantees: the late ack for the revoked partition is classified as a
-    /// stale/late ack -- it increments `acks_for_revoked_partition` and is not
-    /// committed -- so an ack that arrives after a partition is revoked can never
-    /// advance a partition this consumer no longer owns.
+    /// stale/late ack -- it increments
+    /// `receiver.kafka.consumer.group.feedback.after_revocation` and is not
+    /// committed -- so an ack that arrives after a partition is revoked can
+    /// never advance a partition this consumer no longer owns.
     #[tokio::test]
-    async fn stale_ack_after_revoke_counts_acks_for_revoked_partition() {
+    async fn stale_ack_after_revoke_counts_feedback_after_revocation() {
         const TOPIC: &str = "rebalance-stale-ack-traces";
         let group = "rebalance-stale-ack-group";
         with_cluster(
@@ -4410,9 +4555,9 @@ mod tests {
                 let mut m = FoldedMetrics::new();
                 m.fold_all(terminal.metrics());
                 assert!(
-                    m.value("acks_for_revoked_partition") >= 1,
+                    m.value("group.feedback.after_revocation") >= 1,
                     "at least one ack for a revoked partition should be counted and dropped, got {}",
-                    m.value("acks_for_revoked_partition"),
+                    m.value("group.feedback.after_revocation"),
                 );
             },
         )
@@ -4420,18 +4565,18 @@ mod tests {
     }
 
     /// Scenario (consumer-group rebalancing): identical to
-    /// `stale_ack_after_revoke_counts_acks_for_revoked_partition` but the stale
+    /// `stale_ack_after_revoke_counts_feedback_after_revocation` but the stale
     /// feedback is a terminal permanent **Nack** instead of an Ack -- a
     /// manual-commit receiver holds an un-acked in-flight record on a partition
     /// that is then stolen by a second group member (a `RebalanceTrigger`), after
     /// which the test permanently nacks the now-stale record.
     /// Guarantees: the late Nack for the revoked partition is subject to the same
     /// stale/late guard as an Ack (both funnel through `handle_offset_feedback`)
-    /// -- it increments `acks_for_revoked_partition` and is not committed -- so a
-    /// Nack that arrives after a partition is revoked can never advance a
-    /// partition this consumer no longer owns.
+    /// -- it increments `receiver.kafka.consumer.group.feedback.after_revocation`
+    /// and is not committed -- so a Nack that arrives after a partition is
+    /// revoked can never advance a partition this consumer no longer owns.
     #[tokio::test]
-    async fn stale_nack_after_revoke_counts_acks_for_revoked_partition() {
+    async fn stale_nack_after_revoke_counts_feedback_after_revocation() {
         const TOPIC: &str = "rebalance-stale-nack-traces";
         let group = "rebalance-stale-nack-group";
         with_cluster(
@@ -4485,9 +4630,9 @@ mod tests {
                 let mut m = FoldedMetrics::new();
                 m.fold_all(terminal.metrics());
                 assert!(
-                    m.value("acks_for_revoked_partition") >= 1,
+                    m.value("group.feedback.after_revocation") >= 1,
                     "at least one nack for a revoked partition should be counted and dropped, got {}",
-                    m.value("acks_for_revoked_partition"),
+                    m.value("group.feedback.after_revocation"),
                 );
             },
         )
@@ -4502,10 +4647,11 @@ mod tests {
     /// Guarantees: because the redelivered offsets belong to a *new* ownership
     /// period, the generation-aware idempotency guard does NOT skip them -- they
     /// are reprocessed (delivered again), not silently dropped, and
-    /// `idempotent_skips` is not incremented for a cross-generation redelivery.
-    /// Idempotent dedupe applies only WITHIN an ownership generation (covered by
-    /// the unit test `is_known_offset_for_generation_*`); it must never suppress
-    /// a record that a new owner is responsible for reprocessing.
+    /// `receiver.kafka.consumer.records.duplicates` is not incremented for a
+    /// cross-generation redelivery. Idempotent dedupe applies only WITHIN an
+    /// ownership generation (covered by the unit test
+    /// `is_known_offset_for_generation_*`); it must never suppress a record that
+    /// a new owner is responsible for reprocessing.
     #[tokio::test]
     async fn idempotent_redelivery_under_new_generation_is_reprocessed_not_skipped() {
         const TOPIC: &str = "rebalance-idempotent-traces";
@@ -4590,11 +4736,10 @@ mod tests {
                 let mut m = FoldedMetrics::new();
                 m.fold_all(terminal.metrics());
                 assert_eq!(
-                    m.value("idempotent_skips"),
+                    m.value("records.duplicates"),
                     0,
-                    "a cross-generation redelivery must not be counted as an \
-                     idempotent skip, got idempotent_skips={}",
-                    m.value("idempotent_skips"),
+                    "a cross-generation redelivery must not be counted as a duplicate, got {}",
+                    m.value("records.duplicates"),
                 );
             },
         )
@@ -4618,7 +4763,7 @@ mod tests {
     /// exactly the produced count (no rollback, no commit past produced data).
     /// The stale ack from the pre-revoke ownership is dropped by the generation
     /// guard (asserted separately by
-    /// `stale_ack_after_revoke_counts_acks_for_revoked_partition`).
+    /// `stale_ack_after_revoke_counts_feedback_after_revocation`).
     #[tokio::test]
     async fn inflight_records_on_revoke_are_redelivered_with_bounded_duplication() {
         const TOPIC: &str = "rebalance-bounded-dup-traces";
@@ -4749,15 +4894,18 @@ mod tests {
 
                 // Global corroboration: total deliveries are bounded by the
                 // produced count plus at most one redelivery wave.
-                let mut m = FoldedMetrics::new();
-                m.fold_all(terminal.metrics());
                 let max_total_deliveries = (total * max_deliveries) as u64;
+                let admitted_messages = measurement_counter(
+                    terminal.metrics(),
+                    "receiver.kafka.messages",
+                    &[("signal", "traces")],
+                    "started",
+                );
                 assert!(
-                    m.value("messages_received") <= max_total_deliveries,
-                    "total messages_received ({}) must be bounded by produced records \
+                    admitted_messages <= max_total_deliveries,
+                    "total admitted messages ({admitted_messages}) must be bounded by produced records \
                      times the per-offset delivery bound ({max_total_deliveries}); an \
                      unbounded redelivery loop would exceed it",
-                    m.value("messages_received"),
                 );
 
                 // No loss, no rollback, no commit past produced data: once the
@@ -5063,8 +5211,8 @@ mod tests {
     /// that owns no partitions (empty assignment).
     /// Guarantees: `spawn_consumer_lag_refresh` still spawns a task (manual mode)
     /// and the task returns `Some(0.0)` -- the documented empty-assignment
-    /// sentinel -- so the caller resets the `consumer_lag` gauge to 0 rather than
-    /// leaving a stale value.
+    /// sentinel -- so the caller resets `receiver.kafka.consumer.group.lag` to 0
+    /// rather than leaving a stale value.
     #[tokio::test]
     async fn spawn_consumer_lag_refresh_resets_to_zero_when_unassigned() {
         const TOPIC: &str = "lag-empty";
@@ -5542,7 +5690,8 @@ mod tests {
 
                 // Clear the fault so fetches can succeed. librdkafka retries the
                 // injected fetch errors internally, so rather than assert on the
-                // (best-effort, mock-timing-dependent) `transport_errors` counter,
+                // (best-effort, mock-timing-dependent)
+                // `receiver.kafka.transport.errors` counter,
                 // the observable guarantee is that the loop survived the errors
                 // (it did not terminate during the window above) and resumes
                 // delivery once they clear.
@@ -5802,13 +5951,15 @@ mod tests {
 
                 receiver.shutdown(Duration::from_secs(5));
                 let terminal = receiver.await_terminal_state().await;
-                let mut m = FoldedMetrics::new();
-                m.fold_all(terminal.metrics());
                 assert_eq!(
-                    m.value("offset_commit_errors"),
+                    measurement_counter(
+                        terminal.metrics(),
+                        "receiver.kafka.offset_commits",
+                        &[("outcome", "failure")],
+                        "commits",
+                    ),
                     0,
-                    "broker latency must not induce offset commit errors, got {}",
-                    m.value("offset_commit_errors"),
+                    "broker latency must not induce offset commit errors",
                 );
             },
         )
@@ -7496,12 +7647,19 @@ mod tests {
 
                 receiver.shutdown(Duration::from_secs(5));
                 let terminal = receiver.await_terminal_state().await;
-                let mut m = FoldedMetrics::new();
-                m.fold_all(terminal.metrics());
+                let decode_rejections = measurement_counter(
+                    terminal.metrics(),
+                    "receiver.kafka.rejections",
+                    &[
+                        ("signal", "traces"),
+                        ("error.type", "invalid_request"),
+                        ("reason", "decode"),
+                    ],
+                    "messages",
+                );
                 assert!(
-                    m.value("processing_errors") >= 1,
-                    "the poison record must be counted as a processing error, got {}",
-                    m.value("processing_errors"),
+                    decode_rejections >= 1,
+                    "the poison record must be counted as a decode rejection, got {decode_rejections}",
                 );
             },
         )
@@ -7515,8 +7673,8 @@ mod tests {
     /// `Offset::Invalid`).
     /// Guarantees: `compute_consumer_lag` reports the refresh as incomplete
     /// (`None`) instead of computing a mean from a subset, so the caller retains
-    /// the previous `consumer_lag` value rather than publishing a partial or
-    /// zeroed measurement.
+    /// the previous `receiver.kafka.consumer.group.lag` value rather than
+    /// publishing a partial or zeroed measurement.
     #[tokio::test]
     async fn compute_consumer_lag_none_when_all_offsets_invalid() {
         const TOPIC: &str = "lag-all-invalid";
@@ -7687,9 +7845,9 @@ mod tests {
     /// Scenario (operational visibility): the receive loop's lag apply branch observes the in-flight
     /// worker *finish* with a value (a real mean, or the `0.0`
     /// empty-assignment reset).
-    /// Guarantees: the apply branch publishes the value to the `consumer_lag`
-    /// gauge and clears the in-flight slot so the next tick may start a fresh
-    /// refresh.
+    /// Guarantees: the apply branch publishes the value to
+    /// `receiver.kafka.consumer.group.lag` and clears the in-flight slot so the
+    /// next tick may start a fresh refresh.
     #[tokio::test]
     async fn lag_apply_publishes_and_clears_on_completion() {
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
@@ -7714,14 +7872,14 @@ mod tests {
             Ok(join_result) => {
                 in_flight = None;
                 match join_result {
-                    Ok(Some(value)) => receiver.metrics.consumer_lag.set(value),
+                    Ok(Some(value)) => receiver.metrics.consumer.lag.set(value),
                     Ok(None) => {}
                     Err(join_err) => panic!("unexpected join error: {join_err}"),
                 }
             }
         }
 
-        assert_eq!(receiver.metrics.consumer_lag.get(), 42.0);
+        assert_eq!(receiver.metrics.consumer.lag.get(), 42.0);
         assert!(
             in_flight.is_none(),
             "a finished worker must clear the in-flight slot",
@@ -7741,7 +7899,7 @@ mod tests {
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
         // Seed a known gauge value so we can prove it is retained on timeout.
-        receiver.metrics.consumer_lag.set(7.0);
+        receiver.metrics.consumer.lag.set(7.0);
 
         // A worker that never finishes within the deadline.
         let deadline = tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
@@ -7776,7 +7934,7 @@ mod tests {
              (guarded by is_none) cannot start a second worker while the first still runs",
         );
         assert_eq!(
-            receiver.metrics.consumer_lag.get(),
+            receiver.metrics.consumer.lag.get(),
             7.0,
             "the previous gauge value must be retained on a deadline crossing",
         );
@@ -7832,7 +7990,7 @@ mod tests {
             Ok(join_result) => {
                 in_flight = None;
                 match join_result {
-                    Ok(Some(value)) => receiver.metrics.consumer_lag.set(value),
+                    Ok(Some(value)) => receiver.metrics.consumer.lag.set(value),
                     Ok(None) => {}
                     Err(join_err) => panic!("unexpected join error: {join_err}"),
                 }
@@ -7840,7 +7998,7 @@ mod tests {
         }
 
         assert_eq!(
-            receiver.metrics.consumer_lag.get(),
+            receiver.metrics.consumer.lag.get(),
             5.0,
             "a refresh that completes after the deadline must still be published",
         );
@@ -7853,14 +8011,11 @@ mod tests {
     /// Scenario (operational visibility): a manual-commit receiver processes a
     /// well-formed record followed by an undecodable OTAP record on the same
     /// topic.
-    /// Guarantees: the data-processing failure is attributed only to the
-    /// processing category (`processing_errors` and the per-signal
-    /// `unmarshal_failed_traces` both increment) while the unrelated
-    /// filtering (`unknown_topic_errors`) and rebalance
-    /// (`partition_revocations`) categories stay at 0 -- so an operator can
-    /// distinguish a decode failure from filtering or rebalance activity.
+    /// Guarantees: the data-processing failure is attributed to the bounded
+    /// `decode` rejection reason while the unrelated `unknown_topic` rejection
+    /// and partition-revocation metrics stay at zero.
     #[tokio::test]
-    async fn processing_errors_are_categorized_separately_from_filtering_and_rebalance() {
+    async fn decode_rejections_are_categorized_separately_from_filtering_and_rebalance() {
         const TOPIC: &str = "visibility-processing-traces";
         let group = "visibility-processing-group";
         with_cluster(
@@ -7907,32 +8062,40 @@ mod tests {
                 let mut m = FoldedMetrics::new();
                 m.fold_all(terminal.metrics());
 
-                // Processing category incremented.
-                assert!(
-                    m.value("processing_errors") >= 1,
-                    "processing category should count the decode failure, got {}",
-                    m.value("processing_errors"),
+                let decode_rejections = measurement_counter(
+                    terminal.metrics(),
+                    "receiver.kafka.rejections",
+                    &[
+                        ("signal", "traces"),
+                        ("error.type", "invalid_request"),
+                        ("reason", "decode"),
+                    ],
+                    "messages",
+                );
+                let unknown_topic_rejections = measurement_counter(
+                    terminal.metrics(),
+                    "receiver.kafka.rejections",
+                    &[
+                        ("signal", "unknown"),
+                        ("error.type", "invalid_request"),
+                        ("reason", "unknown_topic"),
+                    ],
+                    "messages",
                 );
                 assert!(
-                    m.value("unmarshal_failed_traces") >= 1,
-                    "the per-signal traces unmarshal counter should increment, got {}",
-                    m.value("unmarshal_failed_traces"),
-                );
-                // Filtering and rebalance categories untouched -- the failure is
-                // not misattributed across categories.
-                assert_eq!(
-                    m.value("unknown_topic_errors"),
-                    0,
-                    "a decode failure must not be counted as a filtering \
-                     (unknown-topic) error, got {}",
-                    m.value("unknown_topic_errors"),
+                    decode_rejections >= 1,
+                    "decode rejection reason should count the failure, got {decode_rejections}",
                 );
                 assert_eq!(
-                    m.value("partition_revocations"),
+                    unknown_topic_rejections, 0,
+                    "a decode failure must not be counted as an unknown-topic rejection",
+                );
+                assert_eq!(
+                    m.value("group.partition.revocations"),
                     0,
                     "a decode failure must not be counted as a rebalance \
                      revocation, got {}",
-                    m.value("partition_revocations"),
+                    m.value("group.partition.revocations"),
                 );
             },
         )
@@ -7943,15 +8106,10 @@ mod tests {
     /// include regex that also matches an `exclude_topics` pattern; a record is
     /// produced to the excluded topic (which librdkafka still delivers because
     /// the include regex matches) alongside a record on a normal included topic.
-    /// Guarantees: the excluded record is rejected by the receiver-side exclude
-    /// guard and counted in the filtering category (`unknown_topic_errors`),
-    /// while the per-signal decode category (`unmarshal_failed_traces`) stays at
-    /// 0 -- so expected filtering is visibly distinct from a decode failure. Note
-    /// `processing_errors` is an aggregate superset that also counts filtering,
-    /// so distinctness is drawn against the per-signal decode counter, not the
-    /// aggregate.
+    /// Guarantees: the excluded record is attributed to the bounded
+    /// `unknown_topic` rejection reason while the `decode` reason stays at zero.
     #[tokio::test]
-    async fn filtering_is_categorized_separately_from_processing_errors() {
+    async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors() {
         const INCLUDED: &str = "visibility-included";
         const EXCLUDED: &str = "visibility-excluded";
         let group = "visibility-filtering-group";
@@ -8011,27 +8169,34 @@ mod tests {
 
                 receiver.shutdown(Duration::from_secs(5));
                 let terminal = receiver.await_terminal_state().await;
-                let mut m = FoldedMetrics::new();
-                m.fold_all(terminal.metrics());
-
-                // Filtering category incremented for the excluded topic.
-                assert!(
-                    m.value("unknown_topic_errors") >= 1,
-                    "the excluded topic should be counted in the filtering \
-                     category (unknown_topic_errors), got {}",
-                    m.value("unknown_topic_errors"),
+                let unknown_topic_rejections = measurement_counter(
+                    terminal.metrics(),
+                    "receiver.kafka.rejections",
+                    &[
+                        ("signal", "unknown"),
+                        ("error.type", "invalid_request"),
+                        ("reason", "unknown_topic"),
+                    ],
+                    "messages",
                 );
-                // No per-signal decode failures: both payloads were well-formed,
-                // so filtering must not be misattributed as a traces decode
-                // failure. (`processing_errors` is an aggregate that includes
-                // filtering, so it is expected to be >= 1 here and is not the
-                // distinguishing signal.)
+                let decode_rejections = measurement_counter(
+                    terminal.metrics(),
+                    "receiver.kafka.rejections",
+                    &[
+                        ("signal", "traces"),
+                        ("error.type", "invalid_request"),
+                        ("reason", "decode"),
+                    ],
+                    "messages",
+                );
+                assert!(
+                    unknown_topic_rejections >= 1,
+                    "the excluded topic should be counted as an unknown-topic rejection, got \
+                     {unknown_topic_rejections}",
+                );
                 assert_eq!(
-                    m.value("unmarshal_failed_traces"),
-                    0,
-                    "expected filtering must not be counted as a per-signal \
-                     traces decode failure, got {}",
-                    m.value("unmarshal_failed_traces"),
+                    decode_rejections, 0,
+                    "expected filtering must not be counted as a decode rejection",
                 );
             },
         )
