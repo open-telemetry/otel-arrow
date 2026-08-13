@@ -72,6 +72,7 @@ pub use otap_df_engine_macros::component_inventory;
 pub mod message;
 pub mod processor;
 pub mod receiver;
+pub mod retained_work;
 
 mod attributes;
 mod channel_metrics;
