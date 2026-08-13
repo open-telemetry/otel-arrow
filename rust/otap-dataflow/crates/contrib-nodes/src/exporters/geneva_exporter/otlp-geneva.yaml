@@ -68,9 +68,8 @@ groups:
               # AUTHENTICATION
               # ============================================================
               auth:
-                type: "certificate"
-                path: "/path/to/your/certificate.p12"
-                password: "your-cert-password"
+                type: "systemmanagedidentity"
+                msi_resource: "https://monitor.azure.com/"
 
               # ============================================================
               # OPTIONAL SETTINGS

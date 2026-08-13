@@ -4,6 +4,7 @@
 
 - Type: `urn:microsoft:exporter:geneva`
 - Feature gate: `geneva-exporter`
+- Optional certificate authentication: `geneva-certificate-auth` (disabled by default)
 - Stability: Alpha; supports logs and traces
 
 ## Overview
@@ -113,6 +114,11 @@ From the `otap-dataflow` directory:
 cargo build --release --features geneva-exporter
 ```
 
+Password-protected PKCS#12 certificate authentication is excluded by default.
+Build with `--features geneva-certificate-auth` only when certificate
+authentication is required. This opt-in feature adds PKCS#12 parsing and its
+cryptographic dependencies.
+
 ## Verify the exporter is registered
 
 ```bash
@@ -152,9 +158,10 @@ config:
   role_name: "df-engine"
   role_instance: "instance-001"
 
-  # Authentication method. Other supported values are "certificate",
+  # Authentication method. Other default-build values are
   # "usermanagedidentity", "usermanagedidentitybyarmresourceid",
-  # "workloadidentity", and "agentfed".
+  # "workloadidentity", and "agentfed". "certificate" requires the
+  # opt-in "geneva-certificate-auth" build feature.
   auth:
     type: systemmanagedidentity
     msi_resource: "https://monitor.azure.com/"
