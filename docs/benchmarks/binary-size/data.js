@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786595028761,
+  "lastUpdate": 1786635757180,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -13367,6 +13367,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 100.54,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "maksat.maratov@gmail.com",
+            "name": "Maksat Maratov",
+            "username": "maksmara"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4674574ab75418d61f67010041906ce0c73c84ae",
+          "message": "chore: remove Prost from the ITS metrics path (#3714)\n\n# Change Summary\n\nReplace Prost-based ITS metrics serialization with direct OTLP protobuf\nencoding through `ProtoBuffer`, matching the existing logs path. Prost\nis now used only by tests to decode and verify emitted bytes.\n\n## What issue does this PR close?\n\n* Closes #3668 \n\n## How are these changes tested?\n\n- `cargo test -p otap-df-telemetry`\n- `cargo test -p otap-df-core-nodes internal_telemetry_receiver`\n- `cargo test -p otap-df-engine --test enum_attributes_metrics`\n- `cargo test -p otap-df-otap --test enum_attributes_metrics`\n- `cargo check` for the affected telemetry, engine, OTAP, and core-nodes\ncrates\n- `cargo clippy` for the affected crates with warnings denied \n- Internal metrics bridge benchmark\n\nThe full `cargo xtask check` is currently blocked by pre-existing\ncomponent inventory drift.\n\n## Performance\n\nMeasured with:\n\n```console\ncargo bench -p benchmarks --bench internal_metrics_bridge\n```\n\n| Workload | Before | After | Time reduction | Throughput improvement |\n| --- | ---: | ---: | ---: | ---: |\n| 100 entities, no views | 299.71 us | 98.03 us | 67.2% | 3.05x |\n| 100 entities, six views | 357.92 us | 179.59 us | 51.3% | 2.05x |\n| 1,000 entities, no views | 3.074 ms | 1.119 ms | 64.3% | 2.80x |\n| 1,000 entities, six views | 3.872 ms | 1.903 ms | 50.9% | 2.04x |\n\nAll comparisons were statistically significant (`p < 0.05`). Direct\nprotobuf encoding reduces bridge execution time by approximately\n**51-67%**, increasing throughput by approximately **2.0-3.1x**.\n\n\n## Are there any user-facing changes?\n\nNo. This is an internal serialization and dependency cleanup that\npreserves the existing OTLP output and configuration behavior.\n\n### Changelog\n\n* [ ] Added a `.chloggen/*.yaml` entry\n* [X] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-08-13T14:25:12Z",
+          "tree_id": "348f76b02ecf262ab3bc8b5f161818780a97cead",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/4674574ab75418d61f67010041906ce0c73c84ae"
+        },
+        "date": 1786635742529,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 81.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.77,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 68.85,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 113.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 100.48,
             "unit": "MB"
           }
         ]
