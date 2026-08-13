@@ -18,14 +18,14 @@ pub trait ArrayValue: Debug {
     // of support for this method
     fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
-    fn get_items<'a>(&'a self, item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut ArrayValueIteratorCallback<'a, '_>) -> bool {
         self.get_item_range((..).into(), item_callback)
     }
 
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool;
 
     fn to_string(&self) -> ValueString<'_> {
@@ -39,6 +39,8 @@ pub trait ArrayValue: Debug {
         ValueString::Owned(serde_json::Value::Array(values).to_string())
     }
 }
+
+pub type ArrayValueIteratorCallback<'a, 'b> = dyn FnMut(usize, Value<'a>) -> bool + 'b;
 
 #[derive(Debug)]
 pub struct ArrayRange {

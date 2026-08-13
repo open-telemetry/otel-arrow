@@ -228,7 +228,7 @@ impl ArrayValue for ByteArrayValueStorage {
     fn get_item_range<'a>(
         &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn FnMut(usize, Value<'a>) -> bool,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
             if !(item_callback)(index, Value::Integer(value)) {
@@ -315,10 +315,7 @@ impl ArrayValueMut for ByteArrayValueStorage {
         )))
     }
 
-    fn retain(
-        &mut self,
-        item_callback: &mut dyn FnMut(usize, &mut (dyn AsStaticValueMut + 'static)) -> bool,
-    ) {
+    fn retain(&mut self, item_callback: &mut ArrayValueMutIteratorCallback<'_>) {
         let mut index = 0;
         self.values.retain_mut(|v| {
             let r = (item_callback)(index, v);
