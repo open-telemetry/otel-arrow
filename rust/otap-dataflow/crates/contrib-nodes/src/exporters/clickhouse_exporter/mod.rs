@@ -490,18 +490,17 @@ mod tests {
         assert!(transform_raw_otlp_logs(&traces, &mut transformer).is_none());
     }
 
-    /// Scenario: a raw OTLP logs request has malformed nested protobuf framing.
+    /// Scenario: a raw OTLP logs request has malformed top-level protobuf framing.
     /// Guarantees: the routing layer classifies it as invalid instead of using legacy fallback.
     #[test]
     fn malformed_raw_otlp_logs_are_not_fallback_candidates() {
-        let logs =
-            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(&[
-                0x0a, 0x03, 0x1a, 0x05, 0x00,
-            ])));
+        let logs = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(
+            b"\xff",
+        )));
         let mut transformer = OtlpLogsTransformer::default();
         let error = transform_raw_otlp_logs(&logs, &mut transformer)
             .expect("raw logs should select direct transformation")
-            .expect_err("malformed nested protobuf must fail");
+            .expect_err("malformed top-level protobuf must fail");
 
         assert!(is_invalid_protobuf(&error));
     }

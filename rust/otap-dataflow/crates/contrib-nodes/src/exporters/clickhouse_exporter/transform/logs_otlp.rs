@@ -14,8 +14,8 @@
 //!
 //! Unlike the specialized OTAP transformer in `logs_fast`, this path cannot share input arrays
 //! with its output because its input is a byte buffer rather than Arrow data. Its main savings
-//! come from traversing the protobuf once, materializing only the final arrays, and reusing
-//! allocation and schema state between requests.
+//! come from traversing the nested protobuf hierarchy once, materializing only the final arrays,
+//! and reusing allocation and schema state between requests.
 //!
 //! # Applicability and routing
 //!
@@ -26,7 +26,8 @@
 //!
 //! - a successful non-empty transformation is written as the logs payload
 //! - a valid request with no log records returns `None`, so no empty insert is issued
-//! - invalid protobuf wire framing is rejected and is not sent through the legacy path
+//! - invalid top-level protobuf wire framing is rejected and is not sent through the legacy path
+//! - malformed or wrongly typed nested fields follow the raw views' lazy best-effort behavior
 //! - other conversion or Arrow errors are returned to the caller, which may attempt the legacy
 //!   OTLP-to-OTAP transformation
 //!
@@ -44,7 +45,7 @@
 //!                 |
 //!                 v
 //!       RawLogsData::try_new
-//!       - validate wire framing
+//!       - validate top-level framing
 //!       - expose borrowed views
 //!                 |
 //!                 v
@@ -211,9 +212,9 @@ impl OtlpLogsTransformer {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid protobuf framing, invalid UTF-8, unsupported value coercions,
-    /// or Arrow builder/schema failures. The exporter, not this method, decides whether an error
-    /// is rejected or offered to the legacy transformation path.
+    /// Returns an error for invalid top-level protobuf framing, invalid UTF-8, unsupported value
+    /// coercions, or Arrow builder/schema failures. The exporter, not this method, decides whether
+    /// an error is rejected or offered to the legacy transformation path.
     pub(crate) fn transform(
         &mut self,
         request: &[u8],
@@ -1160,14 +1161,14 @@ mod tests {
     }
 
     /// Scenario: a nested OTLP field declares a length beyond its enclosing message.
-    /// Guarantees: the direct transformer returns an error before traversing malformed ranges.
+    /// Guarantees: lazy traversal ignores the malformed field instead of rejecting the request.
     #[test]
-    fn malformed_nested_request_is_rejected() {
-        let error = OtlpLogsTransformer::default()
+    fn malformed_nested_request_uses_best_effort_view() {
+        let batch = OtlpLogsTransformer::default()
             .transform(&[0x0a, 0x03, 0x1a, 0x05, 0x00])
-            .expect_err("malformed nested protobuf must be rejected");
+            .expect("top-level framing is valid");
 
-        assert!(matches!(error, ClickhouseExporterError::Child(_)));
+        assert!(batch.is_none());
     }
 
     /// Scenario: the previous OTLP request reports an arbitrarily large row count.
