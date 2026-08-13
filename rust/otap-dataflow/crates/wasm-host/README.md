@@ -87,8 +87,8 @@ cargo build -p otap-df --features wasm
 ```
 
 Without `--features wasm`, `df_engine` compiles with no wasmtime dependency
-and rejects any pipeline config referencing `processor:wasm_processor` as an
-unknown component.
+and rejects any pipeline config referencing `processor:wasm_processor` with
+`Unknown processor plugin urn:otel:processor:wasm_processor`.
 
 ## Configuration
 
