@@ -66,8 +66,9 @@ jobs:
 
       - name: Record release base commit
         id: release_base
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
+        run: |
+          git fetch --quiet origin main
+          echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
       - name: Get last released version
         id: last_version
         run: |

@@ -33,7 +33,17 @@ QUEUE=$(gh api graphql \
     -f name="$NAME" \
     --jq '.data.repository.mergeQueue.entries')
 
-QUEUE_COUNT=$(jq -r '.totalCount' <<< "$QUEUE")
+if [ -z "$QUEUE" ] || [ "$QUEUE" = "null" ]; then
+    echo "Error: Could not read merge queue state (is merge queue enabled and GH_TOKEN authorized?)."
+    exit 1
+fi
+
+QUEUE_COUNT=$(jq -r '.totalCount // empty' <<< "$QUEUE")
+if [[ -z "$QUEUE_COUNT" || ! "$QUEUE_COUNT" =~ ^[0-9]+$ ]]; then
+    echo "Error: Could not parse merge queue response."
+    exit 1
+fi
+
 if [ "$QUEUE_COUNT" -ne 0 ]; then
     echo "Error: Cannot prepare a release while pull requests are in the merge queue:"
     jq -r '.nodes[] | "  - #\(.pullRequest.number) \(.pullRequest.url)"' <<< "$QUEUE"
