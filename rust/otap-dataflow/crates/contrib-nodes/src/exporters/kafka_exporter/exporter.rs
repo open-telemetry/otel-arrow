@@ -617,6 +617,30 @@ impl KafkaExporter {
     /// logged and the existing producer keeps running. This mirrors the
     /// reconfiguration posture of sibling nodes (e.g. the condense-attributes
     /// and retry processors), which warn-and-keep rather than failing the node.
+    ///
+    /// # Known limitations
+    ///
+    /// Live reconfiguration does NOT yet provide the following guarantees.
+    /// Both are tracked in the live-reconfiguration issue
+    /// (see <https://github.com/open-telemetry/otel-arrow/issues/3768>}.
+    ///
+    /// - **In-flight pdata can cross configurations.** Control messages
+    ///   (including `Config`) and pdata arrive on separate channels, and
+    ///   control is processed with priority. So pdata that the exporter
+    ///   already accepted *before* the `Config` message can still be sitting in
+    ///   the inbox and get processed *after* `self.config` and `self.producer`
+    ///   are replaced below. Those records are then sent using the new topic,
+    ///   credentials, or tenant configuration rather than the one in effect when
+    ///   they were accepted. There is no ordered cutover barrier that applies
+    ///   the new config only after all preceding pdata has been processed.
+    /// - **The swap can block the pipeline.** The synchronous
+    ///   `self.producer.flush(flush_timeout)` below, and dropping the old
+    ///   producer (which joins its poll thread), both run on the core-local
+    ///   async runtime. A slow or unavailable broker can therefore stall all
+    ///   normal processing and backpressure handling for up to the flush
+    ///   timeout instead of letting the pipeline keep making progress. A
+    ///   non-blocking design would move producer creation, flushing, and
+    ///   retirement to a bounded, serialized lifecycle worker.
     async fn reconfigure(
         &mut self,
         config: serde_json::Value,
@@ -803,6 +827,13 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // producer with a bounded drain of the old one, Invalid
                     // configs are logged and ignored (the current producer keeps
                     // running).
+                    //
+                    // Known limitations (see `reconfigure`): pdata accepted
+                    // before this `Config` message can be processed after the
+                    // swap and cross to the new topic/credentials/tenant, and
+                    // the bounded flush plus old-producer drop can block the
+                    // pipeline. Tracked in the live-reconfiguration issue
+                    // (https://github.com/open-telemetry/otel-arrow/issues/3768).
                     self.reconfigure(config, &effect_handler).await;
                 }
                 Message::Control(_) => {

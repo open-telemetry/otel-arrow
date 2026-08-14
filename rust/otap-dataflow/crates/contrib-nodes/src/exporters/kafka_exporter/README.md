@@ -304,6 +304,39 @@ producer_config:
   "batch.num.messages": "10000"
 ```
 
+### Live Reconfiguration
+
+The exporter accepts live configuration changes at runtime (via a `Config`
+control message). Reconfiguration builds a new librdkafka producer from the
+incoming config, performs a bounded drain (flush, then purge) of the old
+producer, and then swaps in the new producer, config, and compiled
+dynamic-routing allowlists. If the new config fails to deserialize/validate or
+the new producer fails to build, the change is logged and ignored and the
+current producer keeps running.
+
+Live reconfiguration is currently **experimental** and does not yet provide two
+guarantees. Both are tracked in the live-reconfiguration issue
+([#ISSUE](https://github.com/open-telemetry/otel-arrow/issues/3768)):
+
+- **In-flight data can cross configurations.** Control messages (including the
+  reconfiguration message) and telemetry data travel on separate channels, and
+  control messages are processed with priority. Telemetry the exporter already
+  accepted *before* the config change can therefore still be waiting in its
+  inbox and be processed *after* the producer and config are swapped. Those
+  records are then sent using the **new** topic, credentials, or tenant rather
+  than the configuration that was in effect when they were accepted. There is no
+  ordered cutover barrier that applies the new config only after all preceding
+  data has been sent.
+- **The swap can briefly block the pipeline.** The old producer is flushed and
+  retired synchronously, so a slow or unavailable broker can stall normal
+  processing and backpressure for up to the configured flush timeout
+  (`timeout_ms`) instead of letting the pipeline keep making progress.
+
+Until these are addressed, avoid live reconfiguration changes that alter the
+destination topic, credentials, or tenant while data is in flight if
+cross-configuration delivery would be unsafe for your deployment. Prefer draining
+the exporter (or restarting the node) for such changes.
+
 ### Comparison with the Go Kafka exporter
 
 The OpenTelemetry Collector's Go Kafka exporter bundles a synchronous producer
@@ -611,6 +644,10 @@ This node does not emit structured events.
   interval as a workaround for high idle CPU utilization in the upstream
   rdkafka implementation.
 - Resource attribute-based partitioning is not yet implemented.
+- Live reconfiguration is experimental: data accepted before a config change may
+  be delivered using the new topic/credentials/tenant, and the producer swap can
+  briefly block the pipeline. See
+  [Live Reconfiguration](#live-reconfiguration).
 - Compared to the Go Kafka exporter, this exporter delegates retry to an
   upstream `processor:retry` node (no built-in `retry_on_failure`), has no
   application-level sending queue, supports fewer encodings/auth mechanisms, and
