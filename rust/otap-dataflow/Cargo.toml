@@ -12,7 +12,7 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "0.50.0"
+version = "0.51.0"
 authors = ["OpenTelemetry"]
 edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
@@ -22,7 +22,7 @@ rust-version = "1.87.0"
 
 [package]
 name = "otap-df"
-version = "0.50.0"
+version = "0.51.0"
 description = "OTel-Arrow Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
@@ -346,6 +346,7 @@ azure-monitor-exporter = [
 # Contrib extensions (opt-in) - in contrib-extensions
 contrib-extensions = ["otap-df-contrib-extensions/contrib-extensions"]
 azure-identity-auth-extension = ["otap-df-contrib-extensions/azure-identity-auth-extension"]
+k8s-service-account-token-auth-extension = ["otap-df-contrib-extensions/k8s-service-account-token-auth-extension"]
 oauth2-client-auth-extension = ["otap-df-contrib-extensions/oauth2-client-auth-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]

@@ -1,9 +1,0 @@
-# Copyright The OpenTelemetry Authors
-# SPDX-License-Identifier: Apache-2.0
-
-change_type: enhancement
-component: pipeline
-note: "Reduce CPU used to transform OTAP logs in the ClickHouse exporter."
-issues: [3512]
-subtext: |
-  Canonical OTAP log batches use a specialized shape-preserving path. Unsupported layouts automatically use the existing generic transformer.
