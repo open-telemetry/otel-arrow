@@ -136,7 +136,7 @@ impl PartialEq for ValueOrRef<'_> {
                 _ => false,
             },
             ValueOrRef::Double(d) => match other {
-                ValueOrRef::Double(r) => *d == *r,
+                ValueOrRef::Double(r) => d.get_value().to_bits() == r.get_value().to_bits(),
                 _ => false,
             },
             ValueOrRef::Boolean(b) => match other {

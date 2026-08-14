@@ -198,13 +198,13 @@ impl Iterator for CharIndices<'_> {
             CharIndices::String(c) => c.next(),
             CharIndices::Slice(c) => loop {
                 let v = c.source.next()?;
-                c.position += 1;
                 if v.0 < c.start_byte_index {
                     continue;
                 }
-                if c.position > c.end_char_index_exclusive {
+                if c.position >= c.end_char_index_exclusive {
                     return None;
                 }
+                c.position += 1;
                 return Some((v.0 - c.start_byte_index, v.1));
             },
         }
