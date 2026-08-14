@@ -2109,7 +2109,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gauge_id_overflow_triggers_early_flush() {
+    fn test_metric_id_overflow_triggers_early_flush() {
         // Fill the accumulator with u16::MAX - 1 unique metrics (the maximum
         // that fits), then send a batch with 2 more unique metrics. The first
         // batch should be flushed early and the overflowing batch retried into
@@ -2138,55 +2138,57 @@ mod tests {
         );
     }
 
-    macro_rules! test_stream_cardinality_overflow {
-        ($name:ident, $make_offset_batch:ident) => {
-            #[test]
-            fn $name() {
-                // Configure the processor to allow at most 2 unique streams in a batch.
-                // Send a batch with 2 streams (fills to the limit), then a second batch
-                // with 1 new stream. The new stream should trigger a cardinality overflow:
-                // the first batch is flushed early, then the overflowing data is retried
-                // into a fresh batch and flushed on the next wakeup.
-                run_processor_test(
-                    json!({ "max_stream_cardinality": 2 }),
-                    |mut ctx| async move {
-                        let batch1 = make_otlp_bytes_pdata($make_offset_batch(2, 0));
-                        // Use offset to ensure distinct metric names from the first batch.
-                        let batch2 = make_otlp_bytes_pdata($make_offset_batch(1, 2));
+    fn test_stream_cardinality_triggers_early_flush(data1: MetricsData, data2: MetricsData) {
+        // Configure the processor to allow at most 2 unique streams in a batch.
+        // Send a batch with 2 streams (fills to the limit), then a second batch
+        // with 1 new stream. The new stream should trigger a cardinality overflow:
+        // the first batch is flushed early, then the overflowing data is retried
+        // into a fresh batch and flushed on the next wakeup.
+        run_processor_test(
+            json!({ "max_stream_cardinality": 2 }),
+            |mut ctx| async move {
+                let batch1 = make_otlp_bytes_pdata(data1);
+                let batch2 = make_otlp_bytes_pdata(data2);
 
-                        ctx.process(Message::PData(batch1)).await.unwrap();
-                        ctx.process(Message::PData(batch2)).await.unwrap();
-                        let _ = ctx.fire_wakeup().await.unwrap();
+                ctx.process(Message::PData(batch1)).await.unwrap();
+                ctx.process(Message::PData(batch2)).await.unwrap();
+                let _ = ctx.fire_wakeup().await.unwrap();
 
-                        let output = ctx.drain_pdata().await;
-                        assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
-                        assert_output_metric_count(&output[0], 2);
-                        assert_output_metric_count(&output[1], 1);
-                    },
-                );
-            }
-        };
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
+                assert_output_metric_count(&output[0], 2);
+                assert_output_metric_count(&output[1], 1);
+            },
+        );
     }
 
-    test_stream_cardinality_overflow!(
-        test_gauge_stream_cardinality_overflow_triggers_early_flush,
-        make_n_gauge_metrics_with_offset
-    );
+    #[test]
+    fn test_gauge_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_gauge_metrics_with_offset(2, 0);
+        let data2 = make_n_gauge_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
 
-    test_stream_cardinality_overflow!(
-        test_histogram_stream_cardinality_overflow_triggers_early_flush,
-        make_n_histogram_metrics_with_offset
-    );
+    #[test]
+    fn test_histogram_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_histogram_metrics_with_offset(2, 0);
+        let data2 = make_n_histogram_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
 
-    test_stream_cardinality_overflow!(
-        test_exp_histogram_stream_cardinality_overflow_triggers_early_flush,
-        make_n_exp_histogram_metrics_with_offset
-    );
+    #[test]
+    fn test_exp_histogram_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_exp_histogram_metrics_with_offset(2, 0);
+        let data2 = make_n_exp_histogram_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
 
-    test_stream_cardinality_overflow!(
-        test_summary_stream_cardinality_overflow_triggers_early_flush,
-        make_n_summary_metrics_with_offset
-    );
+    #[test]
+    fn test_summary_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_summary_metrics_with_offset(2, 0);
+        let data2 = make_n_summary_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
 
     #[test]
     fn test_otlp_gauge_correlation() {
