@@ -2,17 +2,15 @@
 
 <!-- markdownlint-disable MD013 -->
 
-**Status:** Draft
-
 **Extension URN:** `urn:otel:extension:oauth2_client_auth`
 
 **Capability exposed:** `BearerTokenProvider`
 
 **Execution model:** Active + Shared
 
-**Target crate:** `crates/contrib-extensions`
+**Crate:** `crates/contrib-extensions`
 
-**Target module:** `crates/contrib-extensions/src/oauth2_client_auth/`
+**Module:** `crates/contrib-extensions/src/oauth2_client_auth/`
 
 This document describes the design of the **OAuth 2.0 Client Auth extension**
 (`oauth2_client_auth`) for the OTAP dataflow engine. The extension acquires and
@@ -36,13 +34,14 @@ It builds on the extension system foundations:
 
 ## Problem
 
-The OTLP exporters (`urn:otel:exporter:otlp_grpc`, `urn:otel:exporter:otlp_http`)
-today support only **static** request headers. A fixed `Authorization` header
-cannot express an OAuth 2.0 flow, cannot refresh a token before it expires, and
-forces credentials into every node's config. Any node authenticating to an
-OAuth-protected endpoint (an OTLP backend, a vendor gateway) must either use a
-long-lived static token or re-implement client-credentials acquisition, caching,
-and refresh inline on its data path.
+Absent a token-provider capability, the only credential an OTLP exporter
+(`urn:otel:exporter:otlp_grpc`, `urn:otel:exporter:otlp_http`) can carry is a
+**static** request header. A fixed `Authorization` header cannot express an
+OAuth 2.0 flow, cannot refresh a token before it expires, and forces credentials
+into every node's config. Any node authenticating to an OAuth-protected endpoint
+(an OTLP backend, a vendor gateway) would have to either use a long-lived static
+token or re-implement client-credentials acquisition, caching, and refresh
+inline on its data path.
 
 The extension system lets us factor this out into a **shared, cross-cutting
 capability** that any node binds to, while keeping the data path free of
@@ -70,7 +69,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 ## Non-Goals
 
 - A new capability. This extension **reuses** the `BearerTokenProvider`
-  capability introduced with the
+  capability defined by the engine and documented under the
   [Azure Identity Auth extension](../azure_identity_auth/design.md#capability-bearertokenprovider);
   it adds no capability machinery.
 - Provider-specific identity flows (Managed Identity, Workload Identity). Those
@@ -94,7 +93,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 | Sharing model | All state behind `Arc<Inner>`; every clone (consumers + background task) observes one token cache. At pipeline scope this is per pipeline instance (per core). |
 | Token cache | `tokio::sync::watch<Option<BearerToken>>` - lock-free fast-path read + pub/sub for `token_stream()`. |
 | Slow-path coalescing | An async `fetch_lock` with double-checked caching so concurrent cache-miss callers - and the background refresh - share one in-flight token request. |
-| Grant types (v1) | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523 section 2.1 authorization grant; the signed JWT is sent as the `assertion` parameter). |
+| Grant types | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523 section 2.1 authorization grant; the signed JWT is sent as the `assertion` parameter). |
 | Credential rotation | `client_id` / `client_secret` / signing key may be supplied inline or via `*_file` paths re-read on each acquisition; the file form takes precedence. |
 | Refresh tuning | `expiry_buffer` is user-configurable; the usability margin, min cadence, refresh jitter, and exponential-backoff-with-jitter retry are fixed constants. |
 | Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS). `https://` recommended; `http://` allowed but warned. Finite request and connect timeouts bound every acquisition by default. |
@@ -352,7 +351,7 @@ runs (control channel + refresh timer); only the `TokenSource` acquisition call
 and the `expiry_buffer` value differ:
 
 1. **Control channel** (`ctrl.recv()`): `Shutdown` returns the final metric
-   snapshot as the terminal state; `Config` is a no-op in v1; `CollectTelemetry`
+   snapshot as the terminal state; `Config` is a no-op; `CollectTelemetry`
    flushes the metric set. The control channel is polled even while a refresh is
    in flight, so a shutdown arriving mid-acquisition cancels the in-progress
    token call rather than letting a slow request run past the shutdown deadline,
@@ -447,16 +446,15 @@ backs the capability, and can consume it two ways: a cached fast-path read via
 `get_token()`, or a subscription to `token_stream()` that pushes each refreshed
 token.
 
-The primary consumers are the **OTLP HTTP and gRPC exporters**. The OTLP HTTP
-exporter subscribes to `token_stream()` and caches a
-pre-built `Authorization: Bearer <token>` header that it clones onto each
-outgoing request, so credential work stays off the export hot path and tokens
-rotate without a restart. The refreshed bearer **overrides** any statically
-configured `authorization` header, and the cached token is marked **sensitive**
-(redacted in `Debug`, excluded from HPACK indexing). Until a token is available
-(startup or an auth outage) the exporter withholds export rather than sending
-unauthenticated data. The OTLP gRPC exporter integration follows the same pattern
-and is planned. Any other `BearerTokenProvider` consumer works unchanged.
+The primary consumers are the **OTLP HTTP and gRPC exporters**. Both subscribe
+to `token_stream()` and cache a pre-built `Authorization: Bearer <token>` header
+that they clone onto each outgoing request, so credential work stays off the
+export hot path and tokens rotate without a restart. The refreshed bearer
+**overrides** any statically configured `authorization` header, and the cached
+token is marked **sensitive** (redacted in `Debug`, excluded from HPACK
+indexing). Until a token is available (startup or an auth outage) the exporter
+withholds export rather than sending unauthenticated data. Any other
+`BearerTokenProvider` consumer works unchanged.
 
 ## Telemetry
 
@@ -509,13 +507,13 @@ Metrics are recorded in the background refresh loop and the slow-path
 
 The extension is reconfigured over the extension system's own control channel
 (`ExtensionControlMsg`), independent of pipeline-node reconfiguration
-(`NodeControlMsg::Config`). In v1, `ExtensionControlMsg::Config` is a no-op:
+(`NodeControlMsg::Config`). `ExtensionControlMsg::Config` is a no-op:
 refresh cadence is governed by token lifetime and `expiry_buffer`, and changing
 the client, grant, or scopes is treated as an extension restart rather than an
 in-place swap. Credential *values* still rotate without a restart when supplied
 via the `*_file` fields, since those are re-read on each acquisition (see
-[Configuration](#config-schema)). Promoting the client/grant/scopes to
-hot-swappable config is possible future work (see [Open Questions](#open-questions)).
+[Configuration](#config-schema)). Whether the client, grant, and scopes should
+become hot-swappable is an open question (see [Open Questions](#open-questions)).
 
 ### Cargo features
 
@@ -664,9 +662,9 @@ OAuth-specific coverage:
 
 ## Open Questions
 
-1. **Grant coverage.** v1 ships `client_credentials` and `jwt-bearer`. Is there
-   demand for password or refresh-token grants, or should those stay out of
-   scope as non-machine-to-machine flows?
+1. **Grant coverage.** The extension supports `client_credentials` and
+   `jwt-bearer`. Is there demand for password or refresh-token grants, or should
+   those stay out of scope as non-machine-to-machine flows?
 2. **Multi-scope / multi-endpoint.** As with the Azure extension, one instance
    serves one client + scope set; a node needing multiple audiences declares one
    instance per audience. Is a single multi-scope instance worth the added
@@ -679,7 +677,7 @@ OAuth-specific coverage:
 
 ## Future Work
 
-- **Broader extension scope.** Hoist to group/engine scope (Phase 2) for genuine
+- **Broader extension scope.** Hoist to group/engine scope for genuine
   cross-core token-cache sharing (see
   [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 
