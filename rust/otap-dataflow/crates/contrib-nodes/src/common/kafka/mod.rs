@@ -20,18 +20,12 @@ pub mod security;
 // The test suite is a deliberately broad, reusable test-support API: not every
 // helper is exercised by the current tests, so `dead_code` is expected and
 // allowed here rather than sprinkling per-item attributes.
-#[cfg(any(test, feature = "kafka_bench"))]
+#[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod node_harness;
-#[cfg(any(test, feature = "kafka_bench"))]
+#[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod test;
-
-/// Public benchmark support facade over the in-process mock-broker test suite
-/// and the Kafka exporter harness. Only compiled with the `kafka_bench` feature
-/// and intended solely for `[[bench]]` targets in this crate.
-#[cfg(feature = "kafka_bench")]
-pub mod bench_support;
 
 /// TLS configuration for Kafka broker connections.
 ///
