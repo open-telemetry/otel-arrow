@@ -832,6 +832,11 @@ impl KafkaExporter {
     /// the per-message delivery bound, so a slow or unavailable broker can never
     /// stall the reconfigure.
     ///
+    /// The in-flight set is rebuilt at the new `max_in_flight` after the old
+    /// deliveries are drained, so a live change to the concurrency bound takes
+    /// effect immediately (a lowered bound is enforced at once; a raised bound
+    /// applies to subsequent deliveries).
+    ///
     /// Reconfiguration is best-effort: if the incoming config fails to
     /// deserialize/validate, or the new producer fails to build, the error is
     /// logged and the existing producer keeps running. This mirrors the
@@ -945,6 +950,20 @@ impl KafkaExporter {
                 .await;
         }
 
+        // all in_flight msgs should be drained
+        debug_assert!(
+            in_flight.is_empty(),
+            "in-flight set must be drained"
+        );
+
+        // Capture the new concurrency bound before `new_config` is moved into
+        // `self.config` below.
+        let new_max_in_flight = if self.config.max_in_flight() != new_config.max_in_flight() {
+            Some(new_config.max_in_flight())
+        } else {
+            None
+        };
+
         // Swap in the new producer, config, and compiled allowlist regexes.
         // Dropping the old producer joins its poll thread (see
         // ExporterThreadedProducer::drop).
@@ -953,6 +972,10 @@ impl KafkaExporter {
         self.traces_allowed_topics_regex = new_traces_regex;
         self.metrics_allowed_topics_regex = new_metrics_regex;
         self.logs_allowed_topics_regex = new_logs_regex;
+        // create new InFlightSends if user changes max_in_flight setting
+        if let Some(max_in_flight) = new_max_in_flight {
+                *in_flight = InFlightSends::new(max_in_flight);
+        }
 
         otap_df_telemetry::otel_info!(
             "kafka.exporter.reconfigured",
@@ -1829,6 +1852,21 @@ pub mod test_support {
                 "brokers": brokers,
                 "client_id": "it-client",
                 "logs": { "topic": topic, "encoding": "otlp_proto" },
+            })
+        }
+
+        /// Like [`logs_reconfig_json`] but with an explicit `max_in_flight`, so a
+        /// test can exercise a live change to the concurrency bound.
+        fn logs_reconfig_json_mif(
+            brokers: &str,
+            topic: &str,
+            max_in_flight: usize,
+        ) -> serde_json::Value {
+            serde_json::json!({
+                "brokers": brokers,
+                "client_id": "it-client",
+                "logs": { "topic": topic, "encoding": "otlp_proto" },
+                "max_in_flight": max_in_flight,
             })
         }
 
@@ -3201,6 +3239,206 @@ pub mod test_support {
                     assert!(
                         delivered.contains(&post),
                         "the post-config batch must be delivered across the reconfigure, not lost"
+                    );
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): the exporter starts with `max_in_flight = 8`,
+        /// then a live `Config` lowers it to `1` and a burst of batches is sent
+        /// afterward.
+        /// Guarantees: reconfiguration rebuilds the in-flight set at the new,
+        /// lowered bound, so the post-config burst is delivered serially with no
+        /// loss -- all sent batches land exactly once at strictly increasing
+        /// offsets on a single partition. A stale bound of 8 (the pre-config
+        /// value) would silently ignore the lowered concurrency limit.
+        #[tokio::test]
+        async fn reconfigure_lowers_max_in_flight_and_still_delivers() {
+            let topic = "it-mif-reconfig-lower";
+            const N: usize = 24;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    // Start pipelined (max_in_flight = 8).
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                        8,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Live-lower the concurrency bound to 1 (same topic).
+                    exporter
+                        .send_config(logs_reconfig_json_mif(
+                            cluster.bootstrap_servers(),
+                            topic,
+                            1,
+                        ))
+                        .await;
+
+                    // Burst sent under the new, lowered bound.
+                    let payloads: Vec<Vec<u8>> = (0..N).map(logs_request_bytes_seq).collect();
+                    for payload in &payloads {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata after lowering max_in_flight");
+                    }
+
+                    // Serial delivery: single partition, strictly increasing
+                    // offsets in send order, no loss.
+                    let msgs = consumer.recv_n(N).await;
+                    assert_eq!(msgs.len(), N, "every batch delivered after lowering bound");
+                    for (i, msg) in msgs.iter().enumerate() {
+                        let _ = msg
+                            .assert_partition(0)
+                            .assert_offset(i as i64)
+                            .assert_payload(&payloads[i]);
+                    }
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): the exporter starts with the default
+        /// `max_in_flight = 1`, then a live `Config` raises it to `8` and a burst
+        /// of batches is sent afterward against a per-round-trip stall.
+        /// Guarantees: reconfiguration rebuilds the in-flight set at the new,
+        /// raised bound, so pipelining is active afterward -- every sent batch is
+        /// delivered exactly once despite the stall. A stale bound of 1 (the
+        /// pre-config value) would still deliver, so the invariant asserted here
+        /// is no-loss across a raised-bound reconfigure.
+        #[tokio::test]
+        async fn reconfigure_raises_max_in_flight_and_still_delivers() {
+            let topic = "it-mif-reconfig-raise";
+            const N: usize = 24;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    // Start serial (default max_in_flight = 1).
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Live-raise the concurrency bound to 8.
+                    exporter
+                        .send_config(logs_reconfig_json_mif(
+                            cluster.bootstrap_servers(),
+                            topic,
+                            8,
+                        ))
+                        .await;
+
+                    // Stall each round trip so raised pipelining is exercised.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(40));
+
+                    let payloads: Vec<Vec<u8>> = (0..N).map(logs_request_bytes_seq).collect();
+                    for payload in &payloads {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata after raising max_in_flight");
+                    }
+
+                    // No loss / no duplication across the raised-bound reconfigure.
+                    let msgs = consumer.recv_n(N).await;
+                    assert_eq!(msgs.len(), N, "every batch delivered after raising bound");
+                    let delivered: std::collections::HashSet<Vec<u8>> = msgs
+                        .iter()
+                        .map(|m| m.payload.clone().expect("payload"))
+                        .collect();
+                    assert_eq!(delivered.len(), N, "no duplicate deliveries after raise");
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): a batch is pipelined in flight under
+        /// `max_in_flight = 8`, then a live `Config` lowers the bound to `1`
+        /// (repointing to a new topic), then a batch is accepted after the swap.
+        /// Guarantees: reconfiguration drains and finalizes the in-flight
+        /// delivery on the old producer BEFORE rebuilding the in-flight set at
+        /// the new bound, so no already-accepted batch is dropped when the bound
+        /// changes; the post-config batch is delivered under the new bound.
+        #[tokio::test]
+        async fn reconfigure_bound_change_with_in_flight_batch_loses_nothing() {
+            let original_topic = "it-mif-reconfig-bound-original";
+            let new_topic = "it-mif-reconfig-bound-new";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(original_topic)
+                    .topic(new_topic),
+                |cluster| async move {
+                    let original_consumer = cluster.consumer().subscribe(&[original_topic]);
+                    let new_consumer = cluster.consumer().subscribe(&[new_topic]);
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(original_topic.into(), MessageFormat::OtlpProto),
+                        8,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Pipeline a pre-config batch, then reconfigure to a new topic
+                    // AND a lowered bound in the same Config.
+                    let pre = logs_request_bytes_seq(1);
+                    exporter
+                        .send_pdata(logs_pdata(pre.clone(), None))
+                        .await
+                        .expect("send pre-config pdata");
+                    exporter
+                        .send_config(logs_reconfig_json_mif(
+                            cluster.bootstrap_servers(),
+                            new_topic,
+                            1,
+                        ))
+                        .await;
+
+                    // A batch accepted after the reconfigure (under the new bound).
+                    let post = logs_request_bytes_seq(2);
+                    exporter
+                        .send_pdata(logs_pdata(post.clone(), None))
+                        .await
+                        .expect("send post-config pdata");
+
+                    // Neither batch is lost across the bound-changing reconfigure.
+                    let mut delivered: std::collections::HashSet<Vec<u8>> =
+                        std::collections::HashSet::new();
+                    for m in original_consumer
+                        .collect_until_idle(Duration::from_secs(2))
+                        .await
+                    {
+                        let _ = delivered.insert(m.payload.clone().expect("payload"));
+                    }
+                    for m in new_consumer
+                        .collect_until_idle(Duration::from_secs(2))
+                        .await
+                    {
+                        let _ = delivered.insert(m.payload.clone().expect("payload"));
+                    }
+                    assert!(
+                        delivered.contains(&pre),
+                        "the pre-config in-flight batch must be delivered, not lost when the \
+                         bound is rebuilt"
+                    );
+                    assert!(
+                        delivered.contains(&post),
+                        "the post-config batch must be delivered under the new bound"
                     );
 
                     exporter.shutdown(Duration::from_secs(10)).await;

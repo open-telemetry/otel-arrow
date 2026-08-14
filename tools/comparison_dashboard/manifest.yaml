@@ -143,6 +143,10 @@ suites:
   - suites/dfe/dfe-logs-kafka-otlp-export-baseline.yaml
   - suites/dfe/dfe-logs-kafka-otap-recv-baseline.yaml
   - suites/dfe/dfe-logs-kafka-otap-export-baseline.yaml
+  # DFE Kafka exporter in-flight depth sweep (max_in_flight=1 vs the =1000
+  # baselines above), for a serial-vs-pipelined comparison.
+  - suites/dfe/dfe-logs-kafka-otlp-export-inflight1.yaml
+  - suites/dfe/dfe-logs-kafka-otap-export-inflight1.yaml
 
   # OTel Collector
   - suites/otc/otc-logs-otap-none-baseline.yaml
