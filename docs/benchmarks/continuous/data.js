@@ -1,428 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786740967438,
+  "lastUpdate": 1786743623507,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "29139614+renovate[bot]@users.noreply.github.com",
-            "name": "renovate[bot]",
-            "username": "renovate[bot]"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "34e6604052df66b6297f2fdbb4c760993f21d37d",
-          "message": "chore(deps): update pipeline perf python dependencies (#3556)\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n| [duckdb](https://redirect.github.com/duckdb/duckdb-python)\n([changelog](https://redirect.github.com/duckdb/duckdb-python/releases))\n| `==1.5.4` → `==1.5.5` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/duckdb/1.5.5?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/duckdb/1.5.4/1.5.5?slim=true)\n|\n| [grpcio](https://redirect.github.com/grpc/grpc) | `==1.82.1` →\n`==1.83.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/grpcio/1.83.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/grpcio/1.82.1/1.83.0?slim=true)\n|\n|\n[opentelemetry-exporter-otlp](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.43.0` → `==1.44.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-exporter-otlp/1.44.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-exporter-otlp/1.43.0/1.44.0?slim=true)\n|\n|\n[opentelemetry-proto](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.43.0` → `==1.44.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-proto/1.44.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-proto/1.43.0/1.44.0?slim=true)\n|\n|\n[opentelemetry-sdk](https://redirect.github.com/open-telemetry/opentelemetry-python)\n| `==1.43.0` → `==1.44.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/opentelemetry-sdk/1.44.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/opentelemetry-sdk/1.43.0/1.44.0?slim=true)\n|\n| [pandas](https://redirect.github.com/pandas-dev/pandas) | `==3.0.4` →\n`==3.0.5` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/pandas/3.0.5?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/pandas/3.0.4/3.0.5?slim=true)\n|\n|\n[prometheus_client](https://redirect.github.com/prometheus/client_python)\n| `==0.25.0` → `==0.26.0` |\n![age](https://developer.mend.io/api/mc/badges/age/pypi/prometheus-client/0.26.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/pypi/prometheus-client/0.25.0/0.26.0?slim=true)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>duckdb/duckdb-python (duckdb)</summary>\n\n###\n[`v1.5.5`](https://redirect.github.com/duckdb/duckdb-python/releases/tag/v1.5.5):\nBugfix Release\n\n[Compare\nSource](https://redirect.github.com/duckdb/duckdb-python/compare/v1.5.4...v1.5.5)\n\nSee [DuckDB's\nchangelog](https://redirect.github.com/duckdb/duckdb/releases/tag/v1.5.5)\nfor all changes in DuckDB.\n\n#### What's Changed in DuckDB-Python\n\n- Fix numpy deprecations by\n[@&#8203;evertlammerts](https://redirect.github.com/evertlammerts) in\n[#&#8203;505](https://redirect.github.com/duckdb/duckdb-python/pull/505)\n- Fix alias of `DuckDBPyRelation.query` (closes\n[#&#8203;468](https://redirect.github.com/duckdb/duckdb-python/issues/468))\nby [@&#8203;evertlammerts](https://redirect.github.com/evertlammerts) in\n[#&#8203;524](https://redirect.github.com/duckdb/duckdb-python/pull/524)\n\n</details>\n\n<details>\n<summary>grpc/grpc (grpcio)</summary>\n\n###\n[`v1.83.0`](https://redirect.github.com/grpc/grpc/releases/tag/v1.83.0)\n\n[Compare\nSource](https://redirect.github.com/grpc/grpc/compare/v1.82.1...v1.83.0)\n\nThis is release 1.83.0\n([garden](https://redirect.github.com/grpc/grpc/blob/master/doc/g_stands_for.md))\nof gRPC Core.\n\nFor gRPC documentation, see [grpc.io](https://grpc.io/). For previous\nreleases, see\n[Releases](https://redirect.github.com/grpc/grpc/releases).\n\nThis release contains refinements, improvements, and bug fixes, with\nhighlights listed below.\n\n## Core\n\n- \\[Security] Default to Post-Quantum Cryptography in TLS key exchange.\n([#&#8203;42560](https://redirect.github.com/grpc/grpc/pull/42560))\n- \\[authz] don't pass RBAC policy by value when constructing\nauthorization engine.\n([#&#8203;42636](https://redirect.github.com/grpc/grpc/pull/42636))\n\n## C\\#\n\n- Migrate CSharp Grpc.Tools to new DotNet Version.\n([#&#8203;42661](https://redirect.github.com/grpc/grpc/pull/42661))\n- \\[C#] Tools - Build: Fix protoc SIGSEGV on ARM64 by aligning\nmax-page-size and migrating to manylinux\\_2\\_28.\n([#&#8203;42590](https://redirect.github.com/grpc/grpc/pull/42590))\n\n## Python\n\n- \\[Backport]\\[v1.83.x]\\[Python] grpc-status: Relax protobuf dependency\nlower bound to allow 6.x.\n([#&#8203;43001](https://redirect.github.com/grpc/grpc/pull/43001))\n- \\[Python] Add abort\\_with\\_status to the aio ServicerContext ABC.\n([#&#8203;42733](https://redirect.github.com/grpc/grpc/pull/42733))\n- \\[Python] Update lower bound for protobuf from 6.33.5 to 7.35.1.\n([#&#8203;42914](https://redirect.github.com/grpc/grpc/pull/42914))\n- \\[Python] Pyright typeCheckingMode - standard.\n([#&#8203;42739](https://redirect.github.com/grpc/grpc/pull/42739))\n- \\[Python] Support Python 3.15 - Upgrade bazel dep rules\\_python to\n2.0.2.\n([#&#8203;42637](https://redirect.github.com/grpc/grpc/pull/42637))\n- \\[Python] Hide internal symbols from Python's `cygrpc` shared object.\n([#&#8203;42325](https://redirect.github.com/grpc/grpc/pull/42325))\n- \\[Python] Handle custom Interceptor exceptions in InterceptedCall APIs\n. ([#&#8203;42593](https://redirect.github.com/grpc/grpc/pull/42593))\n\n</details>\n\n<details>\n<summary>open-telemetry/opentelemetry-python\n(opentelemetry-exporter-otlp)</summary>\n\n###\n[`v1.44.0`](https://redirect.github.com/open-telemetry/opentelemetry-python/blob/HEAD/CHANGELOG.md#Version-1440065b0-2026-07-16)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-python/compare/v1.43.0...v1.44.0)\n\n##### Added\n\n- `opentelemetry-docker-tests`: Refactor Docker tests to properly\nvalidate\n  contents of exported telemetry\n\n([#&#8203;5220](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5220))\n- `opentelemetry-exporter-otlp-common`: add shared package for common\nOTLP\n  utilities\n\n([#&#8203;5252](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5252))\n- `opentelemetry-sdk`: add `MissingDependencyError` exception for\ndeclarative\n  configuration and use it for missing optional dependency errors\n\n([#&#8203;5265](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5265))\n- `opentelemetry-sdk`: Add ability to refresh process dependent Resource\n  attributes\n\n([#&#8203;5280](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5280))\n- `opentelemetry-sdk`: add `force_flush` method to `LogRecordExporter`\nABC\n\n([#&#8203;5294](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5294))\n- `opentelemetry-sdk`: Make it possible to limit the size of stored\nspans in\n  InMemorySpanExporter\n\n([#&#8203;5296](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5296))\n- `opentelemetry-sdk`: add log record limits environment variables\n  `OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT` and\n  `OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT`\n\n([#&#8203;5300](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5300))\n- `opentelemetry-sdk`: add support for file exporter with declarative\nconfig\n\n([#&#8203;5311](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5311))\n- `opentelemetry-sdk`: expose `SynchronousMultiLogRecordProcessor` and\n  `ConcurrentMultiLogRecordProcessor` publicly\n\n([#&#8203;5327](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5327))\n- `opentelemetry-sdk`: point the declarative configuration package\nREADME at\n  the shared [language support status\n\nmatrix](https://redirect.github.com/open-telemetry/opentelemetry-configuration/blob/main/language-support-status.md#python)\nin the `opentelemetry-configuration` repo, so Python conformance status\nlives\nalongside the other languages instead of being duplicated per language\nSDK.\n\n([#&#8203;5347](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5347))\n- `opentelemetry-sdk`: document that Python-implementation extensions\n(`OTEL_PYTHON_*` variables) are bypassed when `OTEL_CONFIG_FILE` is set.\nThe\nenv-var initialisation path is skipped entirely in favour of the\ndeclarative\nfile; honouring these alongside a config file is tracked as a follow-up.\n\n([#&#8203;5353](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5353))\n- `opentelemetry-sdk`: wire id\\_generator from declarative configuration\nto\n  TracerProvider\n\n([#&#8203;5363](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5363))\n- `opentelemetry-sdk`: Add support for activating instrumentors from a\ndeclarative configuration file via the\n`instrumentation/development.python`\nsection. Instrumentors can declare a `configuration` attribute to have\ntheir\n  options validated through the same type-coercion pipeline used for SDK\n  component configuration.\n\n([#&#8203;5372](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5372))\n- `opentelemetry-sdk`: add `record_min_max` option to\n  `ExponentialBucketHistogramAggregation`, matching the option already\n  available on `ExplicitBucketHistogramAggregation` and required by the\n  specification\n\n([#&#8203;5377](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5377))\n\n##### Changed\n\n- opentelemetry-sdk: revert BoundedAttributes RLock back to Lock\n\n([#&#8203;5329](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5329))\n- docs: update logs example to use\n`opentelemetry-instrumentation-logging`\n\n([#&#8203;5344](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5344))\n- `opentelemetry-sdk`: bump declarative configuration schema to v1.1.0\n\n([#&#8203;5345](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5345))\n- `opentelemetry-configuration`: declarative configuration moves from\n  `opentelemetry.sdk._configuration` into the new public\n  `opentelemetry-configuration` package (`opentelemetry.configuration`\nnamespace), published experimentally.\n`opentelemetry-sdk[file-configuration]`\ncontinues to work as an alias that installs\n`opentelemetry-configuration`\n  alongside the SDK.\n\n([#&#8203;5356](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5356))\n- `opentelemetry-api`: remove env carrier environment snapshot caching,\nyou now\nhave to pass explicitly the mapping where to get the environment\nvariables\n  from as the `EnvironmentGetter.get` first argument.\n\n([#&#8203;5366](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5366))\n- `opentelemetry-semantic-conventions`: bump to 1.42.0\n\n([#&#8203;5410](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5410))\n- `opentelemetry-semantic-conventions`: bump to 1.43.0\n\n([#&#8203;5413](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5413))\n\n##### Removed\n\n- `opentelemetry-api`, `opentelemetry-sdk`: Removed deprecated Events\nAPI/SDK.\n  Use `LogRecord` with the `event_name` field set instead.\n\n([#&#8203;5293](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5293))\n\n##### Fixed\n\n- `opentelemetry-sdk`: Optimize `LogRecord` memory in\n`BatchLogRecordProcessor`\nby clearing the `Context` object before buffering. This is a potentially\nbreaking change for custom log exporters that access `context` from the\nexported `ReadableLogRecord`, as the context will now be an empty\n`Context()`\n  instead of the original.\n\n([#&#8203;4977](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/4977))\n- `opentelemetry-sdk`: drop non-finite measurements (NaN and Inf) at the\n  instrument level to prevent permanent aggregation poisoning\n\n([#&#8203;5336](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5336))\n- `opentelemetry-sdk`: raise `ValueError` when\n`ExplicitBucketHistogramAggregation` boundaries are not strictly\nincreasing\n  or finite\n\n([#&#8203;5340](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5340))\n- `opentelemetry-sdk`: `ProcessResourceDetector` no longer collects or\nemits\n`process.command_args` and `process.command_line` by default since the\nvalues\nare not sanitized and may contain sensitive information. Users who\ndepend\n  on these resource attributes must pass `include_command_args=True`.\n\n([#&#8203;5364](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5364))\n- `opentelemetry-exporter-otlp-proto-http`: fix the OTLP HTTP metric\nexporter\n  self-observability metrics over-counting data points when\n  `max_export_batch_size` splits a batch; each split now reports its own\n  data-point count instead of the whole-batch count.\n\n([#&#8203;5370](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5370))\n- `opentelemetry-api`: Prevent in-place mutation of `Context` via\ninherited\n  `dict` methods\n\n([#&#8203;5399](https://redirect.github.com/open-telemetry/opentelemetry-python/pull/5399))\n\n</details>\n\n<details>\n<summary>pandas-dev/pandas (pandas)</summary>\n\n###\n[`v3.0.5`](https://redirect.github.com/pandas-dev/pandas/releases/tag/v3.0.5):\npandas 3.0.5\n\n[Compare\nSource](https://redirect.github.com/pandas-dev/pandas/compare/v3.0.4...v3.0.5)\n\nWe are pleased to announce the release of pandas 3.0.5.\nThis is a patch release in the 3.0.x series and includes some regression\nfixes and bug fixes. We recommend that all users of the 3.0.x series\nupgrade to this version.\n\nSee the [full\nwhatsnew](https://pandas.pydata.org/docs/whatsnew/v3.0.5.html) for a\nlist of all the changes.\n\nPandas 3.0 supports Python 3.11 and higher.\nThe release can be installed from PyPI:\n\n```\npython -m pip install --upgrade pandas==3.0.*\n```\n\nOr from conda-forge\n\n```\nconda install -c conda-forge pandas=3.0\n```\n\nPlease report any issues with the release on the [pandas issue\ntracker](https://redirect.github.com/pandas-dev/pandas/issues).\n\nThanks to all the contributors who made this release possible.\n\n</details>\n\n<details>\n<summary>prometheus/client_python (prometheus_client)</summary>\n\n###\n[`v0.26.0`](https://redirect.github.com/prometheus/client_python/releases/tag/v0.26.0)\n\n[Compare\nSource](https://redirect.github.com/prometheus/client_python/compare/v0.25.0...v0.26.0)\n\n#### What's Changed\n\n- Expose measured duration on Timer context manager by\n[@&#8203;vokracko](https://redirect.github.com/vokracko) in\n[#&#8203;1166](https://redirect.github.com/prometheus/client_python/pull/1166)\n- Use specific exception for duplicate timeseries by\n[@&#8203;kajinamit](https://redirect.github.com/kajinamit) in\n[#&#8203;1074](https://redirect.github.com/prometheus/client_python/pull/1074)\n- Make clear() a no-op for label-less metrics (fixes\n[#&#8203;707](https://redirect.github.com/prometheus/client_python/issues/707))\nby [@&#8203;ompathakbaap](https://redirect.github.com/ompathakbaap) in\n[#&#8203;1184](https://redirect.github.com/prometheus/client_python/pull/1184)\n- Use object instead of Any for labels() parameters by\n[@&#8203;gregoiredx](https://redirect.github.com/gregoiredx) in\n[#&#8203;1186](https://redirect.github.com/prometheus/client_python/pull/1186)\n- Add TLS version parameters for start\\_wsgi\\_server by\n[@&#8203;vyzigold](https://redirect.github.com/vyzigold) in\n[#&#8203;1178](https://redirect.github.com/prometheus/client_python/pull/1178)\n- Validate Enum arguments before registering the collector by\n[@&#8203;sean-kim05](https://redirect.github.com/sean-kim05) in\n[#&#8203;1189](https://redirect.github.com/prometheus/client_python/pull/1189)\n- Do not emit a leading zero in floatToGoString exponents >= 10 by\n[@&#8203;sean-kim05](https://redirect.github.com/sean-kim05) in\n[#&#8203;1190](https://redirect.github.com/prometheus/client_python/pull/1190)\n- fix: make test suite pass on Windows and Python 3.12+ by\n[@&#8203;MelvinjoseC](https://redirect.github.com/MelvinjoseC) in\n[#&#8203;1185](https://redirect.github.com/prometheus/client_python/pull/1185)\n- Parse the native histogram sum as a float by\n[@&#8203;sean-kim05](https://redirect.github.com/sean-kim05) in\n[#&#8203;1192](https://redirect.github.com/prometheus/client_python/pull/1192)\n- Remove nameless collectors from the registry on unregister by\n[@&#8203;sean-kim05](https://redirect.github.com/sean-kim05) in\n[#&#8203;1191](https://redirect.github.com/prometheus/client_python/pull/1191)\n- Fix operator precedence allowing exemplars on any metric type by\n[@&#8203;sean-kim05](https://redirect.github.com/sean-kim05) in\n[#&#8203;1188](https://redirect.github.com/prometheus/client_python/pull/1188)\n\n#### New Contributors\n\n- [@&#8203;vokracko](https://redirect.github.com/vokracko) made their\nfirst contribution in\n[#&#8203;1166](https://redirect.github.com/prometheus/client_python/pull/1166)\n- [@&#8203;ompathakbaap](https://redirect.github.com/ompathakbaap) made\ntheir first contribution in\n[#&#8203;1183](https://redirect.github.com/prometheus/client_python/pull/1183)\n- [@&#8203;gregoiredx](https://redirect.github.com/gregoiredx) made\ntheir first contribution in\n[#&#8203;1186](https://redirect.github.com/prometheus/client_python/pull/1186)\n- [@&#8203;vyzigold](https://redirect.github.com/vyzigold) made their\nfirst contribution in\n[#&#8203;1178](https://redirect.github.com/prometheus/client_python/pull/1178)\n- [@&#8203;sean-kim05](https://redirect.github.com/sean-kim05) made\ntheir first contribution in\n[#&#8203;1189](https://redirect.github.com/prometheus/client_python/pull/1189)\n- [@&#8203;MelvinjoseC](https://redirect.github.com/MelvinjoseC) made\ntheir first contribution in\n[#&#8203;1185](https://redirect.github.com/prometheus/client_python/pull/1185)\n\n**Full Changelog**:\n<https://github.com/prometheus/client_python/compare/v0.25.0...v0.26.0>\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am every weekday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yNzUuMiIsInVwZGF0ZWRJblZlciI6IjQzLjI4MC4wIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
-          "timestamp": "2026-07-24T21:13:05Z",
-          "tree_id": "2b41bc3c6634a4cd6c057b9f245831e7c44f8de1",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/34e6604052df66b6297f2fdbb4c760993f21d37d"
-        },
-        "date": 1784930839513,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.96720018122433,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.37839280173752,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 20.081640625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 20.69140625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94992.12040361251,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94992.12040361251,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001659,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 3233834.066949084,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 3036228.255063016,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 34.04318224720987,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0.026947367936372757,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.06308287388457,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.43424926093046,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.88359375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 19.07421875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94991.30354616036,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94965.70588962581,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001831,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2905662.306250234,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 3011839.998403876,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 30.59696423072292,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.18864746391773224,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 31.682985257292156,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 32.553660610746036,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 29.1546875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 29.64453125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94981.1626493417,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 95160.34220495442,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.002282,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 801157.5392800379,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1150223.7257717664,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 8.419027514156275,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.93282549463038,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.22660554664222,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 20.543359375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 20.94140625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94983.42774564595,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94983.42774564595,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001805,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 3139130.102078517,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1168493.5474271977,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 33.04924002621515,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 36.84004569704156,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 37.424535683909376,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 19.93515625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 20.14453125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94982.91013550003,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94982.91013550003,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001914,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 1264088.1485760408,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1152944.291742356,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 13.308585163085938,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.30106434995292,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.4987805632931,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 20.54296875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 20.78515625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94991.40802714393,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94991.40802714393,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001809,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 1278102.2034181538,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 3012557.383548201,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 13.454924292236349,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -42000,6 +41580,426 @@ window.BENCHMARK_DATA = {
             "value": 8.47696275098978,
             "unit": "bytes/log",
             "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "8d6ef9af28194c817066ad3c51d3b928259c9e84",
+          "message": "Optimize raw OTLP log transformation in the ClickHouse exporter (#3712)\n\n# Change Summary\n\nOptimizes the ClickHouse exporter transformation path for raw OTLP log\nrequests.\n\nThe exporter now builds the final ClickHouse Arrow columns directly from\nthe\nserialized OTLP protobuf view, avoiding the intermediate conversion into\nOTAP\nArrow records and the subsequent generic transformation pipeline.\n\nIf the direct path cannot process an input, the exporter automatically\nattempts\nthe existing OTLP-to-OTAP conversion path. OTAP logs, traces, and other\npayload\ntypes continue to use their existing paths.\n\nThis PR builds on the specialized OTAP path merged in #3711 and has been\nrebased\nonto current `main`.\n\n## Performance impact\n\n### End-to-end saturation benchmark\n\nBenchmark params:\n\n- 8,192-log batches\n- synchronous ClickHouse inserts\n- `max_in_flight: 10`\n- one df_engine core\n- six ClickHouse cores\n- twelve traffic-generator cores\n- ClickHouse 25.6\n- three 60-second repetitions per scenario\n\nMedian results for DFE OTLP logs:\n\n| Metric | Current `main` | This change | Impact |\n| --- | ---: | ---: | ---: |\n| Max written throughput | 432,568 logs/s | 543,418 logs/s | +25.6% /\n1.26x |\n| DFE CPU at approximately 100,000 logs/s | 35.21% | 31.04% | -11.8% |\n\nWritten throughput at the fixed offered load remained approximately\n100,000\nlogs/s, as expected. Capacity throughput CV was 4.63% for `main` and\n1.01% for\nthis change. Final post-drain validation found no lost logs in any\nsaturation\nrepetition.\n\nThese saturation results indicate that raw OTLP log workloads can gain\napproximately 26% maximum throughput while using approximately 12% less\nDFE CPU\nat 100,000 logs/s. \n\n### Transformation microbenchmark\n\nThe 8,192-log Criterion benchmark was run on a\npinned CPU with 50 samples, a 2-second warm-up, and a 5-second\nmeasurement\nperiod:\n\n| Path | Median time | Throughput |\n| --- | ---: | ---: |\n| Legacy OTLP-to-OTAP transformation | 5.682 ms | 1.44M logs/s |\n| Direct OTLP transformation | 2.510 ms | 3.26M logs/s |\n| Impact | -55.8% | 2.26x |\n\nThis microbenchmark measures transformation only and excludes ClickHouse\nI/O.\n\n## What issue does this PR close?\n\n- Related to #3512\n\n## How are these changes tested?\n\nAutomated tests verify:\n\n- logical output parity with the existing path, including column names,\nrow\n  order, and values\n- logs with complete and omitted attribute sets\n- multiple resources and scopes with mixed content\n- nested map and slice attribute values\n- byte attributes encoded as base64\n- empty OTLP requests\n- malformed protobuf rejection by the direct transformer so the exporter\ncan\n  attempt the existing path\n- raw OTLP routing being limited to the appropriate payload format\n- independent direct-path and fallback telemetry counters\n- Arrow-to-ClickHouse binding through an ignored test that requires a\nlive\n  ClickHouse instance\n\n## Are there any user-facing changes?\n\nYes. Raw OTLP log requests are transformed more efficiently before\ninsertion\ninto ClickHouse.\n\nThere is no new configuration and no expected change to the ClickHouse\ntable\nschema or logical values. Inputs that cannot use the direct path\nautomatically\nattempt the existing conversion path.\n\n### Changelog\n\n- [x] Added a `.chloggen/*.yaml` entry\n- [ ] This PR is a `chore` (indicated in title)\n- [ ] This is a documentation-only PR.",
+          "timestamp": "2026-08-14T20:42:44Z",
+          "tree_id": "e512e9ce25edc980492ba91ffd9560d85ab80fbb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8d6ef9af28194c817066ad3c51d3b928259c9e84"
+        },
+        "date": 1786743610364,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 5.263157844543457,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 65.34082600663578,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.55277391438726,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.156640625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.921875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94966.94200748719,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 89968.68190182997,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.006962,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 1255067.3737282178,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3018334.291863634,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 13.950047363122362,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 5.264044761657715,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.77773837425815,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.09762324215733,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.71796875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.3125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94974.47880849945,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 89974.98000825418,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.002005,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3106461.9645023304,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1167175.46040104,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 34.52584223099964,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 5.263157844543457,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 65.05110741789052,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.52816023509396,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.2734375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 17.66796875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94991.48401345819,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 89991.93222327619,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001793,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2875067.562880055,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3011189.7387469644,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 31.9480590298563,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 4.99452543258667,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 32.03816910603551,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 32.95805971294804,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 28.286328125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 29.06640625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94974.92039760998,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 90231.373880657,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001912,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 769588.112625833,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1150112.1747636646,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 8.529052363136083,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 37.47531314217374,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 37.928275862068965,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.2015625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.671875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94976.58530020577,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94976.58530020577,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.003246,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 1231252.3331903098,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1152355.774960049,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 12.96374605697308,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 5.263157844543457,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.94294277414325,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.19267557753226,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.495703125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.828125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94966.79486017713,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 89968.54249911518,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.006993,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3187153.6754459096,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3025198.583799638,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 35.42520070809477,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Egress Bytes Per Log"
           }
         ]
       }
