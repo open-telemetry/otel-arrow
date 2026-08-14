@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786691345139,
+  "lastUpdate": 1786726960655,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -14368,6 +14368,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 113.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 100.6,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0632fe29fd1a5feda7a0d0170f173b49ee20e693",
+          "message": "feat: extend OPL type hierarchy to include metric types (#3737)\n\n# Change Summary\n\nExtends the type hierarchy of OPL to make various types of metrics\nconcrete types of the `Metric` signal:\n\n```\nSignal\n|- Log\n|- Span\n|- Metric\n    |- Gauge\n    |- Sum\n    |- Hisotgram\n    |- ExponentialHistogram\n    |- Summary\n```\n\nAllows writing expressions such as:\n\n```\n// keep only histogram metrics\nmetrics | where is Histogram\n\n// only apply transformation to gaueges or sums\nmetrics | if (is Gauge or is Sum) {\n // ...\n}\n```\n\n```\n// note - this is also allowed if the stream type is not `Metrics` e.g.\nsignals | if (is Gauge) { /* ... */ }\n// is equivalent to\nsignals | if (is Metric and is Gauge) { /* ... */ }\n// is equivalent to\nsignals | if (is Metric) { if (is Gauge) { /* ... */ } }\n```\n\nAdds a syntax sugar for applying pipelines directly to some specifig\nmetric type. E.g. the \"source\" of an OPL program can be `guages`,\n`sums`, `hisotgrams`, `exponential_hisotgrams` or `summaries` and the\npipeline will be applied only to rows containing a metric of this type,\nothers are passthrough.\n\ne.g.\n```\ngauges | // ... pipeline\n\n// is equivalent to\n\nsignals | if (is Gauge) {\n  // ... pipeline\n}\n```\n\nChanges:\n- adds support for this soucr in transform process for OPL only\n- OPL parser support for metric type names and source identifiers\n- implementation of query-engine expression planner\n- various tests\n\nNote: we don't have the same sugar in KQL parser to identify metrics\ntype by the source name, so in transform processor it continues to only\nallow KQL programs where the source is `logs`, `metrics`, `traces`\n\n<!--Replace with a brief summary of the change in this PR-->\n\n## What issue does this PR close?\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #3721\n\n## How are these changes tested?\n\nUnit tests\n\n## Are there any user-facing changes?\n\nYes, this new syntax is available in configuraiton for the transform\nprocessor\n\n <!-- If yes, provide further info below -->\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry",
+          "timestamp": "2026-08-14T15:46:54Z",
+          "tree_id": "7f66e3fd391f92504a30bd71e74fc5f94911f8a9",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0632fe29fd1a5feda7a0d0170f173b49ee20e693"
+        },
+        "date": 1786726945516,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 81.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 69.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 113.27,
             "unit": "MB"
           },
           {
