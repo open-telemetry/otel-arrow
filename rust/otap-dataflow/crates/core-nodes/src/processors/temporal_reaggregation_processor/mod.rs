@@ -3743,7 +3743,12 @@ mod tests {
             if s.descriptor().name != "processor.temporal_reaggregation.pdata" {
                 continue;
             }
-            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == metric_name) {
+            if let Some(idx) = s
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|f| f.name == metric_name)
+            {
                 let mut match_outcome = true;
                 let mut match_reason = true;
                 let mut match_error = true;
@@ -3783,7 +3788,7 @@ mod tests {
                 .unwrap();
 
             let snaps = collect_telemetry(&mut ctx).await;
-            
+
             assert_eq!(metric_count(&snaps, "operations", None, None, None), 1);
             assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
         });
@@ -3803,15 +3808,24 @@ mod tests {
 
                 ctx.process(Message::PData(full_batch)).await.unwrap();
                 ctx.process(Message::PData(overflow_batch)).await.unwrap();
-                
+
                 let snaps = collect_telemetry(&mut ctx).await;
-                
+
                 // 2 inputs processed
                 assert_eq!(metric_count(&snaps, "operations", None, None, None), 2);
                 assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
-                
+
                 // successful and failed flushes retain their exact reason
-                assert_eq!(metric_count(&snaps, "flushes", Some("success"), Some("id_overflow"), None), 1);
+                assert_eq!(
+                    metric_count(
+                        &snaps,
+                        "flushes",
+                        Some("success"),
+                        Some("id_overflow"),
+                        None
+                    ),
+                    1
+                );
             },
         );
     }
@@ -3820,19 +3834,31 @@ mod tests {
     /// Guarantees: metric names, units, and attribute values match the documented schema.
     #[test]
     fn test_telemetry_stream_cardinality_overflow() {
-        run_processor_test(json!({ "max_stream_cardinality": 2 }), |mut ctx| async move {
-            let batch1 = make_otlp_bytes_pdata(make_n_gauge_metrics(2));
-            let batch2 = make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(1, 2));
+        run_processor_test(
+            json!({ "max_stream_cardinality": 2 }),
+            |mut ctx| async move {
+                let batch1 = make_otlp_bytes_pdata(make_n_gauge_metrics(2));
+                let batch2 = make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(1, 2));
 
-            ctx.process(Message::PData(batch1)).await.unwrap();
-            ctx.process(Message::PData(batch2)).await.unwrap();
+                ctx.process(Message::PData(batch1)).await.unwrap();
+                ctx.process(Message::PData(batch2)).await.unwrap();
 
-            let snaps = collect_telemetry(&mut ctx).await;
+                let snaps = collect_telemetry(&mut ctx).await;
 
-            assert_eq!(metric_count(&snaps, "operations", None, None, None), 2);
-            assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
-            assert_eq!(metric_count(&snaps, "flushes", Some("success"), Some("stream_cardinality_exceeded"), None), 1);
-        });
+                assert_eq!(metric_count(&snaps, "operations", None, None, None), 2);
+                assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
+                assert_eq!(
+                    metric_count(
+                        &snaps,
+                        "flushes",
+                        Some("success"),
+                        Some("stream_cardinality_exceeded"),
+                        None
+                    ),
+                    1
+                );
+            },
+        );
     }
 
     /// Scenario: The collection timer fires when the buffer is empty, and then again when the buffer has data.
@@ -3843,15 +3869,21 @@ mod tests {
             // empty flush emits nothing
             let _ = ctx.fire_wakeup().await.unwrap();
             let snaps1 = collect_telemetry(&mut ctx).await;
-            assert_eq!(metric_count(&snaps1, "flushes", None, Some("timer"), None), 0);
+            assert_eq!(
+                metric_count(&snaps1, "flushes", None, Some("timer"), None),
+                0
+            );
 
             // non-empty flush records exact reason
             let batch = make_otlp_bytes_pdata(make_n_gauge_metrics(1));
             ctx.process(Message::PData(batch)).await.unwrap();
             let _ = ctx.fire_wakeup().await.unwrap();
-            
+
             let snaps2 = collect_telemetry(&mut ctx).await;
-            assert_eq!(metric_count(&snaps2, "flushes", Some("success"), Some("timer"), None), 1);
+            assert_eq!(
+                metric_count(&snaps2, "flushes", Some("success"), Some("timer"), None),
+                1
+            );
         });
     }
 
@@ -3862,16 +3894,19 @@ mod tests {
         run_processor_test(json!({}), |mut ctx| async move {
             let batch = make_otlp_bytes_pdata(make_n_gauge_metrics(1));
             ctx.process(Message::PData(batch)).await.unwrap();
-            
+
             ctx.process(Message::Control(NodeControlMsg::Shutdown {
                 deadline: Instant::now() + Duration::from_secs(5),
                 reason: "test".to_string(),
             }))
-                .await
-                .unwrap();
+            .await
+            .unwrap();
 
             let snaps = collect_telemetry(&mut ctx).await;
-            assert_eq!(metric_count(&snaps, "flushes", Some("success"), Some("shutdown"), None), 1);
+            assert_eq!(
+                metric_count(&snaps, "flushes", Some("success"), Some("shutdown"), None),
+                1
+            );
         });
     }
 }
