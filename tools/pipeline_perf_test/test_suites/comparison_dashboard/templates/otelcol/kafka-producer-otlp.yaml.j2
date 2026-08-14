@@ -19,6 +19,15 @@ exporters:
       compression: {{ kafka_producer_compression | default("none") }}
       max_message_bytes: {{ kafka_producer_max_message_bytes | default(1000000) }}
       flush_max_messages: {{ kafka_producer_flush_max_messages | default(0) }}
+    # The Go collector's Kafka producer has no producer-level in-flight-batch
+    # cap (unlike DFE's `max_in_flight` and rotel's MAX_CONCURRENT_SENDS). The
+    # closest achievable equivalent is the exporterhelper sending queue, whose
+    # `num_consumers` bounds how many pdata batches are exported concurrently.
+    # Normalized to the same value as DFE/rotel for the exporter comparison.
+    sending_queue:
+      enabled: true
+      num_consumers: {{ kafka_producer_max_in_flight | default(10) }}
+      queue_size: {{ kafka_producer_max_in_flight | default(10) }}
     logs:
       topic: otel-logs
       encoding: otlp_proto

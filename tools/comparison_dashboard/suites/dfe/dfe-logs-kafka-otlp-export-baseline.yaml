@@ -41,6 +41,11 @@ variables:
   kafka_producer_batch_num_messages: 10000
   kafka_producer_queue_buffering_max_messages: 100000
   kafka_producer_flush_max_messages: 0
+  # Normalized in-flight delivery depth across all three exporters (see
+  # KAFKA_BENCHMARK_COMPARISON.md). DFE applies it via its native exporter
+  # `max_in_flight`; rotel is fixed at MAX_CONCURRENT_SENDS=1000; the Go
+  # collector approximates it via exporterhelper sending_queue.num_consumers.
+  kafka_producer_max_in_flight: 1000
 
   # --- Canonical Kafka consumer tuning (single source of truth) ---
   kafka_consumer_group_id: kafka-benchmark-consumer

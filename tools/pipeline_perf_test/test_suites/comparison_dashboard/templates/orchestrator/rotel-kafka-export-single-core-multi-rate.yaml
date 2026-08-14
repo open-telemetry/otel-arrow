@@ -77,6 +77,11 @@ components:
           - "{{max_message_bytes}}"
           - "--kafka-exporter-partitioner"
           - "{{partitioner}}"
+          # rotel's Kafka exporter keeps its in-flight deliveries bounded by a
+          # hardcoded MAX_CONCURRENT_SENDS=1000 (async delivery-future pool);
+          # there is no CLI/custom-config flag to change it. This is rotel's
+          # analog of DFE's `max_in_flight` and is the value DFE/OTC are
+          # normalized to for the exporter comparison.
           - "--kafka-exporter-custom-config"
           - "batch.num.messages={{batch_num_messages}},queue.buffering.max.messages={{queue_buffering}}"
     monitoring:

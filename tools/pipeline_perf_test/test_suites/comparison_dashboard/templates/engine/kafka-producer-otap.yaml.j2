@@ -41,6 +41,11 @@ groups:
 {%- endif %}
               linger_ms: {{ kafka_producer_linger_ms | default(5) }}
               max_message_bytes: {{ kafka_producer_max_message_bytes | default(1000000) }}
+              # Concurrent in-flight Kafka deliveries before intake parks
+              # (normalized across exporters). rotel is fixed at
+              # MAX_CONCURRENT_SENDS=1000; the Go collector approximates this
+              # via exporterhelper sending_queue.num_consumers.
+              max_in_flight: {{ kafka_producer_max_in_flight | default(1) }}
               partitioning_strategy: {{ kafka_producer_partitioner | default("consistent_random") }}
               producer_config:
                 batch.num.messages: "{{ kafka_producer_batch_num_messages | default(10000) }}"
