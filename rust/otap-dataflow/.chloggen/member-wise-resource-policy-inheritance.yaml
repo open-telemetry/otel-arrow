@@ -1,8 +1,0 @@
-change_type: enhancement
-component: pipeline
-note: Resolve resource policy members independently across configuration scopes.
-issues: [3529]
-subtext: >-
-  A narrower core_allocation, memory_limiter, or rate_limiters declaration no
-  longer suppresses unrelated resource members inherited from broader scopes.
-  The rate_limiters named map still resolves as one policy family.
