@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1, user-scalable=yes" />
+  <title>ClickHouse Nightly Benchmarks</title>
+  <style>
+    html {
+      font-family: BlinkMacSystemFont,-apple-system,"Segoe UI",Roboto,Oxygen,Ubuntu,Cantarell,"Fira Sans","Droid Sans","Helvetica Neue",Helvetica,Arial,sans-serif;
+      -webkit-font-smoothing: antialiased;
+      background-color: #fff;
+      font-size: 16px;
+    }
+    body { color: #4a4a4a; margin: 8px; font-size: 1em; font-weight: 400; }
+    header { margin-bottom: 8px; display: flex; flex-direction: column; }
+    main { width: 100%; display: flex; flex-direction: column; }
+    a { color: #3273dc; cursor: pointer; text-decoration: none; }
+    a:hover { color: #000; }
+    button {
+      color: #fff;
+      background-color: #3298dc;
+      border-color: transparent;
+      cursor: pointer;
+      padding: 6px 10px;
+      text-align: center;
+    }
+    button:hover { background-color: #2793da; }
+    footer { margin-top: 16px; display: flex; align-items: center; }
+    .spacer { flex: auto; }
+    .small { font-size: 0.75rem; }
+    .header-label { margin-right: 4px; }
+    .metric-section { margin: 24px 0; }
+    .section-title { margin: 0; font-size: 2rem; text-align: center; }
+    .section-note { margin: 4px 0 16px; text-align: center; color: #666; }
+    .benchmark-set { margin: 8px 0; width: 100%; display: flex; flex-direction: column; }
+    .benchmark-title { font-size: 1.5rem; font-weight: 600; word-break: break-word; text-align: center; }
+    .benchmark-graphs {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-around;
+      align-items: center;
+      flex-wrap: wrap;
+      width: 100%;
+    }
+    .benchmark-chart { max-width: 1000px; }
+    .empty { margin: 12px; padding: 16px; border: 1px dashed #aaa; text-align: center; color: #666; }
+  </style>
+</head>
+<body>
+  <header id="header">
+    <h1>ClickHouse Nightly Benchmarks</h1>
+    <div class="header-item">
+      <strong class="header-label">Last Update:</strong><span id="last-update"></span>
+    </div>
+    <div class="header-item">
+      <strong class="header-label">Repository:</strong><a id="repository-link" rel="noopener"></a>
+    </div>
+    <div class="header-item">
+      <a href="../clickhouse-throughput/">Throughput details</a> |
+      <a href="../clickhouse-resources/">Resource details</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section id="throughput" class="metric-section">
+      <h2 class="section-title">ClickHouse Throughput</h2>
+      <p class="section-note">Higher is better.</p>
+      <div class="section-content"></div>
+    </section>
+    <section id="cpu" class="metric-section">
+      <h2 class="section-title">ClickHouse CPU and Resource Usage</h2>
+      <p class="section-note">Lower is better.</p>
+      <div class="section-content"></div>
+    </section>
+    <section id="memory" class="metric-section">
+      <h2 class="section-title">ClickHouse Memory Usage</h2>
+      <p class="section-note">Lower is better.</p>
+      <div class="section-content"></div>
+    </section>
+  </main>
+
+  <footer>
+    <button id="dl-button">Download data as JSON</button>
+    <div class="spacer"></div>
+    <div class="small">Powered by <a rel="noopener" href="https://github.com/marketplace/actions/continuous-benchmark">github-action-benchmark</a></div>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@2.9.2/dist/Chart.min.js"></script>
+  <script>
+    'use strict';
+    (async function() {
+      const throughput = await loadData('../clickhouse-throughput/data.js');
+      const resources = await loadData('../clickhouse-resources/data.js');
+      const available = [throughput, resources].filter(Boolean);
+      const latest = available.reduce((value, data) => Math.max(value, data.lastUpdate || 0), 0);
+      document.getElementById('last-update').textContent = latest ? new Date(latest).toString() : 'No data available';
+      const repoUrl = available.length ? available[0].repoUrl : 'https://github.com/open-telemetry/otel-arrow';
+      const repoLink = document.getElementById('repository-link');
+      repoLink.href = repoUrl;
+      repoLink.textContent = repoUrl;
+
+      renderSection('throughput', collect(throughput, () => true), '#38a169', 'No throughput data available');
+      renderSection('cpu', collect(resources, name => !isMemory(name)), '#e53e3e', 'No CPU or resource data available');
+      renderSection('memory', collect(resources, isMemory), '#3182ce', 'No memory data available');
+
+      document.getElementById('dl-button').onclick = () => {
+        const blob = new Blob([JSON.stringify({throughput, resources}, null, 2)], {type: 'application/json'});
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'clickhouse_benchmark_data.json';
+        link.click();
+        URL.revokeObjectURL(link.href);
+      };
+
+      function loadData(src) {
+        return new Promise(resolve => {
+          delete window.BENCHMARK_DATA;
+          const script = document.createElement('script');
+          script.src = src;
+          script.onload = () => {
+            const data = window.BENCHMARK_DATA || null;
+            delete window.BENCHMARK_DATA;
+            script.remove();
+            resolve(data);
+          };
+          script.onerror = () => {
+            delete window.BENCHMARK_DATA;
+            script.remove();
+            resolve(null);
+          };
+          document.head.appendChild(script);
+        });
+      }
+
+      function collect(data, include) {
+        const scenarios = new Map();
+        if (!data || !data.entries) return scenarios;
+        for (const entries of Object.values(data.entries)) {
+          for (const entry of entries) {
+            for (const bench of entry.benches || []) {
+              if (!include(bench.name)) continue;
+              const scenario = getScenario(bench.extra);
+              if (!scenarios.has(scenario)) scenarios.set(scenario, new Map());
+              const metrics = scenarios.get(scenario);
+              if (!metrics.has(bench.name)) metrics.set(bench.name, []);
+              metrics.get(bench.name).push({commit: entry.commit, date: entry.date, bench});
+            }
+          }
+        }
+        for (const metrics of scenarios.values()) {
+          for (const points of metrics.values()) points.sort((a, b) => a.date - b.date);
+        }
+        return scenarios;
+      }
+
+      function getScenario(extra) {
+        if (!extra) return 'Benchmark';
+        const metricSeparator = extra.lastIndexOf(' - ');
+        const fullName = metricSeparator >= 0 ? extra.slice(0, metricSeparator) : extra;
+        const suiteSeparator = fullName.lastIndexOf('/');
+        return suiteSeparator >= 0 ? fullName.slice(suiteSeparator + 1) : fullName;
+      }
+
+      function isMemory(name) {
+        const value = name.toLowerCase();
+        return value.includes('memory') || value.includes('ram');
+      }
+
+      function renderSection(id, scenarios, color, emptyMessage) {
+        const content = document.querySelector('#' + id + ' .section-content');
+        if (!scenarios.size) {
+          const empty = document.createElement('div');
+          empty.className = 'empty';
+          empty.textContent = emptyMessage;
+          content.appendChild(empty);
+          return;
+        }
+        for (const [scenarioName, metrics] of scenarios) {
+          const set = document.createElement('div');
+          set.className = 'benchmark-set';
+          const title = document.createElement('h3');
+          title.className = 'benchmark-title';
+          title.textContent = scenarioName;
+          set.appendChild(title);
+          const graphs = document.createElement('div');
+          graphs.className = 'benchmark-graphs';
+          set.appendChild(graphs);
+          content.appendChild(set);
+          for (const [metricName, points] of metrics) renderChart(graphs, metricName, points, color);
+        }
+      }
+
+      function renderChart(parent, name, points, color) {
+        const canvas = document.createElement('canvas');
+        canvas.className = 'benchmark-chart';
+        parent.appendChild(canvas);
+        new Chart(canvas, {
+          type: 'line',
+          data: {
+            labels: points.map(point => point.commit.id.slice(0, 7)),
+            datasets: [{label: name, data: points.map(point => point.bench.value), borderColor: color, backgroundColor: color + '60'}]
+          },
+          options: {
+            scales: {
+              xAxes: [{scaleLabel: {display: true, labelString: 'commit'}}],
+              yAxes: [{scaleLabel: {display: true, labelString: points[0].bench.unit || ''}, ticks: {beginAtZero: true}}]
+            },
+            tooltips: {callbacks: {
+              afterTitle: items => {
+                const point = points[items[0].index];
+                const user = point.commit.committer.username || point.commit.committer.name;
+                return '\n' + point.commit.message + '\n\n' + point.commit.timestamp + ' committed by @' + user + '\n';
+              },
+              label: item => item.value + ' ' + (points[item.index].bench.unit || ''),
+              afterLabel: item => points[item.index].bench.extra ? '\n' + points[item.index].bench.extra : ''
+            }},
+            onClick: (_event, active) => {
+              if (active.length) window.open(points[active[0]._index].commit.url, '_blank');
+            }
+          }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
