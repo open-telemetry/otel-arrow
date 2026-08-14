@@ -41,7 +41,6 @@ impl Hash for MapValueOrRef<'_> {
                 m.len().hash(state);
                 for (k, v) in &m.values {
                     k.hash(state);
-                    [1].hash(state);
                     v.hash(state);
                 }
             }
