@@ -27,6 +27,14 @@ pub struct ClickhouseExporterMetrics {
     /// Total number of log batches sent through the generic transform fallback.
     #[metric(unit = "{batch}")]
     pub log_transform_fallback_batches: Counter<u64>,
+
+    /// Total number of raw OTLP log batches transformed directly to ClickHouse columns.
+    #[metric(unit = "{batch}")]
+    pub log_otlp_direct_path_batches: Counter<u64>,
+
+    /// Total number of raw OTLP log batches sent through the legacy transform fallback.
+    #[metric(unit = "{batch}")]
+    pub log_otlp_transform_fallback_batches: Counter<u64>,
 }
 
 impl ClickhouseExporterMetrics {
@@ -47,6 +55,16 @@ impl ClickhouseExporterMetrics {
     /// Records one log batch sent through the generic fallback path.
     pub fn record_log_transform_fallback(&mut self) {
         self.log_transform_fallback_batches.inc();
+    }
+
+    /// Records one raw OTLP log batch transformed directly to ClickHouse columns.
+    pub fn record_log_otlp_direct_path(&mut self) {
+        self.log_otlp_direct_path_batches.inc();
+    }
+
+    /// Records one raw OTLP log batch transformed by the legacy fallback path.
+    pub fn record_log_otlp_transform_fallback(&mut self) {
+        self.log_otlp_transform_fallback_batches.inc();
     }
 }
 
@@ -135,5 +153,20 @@ mod tests {
 
         assert_eq!(metrics.log_fast_path_batches.get(), 1);
         assert_eq!(metrics.log_transform_fallback_batches.get(), 2);
+    }
+
+    /// Scenario: direct and fallback raw OTLP log transforms are both observed.
+    /// Guarantees: each raw OTLP transform path increments only its dedicated counter.
+    #[test]
+    fn otlp_transform_path_counters_are_independent() {
+        let mut metrics = ClickhouseExporterMetrics::default();
+        metrics.record_log_otlp_direct_path();
+        metrics.record_log_otlp_direct_path();
+        metrics.record_log_otlp_transform_fallback();
+
+        assert_eq!(metrics.log_otlp_direct_path_batches.get(), 2);
+        assert_eq!(metrics.log_otlp_transform_fallback_batches.get(), 1);
+        assert_eq!(metrics.log_fast_path_batches.get(), 0);
+        assert_eq!(metrics.log_transform_fallback_batches.get(), 0);
     }
 }
