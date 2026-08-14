@@ -66,20 +66,16 @@ use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 
-/// Root borrowed view over a serialized OTLP logs request.
+/// Implementation of `LogsDataView` backed by protobuf serialized `LogsData` message
 ///
-/// `LogsData` and `ExportLogsServiceRequest` have the same top-level repeated resource-logs field,
-/// so this view accepts either wire representation. It owns no payload data.
+/// TODO: Rename OtlpLogsView similar to OtapLogsView for consistency?
 pub struct RawLogsData<'a> {
-    /// Bytes of the serialized message.
+    /// bytes of the serialized message
     buf: &'a [u8],
 }
 
 impl<'a> RawLogsData<'a> {
-    /// Create a root view without validating the serialized message.
-    ///
-    /// This constructor is intended only for trusted or already validated internal data. Prefer
-    /// [`Self::try_new`] at an ingestion boundary.
+    /// Create a new instance of `RawLogsData`
     #[must_use]
     pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
@@ -87,9 +83,11 @@ impl<'a> RawLogsData<'a> {
 
     /// Construct a [`RawLogsData`] after validating top-level protobuf wire framing.
     ///
-    /// Cost: a single linear walk of `buf` with no allocations. Each top-level field tag is
-    /// decoded, and each value is bounds-checked against the end of `buf`. Length-delimited nested
-    /// messages are not recursively validated; their fields are interpreted lazily on access.
+    /// Cost: a single linear walk of `buf` with no allocations. Each field tag is decoded,
+    /// and each length-delimited or fixed-width field is bounds-checked against the end of
+    /// `buf`. Length-delimited payloads are not recursively decoded as messages; nested
+    /// `ResourceLogs`, `ScopeLogs`, and `LogRecord` content is interpreted lazily on access
+    /// via the view APIs.
     pub fn try_new(buf: &'a [u8]) -> Result<Self, Error> {
         let mut pos = 0;
         while pos < buf.len() {
@@ -156,14 +154,12 @@ impl<'a> TryFrom<&'a OtlpProtoBytes> for RawLogsData<'a> {
     }
 }
 
-/// Borrowed `ResourceLogsView` backed by a serialized `ResourceLogs` message.
+/// Implementation of `ResourceLogsView` backed by protobuf serialized `ResourceLogs` message
 pub struct RawResourceLogs<'a> {
     byte_parser: ProtoBytesParser<'a, ResourceLogsFieldOffsets>,
 }
 
-/// Lazily cached byte ranges for fields used from a `ResourceLogs` message.
-///
-/// Only the first repeated `scope_logs` range is cached; its iterator scans subsequent values.
+/// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct ResourceLogsFieldOffsets {
     resource: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     schema_url: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
@@ -209,14 +205,12 @@ impl FieldRanges for ResourceLogsFieldOffsets {
     }
 }
 
-/// Borrowed `ScopeLogsView` backed by a serialized `ScopeLogs` message.
+/// Implementation of `ScopeLogsView` backed by protobuf serialized `ScopeLogs` message
 pub struct RawScopeLogs<'a> {
     byte_parser: ProtoBytesParser<'a, ScopeLogsFieldOffsets>,
 }
 
-/// Lazily cached byte ranges for fields used from a `ScopeLogs` message.
-///
-/// Only the first repeated log-record range is cached; its iterator scans subsequent values.
+/// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct ScopeLogsFieldOffsets {
     scope: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
     schema_url: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
@@ -261,17 +255,15 @@ impl FieldRanges for ScopeLogsFieldOffsets {
     }
 }
 
-/// Borrowed `LogRecordView` backed by a serialized `LogRecord` message.
+/// Implementation of `LogRecordView` backed by protobuf serialized `LogRecord` message
 pub struct RawLogRecord<'a> {
     bytes_parser: ProtoBytesParser<'a, LogFieldOffsets>,
 }
 
 impl<'a> RawLogRecord<'a> {
-    /// Create an unchecked view of an internally generated serialized log record.
-    ///
-    /// This is exposed specifically for records that encode body and attributes as OTLP bytes.
-    /// External request bytes should be validated through [`RawLogsData::try_new`] before child
-    /// views are constructed.
+    /// Create a new instance of `RawLogRecord`. This is exposed
+    /// specifically for interpreting internally generated log records
+    /// which encode body and attributes as OTLP bytes.
     #[must_use]
     pub fn new(buf: &'a [u8]) -> Self {
         Self {
@@ -280,10 +272,7 @@ impl<'a> RawLogRecord<'a> {
     }
 }
 
-/// Lazily cached byte ranges for fields used from a `LogRecord` message.
-///
-/// Scalar ranges share a field-number-indexed array. Only the first attribute range is cached;
-/// the attribute iterator continues scanning subsequent values as needed.
+/// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct LogFieldOffsets {
     scalar_fields: [Cell<Option<(NonZeroUsize, NonZeroUsize)>>; 13],
     first_attribute: Cell<Option<(NonZeroUsize, NonZeroUsize)>>,
@@ -347,7 +336,8 @@ impl FieldRanges for LogFieldOffsets {
 
 /* ----------------------------- ADAPTER ITERATORS ----------------------- */
 
-/// Iterator of borrowed resource-log views in their protobuf wire order.
+/// Iterator of ResourceLogs - produces implementation of `ResourceLogs` view from byte array
+/// containing a serialized LogsData message
 pub struct ResourceLogsIter<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -375,7 +365,8 @@ impl<'a> Iterator for ResourceLogsIter<'a> {
     }
 }
 
-/// Iterator of borrowed scope-log views in their parent resource's protobuf wire order.
+/// Iterator of ScopeLogs - produces implementation of `ScopeLogs` view from byte array
+/// containing a serialized ResourceLogs message
 pub struct ScopeLogsIter<'a> {
     byte_parser: RepeatedFieldProtoBytesParser<'a, ResourceLogsFieldOffsets>,
 }
@@ -392,7 +383,8 @@ impl<'a> Iterator for ScopeLogsIter<'a> {
     }
 }
 
-/// Iterator of borrowed log-record views in their parent scope's protobuf wire order.
+/// Iterator of LogsRecord - produces implementation of `LogRecord` view from byte array
+/// containing a serialized ScopeLogs message
 pub struct LogRecordsIter<'a> {
     byte_parser: RepeatedFieldProtoBytesParser<'a, ScopeLogsFieldOffsets>,
 }
