@@ -260,7 +260,7 @@
 
       for (const entry of entries) {
         const { commit, date, tool, benches } = entry;
-        const dateStr = new Date(date).toISOString().slice(0, 10); // YYYY-MM-DD
+        const dateStr = new Date(date).toISOString();
 
         if (!dates.includes(dateStr)) {
           dates.push(dateStr);
@@ -298,7 +298,7 @@
 
       for (const entry of entries) {
         const { commit, date, tool, benches } = entry;
-        const dateStr = new Date(date).toISOString().slice(0, 10); // YYYY-MM-DD
+        const dateStr = new Date(date).toISOString();
 
         if (!dates.includes(dateStr)) {
           dates.push(dateStr);
@@ -390,7 +390,7 @@
       results.sort((a, b) => a.name.localeCompare(b.name));
 
       const data = {
-        labels: dates,
+        labels: dates.map(timestamp => timestamp.slice(0, 16).replace('T', ' ')),
         datasets: results.map(({ name, dataset }, index) => {
           const color = COLORS[index % COLORS.length];
           return {
