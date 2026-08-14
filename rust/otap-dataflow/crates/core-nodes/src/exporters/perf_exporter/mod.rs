@@ -36,7 +36,7 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MeasurementMetricSet;
@@ -51,7 +51,7 @@ pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:exporter:perf";
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -83,7 +83,7 @@ impl PerfExporter {
     /// creates a perf exporter with the provided config
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         PerfExporter {
             config,

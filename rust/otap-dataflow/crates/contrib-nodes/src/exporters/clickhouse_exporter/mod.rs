@@ -44,7 +44,7 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::TryIntoWithOptions;
@@ -102,7 +102,7 @@ const SUPPORTED_ARROW_PAYLOAD_TYPES: &[ArrowPayloadType] = &[
 /// Clickhouse exporter that sends OTAP data to Clickhouse backend
 pub struct ClickhouseExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
     ch_metrics: MetricSet<ClickhouseExporterMetrics>,
 }
 
@@ -113,7 +113,7 @@ impl ClickhouseExporter {
         config: &serde_json::Value,
     ) -> Result<Self, otap_df_config::error::Error> {
         let ch_metrics = pipeline_ctx.register_metrics::<ClickhouseExporterMetrics>();
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         let patch: ConfigPatch = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -137,7 +137,7 @@ impl ClickhouseExporter {
 
     fn terminal_state(
         deadline: Instant,
-        mut pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+        mut pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
         ch_metrics: MetricSet<ClickhouseExporterMetrics>,
     ) -> TerminalState {
         let mut snapshots = Vec::new();

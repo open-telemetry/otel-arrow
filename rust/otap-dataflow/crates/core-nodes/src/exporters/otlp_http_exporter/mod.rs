@@ -60,7 +60,7 @@ use secrecy::ExposeSecret;
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use otap_df_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use otap_df_otap::pdata::{Context, OtapPdata};
@@ -76,7 +76,7 @@ pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
 /// Exporter that sends OTLP data via HTTP
 pub struct OtlpHttpExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
     /// Optional bearer token provider resolved from the
     /// `bearer_token_provider` capability. When bound, a fresh
     /// `Authorization: Bearer <token>` is injected on every outgoing
@@ -143,7 +143,7 @@ impl OtlpHttpExporter {
         config: &serde_json::Value,
         token_provider: Option<Box<dyn BearerTokenProvider>>,
     ) -> Result<Self, ConfigError> {
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -837,7 +837,7 @@ fn apply_auth_rejection(auth: &mut Option<BearerAuth>, rejected_generation: Opti
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: &mut MeasurementMetricSet<ExporterExportMetrics>,
     auth_bound: bool,
 ) -> Option<u64> {
     let CompletedExport {
@@ -1629,7 +1629,7 @@ mod test {
         ExporterWrapper::local(
             OtlpHttpExporter {
                 config,
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
                 token_provider: Some(Box::new(provider)),
             },
             node_id,
@@ -2147,7 +2147,7 @@ mod test {
         let exporter = ExporterWrapper::local(
             OtlpHttpExporter {
                 config,
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
                 token_provider: None,
             },
             node_id.clone(),
@@ -2522,7 +2522,7 @@ mod test {
         let controller = ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let mut metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let mut metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);

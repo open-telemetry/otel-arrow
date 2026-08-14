@@ -883,13 +883,13 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `receiver.kafka.messages`
+#### `receiver.messages`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `receiver.kafka.messages.started` | `{message}` | `signal` | Decoded messages admitted to the pipeline send path. |
-| `receiver.kafka.messages.completed` | `{message}` | `signal` | Admitted messages whose receiver work terminated. |
-| `receiver.kafka.messages.payload_size` | `By` | `signal` | Encoded Kafka payload bytes admitted to the pipeline send path. |
+| `receiver.messages.started` | `{message}` | `signal` | Decoded messages admitted to the pipeline send path. |
+| `receiver.messages.completed` | `{message}` | `signal` | Admitted messages whose receiver work terminated. |
+| `receiver.messages.bytes` | `By` | `signal` | Encoded Kafka payload bytes admitted to the pipeline send path. |
 
 `signal` is one of `traces`, `metrics`, or `logs`. Comparing `started` with
 `completed` exposes receiver work abandoned by an interrupted pipeline send.
@@ -956,9 +956,9 @@ value, and an empty assignment resets it to zero.
 
 | Legacy metric | Replacement |
 | --- | --- |
-| `receiver.kafka.messages_received` | Sum `receiver.kafka.messages.started` across `signal`. |
-| `receiver.kafka.bytes_received` | Sum `receiver.kafka.messages.payload_size` across `signal`. |
-| `receiver.kafka.log_msgs_received`, `metric_msgs_received`, `trace_msgs_received` | `receiver.kafka.messages.started` filtered by `signal`. |
+| `receiver.kafka.messages_received` | Sum `receiver.messages.started` across `signal`. |
+| `receiver.kafka.bytes_received` | Sum `receiver.messages.bytes` across `signal`. |
+| `receiver.kafka.log_msgs_received`, `metric_msgs_received`, `trace_msgs_received` | `receiver.messages.started` filtered by `signal`. |
 | `receiver.kafka.acks_received`, `nacks_received` | `receiver.kafka.acknowledgements.responses` with `outcome="success"` or `outcome="refused"`. |
 | `receiver.kafka.processing_errors` | Sum `receiver.kafka.rejections.messages` across its bounded attributes. |
 | `receiver.kafka.unmarshal_failed_traces`, `unmarshal_failed_metrics`, `unmarshal_failed_logs` | `receiver.kafka.rejections.messages{reason="decode"}` filtered by `signal`. |

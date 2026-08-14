@@ -1031,6 +1031,8 @@ pub mod test_support {
 
         // ---- RecordingReporter ----
 
+        /// Scenario: A reporter receives successful, transient, and permanent outcomes.
+        /// Guarantees: Each outcome is retained in its corresponding bounded test collection.
         #[tokio::test]
         async fn recording_reporter_tracks_acks_and_nacks() {
             let reporter = RecordingReporter::new();
@@ -1054,6 +1056,8 @@ pub mod test_support {
             assert_eq!(permanent_reasons[0], "permanent-error");
         }
 
+        /// Scenario: A traces message reaches an exporter configured only for logs.
+        /// Guarantees: The message is permanently nacked and counted as an unconfigured-signal failure.
         #[tokio::test]
         async fn test_export_unconfigured_signal_type_is_nacked() {
             let pipeline_ctx = pipeline_context();
@@ -1095,7 +1099,7 @@ pub mod test_support {
             assert_eq!(
                 exporter
                     .metrics
-                    .pdata
+                    .exports
                     .get(
                         otap_df_telemetry::common_attributes::SignalOutcomeAttributes {
                             signal: SignalType::Traces,
@@ -1122,6 +1126,8 @@ pub mod test_support {
             );
         }
 
+        /// Scenario: A transport header supplies an invalid dynamic Kafka topic.
+        /// Guarantees: The message is permanently nacked and classified as an invalid-topic failure.
         #[tokio::test]
         async fn test_export_invalid_dynamic_topic_is_permanently_nacked() {
             let pipeline_ctx = pipeline_context();

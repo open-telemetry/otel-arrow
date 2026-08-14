@@ -24,7 +24,7 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer;
 use otap_df_pdata::TryIntoWithOptions;
@@ -61,7 +61,7 @@ use config::Config;
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
     async_metrics: MetricSet<OtapGrpcAsyncMetrics>,
     export_latency_window: ExportLatencyWindow,
 }
@@ -209,7 +209,7 @@ impl OTAPExporter {
     /// Creates a new OTAPExporter
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
         let async_metrics = pipeline_ctx.register_metrics::<OtapGrpcAsyncMetrics>();
         OTAPExporter {
             config,
@@ -1841,7 +1841,7 @@ mod tests {
             let mut logs_failed_count = 0;
             for _ in 0..3 {
                 let metrics = metrics_receiver.recv_async().await.unwrap();
-                if metrics.descriptor().name == "exporter.pdata.exports"
+                if metrics.descriptor().name == "exporter.exports"
                     && metrics.measurement_attribute_value("signal") == Some("logs")
                 {
                     match metrics.measurement_attribute_value("outcome") {

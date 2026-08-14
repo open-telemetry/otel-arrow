@@ -28,7 +28,7 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
 use otap_df_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
@@ -83,7 +83,7 @@ pub(crate) const fn default_num_connections() -> usize {
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
 }
 
 /// Declare the OTLP Exporter as a local exporter factory
@@ -133,7 +133,7 @@ impl OTLPExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -678,7 +678,7 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     encoder: &mut Enc,
     make_future: MakeFuture,
     inflight: &mut InFlightExports<Fut, CompletedExport>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: &mut MeasurementMetricSet<ExporterExportMetrics>,
     effect_handler: &EffectHandler<OtapPdata>,
 ) where
     Enc: ProtoBytesEncoder,
@@ -736,7 +736,7 @@ async fn notify_prepare_error(
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: &mut MeasurementMetricSet<ExporterExportMetrics>,
 ) -> SignalClient {
     let CompletedExport {
         result,
@@ -1350,7 +1350,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1474,7 +1474,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1546,7 +1546,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
             },
             node_id.clone(),
             node_config,
@@ -1718,7 +1718,7 @@ mod tests {
             let mut logs_failed_count = 0;
             for _ in 0..2 {
                 let metrics = metrics_receiver.recv_async().await.unwrap();
-                if metrics.descriptor().name == "exporter.pdata.exports"
+                if metrics.descriptor().name == "exporter.exports"
                     && metrics.measurement_attribute_value("signal") == Some("logs")
                 {
                     match metrics.measurement_attribute_value("outcome") {
@@ -2108,7 +2108,7 @@ mod tests {
                     max_in_flight: 1,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
             },
             node_id.clone(),
             node_config,

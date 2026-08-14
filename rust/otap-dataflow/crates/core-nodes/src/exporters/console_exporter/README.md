@@ -192,7 +192,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | PData messages whose console export reached a terminal outcome. A successful outcome means formatting and the stdout write completed without an error. |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | PData messages whose console export reached a terminal outcome. A successful outcome means formatting and the stdout write completed without an error. |
 | `exporter.console.failures.messages` | `{message}` | `format`, `signal`, `error.type` | Failed console exports classified by selected output format and actionable error type. |
 
 `error.type` is one of `otlp_view_creation`, `otap_view_creation`,
@@ -202,7 +202,7 @@ per-measurement attributes.
 
 Console output remains best effort. The exporter ACKs a message after the
 attempt even when `outcome="failure"`, so `node.consumer.consumed.messages`
-describes pipeline completion while `exporter.pdata.exports.messages` describes
+describes pipeline completion while `exporter.exports.messages` describes
 the actual console export result.
 
 ### Events

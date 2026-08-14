@@ -519,34 +519,35 @@ recording updates a bounded in-process aggregate; it does not synchronously send
 a separate request to the telemetry backend. Together, the measurements answer
 different operational questions:
 
-- `exporter.pdata.exports.messages`: Is the exporter succeeding?
+- `exporter.exports.messages`: Is the exporter succeeding?
 - `exporter.kafka.failures.messages`: Why is an export failing?
 - `exporter.kafka.operations.duration`: Is encoding or Kafka delivery slow?
-- `exporter.kafka.exports.duration`: What end-to-end latency does the pipeline
+- `exporter.exports.duration`: What end-to-end latency does the pipeline
   experience?
-- `exporter.kafka.exports.payload.size`: Are encoded messages approaching Kafka
-  size limits, or does payload size correlate with failures?
+- `exporter.kafka.exports.bytes`: Are encoded messages approaching Kafka size
+  limits, or do wire bytes correlate with failures?
 - `exporter.kafka.routing.messages`: Is dynamic topic routing being used as
   expected?
 
-#### `exporter.pdata.exports`
+#### `exporter.exports`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Pdata messages whose Kafka export reached a terminal outcome. |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Pdata messages whose Kafka export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | End-to-end time from receiving pdata through the terminal Kafka delivery result. |
 
 `signal` is one of `traces`, `metrics`, or `logs`. The Kafka exporter emits the
-terminal `outcome` values `success` and `failure`.
+terminal `outcome` values `success` and `failure`. Duration uses a bounded
+exponential histogram.
 
 #### `exporter.kafka.exports`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.kafka.exports.duration` | `s` | `signal`, `outcome` | End-to-end time from receiving pdata through the terminal Kafka delivery result. |
-| `exporter.kafka.exports.payload.size` | `By` | `signal`, `outcome` | Encoded payload size for attempts that reached the Kafka producer. |
+| `exporter.kafka.exports.bytes` | `By` | `signal`, `outcome` | Encoded Kafka payload bytes for attempts that reached the producer. |
 
-Both measurements use bounded exponential histograms. Payload size is absent
-for attempts that fail before encoding completes.
+Wire bytes use a bounded exponential histogram and are absent for attempts that
+fail before encoding completes.
 
 #### `exporter.kafka.operations`
 
@@ -581,11 +582,12 @@ metric attributes, which keeps cardinality bounded for dynamic tenant routing.
 
 | Legacy metric | Replacement |
 | --- | --- |
-| `exporter.kafka.exports.messages` | `exporter.pdata.exports.messages`, preserving the `signal` and `outcome` attributes. |
+| `exporter.pdata.exports.messages` | `exporter.exports.messages`, preserving the `signal` and `outcome` attributes. |
+| `exporter.kafka.exports.messages` | `exporter.exports.messages`, preserving the `signal` and `outcome` attributes. |
 | `exporter.kafka.topic_from_header` | `exporter.kafka.routing.messages{topic.source="header"}`, now also partitioned by `signal`. |
 | `exporter.kafka.topic_from_static_config` | `exporter.kafka.routing.messages{topic.source="static_config"}`, now also partitioned by `signal`. |
 | `exporter.kafka.acks_received` | Removed. An exporter is a terminal node, so downstream acknowledgement controls are not an export outcome. |
-| `exporter.kafka.nacks_received` | Removed. Use `exporter.pdata.exports.messages{outcome="failure"}` for terminal export failures. |
+| `exporter.kafka.nacks_received` | Removed. Use `exporter.exports.messages{outcome="failure"}` for terminal export failures. |
 
 ### Events
 

@@ -419,7 +419,8 @@ impl KafkaReceiver {
             }
             None => Err(KafkaReceiverError::UnknownTopicDecode(
                 EngineError::PdataConversionError {
-                    error: "Unknown kafka topic received unable to convert to PData".to_string(),
+                    error: "Received a message from an unknown Kafka topic; unable to convert it to PData"
+                        .to_string(),
                 },
             )),
         }?;
@@ -4897,7 +4898,7 @@ mod tests {
                 let max_total_deliveries = (total * max_deliveries) as u64;
                 let admitted_messages = measurement_counter(
                     terminal.metrics(),
-                    "receiver.kafka.messages",
+                    "receiver.messages",
                     &[("signal", "traces")],
                     "started",
                 );

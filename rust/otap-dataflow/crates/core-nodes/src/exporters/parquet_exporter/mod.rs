@@ -52,7 +52,7 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
@@ -69,7 +69,7 @@ const PARQUET_EXPORTER_URN: &str = "urn:otel:exporter:parquet";
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
     config: config::Config,
-    pdata_metrics: Option<MeasurementMetricSet<ExporterPDataExportMetrics>>,
+    pdata_metrics: Option<MeasurementMetricSet<ExporterExportMetrics>>,
     io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
 }
 
@@ -122,7 +122,7 @@ impl ParquetExporter {
             }
         })?;
 
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
         let io_metrics = pipeline_ctx.register_metrics::<metrics::ParquetExporterMetrics>();
 
         Ok(ParquetExporter {
@@ -134,7 +134,7 @@ impl ParquetExporter {
 
     fn terminal_state(
         deadline: Instant,
-        mut pdata_metrics: Option<MeasurementMetricSet<ExporterPDataExportMetrics>>,
+        mut pdata_metrics: Option<MeasurementMetricSet<ExporterExportMetrics>>,
         io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
     ) -> TerminalState {
         let mut snapshots = Vec::new();
@@ -1581,13 +1581,13 @@ mod test {
         let mut saw_exports = false;
         telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
             let has_positive_value = iter.into_iter().any(|(_, value)| value.to_f64() > 0.0);
-            if desc.name == "exporter.pdata.exports" && has_positive_value {
+            if desc.name == "exporter.exports" && has_positive_value {
                 saw_exports = true;
             }
         });
         assert!(
             saw_exports,
-            "expected exporter.pdata.exports metrics to be reported"
+            "expected exporter.exports metrics to be reported"
         );
     }
 

@@ -93,7 +93,7 @@ pub struct SignalOutcomeAttributes {
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
 pub struct ReceiverRejectionAttributes {
-    /// Reason the receiver rejected the request or batch.
+    /// Bounded category describing why the receiver rejected the request or batch.
     #[attribute_key = "error.type"]
     pub error_type: ReceiverRejectionErrorType,
 }

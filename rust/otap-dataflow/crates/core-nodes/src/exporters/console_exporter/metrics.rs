@@ -6,7 +6,7 @@
 use super::ConsoleOutputFormat;
 use otap_df_config::SignalType;
 use otap_df_engine::context::PipelineContext;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::Counter;
@@ -60,7 +60,7 @@ struct ConsoleExporterFailureMetrics {
 
 /// Metric sets emitted directly by a console exporter.
 pub(super) struct ConsoleExporterMetrics {
-    export_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    export_metrics: MeasurementMetricSet<ExporterExportMetrics>,
     failure_metrics: MeasurementMetricSet<ConsoleExporterFailureMetrics>,
 }
 
@@ -68,7 +68,7 @@ impl ConsoleExporterMetrics {
     /// Registers console exporter metrics with the selected output format.
     pub(super) fn register(pipeline_ctx: &PipelineContext, format: ConsoleOutputFormat) -> Self {
         Self {
-            export_metrics: ExporterPDataExportMetrics::register(pipeline_ctx),
+            export_metrics: ExporterExportMetrics::register(pipeline_ctx),
             failure_metrics: ConsoleExporterFailureMetrics::register(
                 pipeline_ctx,
                 &ConsoleFormatAttributes { format },
@@ -230,7 +230,7 @@ mod tests {
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 2);
         assert!(snapshots.iter().any(|snapshot| {
-            snapshot.descriptor().name == "exporter.pdata.exports"
+            snapshot.descriptor().name == "exporter.exports"
                 && snapshot.measurement_attribute_value("signal") == Some("traces")
                 && snapshot.measurement_attribute_value("outcome") == Some("failure")
         }));
