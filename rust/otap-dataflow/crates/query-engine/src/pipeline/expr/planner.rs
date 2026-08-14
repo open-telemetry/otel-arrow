@@ -1590,31 +1590,17 @@ impl ExprPlanner {
                     "Metric" => SignalType::Metrics,
                     "Span" => SignalType::Traces,
                     other if let Ok(metric_type) = MetricType::from_str(other) => {
-                        // produce plan equivalent to "is Metric and type == <metric_type>"
-                        // where metric_type is the OTAP metric type determinant (e.g.  1 = Gauge,
-                        // 2 = Sum, 3 = Histogram, etc.  see OTAP spec for all values)
-                        return Ok(Some(ScopedExpr::JoinAndEval {
-                            children: vec![
-                                ScopedExpr::Eval {
-                                    scope: DataScope::Root,
-                                    eval: LeafEval::BatchPredicate(Box::new(
-                                        SignalTypePredicate::new(SignalType::Metrics),
-                                    )),
-                                },
-                                ScopedExpr::Eval {
-                                    scope: DataScope::Root,
-                                    eval: LeafEval::new_df_expr(
-                                        col(consts::METRIC_TYPE).eq(lit(metric_type as u8)),
-                                        false,
-                                    )?,
-                                },
-                            ],
+                        // produce a plan that simply checks if the value in the "type" column
+                        // is equivalent to the metric type discriminant. This will always quickly
+                        // evaluate to `None` for non-metrics batches because projection will not
+                        // find such a column and the result will  be interpreted as `false` in a
+                        // filtering scenario
+                        return Ok(Some(ScopedExpr::Eval {
+                            scope: DataScope::Root,
                             eval: LeafEval::new_df_expr(
-                                col(arg_column_name(0)).and(col(arg_column_name(1))),
+                                col(consts::METRIC_TYPE).eq(lit(metric_type as u8)),
                                 false,
                             )?,
-                            align_children_to_root: false,
-                            default_null_children: false,
                         }));
                     }
                     _ => {
