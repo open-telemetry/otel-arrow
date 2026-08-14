@@ -100,7 +100,7 @@
       repoLink.textContent = repoUrl;
 
       renderSection('throughput', collect(throughput, () => true), '#38a169', 'No throughput data available');
-      renderSection('cpu', collect(resources, name => !isMemory(name)), '#e53e3e', 'No CPU or resource data available');
+      renderSection('cpu', collect(resources, name => name !== 'test_duration' && !isMemory(name)), '#e53e3e', 'No CPU or resource data available');
       renderSection('memory', collect(resources, isMemory), '#3182ce', 'No memory data available');
 
       document.getElementById('dl-button').onclick = () => {
@@ -158,7 +158,13 @@
         const metricSeparator = extra.lastIndexOf(' - ');
         const fullName = metricSeparator >= 0 ? extra.slice(0, metricSeparator) : extra;
         const suiteSeparator = fullName.lastIndexOf('/');
-        return suiteSeparator >= 0 ? fullName.slice(suiteSeparator + 1) : fullName;
+        const rawName = suiteSeparator >= 0 ? fullName.slice(suiteSeparator + 1) : fullName;
+        const labels = {
+          'OTAP-IN-BATCHED-100K': 'df_engine - OTAP - 100K',
+          'OTLP-IN-BATCHED-100K': 'df_engine - OTLP - 100K',
+          'OTELCOL-OTLP-TRANSFORMED-100K': 'OTelCol - OTLP - 100K'
+        };
+        return labels[rawName] || rawName;
       }
 
       function isMemory(name) {
@@ -175,7 +181,13 @@
           content.appendChild(empty);
           return;
         }
-        for (const [scenarioName, metrics] of scenarios) {
+        const order = ['df_engine - OTAP - 100K', 'df_engine - OTLP - 100K', 'OTelCol - OTLP - 100K'];
+        const orderedScenarios = [...scenarios].sort((left, right) => {
+          const leftIndex = order.indexOf(left[0]);
+          const rightIndex = order.indexOf(right[0]);
+          return (leftIndex < 0 ? order.length : leftIndex) - (rightIndex < 0 ? order.length : rightIndex);
+        });
+        for (const [scenarioName, metrics] of orderedScenarios) {
           const set = document.createElement('div');
           set.className = 'benchmark-set';
           const title = document.createElement('h3');
@@ -186,8 +198,22 @@
           graphs.className = 'benchmark-graphs';
           set.appendChild(graphs);
           content.appendChild(set);
-          for (const [metricName, points] of metrics) renderChart(graphs, metricName, points, color);
+          for (const [metricName, points] of metrics) renderChart(graphs, getMetricLabel(metricName, scenarioName), points, color);
         }
+      }
+
+      function getMetricLabel(name, scenario) {
+        const labels = {
+          logs_produced_rate: 'Logs produced',
+          log_rows_written_rate: 'ClickHouse logs written',
+          'df-engine_cpu_percentage_normalized_avg': 'Pipeline CPU',
+          'df-engine_ram_mib_max': 'Pipeline RAM',
+          'go-collector_cpu_percentage_normalized_avg': 'Pipeline CPU',
+          'go-collector_ram_mib_max': 'Pipeline RAM',
+          clickhouse_cpu_percentage_normalized_avg: 'ClickHouse CPU',
+          clickhouse_ram_mib_max: 'ClickHouse RAM'
+        };
+        return scenario + ' - ' + (labels[name] || name);
       }
 
       function renderChart(parent, name, points, color) {
