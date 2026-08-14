@@ -3707,4 +3707,171 @@ mod tests {
         ];
         run_test(config, actions);
     }
+
+    // --- Telemetry Tests ---
+
+    use otap_df_telemetry::reporter::MetricsReporter;
+
+    /// Helper to collect current telemetry snapshots from the processor.
+    async fn collect_telemetry(
+        ctx: &mut TestContext<OtapPdata>,
+    ) -> Vec<otap_df_telemetry::metrics::MetricSetSnapshot> {
+        let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(10);
+        ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+            metrics_reporter: reporter,
+        }))
+        .await
+        .unwrap();
+
+        let mut snaps = Vec::new();
+        while let Ok(snap) = metrics_rx.try_recv() {
+            snaps.push(snap);
+        }
+        snaps
+    }
+
+    /// Helper to count the occurrences of a metric with specific attribute values.
+    fn metric_count(
+        snaps: &[otap_df_telemetry::metrics::MetricSetSnapshot],
+        metric_name: &str,
+        outcome: Option<&str>,
+        reason: Option<&str>,
+        error_type: Option<&str>,
+    ) -> u64 {
+        let mut total = 0;
+        for s in snaps {
+            if s.descriptor().name != "processor.temporal_reaggregation.pdata" {
+                continue;
+            }
+            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == metric_name) {
+                let mut match_outcome = true;
+                let mut match_reason = true;
+                let mut match_error = true;
+
+                if let Some(o) = outcome {
+                    if s.measurement_attribute_value("outcome") != Some(o) {
+                        match_outcome = false;
+                    }
+                }
+                if let Some(r) = reason {
+                    if s.measurement_attribute_value("reason") != Some(r) {
+                        match_reason = false;
+                    }
+                }
+                if let Some(e) = error_type {
+                    if s.measurement_attribute_value("error.type") != Some(e) {
+                        match_error = false;
+                    }
+                }
+
+                if match_outcome && match_reason && match_error {
+                    total += s.get_metrics()[idx].to_u64_lossy();
+                }
+            }
+        }
+        total
+    }
+
+    /// Scenario: A valid payload passes through the processor without errors.
+    /// Guarantees: every metrics PData input records exactly one operation outcome.
+    #[test]
+    fn test_telemetry_successful_passthrough() {
+        run_processor_test(json!({}), |mut ctx| async move {
+            let payload = make_otap_payload_from_metrics(make_n_gauge_metrics(1));
+            ctx.process(Message::PData(OtapPdata::new_default(payload)))
+                .await
+                .unwrap();
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            
+            assert_eq!(metric_count(&snaps, "operations", None, None, None), 1);
+            assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
+        });
+    }
+
+    /// Scenario: A batch causes the internal ID counter to overflow, triggering an early flush.
+    /// Guarantees: intermediate overflow handling does not double-count the input operation.
+    #[test]
+    fn test_telemetry_id_overflow() {
+        let max_metrics = (u16::MAX - 1) as usize;
+        run_processor_test(
+            json!({ "max_stream_cardinality": u16::MAX }),
+            move |mut ctx| async move {
+                let full_batch = make_otlp_bytes_pdata(make_n_gauge_metrics(max_metrics));
+                let overflow_batch =
+                    make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(2, max_metrics));
+
+                ctx.process(Message::PData(full_batch)).await.unwrap();
+                ctx.process(Message::PData(overflow_batch)).await.unwrap();
+                
+                let snaps = collect_telemetry(&mut ctx).await;
+                
+                // 2 inputs processed
+                assert_eq!(metric_count(&snaps, "operations", None, None, None), 2);
+                assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
+                
+                // successful and failed flushes retain their exact reason
+                assert_eq!(metric_count(&snaps, "flushes", Some("success"), Some("id_overflow"), None), 1);
+            },
+        );
+    }
+
+    /// Scenario: A batch exceeds the maximum stream cardinality, triggering an early flush.
+    /// Guarantees: metric names, units, and attribute values match the documented schema.
+    #[test]
+    fn test_telemetry_stream_cardinality_overflow() {
+        run_processor_test(json!({ "max_stream_cardinality": 2 }), |mut ctx| async move {
+            let batch1 = make_otlp_bytes_pdata(make_n_gauge_metrics(2));
+            let batch2 = make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(1, 2));
+
+            ctx.process(Message::PData(batch1)).await.unwrap();
+            ctx.process(Message::PData(batch2)).await.unwrap();
+
+            let snaps = collect_telemetry(&mut ctx).await;
+
+            assert_eq!(metric_count(&snaps, "operations", None, None, None), 2);
+            assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
+            assert_eq!(metric_count(&snaps, "flushes", Some("success"), Some("stream_cardinality_exceeded"), None), 1);
+        });
+    }
+
+    /// Scenario: The collection timer fires when the buffer is empty, and then again when the buffer has data.
+    /// Guarantees: empty flushes emit nothing. successful flushes retain exact reason.
+    #[test]
+    fn test_telemetry_timer_flush() {
+        run_processor_test(json!({}), |mut ctx| async move {
+            // empty flush emits nothing
+            let _ = ctx.fire_wakeup().await.unwrap();
+            let snaps1 = collect_telemetry(&mut ctx).await;
+            assert_eq!(metric_count(&snaps1, "flushes", None, Some("timer"), None), 0);
+
+            // non-empty flush records exact reason
+            let batch = make_otlp_bytes_pdata(make_n_gauge_metrics(1));
+            ctx.process(Message::PData(batch)).await.unwrap();
+            let _ = ctx.fire_wakeup().await.unwrap();
+            
+            let snaps2 = collect_telemetry(&mut ctx).await;
+            assert_eq!(metric_count(&snaps2, "flushes", Some("success"), Some("timer"), None), 1);
+        });
+    }
+
+    /// Scenario: The processor is shut down while holding aggregated data.
+    /// Guarantees: successful flushes retain their exact reason.
+    #[test]
+    fn test_telemetry_shutdown_flush() {
+        run_processor_test(json!({}), |mut ctx| async move {
+            let batch = make_otlp_bytes_pdata(make_n_gauge_metrics(1));
+            ctx.process(Message::PData(batch)).await.unwrap();
+            
+            ctx.process(Message::Control(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(5),
+                reason: "test".to_string(),
+            }))
+                .await
+                .unwrap();
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(metric_count(&snaps, "flushes", Some("success"), Some("shutdown"), None), 1);
+        });
+    }
 }
