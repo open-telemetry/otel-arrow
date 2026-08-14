@@ -25,7 +25,7 @@ use crate::views::otlp::bytes::common::{
 use crate::views::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
     from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim, read_varint,
-    to_nonzero_range,
+    to_nonzero_range, validate_message_wire_format,
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use otap_df_pdata_views::views::logs::{
@@ -55,56 +55,7 @@ impl<'a> RawLogsData<'a> {
     /// `ResourceLogs`, `ScopeLogs`, and `LogRecord` content is interpreted lazily on access
     /// via the view APIs.
     pub fn try_new(buf: &'a [u8]) -> Result<Self, Error> {
-        let mut pos = 0;
-        while pos < buf.len() {
-            let (tag, next) = read_varint(buf, pos).ok_or(Error::InvalidProtobufWireFormat)?;
-            let field_num = tag >> 3;
-            let wire_type = tag & 7;
-
-            if field_num == 0 {
-                return Err(Error::InvalidProtobufWireFormat);
-            }
-
-            pos = match wire_type {
-                wire_types::VARINT => {
-                    let (_, p) = read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
-                    p
-                }
-                wire_types::LEN => {
-                    let (len, p) =
-                        read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
-                    let end = p
-                        .checked_add(
-                            usize::try_from(len).map_err(|_| Error::InvalidProtobufWireFormat)?,
-                        )
-                        .ok_or(Error::InvalidProtobufWireFormat)?;
-                    if end > buf.len() {
-                        return Err(Error::InvalidProtobufWireFormat);
-                    }
-                    end
-                }
-                wire_types::FIXED64 => {
-                    let end = next
-                        .checked_add(8)
-                        .ok_or(Error::InvalidProtobufWireFormat)?;
-                    if end > buf.len() {
-                        return Err(Error::InvalidProtobufWireFormat);
-                    }
-                    end
-                }
-                wire_types::FIXED32 => {
-                    let end = next
-                        .checked_add(4)
-                        .ok_or(Error::InvalidProtobufWireFormat)?;
-                    if end > buf.len() {
-                        return Err(Error::InvalidProtobufWireFormat);
-                    }
-                    end
-                }
-                _ => return Err(Error::InvalidProtobufWireFormat),
-            };
-        }
-
+        validate_message_wire_format(buf)?;
         Ok(Self { buf })
     }
 }
