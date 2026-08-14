@@ -7613,6 +7613,7 @@ dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
  "cpu-time",
+ "data-encoding",
  "flume",
  "futures",
  "futures-core",
@@ -7635,11 +7636,13 @@ dependencies = [
  "serde_yaml",
  "smallvec",
  "socket2",
+ "tempfile",
  "thiserror 2.0.19",
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

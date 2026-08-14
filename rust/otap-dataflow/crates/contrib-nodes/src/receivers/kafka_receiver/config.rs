@@ -529,7 +529,24 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
                 })?;
         }
 
-        // Fetch byte constraints
+        // Fetch byte constraints. These fields are signed (`i32`), so a negative
+        // value can arrive via deserialization; guard the absolute bounds before
+        // the relative `max >= min` check so an out-of-range value produces a
+        // field-specific error rather than a confusing "max < min" message.
+        if builder.min_fetch_bytes < 1 {
+            // librdkafka `fetch.min.bytes` has a minimum of 1.
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "min_fetch_bytes".to_string(),
+            });
+        }
+        if builder.max_fetch_bytes < 0 {
+            // librdkafka `fetch.max.bytes` permits 0 (valid range 0..2147483135),
+            // so reject only negatives here; the relative check below enforces
+            // max >= min.
+            return Err(KafkaReceiverError::ConfigNegativeValue {
+                field: "max_fetch_bytes".to_string(),
+            });
+        }
         if builder.max_fetch_bytes < builder.min_fetch_bytes {
             return Err(KafkaReceiverError::ConfigInvalidFetchBytes {
                 max: builder.max_fetch_bytes,
@@ -552,6 +569,32 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
         if builder.lag_refresh_interval_ms == Some(0) {
             return Err(KafkaReceiverError::ConfigNonPositiveValue {
                 field: "lag_refresh_interval_ms".to_string(),
+            });
+        }
+
+        // Consumer-group timing must be strictly positive: librdkafka rejects a
+        // zero `session.timeout.ms` / `heartbeat.interval.ms` (valid range starts
+        // at 1). Note `max_fetch_wait_ms` is intentionally NOT checked here: it
+        // maps to `fetch.wait.max.ms`, whose valid range is 0..300000, so 0 is a
+        // legitimate low-latency setting.
+        if builder.session_timeout_ms == 0 {
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "session_timeout_ms".to_string(),
+            });
+        }
+        if builder.heartbeat_interval_ms == 0 {
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "heartbeat_interval_ms".to_string(),
+            });
+        }
+
+        // Kafka requires the heartbeat interval to be lower than the session
+        // timeout; librdkafka rejects the consumer otherwise. Fail fast at
+        // construction with a clear error instead of at consumer creation.
+        if builder.heartbeat_interval_ms >= builder.session_timeout_ms {
+            return Err(KafkaReceiverError::ConfigInvalidHeartbeat {
+                heartbeat: builder.heartbeat_interval_ms,
+                session: builder.session_timeout_ms,
             });
         }
 
@@ -1183,23 +1226,36 @@ mod tests {
 
     // ---- AutoOffsetReset ----
 
+    // ---- Construction and configuration ----
+
+    /// Scenario (construction and configuration): the `earliest` auto-offset-reset is
+    /// mapped to its librdkafka value.
+    /// Guarantees: it maps to `"earliest"`, so the setting reaches librdkafka correctly.
     #[test]
     fn auto_offset_reset_to_kafka_value_earliest() {
         assert_eq!(AutoOffsetReset::Earliest.to_kafka_value(), "earliest");
     }
 
+    /// Scenario (construction and configuration): the `latest` auto-offset-reset is mapped
+    /// to its librdkafka value.
+    /// Guarantees: it maps to `"latest"`, so the setting reaches librdkafka correctly.
     #[test]
     fn auto_offset_reset_to_kafka_value_latest() {
         assert_eq!(AutoOffsetReset::Latest.to_kafka_value(), "latest");
     }
 
+    /// Scenario (construction and configuration): the `error` auto-offset-reset is mapped
+    /// to its librdkafka value.
+    /// Guarantees: it maps to `"error"`, so the setting reaches librdkafka correctly.
     #[test]
     fn auto_offset_reset_to_kafka_value_error() {
         assert_eq!(AutoOffsetReset::Error.to_kafka_value(), "error");
     }
 
-    // ---- IsolationLevel ----
-
+    /// Scenario (construction and configuration): the read-uncommitted isolation level is
+    /// mapped to its librdkafka value.
+    /// Guarantees: it maps to `"read_uncommitted"`, so the isolation setting reaches
+    /// librdkafka correctly.
     #[test]
     fn isolation_level_to_kafka_value_read_uncommitted() {
         assert_eq!(
@@ -1208,6 +1264,10 @@ mod tests {
         );
     }
 
+    /// Scenario (construction and configuration): the read-committed isolation level is
+    /// mapped to its librdkafka value.
+    /// Guarantees: it maps to `"read_committed"`, so the isolation setting reaches
+    /// librdkafka correctly.
     #[test]
     fn isolation_level_to_kafka_value_read_committed() {
         assert_eq!(
@@ -1216,8 +1276,10 @@ mod tests {
         );
     }
 
-    // ---- CommitConfig ----
-
+    /// Scenario (construction and configuration): a `CommitConfig` is constructed with
+    /// defaults.
+    /// Guarantees: the default mode and interval match the documented defaults, so an
+    /// unconfigured commit block is safe.
     #[test]
     fn commit_config_defaults() {
         let cfg = CommitConfig::default();
@@ -1225,6 +1287,10 @@ mod tests {
         assert_eq!(cfg.interval_ms, None);
     }
 
+    /// Scenario (construction and configuration): a commit config with auto mode is
+    /// deserialized.
+    /// Guarantees: the auto commit mode and interval are parsed, so operators can select
+    /// auto-commit via config.
     #[test]
     fn commit_config_deserialize_auto() {
         let json = json!({"mode": "auto", "interval_ms": 5000});
@@ -1233,6 +1299,10 @@ mod tests {
         assert_eq!(cfg.interval_ms, Some(5000));
     }
 
+    /// Scenario (construction and configuration): a commit config with manual mode is
+    /// deserialized.
+    /// Guarantees: the manual commit mode is parsed, so operators can select manual
+    /// (at-least-once) commit via config.
     #[test]
     fn commit_config_deserialize_manual() {
         let json = json!({"mode": "manual", "interval_ms": 500});
@@ -1241,6 +1311,9 @@ mod tests {
         assert_eq!(cfg.interval_ms, Some(500));
     }
 
+    /// Scenario (construction and configuration): an empty commit block is deserialized.
+    /// Guarantees: it falls back to the documented defaults, so omitting the commit block
+    /// is valid.
     #[test]
     fn commit_config_deserialize_defaults_when_empty() {
         let json = json!({});
@@ -1249,8 +1322,10 @@ mod tests {
         assert_eq!(cfg.interval_ms, None);
     }
 
-    // ---- SignalConfig ----
-
+    /// Scenario (construction and configuration): a `SignalConfig` is constructed with
+    /// defaults.
+    /// Guarantees: the defaults (encoding, empty excludes) match the documented values, so
+    /// a minimal signal config is safe.
     #[test]
     fn signal_config_defaults() {
         let cfg = SignalConfig::default();
@@ -1259,6 +1334,10 @@ mod tests {
         assert_eq!(cfg.encoding(), MessageFormat::OtlpProto);
     }
 
+    /// Scenario (construction and configuration): a signal config with a topics list is
+    /// deserialized.
+    /// Guarantees: the topics are parsed onto the signal, so per-signal topic subscription
+    /// is configurable.
     #[test]
     fn signal_config_deserialize_with_topics() {
         let json = json!({"topics": ["traces-prod", "^traces-team-.*"]});
@@ -1268,6 +1347,10 @@ mod tests {
         assert_eq!(cfg.encoding(), MessageFormat::OtlpProto);
     }
 
+    /// Scenario (construction and configuration): a signal config with exclude_topics and
+    /// an explicit encoding is deserialized.
+    /// Guarantees: both fields are parsed, so exclude patterns and per-signal encoding are
+    /// configurable.
     #[test]
     fn signal_config_deserialize_with_exclude_and_encoding() {
         let json = json!({
@@ -1281,8 +1364,10 @@ mod tests {
         assert_eq!(cfg.encoding(), MessageFormat::OtapProto);
     }
 
-    // ---- Getters ----
-
+    /// Scenario (construction and configuration): the config getters are read after
+    /// construction.
+    /// Guarantees: each getter returns the configured value, so downstream code reads
+    /// config through a stable accessor surface.
     #[test]
     fn getters_return_expected_values() {
         let cfg: KafkaReceiverConfig =
@@ -1311,6 +1396,9 @@ mod tests {
         assert_eq!(cfg.traces_encoding(), MessageFormat::OtlpProto);
     }
 
+    /// Scenario (construction and configuration): topic getters are read for unconfigured
+    /// signals.
+    /// Guarantees: they return empty, so an unconfigured signal contributes no topics.
     #[test]
     fn getters_return_empty_for_missing_topics() {
         // Only traces has topics; metrics and logs are empty.
@@ -1331,8 +1419,10 @@ mod tests {
         assert!(cfg.is_auto_commit());
     }
 
-    // ---- validate (empty string fields) ----
-
+    /// Scenario (construction and configuration): the brokers field is set to an empty
+    /// string.
+    /// Guarantees: validation fails, so an empty required string cannot be silently
+    /// accepted.
     #[test]
     fn validate_empty_brokers_fails() {
         let cfg = KafkaReceiverConfigBuilder::new("", "g", "c").with_traces(SignalConfig {
@@ -1343,6 +1433,10 @@ mod tests {
         assert!(err.contains("brokers"), "unexpected error: {err}");
     }
 
+    /// Scenario (construction and configuration): the client_id field is set to an empty
+    /// string.
+    /// Guarantees: validation fails, so an empty required string cannot be silently
+    /// accepted.
     #[test]
     fn validate_empty_client_id_fails() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "").with_traces(SignalConfig {
@@ -1353,6 +1447,10 @@ mod tests {
         assert!(err.contains("client_id"), "unexpected error: {err}");
     }
 
+    /// Scenario (construction and configuration): the group_id field is set to an empty
+    /// string.
+    /// Guarantees: validation fails, so an empty required string cannot be silently
+    /// accepted.
     #[test]
     fn validate_empty_group_id_fails() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "", "c").with_traces(SignalConfig {
@@ -1363,6 +1461,10 @@ mod tests {
         assert!(err.contains("group_id"), "unexpected error: {err}");
     }
 
+    /// Scenario (construction and configuration): the group_instance_id field is set to an
+    /// empty string.
+    /// Guarantees: validation fails, so an empty required string cannot be silently
+    /// accepted.
     #[test]
     fn validate_empty_group_instance_id_fails() {
         let mut cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
@@ -1374,6 +1476,10 @@ mod tests {
         assert!(err.contains("group_instance_id"), "unexpected error: {err}");
     }
 
+    /// Scenario (construction and configuration): the message_format_header field is set to
+    /// an empty string.
+    /// Guarantees: validation fails, so an empty required string cannot be silently
+    /// accepted.
     #[test]
     fn validate_empty_message_format_header_fails() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
@@ -1389,6 +1495,10 @@ mod tests {
         );
     }
 
+    /// Scenario (construction and configuration): the resource-attrs header key field is
+    /// set to an empty string.
+    /// Guarantees: validation fails, so an empty required string cannot be silently
+    /// accepted.
     #[test]
     fn validate_empty_resource_attrs_header_key_fails() {
         let mut cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
@@ -1406,6 +1516,10 @@ mod tests {
         assert!(err.contains("empty header key"), "unexpected error: {err}");
     }
 
+    /// Scenario (construction and configuration): the resource-attrs extraction key field
+    /// is set to an empty string.
+    /// Guarantees: validation fails, so an empty required string cannot be silently
+    /// accepted.
     #[test]
     fn validate_empty_resource_attrs_extraction_key_fails() {
         let mut cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
@@ -1426,294 +1540,9 @@ mod tests {
         );
     }
 
-    // ---- validate (topics disjoint) ----
-
-    #[test]
-    fn validate_all_distinct_is_valid() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["traces-topic".to_string()],
-                ..Default::default()
-            })
-            .with_metrics(SignalConfig {
-                topics: vec!["metrics-topic".to_string()],
-                ..Default::default()
-            })
-            .with_logs(SignalConfig {
-                topics: vec!["logs-topic".to_string()],
-                ..Default::default()
-            });
-        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
-    }
-
-    #[test]
-    fn validate_all_empty_fails() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c");
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("at least one signal"));
-    }
-
-    #[test]
-    fn validate_traces_equals_metrics_is_invalid() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["same-topic".to_string()],
-                ..Default::default()
-            })
-            .with_metrics(SignalConfig {
-                topics: vec!["same-topic".to_string()],
-                ..Default::default()
-            });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("overlap"));
-    }
-
-    #[test]
-    fn validate_traces_equals_logs_is_invalid() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["same-topic".to_string()],
-                ..Default::default()
-            })
-            .with_logs(SignalConfig {
-                topics: vec!["same-topic".to_string()],
-                ..Default::default()
-            });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("overlap"));
-    }
-
-    #[test]
-    fn validate_metrics_equals_logs_is_invalid() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_metrics(SignalConfig {
-                topics: vec!["same-topic".to_string()],
-                ..Default::default()
-            })
-            .with_logs(SignalConfig {
-                topics: vec!["same-topic".to_string()],
-                ..Default::default()
-            });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("overlap"));
-    }
-
-    #[test]
-    fn validate_one_set_others_empty_is_valid() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["only-traces".to_string()],
-            ..Default::default()
-        });
-        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
-    }
-
-    #[test]
-    fn validate_multi_topic_overlap_across_signals_is_invalid() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["topic-a".to_string(), "topic-b".to_string()],
-                ..Default::default()
-            })
-            .with_metrics(SignalConfig {
-                topics: vec!["topic-c".to_string(), "topic-b".to_string()],
-                ..Default::default()
-            });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("overlap"));
-    }
-
-    #[test]
-    fn validate_multi_topic_disjoint_is_valid() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["traces-a".to_string(), "traces-b".to_string()],
-                ..Default::default()
-            })
-            .with_metrics(SignalConfig {
-                topics: vec!["metrics-a".to_string()],
-                ..Default::default()
-            })
-            .with_logs(SignalConfig {
-                topics: vec!["logs-a".to_string(), "logs-b".to_string()],
-                ..Default::default()
-            });
-        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
-    }
-
-    // ---- validate (regex) ----
-
-    #[test]
-    fn validate_invalid_regex_topic_fails() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["^traces-(invalid".to_string()],
-            ..Default::default()
-        });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("invalid regex topic pattern in traces"));
-    }
-
-    #[test]
-    fn validate_valid_regex_topic_succeeds() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["^traces-.*".to_string()],
-            ..Default::default()
-        });
-        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
-    }
-
-    // ---- validate (exclude_topics) ----
-
-    #[test]
-    fn validate_exclude_topics_without_regex_fails() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["traces-prod".to_string()],
-            exclude_topics: vec!["^traces-test$".to_string()],
-            ..Default::default()
-        });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("exclude_topics is only allowed when"));
-    }
-
-    #[test]
-    fn validate_exclude_topics_with_regex_succeeds() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["^traces-.*".to_string()],
-            exclude_topics: vec!["^traces-test$".to_string()],
-            ..Default::default()
-        });
-        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
-    }
-
-    #[test]
-    fn validate_exclude_topics_empty_string_fails() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["^traces-.*".to_string()],
-            exclude_topics: vec!["".to_string()],
-            ..Default::default()
-        });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("non-empty"));
-    }
-
-    #[test]
-    fn validate_exclude_topics_invalid_regex_fails() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["^traces-.*".to_string()],
-            exclude_topics: vec!["^(invalid".to_string()],
-            ..Default::default()
-        });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("invalid regex in traces.exclude_topics"));
-    }
-
-    // ---- validate (topic names) ----
-
-    #[test]
-    fn validate_empty_topic_name_fails() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["".to_string()],
-            ..Default::default()
-        });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("traces.topics"), "unexpected error: {err}");
-        assert!(err.contains("empty"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn validate_dot_topic_name_fails() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_metrics(SignalConfig {
-            topics: vec![".".to_string()],
-            ..Default::default()
-        });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("metrics.topics"), "unexpected error: {err}");
-        assert!(err.contains("ambiguous"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn validate_dotdot_topic_name_fails() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_logs(SignalConfig {
-            topics: vec!["..".to_string()],
-            ..Default::default()
-        });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("logs.topics"), "unexpected error: {err}");
-        assert!(err.contains("ambiguous"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn validate_topic_name_invalid_chars_fails() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["bad/topic".to_string()],
-            ..Default::default()
-        });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("traces.topics"), "unexpected error: {err}");
-        assert!(err.contains("invalid character"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn validate_topic_name_too_long_fails() {
-        let long_topic = "a".repeat(250);
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec![long_topic],
-            ..Default::default()
-        });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("traces.topics"), "unexpected error: {err}");
-        assert!(err.contains("maximum length"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn validate_regex_topic_skips_name_validation() {
-        // Regex patterns start with '^' and should NOT be validated as literal topic names
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["^traces-.*".to_string()],
-            ..Default::default()
-        });
-        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
-    }
-
-    #[test]
-    fn validate_mixed_literal_and_regex_topics() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["valid-literal".to_string(), "^traces-.*".to_string()],
-            ..Default::default()
-        });
-        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
-    }
-
-    #[test]
-    fn validate_invalid_literal_among_regex_topics_fails() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
-            topics: vec!["^traces-.*".to_string(), "bad topic".to_string()],
-            ..Default::default()
-        });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("traces.topics"), "unexpected error: {err}");
-        assert!(err.contains("invalid character"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn validate_valid_literal_topics_across_signals() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["my-traces".to_string()],
-                ..Default::default()
-            })
-            .with_metrics(SignalConfig {
-                topics: vec!["my.metrics".to_string()],
-                ..Default::default()
-            })
-            .with_logs(SignalConfig {
-                topics: vec!["my_logs".to_string()],
-                ..Default::default()
-            });
-        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
-    }
-
-    // ---- validate (fetch bytes) ----
-
+    /// Scenario (construction and configuration): max fetch bytes is set below min fetch
+    /// bytes.
+    /// Guarantees: validation fails, so an inconsistent fetch-size window is rejected.
     #[test]
     fn validate_max_fetch_bytes_less_than_min_fails() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
@@ -1727,6 +1556,46 @@ mod tests {
         assert!(err.contains("max_fetch_bytes"));
     }
 
+    /// Scenario (construction and configuration): `max_fetch_bytes` is set to a
+    /// negative value (its `i32` type permits negatives from JSON).
+    /// Guarantees: validation fails with the >= 0 rule, so a negative fetch-max
+    /// (invalid to librdkafka) is rejected up front rather than forwarded.
+    #[test]
+    fn validate_negative_max_fetch_bytes_is_rejected() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_max_fetch_bytes(-1);
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("max_fetch_bytes") && err.contains(">= 0"),
+            "unexpected error: {err}",
+        );
+    }
+
+    /// Scenario (construction and configuration): `min_fetch_bytes` is set below
+    /// one (its `i32` type permits zero and negatives from JSON).
+    /// Guarantees: validation fails with the > 0 rule, so a `fetch.min.bytes`
+    /// below librdkafka's minimum of 1 is rejected up front.
+    #[test]
+    fn validate_min_fetch_bytes_below_one_is_rejected() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_min_fetch_bytes(0);
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("min_fetch_bytes") && err.contains("> 0"),
+            "unexpected error: {err}",
+        );
+    }
+
+    /// Scenario (construction and configuration): max partition fetch bytes is set to zero.
+    /// Guarantees: validation fails, so a zero per-partition fetch limit is rejected.
     #[test]
     fn validate_max_partition_fetch_bytes_zero_fails() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
@@ -1739,8 +1608,9 @@ mod tests {
         assert!(err.contains("max_partition_fetch_bytes"));
     }
 
-    // ---- validate (commit interval) ----
-
+    /// Scenario (construction and configuration): the commit interval is left unset.
+    /// Guarantees: validation succeeds, so omitting the interval is allowed (the safety-net
+    /// default applies).
     #[test]
     fn validate_commit_interval_none_is_valid() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
@@ -1755,7 +1625,8 @@ mod tests {
         assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
     }
 
-    // REVIEW-FIX(#3 reject-zero-interval): zero commit interval is now invalid.
+    /// Scenario (construction and configuration): the commit interval is set to zero.
+    /// Guarantees: validation fails, so a zero commit interval is rejected.
     #[test]
     fn validate_commit_interval_zero_is_invalid() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
@@ -1771,6 +1642,9 @@ mod tests {
         assert!(err.contains("must be > 0"), "unexpected error: {err}");
     }
 
+    /// Scenario (construction and configuration): the commit interval is set to a positive
+    /// value.
+    /// Guarantees: validation succeeds, so a positive commit interval is accepted.
     #[test]
     fn validate_commit_interval_some_value_is_valid() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
@@ -1785,133 +1659,114 @@ mod tests {
         assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
     }
 
-    // ---- validate (lag refresh interval) ----
-
-    /// Scenario: lag_refresh_interval_ms is left unset (the default).
-    /// Guarantees: consumer-lag refresh is optional; a `None` interval is valid
-    /// and the getter reports `None` so the receiver keeps the feature disabled.
+    /// Scenario (construction and configuration): the default consumer-group
+    /// timing (heartbeat 3000 ms < session 10000 ms) and fetch wait are used.
+    /// Guarantees: the defaults pass validation, so an operator config that does
+    /// not set these timeouts is valid.
     #[test]
-    fn validate_lag_refresh_interval_none_is_valid() {
+    fn validate_default_timeouts_are_valid() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
             topics: vec!["t".to_string()],
             ..Default::default()
         });
-        let cfg = KafkaReceiverConfig::try_from(cfg).expect("None interval must be valid");
-        assert_eq!(cfg.lag_refresh_interval_ms(), None);
+        assert!(
+            KafkaReceiverConfig::try_from(cfg).is_ok(),
+            "default heartbeat/session/fetch-wait timeouts must be valid",
+        );
     }
 
-    /// Scenario: lag_refresh_interval_ms is explicitly set to zero.
-    /// Guarantees: a zero interval is rejected at config validation so the
-    /// receiver never schedules a degenerate zero-delay lag-refresh timer.
+    /// Scenario (construction and configuration): `session_timeout_ms` is set to
+    /// zero.
+    /// Guarantees: validation fails, so a zero session timeout (an invalid
+    /// librdkafka setting) is rejected at construction rather than at consumer
+    /// creation.
     #[test]
-    fn validate_lag_refresh_interval_zero_is_invalid() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["t".to_string()],
-                ..Default::default()
-            })
-            .with_lag_refresh_interval_ms(Some(0));
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
-        assert!(err.contains("must be > 0"), "unexpected error: {err}");
+    fn validate_session_timeout_zero_is_invalid() {
+        let json = json!({
+            "brokers": "kafka:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "session_timeout_ms": 0,
+        });
+        let err = serde_json::from_value::<KafkaReceiverConfig>(json)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("session_timeout_ms") && err.contains("must be > 0"),
+            "unexpected error: {err}",
+        );
     }
 
-    /// Scenario: lag_refresh_interval_ms is set to a positive value via builder.
-    /// Guarantees: a valid interval passes validation and is surfaced verbatim
-    /// by the getter so the receiver can schedule the lag-refresh timer.
+    /// Scenario (construction and configuration): `heartbeat_interval_ms` is set
+    /// to zero.
+    /// Guarantees: validation fails, so a zero heartbeat interval is rejected.
     #[test]
-    fn validate_lag_refresh_interval_some_value_is_valid() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["t".to_string()],
-                ..Default::default()
-            })
-            .with_lag_refresh_interval_ms(Some(5000));
-        let cfg = KafkaReceiverConfig::try_from(cfg).expect("positive interval must be valid");
-        assert_eq!(cfg.lag_refresh_interval_ms(), Some(5000));
+    fn validate_heartbeat_interval_zero_is_invalid() {
+        let json = json!({
+            "brokers": "kafka:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "heartbeat_interval_ms": 0,
+        });
+        let err = serde_json::from_value::<KafkaReceiverConfig>(json)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("heartbeat_interval_ms") && err.contains("must be > 0"),
+            "unexpected error: {err}",
+        );
     }
 
-    // ---- all_topics ----
-
+    /// Scenario (construction and configuration): `max_fetch_wait_ms` is set to
+    /// zero.
+    /// Guarantees: validation accepts it and maps it to `fetch.wait.max.ms=0`,
+    /// so the low-latency setting (valid librdkafka range 0..300000) is honored
+    /// rather than rejected.
     #[test]
-    fn all_topics_returns_all_configured() {
-        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["traces-topic".to_string()],
-                ..Default::default()
-            })
-            .with_metrics(SignalConfig {
-                topics: vec!["metrics-topic".to_string()],
-                ..Default::default()
-            })
-            .with_logs(SignalConfig {
-                topics: vec!["logs-topic".to_string()],
-                ..Default::default()
-            })
-            .try_into()
-            .unwrap();
-        let topics = cfg.all_topics();
-        assert_eq!(topics.len(), 3);
-        assert!(topics.contains(&"traces-topic"));
-        assert!(topics.contains(&"metrics-topic"));
-        assert!(topics.contains(&"logs-topic"));
+    fn validate_max_fetch_wait_zero_is_accepted() {
+        let json = json!({
+            "brokers": "kafka:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "max_fetch_wait_ms": 0,
+        });
+        let cfg: KafkaReceiverConfig = serde_json::from_value(json)
+            .expect("max_fetch_wait_ms=0 should be a valid configuration");
+        let client_config = cfg.build_client_config();
+        assert_eq!(client_config.get("fetch.wait.max.ms"), Some("0"));
     }
 
+    /// Scenario (construction and configuration): `heartbeat_interval_ms` is set
+    /// greater than or equal to `session_timeout_ms`.
+    /// Guarantees: validation fails with a dedicated heartbeat error, so an
+    /// invalid heartbeat/session relationship (which librdkafka would reject at
+    /// consumer creation) is caught up front.
     #[test]
-    fn all_topics_returns_empty_when_none_configured() {
-        // Validation requires at least one signal with topics, so we verify
-        // that a builder with no topics fails validation.
-        let result = KafkaReceiverConfig::try_from(KafkaReceiverConfigBuilder::new("b", "g", "c"));
-        assert!(result.is_err());
+    fn validate_heartbeat_not_less_than_session_is_invalid() {
+        let json = json!({
+            "brokers": "kafka:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "session_timeout_ms": 3000,
+            "heartbeat_interval_ms": 3000,
+        });
+        let err = serde_json::from_value::<KafkaReceiverConfig>(json)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("heartbeat_interval_ms") && err.contains("session_timeout_ms"),
+            "unexpected error: {err}",
+        );
     }
 
-    #[test]
-    fn all_topics_returns_only_set_topics() {
-        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["t".to_string()],
-                ..Default::default()
-            })
-            .with_logs(SignalConfig {
-                topics: vec!["l".to_string()],
-                ..Default::default()
-            })
-            .try_into()
-            .unwrap();
-        let topics = cfg.all_topics();
-        assert_eq!(topics.len(), 2);
-        assert!(topics.contains(&"t"));
-        assert!(topics.contains(&"l"));
-    }
-
-    #[test]
-    fn all_topics_returns_flattened_multi_topic_list() {
-        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["t1".to_string(), "t2".to_string()],
-                ..Default::default()
-            })
-            .with_metrics(SignalConfig {
-                topics: vec!["m1".to_string()],
-                ..Default::default()
-            })
-            .with_logs(SignalConfig {
-                topics: vec!["l1".to_string(), "l2".to_string(), "l3".to_string()],
-                ..Default::default()
-            })
-            .try_into()
-            .unwrap();
-        let topics = cfg.all_topics();
-        assert_eq!(topics.len(), 6);
-        assert!(topics.contains(&"t1"));
-        assert!(topics.contains(&"t2"));
-        assert!(topics.contains(&"m1"));
-        assert!(topics.contains(&"l1"));
-        assert!(topics.contains(&"l2"));
-        assert!(topics.contains(&"l3"));
-    }
-
-    // ---- build_client_config ----
-
+    /// Scenario (construction and configuration): a client config is built from a default
+    /// receiver config.
+    /// Guarantees: the expected default librdkafka properties are set, so the consumer
+    /// starts with the documented defaults.
     #[test]
     fn build_client_config_contains_expected_defaults() {
         let cfg =
@@ -1945,6 +1800,9 @@ mod tests {
         assert_eq!(client_config.get("enable.auto.offset.store"), Some("false"));
     }
 
+    /// Scenario (construction and configuration): a client config is built with auto-commit
+    /// enabled.
+    /// Guarantees: `enable.auto.commit` is set true, so librdkafka owns offset commits.
     #[test]
     fn build_client_config_auto_commit() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
@@ -1965,6 +1823,10 @@ mod tests {
         assert_eq!(client_config.get("enable.auto.offset.store"), Some("true"));
     }
 
+    /// Scenario (construction and configuration): auto-commit is enabled without an
+    /// interval.
+    /// Guarantees: the auto-commit interval property is omitted, so librdkafka uses its own
+    /// default interval.
     #[test]
     fn build_client_config_auto_commit_no_interval_omits_property() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_commit(CommitConfig {
@@ -1977,6 +1839,10 @@ mod tests {
         assert_eq!(client_config.get("enable.auto.offset.store"), Some("true"));
     }
 
+    /// Scenario (construction and configuration): a client config is built for manual
+    /// commit.
+    /// Guarantees: `enable.auto.commit` is false and no auto-commit interval is set, so the
+    /// receiver owns commits.
     #[test]
     fn build_client_config_manual_commit_no_auto_interval() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_commit(CommitConfig {
@@ -1991,6 +1857,10 @@ mod tests {
         assert_eq!(client_config.get("enable.auto.offset.store"), Some("false"));
     }
 
+    /// Scenario (construction and configuration): a custom `consumer_config` passthrough is
+    /// provided.
+    /// Guarantees: the passthrough keys are applied, so operators can set arbitrary
+    /// librdkafka knobs.
     #[test]
     fn build_client_config_custom_consumer_config() {
         let mut custom = HashMap::new();
@@ -2001,6 +1871,10 @@ mod tests {
         assert_eq!(client_config.get("custom.setting"), Some("custom-value"));
     }
 
+    /// Scenario (construction and configuration): a passthrough key collides with a
+    /// built-in managed property.
+    /// Guarantees: the built-in value wins, so a passthrough cannot subvert a managed
+    /// setting.
     #[test]
     fn build_client_config_builtin_overrides_custom() {
         let mut custom = HashMap::new();
@@ -2016,6 +1890,49 @@ mod tests {
         );
     }
 
+    /// Scenario (construction and configuration): a `consumer_config` escape-hatch
+    /// map sets several keys that are also managed by first-class config fields
+    /// (`bootstrap.servers`, `group.id`, `enable.auto.commit`) alongside a
+    /// non-managed passthrough key (`fetch.error.backoff.ms`).
+    /// Guarantees: `overridden_consumer_config_keys` reports exactly the managed
+    /// keys (which the receiver will overwrite and warn about via the runtime
+    /// `kafka.receiver.consumer_config.override` event) and never the
+    /// passthrough key, so the operator gets an accurate override warning surface
+    /// without false positives.
+    #[test]
+    fn overridden_consumer_config_keys_flags_only_managed_keys() {
+        let mut custom = HashMap::new();
+        // Managed keys (also first-class config fields).
+        let _ = custom.insert("bootstrap.servers".to_string(), "x:1".to_string());
+        let _ = custom.insert("group.id".to_string(), "shadow-group".to_string());
+        let _ = custom.insert("enable.auto.commit".to_string(), "true".to_string());
+        // Non-managed passthrough key (a legitimate escape-hatch tunable).
+        let _ = custom.insert("fetch.error.backoff.ms".to_string(), "250".to_string());
+
+        let cfg = KafkaReceiverConfig::try_from(
+            KafkaReceiverConfigBuilder::new("b", "g", "c")
+                .with_traces(SignalConfig::new(vec!["t".to_string()]))
+                .with_consumer_config(custom),
+        )
+        .expect("test config should be valid");
+
+        let mut overridden = cfg.overridden_consumer_config_keys();
+        overridden.sort_unstable();
+        assert_eq!(
+            overridden,
+            vec!["bootstrap.servers", "enable.auto.commit", "group.id"],
+            "only managed keys should be flagged as overridden, not the \
+             non-managed passthrough key",
+        );
+        assert!(
+            !overridden.contains(&"fetch.error.backoff.ms"),
+            "a non-managed passthrough key must not be flagged as overridden",
+        );
+    }
+
+    /// Scenario (construction and configuration): a `group.instance.id` is configured.
+    /// Guarantees: it is set on the client config, so the consumer joins as a static group
+    /// member.
     #[test]
     fn build_client_config_group_instance_id() {
         let cfg =
@@ -2024,6 +1941,8 @@ mod tests {
         assert_eq!(client_config.get("group.instance.id"), Some("instance-1"));
     }
 
+    /// Scenario (construction and configuration): no `group.instance.id` is configured.
+    /// Guarantees: the property is omitted, so the consumer joins as a dynamic member.
     #[test]
     fn build_client_config_no_group_instance_id_when_none() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c");
@@ -2031,8 +1950,9 @@ mod tests {
         assert_eq!(client_config.get("group.instance.id"), None);
     }
 
-    // ---- Serde deserialization ----
-
+    /// Scenario (construction and configuration): a minimal JSON config with only required
+    /// fields and topics is deserialized.
+    /// Guarantees: it parses successfully, so a minimal operator config is valid.
     #[test]
     fn deserialize_minimal_config() {
         let json = json!({
@@ -2057,6 +1977,9 @@ mod tests {
         assert_eq!(cfg.commit_interval_ms(), None);
     }
 
+    /// Scenario (construction and configuration): a JSON config missing required fields is
+    /// deserialized.
+    /// Guarantees: it fails, so an incomplete config is rejected at parse time.
     #[test]
     fn deserialize_without_required_fields_fails() {
         // brokers, group_id, client_id are required -- empty object should fail
@@ -2065,6 +1988,10 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Scenario (construction and configuration): a fully-populated JSON config is
+    /// deserialized.
+    /// Guarantees: every field parses onto the config, so the full configuration surface is
+    /// supported.
     #[test]
     fn deserialize_full_config() {
         let json = json!({
@@ -2115,6 +2042,9 @@ mod tests {
         assert!(cfg.is_idempotent());
     }
 
+    /// Scenario (construction and configuration): topics are provided as a JSON list.
+    /// Guarantees: the list is parsed, so multi-topic subscriptions can be configured as
+    /// arrays.
     #[test]
     fn deserialize_topics_as_list() {
         let json = json!({
@@ -2138,6 +2068,9 @@ mod tests {
         assert_eq!(cfg.logs_topics(), &["logs-x", "logs-y", "logs-z"]);
     }
 
+    /// Scenario (construction and configuration): each auto-offset-reset variant is
+    /// deserialized.
+    /// Guarantees: every variant parses, so all offset-reset options are configurable.
     #[test]
     fn auto_offset_reset_deserialize_variants() {
         assert_eq!(
@@ -2154,6 +2087,9 @@ mod tests {
         );
     }
 
+    /// Scenario (construction and configuration): each isolation-level variant is
+    /// deserialized.
+    /// Guarantees: every variant parses, so all isolation options are configurable.
     #[test]
     fn isolation_level_deserialize_variants() {
         assert_eq!(
@@ -2166,8 +2102,9 @@ mod tests {
         );
     }
 
-    // ---- Default functions ----
-
+    /// Scenario (construction and configuration): the serde default functions are invoked.
+    /// Guarantees: they return the documented defaults, so omitted fields default
+    /// consistently.
     #[test]
     fn default_functions_return_expected_values() {
         assert_eq!(default_auto_offset_reset(), AutoOffsetReset::Latest);
@@ -2182,8 +2119,548 @@ mod tests {
         assert_eq!(default_max_partition_fetch_bytes(), 1_048_576);
     }
 
-    // ---- HeaderExtraction + resource_attrs_from_headers ----
+    /// Scenario (construction and configuration): the commit interval default is read.
+    /// Guarantees: it equals the documented default, so an unset interval behaves
+    /// predictably.
+    #[test]
+    fn commit_interval_ms_default_value() {
+        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .try_into()
+            .unwrap();
+        assert_eq!(cfg.commit_interval_ms(), None);
+    }
 
+    /// Scenario (construction and configuration): the commit interval is set via the
+    /// builder.
+    /// Guarantees: the value is applied, so the builder configures the commit interval.
+    #[test]
+    fn commit_interval_ms_set_via_builder() {
+        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_commit(CommitConfig {
+                interval_ms: Some(3000),
+                ..Default::default()
+            })
+            .try_into()
+            .unwrap();
+        assert_eq!(cfg.commit_interval_ms(), Some(3000));
+    }
+
+    /// Scenario (construction and configuration): a client config is built in auto mode
+    /// with an interval.
+    /// Guarantees: the auto-commit interval property is set, so librdkafka commits on the
+    /// configured cadence.
+    #[test]
+    fn build_client_config_sets_auto_commit_interval_when_auto_mode() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_commit(CommitConfig {
+            mode: CommitMode::Auto,
+            interval_ms: Some(2000),
+        });
+        let client_config = cfg.build_client_config();
+        assert_eq!(client_config.get("enable.auto.commit"), Some("true"));
+        assert_eq!(client_config.get("auto.commit.interval.ms"), Some("2000"));
+    }
+
+    /// Scenario (construction and configuration): session and fetch tuning fields are
+    /// deserialized.
+    /// Guarantees: the tuning values parse onto the config, so fetch/session knobs are
+    /// configurable.
+    #[test]
+    fn session_and_fetch_tuning_deserialized() {
+        let json = json!({
+            "brokers": "b:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "session_timeout_ms": 20000,
+            "heartbeat_interval_ms": 5000,
+            "min_fetch_bytes": 512,
+            "max_fetch_bytes": 2097152,
+            "max_fetch_wait_ms": 500,
+            "max_partition_fetch_bytes": 2097152,
+            "traces": {"topics": ["t"]}
+        });
+        let cfg: KafkaReceiverConfig = serde_json::from_value(json).unwrap();
+        let client_config = cfg.build_client_config();
+        assert_eq!(client_config.get("session.timeout.ms"), Some("20000"));
+        assert_eq!(client_config.get("heartbeat.interval.ms"), Some("5000"));
+        assert_eq!(client_config.get("fetch.min.bytes"), Some("512"));
+        assert_eq!(client_config.get("fetch.max.bytes"), Some("2097152"));
+        assert_eq!(client_config.get("fetch.wait.max.ms"), Some("500"));
+        assert_eq!(
+            client_config.get("max.partition.fetch.bytes"),
+            Some("2097152")
+        );
+    }
+
+    /// Scenario (construction and configuration): the builder setters are invoked.
+    /// Guarantees: each setter applies its value to the built config, so the builder
+    /// surface is complete.
+    #[test]
+    fn builder_methods_set_values() {
+        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b:9092", "g", "c")
+            .with_group_instance_id("inst-1")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_auto_offset_reset(AutoOffsetReset::Earliest)
+            .with_isolation_level(IsolationLevel::ReadUncommitted)
+            .with_enable_idempotency(true)
+            .try_into()
+            .unwrap();
+        assert_eq!(cfg.brokers(), "b:9092");
+        assert_eq!(cfg.group_id(), "g");
+        assert_eq!(cfg.client_id(), "c");
+        assert_eq!(cfg.traces_topics(), &["t"]);
+        assert!(cfg.is_idempotent());
+    }
+
+    // ---- Routing and payload correctness ----
+
+    /// Scenario (routing and payload correctness): traces, metrics, and logs are configured
+    /// on fully distinct topics.
+    /// Guarantees: validation succeeds, so a disjoint multi-signal topic layout is
+    /// accepted.
+    #[test]
+    fn validate_all_distinct_is_valid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["traces-topic".to_string()],
+                ..Default::default()
+            })
+            .with_metrics(SignalConfig {
+                topics: vec!["metrics-topic".to_string()],
+                ..Default::default()
+            })
+            .with_logs(SignalConfig {
+                topics: vec!["logs-topic".to_string()],
+                ..Default::default()
+            });
+        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): no signal has any topic configured.
+    /// Guarantees: validation fails, so a receiver that would subscribe to nothing is
+    /// rejected.
+    #[test]
+    fn validate_all_empty_fails() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c");
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("at least one signal"));
+    }
+
+    /// Scenario (routing and payload correctness): traces and metrics share a topic.
+    /// Guarantees: validation fails, so one topic cannot feed two signal decoders.
+    #[test]
+    fn validate_traces_equals_metrics_is_invalid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["same-topic".to_string()],
+                ..Default::default()
+            })
+            .with_metrics(SignalConfig {
+                topics: vec!["same-topic".to_string()],
+                ..Default::default()
+            });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("overlap"));
+    }
+
+    /// Scenario (routing and payload correctness): traces and logs share a topic.
+    /// Guarantees: validation fails, so one topic cannot feed two signal decoders.
+    #[test]
+    fn validate_traces_equals_logs_is_invalid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["same-topic".to_string()],
+                ..Default::default()
+            })
+            .with_logs(SignalConfig {
+                topics: vec!["same-topic".to_string()],
+                ..Default::default()
+            });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("overlap"));
+    }
+
+    /// Scenario (routing and payload correctness): metrics and logs share a topic.
+    /// Guarantees: validation fails, so one topic cannot feed two signal decoders.
+    #[test]
+    fn validate_metrics_equals_logs_is_invalid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_metrics(SignalConfig {
+                topics: vec!["same-topic".to_string()],
+                ..Default::default()
+            })
+            .with_logs(SignalConfig {
+                topics: vec!["same-topic".to_string()],
+                ..Default::default()
+            });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("overlap"));
+    }
+
+    /// Scenario (routing and payload correctness): only one signal is configured and the
+    /// others are empty.
+    /// Guarantees: validation succeeds, so a single-signal receiver is valid.
+    #[test]
+    fn validate_one_set_others_empty_is_valid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["only-traces".to_string()],
+            ..Default::default()
+        });
+        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): two signals share one topic within
+    /// larger multi-topic lists.
+    /// Guarantees: validation fails, so any cross-signal topic overlap is rejected.
+    #[test]
+    fn validate_multi_topic_overlap_across_signals_is_invalid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["topic-a".to_string(), "topic-b".to_string()],
+                ..Default::default()
+            })
+            .with_metrics(SignalConfig {
+                topics: vec!["topic-c".to_string(), "topic-b".to_string()],
+                ..Default::default()
+            });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("overlap"));
+    }
+
+    /// Scenario (routing and payload correctness): signals have multi-topic lists that are
+    /// pairwise disjoint.
+    /// Guarantees: validation succeeds, so disjoint multi-topic layouts are accepted.
+    #[test]
+    fn validate_multi_topic_disjoint_is_valid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["traces-a".to_string(), "traces-b".to_string()],
+                ..Default::default()
+            })
+            .with_metrics(SignalConfig {
+                topics: vec!["metrics-a".to_string()],
+                ..Default::default()
+            })
+            .with_logs(SignalConfig {
+                topics: vec!["logs-a".to_string(), "logs-b".to_string()],
+                ..Default::default()
+            });
+        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): a signal is configured with a
+    /// syntactically invalid topic regex.
+    /// Guarantees: validation fails, so a bad regex is rejected before the receiver starts.
+    #[test]
+    fn validate_invalid_regex_topic_fails() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["^traces-(invalid".to_string()],
+            ..Default::default()
+        });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("invalid regex topic pattern in traces"));
+    }
+
+    /// Scenario (routing and payload correctness): a signal is configured with a valid
+    /// `^`-anchored topic regex.
+    /// Guarantees: validation succeeds, so regex topic subscriptions are accepted.
+    #[test]
+    fn validate_valid_regex_topic_succeeds() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["^traces-.*".to_string()],
+            ..Default::default()
+        });
+        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): exclude_topics is set on a signal whose
+    /// include topics are not regexes.
+    /// Guarantees: validation fails, so exclude patterns are only allowed alongside regex
+    /// includes.
+    #[test]
+    fn validate_exclude_topics_without_regex_fails() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["traces-prod".to_string()],
+            exclude_topics: vec!["^traces-test$".to_string()],
+            ..Default::default()
+        });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("exclude_topics is only allowed when"));
+    }
+
+    /// Scenario (routing and payload correctness): exclude_topics is set alongside a regex
+    /// include.
+    /// Guarantees: validation succeeds, so regex include plus exclude patterns compose.
+    #[test]
+    fn validate_exclude_topics_with_regex_succeeds() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["^traces-.*".to_string()],
+            exclude_topics: vec!["^traces-test$".to_string()],
+            ..Default::default()
+        });
+        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): an exclude_topics entry is an empty
+    /// string.
+    /// Guarantees: validation fails, so an empty exclude pattern is rejected.
+    #[test]
+    fn validate_exclude_topics_empty_string_fails() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["^traces-.*".to_string()],
+            exclude_topics: vec!["".to_string()],
+            ..Default::default()
+        });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("non-empty"));
+    }
+
+    /// Scenario (routing and payload correctness): an exclude_topics entry is an invalid
+    /// regex.
+    /// Guarantees: validation fails, so a bad exclude regex is rejected.
+    #[test]
+    fn validate_exclude_topics_invalid_regex_fails() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["^traces-.*".to_string()],
+            exclude_topics: vec!["^(invalid".to_string()],
+            ..Default::default()
+        });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("invalid regex in traces.exclude_topics"));
+    }
+
+    /// Scenario (routing and payload correctness): a literal topic name is empty.
+    /// Guarantees: validation fails, so an empty topic name is rejected.
+    #[test]
+    fn validate_empty_topic_name_fails() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["".to_string()],
+            ..Default::default()
+        });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("traces.topics"), "unexpected error: {err}");
+        assert!(err.contains("empty"), "unexpected error: {err}");
+    }
+
+    /// Scenario (routing and payload correctness): a literal topic name is `.`.
+    /// Guarantees: validation fails, so the reserved `.` topic name is rejected.
+    #[test]
+    fn validate_dot_topic_name_fails() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_metrics(SignalConfig {
+            topics: vec![".".to_string()],
+            ..Default::default()
+        });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("metrics.topics"), "unexpected error: {err}");
+        assert!(err.contains("ambiguous"), "unexpected error: {err}");
+    }
+
+    /// Scenario (routing and payload correctness): a literal topic name is `..`.
+    /// Guarantees: validation fails, so the reserved `..` topic name is rejected.
+    #[test]
+    fn validate_dotdot_topic_name_fails() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_logs(SignalConfig {
+            topics: vec!["..".to_string()],
+            ..Default::default()
+        });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("logs.topics"), "unexpected error: {err}");
+        assert!(err.contains("ambiguous"), "unexpected error: {err}");
+    }
+
+    /// Scenario (routing and payload correctness): a literal topic name contains characters
+    /// outside the Kafka-allowed set.
+    /// Guarantees: validation fails, so a syntactically invalid topic name is rejected.
+    #[test]
+    fn validate_topic_name_invalid_chars_fails() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["bad/topic".to_string()],
+            ..Default::default()
+        });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("traces.topics"), "unexpected error: {err}");
+        assert!(err.contains("invalid character"), "unexpected error: {err}");
+    }
+
+    /// Scenario (routing and payload correctness): a literal topic name exceeds the Kafka
+    /// length limit.
+    /// Guarantees: validation fails, so an over-long topic name is rejected.
+    #[test]
+    fn validate_topic_name_too_long_fails() {
+        let long_topic = "a".repeat(250);
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec![long_topic],
+            ..Default::default()
+        });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("traces.topics"), "unexpected error: {err}");
+        assert!(err.contains("maximum length"), "unexpected error: {err}");
+    }
+
+    /// Scenario (routing and payload correctness): a topic entry is a regex pattern.
+    /// Guarantees: Kafka name-syntax validation is skipped for it, so regex patterns are
+    /// not rejected as invalid names.
+    #[test]
+    fn validate_regex_topic_skips_name_validation() {
+        // Regex patterns start with '^' and should NOT be validated as literal topic names
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["^traces-.*".to_string()],
+            ..Default::default()
+        });
+        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): a signal mixes literal and regex topic
+    /// entries.
+    /// Guarantees: validation succeeds, so literal and regex topics can be combined.
+    #[test]
+    fn validate_mixed_literal_and_regex_topics() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["valid-literal".to_string(), "^traces-.*".to_string()],
+            ..Default::default()
+        });
+        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): an invalid literal name appears among
+    /// valid regex topics.
+    /// Guarantees: validation fails, so a bad literal is still caught in a mixed list.
+    #[test]
+    fn validate_invalid_literal_among_regex_topics_fails() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["^traces-.*".to_string(), "bad topic".to_string()],
+            ..Default::default()
+        });
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("traces.topics"), "unexpected error: {err}");
+        assert!(err.contains("invalid character"), "unexpected error: {err}");
+    }
+
+    /// Scenario (routing and payload correctness): valid literal topics are configured
+    /// across signals.
+    /// Guarantees: validation succeeds, so a well-formed literal topic layout is accepted.
+    #[test]
+    fn validate_valid_literal_topics_across_signals() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["my-traces".to_string()],
+                ..Default::default()
+            })
+            .with_metrics(SignalConfig {
+                topics: vec!["my.metrics".to_string()],
+                ..Default::default()
+            })
+            .with_logs(SignalConfig {
+                topics: vec!["my_logs".to_string()],
+                ..Default::default()
+            });
+        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): all three signals are configured with
+    /// topics.
+    /// Guarantees: `all_topics` returns every configured topic, so the subscription set
+    /// covers all signals.
+    #[test]
+    fn all_topics_returns_all_configured() {
+        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["traces-topic".to_string()],
+                ..Default::default()
+            })
+            .with_metrics(SignalConfig {
+                topics: vec!["metrics-topic".to_string()],
+                ..Default::default()
+            })
+            .with_logs(SignalConfig {
+                topics: vec!["logs-topic".to_string()],
+                ..Default::default()
+            })
+            .try_into()
+            .unwrap();
+        let topics = cfg.all_topics();
+        assert_eq!(topics.len(), 3);
+        assert!(topics.contains(&"traces-topic"));
+        assert!(topics.contains(&"metrics-topic"));
+        assert!(topics.contains(&"logs-topic"));
+    }
+
+    /// Scenario (routing and payload correctness): no signal has topics.
+    /// Guarantees: `all_topics` is empty, so nothing is subscribed.
+    #[test]
+    fn all_topics_returns_empty_when_none_configured() {
+        // Validation requires at least one signal with topics, so we verify
+        // that a builder with no topics fails validation.
+        let result = KafkaReceiverConfig::try_from(KafkaReceiverConfigBuilder::new("b", "g", "c"));
+        assert!(result.is_err());
+    }
+
+    /// Scenario (routing and payload correctness): only some signals are configured.
+    /// Guarantees: `all_topics` returns only the configured signals' topics, so
+    /// unconfigured signals contribute nothing.
+    #[test]
+    fn all_topics_returns_only_set_topics() {
+        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_logs(SignalConfig {
+                topics: vec!["l".to_string()],
+                ..Default::default()
+            })
+            .try_into()
+            .unwrap();
+        let topics = cfg.all_topics();
+        assert_eq!(topics.len(), 2);
+        assert!(topics.contains(&"t"));
+        assert!(topics.contains(&"l"));
+    }
+
+    /// Scenario (routing and payload correctness): signals have multi-topic lists.
+    /// Guarantees: `all_topics` returns the flattened union, so multi-topic subscriptions
+    /// are fully covered.
+    #[test]
+    fn all_topics_returns_flattened_multi_topic_list() {
+        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t1".to_string(), "t2".to_string()],
+                ..Default::default()
+            })
+            .with_metrics(SignalConfig {
+                topics: vec!["m1".to_string()],
+                ..Default::default()
+            })
+            .with_logs(SignalConfig {
+                topics: vec!["l1".to_string(), "l2".to_string(), "l3".to_string()],
+                ..Default::default()
+            })
+            .try_into()
+            .unwrap();
+        let topics = cfg.all_topics();
+        assert_eq!(topics.len(), 6);
+        assert!(topics.contains(&"t1"));
+        assert!(topics.contains(&"t2"));
+        assert!(topics.contains(&"m1"));
+        assert!(topics.contains(&"l1"));
+        assert!(topics.contains(&"l2"));
+        assert!(topics.contains(&"l3"));
+    }
+
+    /// Scenario (routing and payload correctness): a header-extraction config is
+    /// deserialized.
+    /// Guarantees: the extraction rules parse, so header-to-attribute mapping is
+    /// configurable.
     #[test]
     fn header_extraction_deserialize() {
         let json = json!({"key": "tenant.id", "value_type": "string"});
@@ -2197,6 +2674,10 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): a config with
+    /// resource-attrs-from-headers is deserialized.
+    /// Guarantees: the mapping parses onto the config, so header-derived resource
+    /// attributes are configurable.
     #[test]
     fn deserialize_config_with_resource_attrs_from_headers() {
         let json = json!({
@@ -2229,6 +2710,10 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): the resource-attrs-from-headers getter
+    /// is read.
+    /// Guarantees: it returns the configured mapping, so downstream extraction reads a
+    /// stable accessor.
     #[test]
     fn getter_returns_resource_attrs_from_headers() {
         let mut extractors = HashMap::new();
@@ -2250,6 +2735,9 @@ mod tests {
         assert_eq!(cfg.resource_attrs_from_headers(), &extractors);
     }
 
+    /// Scenario (routing and payload correctness): every attribute value type is
+    /// deserialized.
+    /// Guarantees: each type parses, so all header attribute value kinds are configurable.
     #[test]
     fn attribute_value_type_deserialize_all_variants() {
         assert_eq!(
@@ -2270,6 +2758,10 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): a header extraction using every value
+    /// type is deserialized.
+    /// Guarantees: all value types parse together, so mixed-type header extraction is
+    /// configurable.
     #[test]
     fn header_extraction_deserialize_all_value_types() {
         let cases = vec![
@@ -2291,76 +2783,9 @@ mod tests {
         }
     }
 
-    // ---- commit config ----
-
-    #[test]
-    fn commit_interval_ms_default_value() {
-        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["t".to_string()],
-                ..Default::default()
-            })
-            .try_into()
-            .unwrap();
-        assert_eq!(cfg.commit_interval_ms(), None);
-    }
-
-    #[test]
-    fn commit_interval_ms_set_via_builder() {
-        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["t".to_string()],
-                ..Default::default()
-            })
-            .with_commit(CommitConfig {
-                interval_ms: Some(3000),
-                ..Default::default()
-            })
-            .try_into()
-            .unwrap();
-        assert_eq!(cfg.commit_interval_ms(), Some(3000));
-    }
-
-    #[test]
-    fn build_client_config_sets_auto_commit_interval_when_auto_mode() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_commit(CommitConfig {
-            mode: CommitMode::Auto,
-            interval_ms: Some(2000),
-        });
-        let client_config = cfg.build_client_config();
-        assert_eq!(client_config.get("enable.auto.commit"), Some("true"));
-        assert_eq!(client_config.get("auto.commit.interval.ms"), Some("2000"));
-    }
-
-    // ---- enable_idempotency ----
-
-    #[test]
-    fn enable_idempotency_defaults_to_false() {
-        let json = json!({
-            "brokers": "b:9092",
-            "group_id": "g",
-            "client_id": "c",
-            "traces": {"topics": ["t"]}
-        });
-        let cfg: KafkaReceiverConfig = serde_json::from_value(json).expect("should deserialize");
-        assert!(!cfg.is_idempotent());
-    }
-
-    #[test]
-    fn enable_idempotency_deserialized_when_true() {
-        let json = json!({
-            "brokers": "b:9092",
-            "group_id": "g",
-            "client_id": "c",
-            "traces": {"topics": ["t"]},
-            "enable_idempotency": true
-        });
-        let cfg: KafkaReceiverConfig = serde_json::from_value(json).expect("should deserialize");
-        assert!(cfg.is_idempotent());
-    }
-
-    // ---- per-signal encoding ----
-
+    /// Scenario (routing and payload correctness): a signal is configured without an
+    /// explicit encoding.
+    /// Guarantees: it defaults to OTLP proto, so the zero-copy default encoding applies.
     #[test]
     fn per_signal_encoding_defaults_to_otlp_proto() {
         let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
@@ -2375,6 +2800,10 @@ mod tests {
         assert_eq!(cfg.logs_encoding(), MessageFormat::OtlpProto);
     }
 
+    /// Scenario (routing and payload correctness): signals are configured with different
+    /// encodings.
+    /// Guarantees: each signal keeps its own encoding, so per-signal encoding is
+    /// independent.
     #[test]
     fn per_signal_encoding_can_differ() {
         let json = json!({
@@ -2391,59 +2820,121 @@ mod tests {
         assert_eq!(cfg.logs_encoding(), MessageFormat::OtapProto);
     }
 
-    // ---- session / fetch tuning deserialization ----
+    // ---- Consumer-group rebalancing ----
 
+    /// Scenario (consumer-group rebalancing): the `range` rebalance strategy is mapped to
+    /// its librdkafka value.
+    /// Guarantees: it maps to `"range"`, so the strategy reaches librdkafka correctly.
     #[test]
-    fn session_and_fetch_tuning_deserialized() {
+    fn rebalance_strategy_to_librdkafka_value_range() {
+        assert_eq!(RebalanceStrategy::Range.to_librdkafka_value(), "range");
+    }
+
+    /// Scenario (consumer-group rebalancing): the `roundrobin` rebalance strategy is mapped
+    /// to its librdkafka value.
+    /// Guarantees: it maps to `"roundrobin"`, so the strategy reaches librdkafka correctly.
+    #[test]
+    fn rebalance_strategy_to_librdkafka_value_round_robin() {
+        assert_eq!(
+            RebalanceStrategy::RoundRobin.to_librdkafka_value(),
+            "roundrobin"
+        );
+    }
+
+    /// Scenario (consumer-group rebalancing): the `cooperative-sticky` rebalance strategy
+    /// is mapped to its librdkafka value.
+    /// Guarantees: it maps to `"cooperative-sticky"`, so the strategy reaches librdkafka
+    /// correctly.
+    #[test]
+    fn rebalance_strategy_to_librdkafka_value_cooperative_sticky() {
+        assert_eq!(
+            RebalanceStrategy::CooperativeSticky.to_librdkafka_value(),
+            "cooperative-sticky"
+        );
+    }
+
+    /// Scenario (consumer-group rebalancing): a client config is built with a rebalance
+    /// strategy configured.
+    /// Guarantees: `partition.assignment.strategy` is set, so the operator-selected
+    /// strategy reaches the consumer.
+    #[test]
+    fn build_client_config_sets_rebalance_strategy() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_rebalance_strategy(RebalanceStrategy::CooperativeSticky);
+        let client_config = cfg.build_client_config();
+        assert_eq!(
+            client_config.get("partition.assignment.strategy"),
+            Some("cooperative-sticky")
+        );
+    }
+
+    /// Scenario (consumer-group rebalancing): a client config is built without a rebalance
+    /// strategy.
+    /// Guarantees: the property is omitted, so librdkafka's default assignor applies.
+    #[test]
+    fn build_client_config_no_rebalance_strategy_when_none() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c");
+        let client_config = cfg.build_client_config();
+        assert_eq!(client_config.get("partition.assignment.strategy"), None);
+    }
+
+    /// Scenario (consumer-group rebalancing): a config with a rebalance strategy is
+    /// deserialized.
+    /// Guarantees: the strategy parses, so it is configurable via JSON.
+    #[test]
+    fn deserialize_config_with_rebalance_strategy() {
         let json = json!({
             "brokers": "b:9092",
             "group_id": "g",
             "client_id": "c",
-            "session_timeout_ms": 20000,
-            "heartbeat_interval_ms": 5000,
-            "min_fetch_bytes": 512,
-            "max_fetch_bytes": 2097152,
-            "max_fetch_wait_ms": 500,
-            "max_partition_fetch_bytes": 2097152,
-            "traces": {"topics": ["t"]}
+            "traces": {"topics": ["t"]},
+            "rebalance_strategy": "cooperative_sticky"
         });
-        let cfg: KafkaReceiverConfig = serde_json::from_value(json).unwrap();
-        let client_config = cfg.build_client_config();
-        assert_eq!(client_config.get("session.timeout.ms"), Some("20000"));
-        assert_eq!(client_config.get("heartbeat.interval.ms"), Some("5000"));
-        assert_eq!(client_config.get("fetch.min.bytes"), Some("512"));
-        assert_eq!(client_config.get("fetch.max.bytes"), Some("2097152"));
-        assert_eq!(client_config.get("fetch.wait.max.ms"), Some("500"));
+        let cfg: KafkaReceiverConfig = serde_json::from_value(json)
+            .expect("should deserialize config with rebalance_strategy");
         assert_eq!(
-            client_config.get("max.partition.fetch.bytes"),
-            Some("2097152")
+            cfg.rebalance_strategy(),
+            Some(RebalanceStrategy::CooperativeSticky)
         );
     }
 
-    // ---- Builder methods ----
-
+    /// Scenario (consumer-group rebalancing): the rebalance-strategy getter is read on a
+    /// default config.
+    /// Guarantees: it returns none, so the default assignor is used unless configured.
     #[test]
-    fn builder_methods_set_values() {
-        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b:9092", "g", "c")
-            .with_group_instance_id("inst-1")
+    fn rebalance_strategy_getter_returns_none_by_default() {
+        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
             .with_traces(SignalConfig {
                 topics: vec!["t".to_string()],
                 ..Default::default()
             })
-            .with_auto_offset_reset(AutoOffsetReset::Earliest)
-            .with_isolation_level(IsolationLevel::ReadUncommitted)
-            .with_enable_idempotency(true)
             .try_into()
             .unwrap();
-        assert_eq!(cfg.brokers(), "b:9092");
-        assert_eq!(cfg.group_id(), "g");
-        assert_eq!(cfg.client_id(), "c");
-        assert_eq!(cfg.traces_topics(), &["t"]);
-        assert!(cfg.is_idempotent());
+        assert_eq!(cfg.rebalance_strategy(), None);
     }
 
-    // ---- TLS configuration ----
+    /// Scenario (consumer-group rebalancing): a rebalance strategy is set via the builder.
+    /// Guarantees: the value is applied, so the builder configures the assignment strategy.
+    #[test]
+    fn builder_with_rebalance_strategy() {
+        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_rebalance_strategy(RebalanceStrategy::RoundRobin)
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            cfg.rebalance_strategy(),
+            Some(RebalanceStrategy::RoundRobin)
+        );
+    }
 
+    // ---- Compatibility ----
+
+    /// Scenario (compatibility): the TLS getter is read on a default config.
+    /// Guarantees: it returns none, so TLS is off unless configured.
     #[test]
     fn tls_getter_returns_none_by_default() {
         let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
@@ -2456,6 +2947,8 @@ mod tests {
         assert!(cfg.tls().is_none());
     }
 
+    /// Scenario (compatibility): TLS is configured via the builder.
+    /// Guarantees: the TLS block is applied, so the builder configures TLS.
     #[test]
     fn with_tls_builder_method() {
         let tls = TlsConfig::new(
@@ -2480,6 +2973,8 @@ mod tests {
         assert!(!tls.insecure());
     }
 
+    /// Scenario (compatibility): a config with a TLS block is deserialized.
+    /// Guarantees: the TLS fields parse, so TLS is configurable via JSON.
     #[test]
     fn deserialize_config_with_tls() {
         let json = json!({
@@ -2503,6 +2998,9 @@ mod tests {
         assert!(tls.insecure());
     }
 
+    /// Scenario (compatibility): a TLS block omits the insecure flag.
+    /// Guarantees: insecure defaults to false, so certificate verification is on unless
+    /// explicitly disabled.
     #[test]
     fn deserialize_config_with_tls_insecure_defaults_false() {
         let json = json!({
@@ -2522,6 +3020,9 @@ mod tests {
         assert!(!tls.insecure());
     }
 
+    /// Scenario (compatibility): a client config is built with neither TLS nor auth.
+    /// Guarantees: `security.protocol` is PLAINTEXT, so an unsecured connection is used
+    /// only when nothing is configured.
     #[test]
     fn build_client_config_no_tls_no_auth_sets_plaintext() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c");
@@ -2530,6 +3031,9 @@ mod tests {
         assert_eq!(client_config.get("ssl.ca.location"), None);
     }
 
+    /// Scenario (compatibility): a client config is built with TLS and no auth.
+    /// Guarantees: `security.protocol` is SSL and the `ssl.*` properties are set, so
+    /// server-only TLS is configured.
     #[test]
     fn build_client_config_tls_only_sets_ssl_protocol() {
         let tls = TlsConfig::new(
@@ -2557,6 +3061,9 @@ mod tests {
         );
     }
 
+    /// Scenario (compatibility): TLS is configured with insecure = true.
+    /// Guarantees: certificate verification is disabled, so insecure TLS is honored when
+    /// explicitly requested.
     #[test]
     fn build_client_config_tls_insecure_disables_verification() {
         let tls = TlsConfig::new(
@@ -2574,6 +3081,8 @@ mod tests {
         );
     }
 
+    /// Scenario (compatibility): a client config is built with TLS and SASL auth.
+    /// Guarantees: `security.protocol` is SASL_SSL, so SASL-over-TLS is configured.
     #[test]
     #[cfg(feature = "aws")]
     fn build_client_config_tls_with_sasl_sets_sasl_ssl_protocol() {
@@ -2601,6 +3110,9 @@ mod tests {
         assert_eq!(client_config.get("sasl.mechanism"), Some("OAUTHBEARER"));
     }
 
+    /// Scenario (compatibility): AWS MSK IAM auth is configured without an explicit TLS
+    /// block.
+    /// Guarantees: `security.protocol` is SASL_SSL, so MSK IAM implies TLS.
     #[test]
     #[cfg(feature = "aws")]
     fn build_client_config_aws_msk_without_tls_sets_sasl_ssl() {
@@ -2624,6 +3136,9 @@ mod tests {
         assert_eq!(client_config.get("ssl.ca.location"), None);
     }
 
+    /// Scenario (compatibility): generic SASL auth is configured without TLS.
+    /// Guarantees: `security.protocol` is SASL_PLAINTEXT, so plaintext SASL is used when no
+    /// TLS is requested.
     #[test]
     fn build_client_config_sasl_without_msk_and_no_tls_sets_sasl_plaintext() {
         let json = json!({
@@ -2649,89 +3164,167 @@ mod tests {
         assert_eq!(client_config.get("sasl.username"), Some("user"));
         assert_eq!(client_config.get("sasl.password"), Some("pass"));
     }
-    // ---- RebalanceStrategy ----
 
+    /// Scenario (compatibility): SASL SCRAM-SHA-256 auth is configured with no TLS.
+    /// Guarantees: `build_client_config` sets `security.protocol` to
+    /// SASL_PLAINTEXT and `sasl.mechanism` to SCRAM-SHA-256 with the supplied
+    /// credentials, so the SCRAM-256 mechanism in the auth matrix is wired
+    /// through to librdkafka correctly.
     #[test]
-    fn rebalance_strategy_to_librdkafka_value_range() {
-        assert_eq!(RebalanceStrategy::Range.to_librdkafka_value(), "range");
-    }
-
-    #[test]
-    fn rebalance_strategy_to_librdkafka_value_round_robin() {
+    fn build_client_config_scram_sha_256_sets_sasl_plaintext() {
+        let json = json!({
+            "brokers": "kafka:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "auth": {
+                "sasl": {
+                    "mechanism": "SCRAM-SHA-256",
+                    "username": "user",
+                    "password": "pass"
+                }
+            }
+        });
+        let cfg: KafkaReceiverConfig = serde_json::from_value(json).unwrap();
+        let client_config = cfg.build_client_config();
         assert_eq!(
-            RebalanceStrategy::RoundRobin.to_librdkafka_value(),
-            "roundrobin"
+            client_config.get("security.protocol"),
+            Some("SASL_PLAINTEXT")
         );
+        assert_eq!(client_config.get("sasl.mechanism"), Some("SCRAM-SHA-256"));
+        assert_eq!(client_config.get("sasl.username"), Some("user"));
+        assert_eq!(client_config.get("sasl.password"), Some("pass"));
     }
 
+    /// Scenario (compatibility): SASL SCRAM-SHA-512 auth is configured over TLS.
+    /// Guarantees: `build_client_config` sets `security.protocol` to SASL_SSL
+    /// (SASL over TLS) and `sasl.mechanism` to SCRAM-SHA-512 alongside the TLS
+    /// CA path, so the SCRAM-512 mechanism combined with TLS is wired through
+    /// correctly.
     #[test]
-    fn rebalance_strategy_to_librdkafka_value_cooperative_sticky() {
+    fn build_client_config_scram_sha_512_over_tls_sets_sasl_ssl() {
+        let json = json!({
+            "brokers": "kafka:9093",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]},
+            "tls": {"ca_file": "/certs/ca.pem"},
+            "auth": {
+                "sasl": {
+                    "mechanism": "SCRAM-SHA-512",
+                    "username": "user",
+                    "password": "pass"
+                }
+            }
+        });
+        let cfg: KafkaReceiverConfig = serde_json::from_value(json).unwrap();
+        let client_config = cfg.build_client_config();
+        assert_eq!(client_config.get("security.protocol"), Some("SASL_SSL"));
+        assert_eq!(client_config.get("sasl.mechanism"), Some("SCRAM-SHA-512"));
+        assert_eq!(client_config.get("sasl.username"), Some("user"));
+        assert_eq!(client_config.get("sasl.password"), Some("pass"));
+        assert_eq!(client_config.get("ssl.ca.location"), Some("/certs/ca.pem"));
+    }
+
+    /// Scenario (compatibility): mutual TLS is configured with a CA, client
+    /// certificate, client key, and an encrypted-key password.
+    /// Guarantees: `build_client_config` sets `security.protocol` to SSL and
+    /// wires all four mTLS paths -- including `ssl.key.password` -- so an
+    /// encrypted client key can be used for mutual TLS.
+    #[test]
+    fn build_client_config_mtls_sets_key_password() {
+        let tls = TlsConfig::new(
+            "/certs/ca.pem".to_string(),
+            "/certs/client.pem".to_string(),
+            "/certs/client-key.pem".to_string(),
+            Some("key-secret".to_string()),
+            false,
+        );
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_tls(tls);
+        let client_config = cfg.build_client_config();
+        assert_eq!(client_config.get("security.protocol"), Some("SSL"));
+        assert_eq!(client_config.get("ssl.ca.location"), Some("/certs/ca.pem"));
         assert_eq!(
-            RebalanceStrategy::CooperativeSticky.to_librdkafka_value(),
-            "cooperative-sticky"
+            client_config.get("ssl.certificate.location"),
+            Some("/certs/client.pem")
         );
+        assert_eq!(
+            client_config.get("ssl.key.location"),
+            Some("/certs/client-key.pem")
+        );
+        assert_eq!(client_config.get("ssl.key.password"), Some("key-secret"));
     }
 
+    // ---- Operational visibility ----
+
+    /// Scenario (operational visibility): the lag-refresh interval is left unset.
+    /// Guarantees: validation succeeds, so omitting the lag-refresh interval disables
+    /// periodic lag refresh.
     #[test]
-    fn build_client_config_sets_rebalance_strategy() {
+    fn validate_lag_refresh_interval_none_is_valid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["t".to_string()],
+            ..Default::default()
+        });
+        let cfg = KafkaReceiverConfig::try_from(cfg).expect("None interval must be valid");
+        assert_eq!(cfg.lag_refresh_interval_ms(), None);
+    }
+
+    /// Scenario (operational visibility): the lag-refresh interval is set to zero.
+    /// Guarantees: validation fails, so a zero lag-refresh interval is rejected.
+    #[test]
+    fn validate_lag_refresh_interval_zero_is_invalid() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_rebalance_strategy(RebalanceStrategy::CooperativeSticky);
-        let client_config = cfg.build_client_config();
-        assert_eq!(
-            client_config.get("partition.assignment.strategy"),
-            Some("cooperative-sticky")
-        );
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_lag_refresh_interval_ms(Some(0));
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("must be > 0"), "unexpected error: {err}");
     }
 
+    /// Scenario (operational visibility): the lag-refresh interval is set to a positive
+    /// value.
+    /// Guarantees: validation succeeds, so a positive lag-refresh interval is accepted.
     #[test]
-    fn build_client_config_no_rebalance_strategy_when_none() {
-        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c");
-        let client_config = cfg.build_client_config();
-        assert_eq!(client_config.get("partition.assignment.strategy"), None);
+    fn validate_lag_refresh_interval_some_value_is_valid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_lag_refresh_interval_ms(Some(5000));
+        let cfg = KafkaReceiverConfig::try_from(cfg).expect("positive interval must be valid");
+        assert_eq!(cfg.lag_refresh_interval_ms(), Some(5000));
     }
 
+    /// Scenario (operational visibility): the idempotency flag is read on a default config.
+    /// Guarantees: it defaults to false, so duplicate-suppression is opt-in.
     #[test]
-    fn deserialize_config_with_rebalance_strategy() {
+    fn enable_idempotency_defaults_to_false() {
+        let json = json!({
+            "brokers": "b:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["t"]}
+        });
+        let cfg: KafkaReceiverConfig = serde_json::from_value(json).expect("should deserialize");
+        assert!(!cfg.is_idempotent());
+    }
+
+    /// Scenario (operational visibility): an idempotency-enabled config is deserialized.
+    /// Guarantees: the flag parses as true, so idempotent dedupe is configurable.
+    #[test]
+    fn enable_idempotency_deserialized_when_true() {
         let json = json!({
             "brokers": "b:9092",
             "group_id": "g",
             "client_id": "c",
             "traces": {"topics": ["t"]},
-            "rebalance_strategy": "cooperative_sticky"
+            "enable_idempotency": true
         });
-        let cfg: KafkaReceiverConfig = serde_json::from_value(json)
-            .expect("should deserialize config with rebalance_strategy");
-        assert_eq!(
-            cfg.rebalance_strategy(),
-            Some(RebalanceStrategy::CooperativeSticky)
-        );
-    }
-
-    #[test]
-    fn rebalance_strategy_getter_returns_none_by_default() {
-        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["t".to_string()],
-                ..Default::default()
-            })
-            .try_into()
-            .unwrap();
-        assert_eq!(cfg.rebalance_strategy(), None);
-    }
-
-    #[test]
-    fn builder_with_rebalance_strategy() {
-        let cfg: KafkaReceiverConfig = KafkaReceiverConfigBuilder::new("b", "g", "c")
-            .with_traces(SignalConfig {
-                topics: vec!["t".to_string()],
-                ..Default::default()
-            })
-            .with_rebalance_strategy(RebalanceStrategy::RoundRobin)
-            .try_into()
-            .unwrap();
-        assert_eq!(
-            cfg.rebalance_strategy(),
-            Some(RebalanceStrategy::RoundRobin)
-        );
+        let cfg: KafkaReceiverConfig = serde_json::from_value(json).expect("should deserialize");
+        assert!(cfg.is_idempotent());
     }
 }

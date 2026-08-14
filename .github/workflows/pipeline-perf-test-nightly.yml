@@ -11,6 +11,8 @@ on:
 jobs:
   pipeline-perf-test:
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
+    outputs:
+      clickhouse_results_ready: ${{ steps.validate_clickhouse_results.outcome == 'success' }}
     steps:
       # Route tool-created temp files to RUNNER_TEMP, which GitHub Actions empties
       # at the start and end of every job. Required when running directly on the
@@ -51,7 +53,7 @@ jobs:
           git submodule init
           git submodule update
           cd rust/otap-dataflow
-          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          docker buildx build --load --build-arg FEATURES=clickhouse-exporter --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
 
       - name: Build otelarrowcol image
@@ -111,6 +113,23 @@ jobs:
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/batch-processor-docker.yaml
+
+      - name: Run df_engine ClickHouse comparison
+        id: clickhouse_df_engine
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py \
+            --config test_suites/integration/clickhouse/otap-clickhouse-logs.yaml \
+            --tests OTAP-IN-BATCHED-100K,OTLP-IN-BATCHED-100K
+
+      - name: Run OTel Collector ClickHouse comparison
+        id: clickhouse_collector
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py \
+            --config test_suites/integration/clickhouse/otelcol-clickhouse-logs.yaml
 
       - name: Run idle state performance tests
         if: ${{ !cancelled() }}
@@ -253,6 +272,67 @@ jobs:
           name: passthrough-nightly-results
           path: tools/pipeline_perf_test/results/continuous_passthrough/gh-actions-benchmark/*.json
 
+      - name: Validate ClickHouse comparison results
+        id: validate_clickhouse_results
+        if: ${{ !cancelled() && steps.clickhouse_df_engine.outcome == 'success' && steps.clickhouse_collector.outcome == 'success' }}
+        run: |
+          python - <<'PY'
+          import glob
+          import json
+
+          paths = glob.glob("tools/pipeline_perf_test/results/clickhouse/gh-actions-benchmark/*.json")
+          paths += glob.glob("tools/pipeline_perf_test/results/otelcol_clickhouse/gh-actions-benchmark/*.json")
+          expected = {
+            "OTAP-IN-BATCHED-100K": {
+              "logs_produced_rate",
+              "log_rows_written_rate",
+              "df-engine_cpu_percentage_normalized_avg",
+              "clickhouse_cpu_percentage_normalized_avg",
+              "df-engine_ram_mib_max",
+              "clickhouse_ram_mib_max",
+              "test_duration",
+            },
+            "OTLP-IN-BATCHED-100K": {
+              "logs_produced_rate",
+              "log_rows_written_rate",
+              "df-engine_cpu_percentage_normalized_avg",
+              "clickhouse_cpu_percentage_normalized_avg",
+              "df-engine_ram_mib_max",
+              "clickhouse_ram_mib_max",
+              "test_duration",
+            },
+            "OTELCOL-OTLP-TRANSFORMED-100K": {
+              "logs_produced_rate",
+              "log_rows_written_rate",
+              "go-collector_cpu_percentage_normalized_avg",
+              "clickhouse_cpu_percentage_normalized_avg",
+              "go-collector_ram_mib_max",
+              "clickhouse_ram_mib_max",
+            },
+          }
+          actual = {name: set() for name in expected}
+          if len(paths) != len(expected):
+            raise SystemExit(f"Expected {len(expected)} ClickHouse reports, found {len(paths)}")
+          for path in paths:
+              with open(path, encoding="utf-8") as file:
+                  for metric in json.load(file):
+                      for name in expected:
+                          if name in metric.get("extra", ""):
+                              actual[name].add(metric["name"])
+          if actual != expected:
+            raise SystemExit(f"Incomplete ClickHouse results: expected {expected}, found {actual}")
+          PY
+
+      - name: Upload ClickHouse comparison results for processing
+        if: ${{ steps.validate_clickhouse_results.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clickhouse-nightly-results
+          if-no-files-found: error
+          path: |
+            tools/pipeline_perf_test/results/clickhouse/gh-actions-benchmark/*.json
+            tools/pipeline_perf_test/results/otelcol_clickhouse/gh-actions-benchmark/*.json
+
       - name: Add benchmark link to job summary
         if: ${{ !cancelled() }}
         run: |
@@ -265,7 +345,8 @@ jobs:
       - name: Clean up Docker artifacts created by this job
         if: always()
         run: |
-          docker rmi -f df_engine otelarrowcol 2>/dev/null || true
+          docker rm -f load-generator df-engine go-collector clickhouse 2>/dev/null || true
+          docker rmi -f df_engine otelarrowcol otel/opentelemetry-collector-contrib:0.149.0 clickhouse/clickhouse-server:26.3.17.56 2>/dev/null || true
           # Prune dangling (unused) build cache and images only.
           docker builder prune -f 2>/dev/null || true
           docker image prune -f 2>/dev/null || true
@@ -371,6 +452,14 @@ jobs:
           merge-multiple: true
           path: passthrough_results
 
+      - name: Download ClickHouse comparison artifacts
+        if: ${{ needs['pipeline-perf-test'].outputs.clickhouse_results_ready == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: clickhouse-nightly-results*
+          merge-multiple: true
+          path: clickhouse_results
+
       - name: Consolidate syslog benchmark data
         if: ${{ !cancelled() }}
         run: |
@@ -425,6 +514,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh passthrough_results passthrough_output.json
+
+      - name: Consolidate ClickHouse comparison benchmark data
+        if: ${{ !cancelled() && needs['pipeline-perf-test'].outputs.clickhouse_results_ready == 'true' }}
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh clickhouse_results clickhouse_output.json
+          jq '[.[] | select(.name == "logs_produced_rate" or .name == "log_rows_written_rate")]' \
+            clickhouse_output.json > clickhouse_throughput_output.json
+          jq '[.[] | select(.name != "logs_produced_rate" and .name != "log_rows_written_rate")]' \
+            clickhouse_output.json > clickhouse_resources_output.json
 
       - name: Update benchmark data
         if: ${{ !cancelled() && hashFiles('syslog_output.json') != '' }}
@@ -592,6 +690,32 @@ jobs:
           max-items-in-chart: 100
           github-token: ${{ secrets.GITHUB_TOKEN }}
           benchmark-data-dir-path: "docs/benchmarks/continuous-passthrough"
+          auto-push: true
+          save-data-file: true
+
+      - name: Update ClickHouse throughput benchmark data
+        if: ${{ !cancelled() && hashFiles('clickhouse_throughput_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        with:
+          tool: "customBiggerIsBetter"
+          output-file-path: clickhouse_throughput_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/clickhouse-throughput"
+          auto-push: true
+          save-data-file: true
+
+      - name: Update ClickHouse resource benchmark data
+        if: ${{ !cancelled() && hashFiles('clickhouse_resources_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: clickhouse_resources_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/clickhouse-resources"
           auto-push: true
           save-data-file: true
 
