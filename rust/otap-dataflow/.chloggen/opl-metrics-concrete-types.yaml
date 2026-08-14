@@ -1,0 +1,4 @@
+change_type: enhancement
+component: query-engine
+note: Add support for concrete metric types in OPL type hierarchy
+issues: [3721]

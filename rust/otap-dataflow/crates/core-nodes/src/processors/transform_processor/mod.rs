@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use data_engine_expressions::{Expression, PipelineExpression};
+use data_engine_expressions::Expression;
 use data_engine_kql_parser::{KqlParser, Parser};
 use linkme::distributed_slice;
 use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
@@ -99,22 +99,48 @@ enum SignalScope {
     Signal(SignalType),
 }
 
-impl TryFrom<&PipelineExpression> for SignalScope {
-    type Error = ConfigError;
-
-    fn try_from(pipeline_expr: &PipelineExpression) -> Result<Self, Self::Error> {
+impl SignalScope {
+    fn try_from_kql_query(query: &str) -> Result<Self, ConfigError> {
         // Current logic looks at the start of the pipeline and expects it to be in a form like
         // "logs | ..." or "traces | ...", etc.
-        //
-        // TODO the logic here wouldn't be safe for languages other than Kql. We might want to have
-        //  the pipeline expression be able to return name of the source
-        let query = pipeline_expr.get_query_slice(pipeline_expr.get_query_location());
         let query = query.trim_start();
         Ok(if query.starts_with("logs") {
             Self::Signal(SignalType::Logs)
         } else if query.starts_with("traces") {
             Self::Signal(SignalType::Traces)
         } else if query.starts_with("metrics") {
+            Self::Signal(SignalType::Metrics)
+        } else if query.starts_with("signal") {
+            Self::All
+        } else {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "could not determine signal type from query".into(),
+            });
+        })
+    }
+
+    fn try_from_opl_query(query: &str) -> Result<Self, ConfigError> {
+        // Current logic looks at the start of the pipeline and expects it to be in a form like
+        // "logs | ..." or "traces | ...", etc.
+        //
+        // The OPL Parser will inspect the source during parsing and if it sees the source is the
+        // plural form of some concrete metric type (gauges, sums, histograms, etc.), it creates a
+        // query plan that will select for processing only these batch types and only rows having
+        // the specified metric type. All other batches / rows are treated as passthrough. This is
+        // why for OPL only we allow these identifiers to the query source
+        //
+        let query = query.trim_start();
+        Ok(if query.starts_with("logs") {
+            Self::Signal(SignalType::Logs)
+        } else if query.starts_with("traces") {
+            Self::Signal(SignalType::Traces)
+        } else if query.starts_with("metrics")
+            || query.starts_with("gauges")
+            || query.starts_with("sums")
+            || query.starts_with("histograms")
+            || query.starts_with("exponential_histograms")
+            || query.starts_with("summaries")
+        {
             Self::Signal(SignalType::Metrics)
         } else if query.starts_with("signal") {
             Self::All
@@ -152,7 +178,9 @@ impl TransformProcessor {
                 let pipeline_expr = KqlParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
-                let signal_scope = SignalScope::try_from(&pipeline_expr)?;
+                let signal_scope = SignalScope::try_from_kql_query(
+                    pipeline_expr.get_query_slice(pipeline_expr.get_query_location()),
+                )?;
                 (
                     vec![Transform {
                         pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
@@ -165,7 +193,9 @@ impl TransformProcessor {
                 let pipeline_expr = OplParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
-                let signal_scope = SignalScope::try_from(&pipeline_expr)?;
+                let signal_scope = SignalScope::try_from_opl_query(
+                    pipeline_expr.get_query_slice(pipeline_expr.get_query_location()),
+                )?;
                 (
                     vec![Transform {
                         pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
@@ -275,6 +305,10 @@ impl TransformProcessor {
             return Ok(());
         }
 
+        // Must be built before the context is moved into the slot map below. Holds no
+        // frames, so cloning it per outbound batch is cheap.
+        let outbound_context = inbound_context.clone_detached();
+
         // keep error reason if there was an error, so we can send it to upstream in Nack once
         // all routed outbound batches have been Ack/Nack'd
         let inbound_ctx_key = self
@@ -296,7 +330,7 @@ impl TransformProcessor {
         // the output of the pipeline. We need to do this b/c we'll be emitting this batch, plus
         // any routed batches, and we don't want to Ack the inbound context until we receive Acks
         // from all downstream batches (including this result)
-        let mut pdata = OtapPdata::new(Context::default(), default_otap_batch.into());
+        let mut pdata = OtapPdata::new(outbound_context.clone(), default_otap_batch.into());
         let outbound_key = self
             .contexts
             .insert_outbound(inbound_ctx_key)
@@ -364,8 +398,7 @@ impl TransformProcessor {
 
             // setup the pdata with the new outbound context
             let payload = OtapPayload::OtapArrowRecords(otap_batch);
-            let context = Context::default();
-            let mut pdata = OtapPdata::new(context, payload);
+            let mut pdata = OtapPdata::new(outbound_context.clone(), payload);
             let outbound_key = self
                 .contexts
                 .insert_outbound(inbound_ctx_key)
@@ -689,7 +722,9 @@ mod test {
                 arrow::v1::ArrowPayloadType,
                 common::v1::{AnyValue, InstrumentationScope, KeyValue},
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
-                metrics::v1::{Metric, MetricsData, ResourceMetrics, ScopeMetrics},
+                metrics::v1::{
+                    Gauge, Histogram, Metric, MetricsData, ResourceMetrics, ScopeMetrics, Sum,
+                },
                 resource::v1::Resource,
                 trace::v1::{ResourceSpans, ScopeSpans, Span, Status, TracesData},
             },
@@ -701,8 +736,10 @@ mod test {
     use otap_df_otap::{
         pdata::{Context, OtapPdata},
         testing::{TestCallData, next_ack, next_nack},
+        transport_headers::{TransportHeader, TransportHeaders},
     };
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use std::net::SocketAddr;
 
     #[derive(Debug, PartialEq, Eq)]
     struct TransformMetricPoint {
@@ -2131,6 +2168,101 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: an inbound batch carrying transport headers and a peer address is
+    /// split across the default output port and two routed output ports.
+    /// Guarantees: every outbound batch carries the originating request's transport
+    /// headers and peer address, while the inbound Ack frames stay behind so the
+    /// upstream node is still Ack'd exactly once after all outbound batches settle.
+    #[test]
+    fn test_split_batch_retains_inbound_request_metadata() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            } else if (severity_text == "INFO") {
+                route_to "info_port"
+            }"#;
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+        let info_port_rx = set_pdata_sender("info_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let peer_addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
+                let mut headers = TransportHeaders::new();
+                headers.push(TransportHeader::text("tenant", "x-tenant", "acme"));
+
+                let upstream_node_id = 999;
+                let pdata = create_pdata_with_subscriber(
+                    to_otap_logs(create_log_records(&["ERROR", "INFO", "DEBUG"])),
+                    Interests::ACKS,
+                    1,
+                    upstream_node_id,
+                )
+                .with_transport_headers(headers.clone())
+                .with_peer_addr(peer_addr);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // DEBUG stays on the default port, ERROR and INFO are routed
+                let (default_ctx, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                let (error_ctx, _) = error_port_rx.recv().await.unwrap().into_parts();
+                let (info_ctx, _) = info_port_rx.recv().await.unwrap().into_parts();
+
+                for (port, context) in [
+                    ("default", &default_ctx),
+                    ("error_port", &error_ctx),
+                    ("info_port", &info_ctx),
+                ] {
+                    assert_eq!(
+                        context.transport_headers(),
+                        Some(&headers),
+                        "{port} lost the inbound transport headers"
+                    );
+                    assert_eq!(
+                        context.peer_addr(),
+                        Some(peer_addr),
+                        "{port} lost the inbound peer address"
+                    );
+                }
+
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                send_ack(&mut ctx, default_ctx, SignalType::Logs)
+                    .await
+                    .unwrap();
+                assert!(pipeline_completion_rx.is_empty());
+                send_ack(&mut ctx, error_ctx, SignalType::Logs)
+                    .await
+                    .unwrap();
+                assert!(pipeline_completion_rx.is_empty());
+                send_ack(&mut ctx, info_ctx, SignalType::Logs)
+                    .await
+                    .unwrap();
+
+                match pipeline_completion_rx.recv().await.unwrap() {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
+                        let (node_id, _ack) = next_ack(ack).expect("expected ack subscriber");
+                        assert_eq!(node_id, upstream_node_id);
+                    }
+                    other => panic!("got unexpected pipeline ctrl message {other:?}"),
+                };
+                assert!(
+                    pipeline_completion_rx.is_empty(),
+                    "upstream must be Ack'd once, not once per outbound batch"
+                );
+            })
+            .validate(|_ctx| async move {})
+    }
+
     #[test]
     fn test_nack_with_subscribers_with_routing_downstream_routed_error() {
         // test that the inbound batch will be Nack'd with the reason from a downstream routed
@@ -2723,6 +2855,107 @@ mod test {
                     }
                     _ => panic!("unexpected payload type"),
                 }
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    /// Scenario: Process metrics with an OPL pipeline sourced from some specific metric type.
+    /// Guarantees: Only selected metric type are modified; rows w/out this metric type and batches
+    /// without of the selected metric type pass through unchanged.
+    #[test]
+    fn test_process_histogram_concrete_data_types() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = "histograms | set name = \"new_histogram_name\"";
+        let processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let gauge_metric = Metric::build()
+                    .name("gauge_name")
+                    .data_gauge(Gauge::default())
+                    .finish();
+
+                let histogram_metric = Metric::build()
+                    .name("histogram_metric")
+                    .data_histogram(Histogram::default())
+                    .finish();
+
+                let input_batch1 = vec![gauge_metric.clone(), histogram_metric.clone()];
+                let otap_batch1 = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData {
+                    resource_metrics: vec![ResourceMetrics::new(
+                        Resource::default(),
+                        vec![ScopeMetrics::new(
+                            InstrumentationScope::default(),
+                            input_batch1.clone(),
+                        )],
+                    )],
+                }));
+                let pdata_batch1 = OtapPdata::new(
+                    Context::default(),
+                    OtapPayload::OtapArrowRecords(otap_batch1),
+                );
+                ctx.process(Message::PData(pdata_batch1)).await.unwrap();
+
+                // check it still processes correctly metrics batches even if they don't have
+                // any of the specific metric type selected by the query
+                let sum_metric = Metric::build()
+                    .name("sum_metric")
+                    .data_sum(Sum::default())
+                    .finish();
+
+                let input_batch2 = vec![sum_metric.clone()];
+                let otap_batch2 = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData {
+                    resource_metrics: vec![ResourceMetrics::new(
+                        Resource::default(),
+                        vec![ScopeMetrics::new(
+                            InstrumentationScope::default(),
+                            input_batch2.clone(),
+                        )],
+                    )],
+                }));
+                let pdata_batch2 = OtapPdata::new(
+                    Context::default(),
+                    OtapPayload::OtapArrowRecords(otap_batch2),
+                );
+                ctx.process(Message::PData(pdata_batch2)).await.unwrap();
+
+                let output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 2);
+
+                let mut outputs = output.into_iter();
+                let mut result1 = outputs.next().unwrap();
+                let mut result2 = outputs.next().unwrap();
+
+                let payload1: OtapArrowRecords =
+                    result1.take_payload().try_into_with_default().unwrap();
+                let OtlpProtoMessage::Metrics(metrics_result1) = otap_to_otlp(&payload1) else {
+                    panic!("invalid signal type result")
+                };
+                assert_eq!(metrics_result1.resource_metrics.len(), 1);
+                assert_eq!(metrics_result1.resource_metrics[0].scope_metrics.len(), 1);
+                assert_eq!(
+                    metrics_result1.resource_metrics[0].scope_metrics[0].metrics,
+                    vec![
+                        gauge_metric.clone(),
+                        Metric::build()
+                            .name("new_histogram_name")
+                            .data_histogram(Histogram::default())
+                            .finish()
+                    ]
+                );
+
+                let payload2: OtapArrowRecords =
+                    result2.take_payload().try_into_with_default().unwrap();
+                let OtlpProtoMessage::Metrics(metrics_result2) = otap_to_otlp(&payload2) else {
+                    panic!("invalid signal type result")
+                };
+                assert_eq!(metrics_result2.resource_metrics.len(), 1);
+                assert_eq!(metrics_result2.resource_metrics[0].scope_metrics.len(), 1);
+                assert_eq!(
+                    metrics_result2.resource_metrics[0].scope_metrics[0].metrics,
+                    vec![sum_metric.clone()]
+                );
             })
             .validate(|_ctx| async move {})
     }

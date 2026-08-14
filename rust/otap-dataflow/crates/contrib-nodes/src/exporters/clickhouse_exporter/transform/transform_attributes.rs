@@ -23,7 +23,10 @@
 //! for rewriting foreign keys in parent signal batches.
 use std::collections::HashMap;
 
-use arrow::array::{Array, MapBuilder, StringBuilder, UInt16Array, UInt32Builder};
+use arrow::array::{
+    Array, BinaryArray, BooleanArray, Float64Array, MapBuilder, StringBuilder, UInt8Array,
+    UInt16Array, UInt32Builder,
+};
 use arrow::array::{RecordBatch, UInt32Array};
 use arrow::compute::cast;
 use arrow::datatypes::DataType;
@@ -180,6 +183,170 @@ fn parent_ids_as_u16(batch: &RecordBatch) -> Result<Option<UInt16Array>, Clickho
         .clone();
 
     Ok(Some(ids))
+}
+
+struct AttributeMapEncoder<'a> {
+    types: &'a UInt8Array,
+    keys: StringArrayAccessor<'a>,
+    strings: Option<StringArrayAccessor<'a>>,
+    integers: Option<Int64ArrayAccessor<'a>>,
+    doubles: Option<&'a Float64Array>,
+    booleans: Option<&'a BooleanArray>,
+    bytes: Option<&'a BinaryArray>,
+    serialized: Option<ByteArrayAccessor<'a>>,
+}
+
+impl<'a> AttributeMapEncoder<'a> {
+    fn try_new(batch: &'a RecordBatch) -> Result<Self, ClickhouseExporterError> {
+        Ok(Self {
+            types: get_u8_array(batch, consts::ATTRIBUTE_TYPE)?,
+            keys: StringArrayAccessor::try_new_for_column(batch, consts::ATTRIBUTE_KEY)?,
+            strings: get_array_op(batch, consts::ATTRIBUTE_STR)
+                .map(StringArrayAccessor::try_new)
+                .transpose()?,
+            integers: get_array_op(batch, consts::ATTRIBUTE_INT)
+                .map(Int64ArrayAccessor::try_new)
+                .transpose()?,
+            doubles: get_f64_array_opt(batch, consts::ATTRIBUTE_DOUBLE)?,
+            booleans: get_bool_array_opt(batch, consts::ATTRIBUTE_BOOL)?,
+            bytes: get_binary_array_opt(batch, consts::ATTRIBUTE_BYTES)?,
+            serialized: get_array_op(batch, consts::ATTRIBUTE_SER)
+                .map(ByteArrayAccessor::try_new)
+                .transpose()?,
+        })
+    }
+
+    fn append_row(&self, row: usize, builder: &mut MapBuilder<StringBuilder, StringBuilder>) {
+        let Some(key) = self.keys.str_at(row) else {
+            return;
+        };
+        builder.keys().append_value(key);
+
+        let attribute_type = self.types.value(row);
+        match attribute_type {
+            value if value == AttributeValueType::Empty as u8 => {
+                builder.values().append_value("");
+            }
+            value if value == AttributeValueType::Str as u8 => {
+                builder.values().append_value(
+                    self.strings
+                        .as_ref()
+                        .and_then(|a| a.str_at(row))
+                        .unwrap_or(""),
+                );
+            }
+            value if value == AttributeValueType::Int as u8 => {
+                if let Some(value) = self.integers.as_ref().and_then(|a| a.value_at(row)) {
+                    let mut buffer = itoa::Buffer::new();
+                    builder.values().append_value(buffer.format(value));
+                } else {
+                    builder.values().append_value("");
+                }
+            }
+            value if value == AttributeValueType::Double as u8 => {
+                if let Some(value) = self.doubles.and_then(|a| a.value_at(row)) {
+                    let mut buffer = ryu::Buffer::new();
+                    builder.values().append_value(buffer.format(value));
+                } else {
+                    builder.values().append_value("");
+                }
+            }
+            value if value == AttributeValueType::Bool as u8 => {
+                if let Some(value) = self.booleans.and_then(|a| a.value_at(row)) {
+                    builder
+                        .values()
+                        .append_value(if value { "true" } else { "false" });
+                } else {
+                    builder.values().append_value("");
+                }
+            }
+            value if value == AttributeValueType::Bytes as u8 => {
+                if let Some(bytes) = self.bytes.filter(|a| a.is_valid(row)) {
+                    builder.values().append_value(
+                        base64::engine::general_purpose::STANDARD.encode(bytes.value(row)),
+                    );
+                } else {
+                    builder.values().append_value("");
+                }
+            }
+            value
+                if value == AttributeValueType::Map as u8
+                    || value == AttributeValueType::Slice as u8 =>
+            {
+                let json = self
+                    .serialized
+                    .as_ref()
+                    .and_then(|a| a.slice_at(row))
+                    .and_then(|value| {
+                        let mut buffer = Vec::with_capacity(value.len() * 2);
+                        append_cbor_as_json(&mut buffer, value)
+                            .ok()
+                            .and_then(|()| String::from_utf8(buffer).ok())
+                    })
+                    .unwrap_or_default();
+                builder.values().append_value(json);
+            }
+            _ => builder.values().append_value(""),
+        }
+    }
+}
+
+/// Inline an attribute payload directly into an existing parent row order.
+pub(crate) fn inline_attributes_to_parent(
+    batch: &RecordBatch,
+    parent_ids: &UInt16Array,
+) -> Result<Option<MapArray>, ClickhouseExporterError> {
+    let Some(attribute_parent_ids) = parent_ids_as_u16(batch)? else {
+        return Ok(None);
+    };
+
+    // OTAP attribute rows are sorted by type/key/value for compression, so their parent IDs are
+    // commonly non-contiguous. Build a compact row index in two linear passes instead of creating
+    // a hash entry and a separately allocated Vec for every parent.
+    let max_id = attribute_parent_ids
+        .iter()
+        .chain(parent_ids.iter())
+        .flatten()
+        .max()
+        .unwrap_or(0) as usize;
+    let mut offsets = vec![0_u32; max_id.saturating_add(2)];
+    for id in attribute_parent_ids.iter().flatten() {
+        offsets[id as usize + 1] += 1;
+    }
+    for index in 1..offsets.len() {
+        offsets[index] += offsets[index - 1];
+    }
+    let mut cursors = offsets[..offsets.len() - 1].to_vec();
+    let mut grouped_rows = vec![0_u32; attribute_parent_ids.len()];
+    for (row, id) in attribute_parent_ids.iter().enumerate() {
+        let Some(id) = id else {
+            continue;
+        };
+        let cursor = &mut cursors[id as usize];
+        grouped_rows[*cursor as usize] = row as u32;
+        *cursor += 1;
+    }
+
+    let encoder = AttributeMapEncoder::try_new(batch)?;
+    let mut builder = MapBuilder::with_capacity(
+        None,
+        StringBuilder::new(),
+        StringBuilder::new(),
+        parent_ids.len(),
+    );
+    for row in 0..parent_ids.len() {
+        if parent_ids.is_valid(row) {
+            let id = parent_ids.value(row) as usize;
+            let start = offsets[id] as usize;
+            let end = offsets[id + 1] as usize;
+            for &attribute_row in &grouped_rows[start..end] {
+                encoder.append_row(attribute_row as usize, &mut builder);
+            }
+        }
+        builder.append(true)?;
+    }
+
+    Ok(Some(builder.finish()))
 }
 
 /// For Clickhouse Map(str, str) attribute columns, we group the rows by parent_id and represent the set as an array of dicts.
@@ -409,6 +576,8 @@ mod tests_group_attributes {
         out
     }
 
+    /// Scenario: an attribute batch has no parent ID column.
+    /// Guarantees: grouping reports no attribute map instead of fabricating parent associations.
     #[test]
     fn map_returns_none_when_parent_id_missing() {
         let batch = build_batch(
@@ -427,6 +596,8 @@ mod tests_group_attributes {
         assert!(got.is_none());
     }
 
+    /// Scenario: attribute rows share parent IDs and one row has a null key.
+    /// Guarantees: values are grouped by parent while null-keyed attributes are omitted.
     #[test]
     fn map_groups_by_parent_id_and_skips_null_keys() {
         // rows:
@@ -459,6 +630,8 @@ mod tests_group_attributes {
         assert_eq!(by_id[&20], vec![("b".into(), "y".into())]);
     }
 
+    /// Scenario: parent IDs use dictionary-encoded UInt32 values.
+    /// Guarantees: grouping accepts the canonical encoded ID layout and preserves associations.
     #[test]
     fn map_groups_dictionary_encoded_u32_parent_ids() {
         let fields = vec![
@@ -504,6 +677,8 @@ mod tests_group_attributes {
         assert_eq!(by_id[&99], vec![("c".into(), "z".into())]);
     }
 
+    /// Scenario: attributes contain scalar values, nulls, and missing value columns.
+    /// Guarantees: values use the expected strings and absent values become empty strings.
     #[test]
     fn map_formats_non_string_types_to_string_and_defaults_to_empty_on_null_or_missing_column() {
         // 6 rows for same parent, each different type.
@@ -557,6 +732,8 @@ mod tests_group_attributes {
         );
     }
 
+    /// Scenario: serialized map and slice values are missing or invalid CBOR.
+    /// Guarantees: failed serialization falls back to an empty string for each attribute.
     #[test]
     fn map_and_slice_types_use_attribute_ser_and_default_to_empty_on_decode_failure() {
         // If you can easily generate real CBOR bytes used by append_cbor_as_json,

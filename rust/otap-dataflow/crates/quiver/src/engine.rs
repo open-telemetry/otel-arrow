@@ -67,6 +67,32 @@ pub struct MaintenanceStats {
     pub pending_deletes_cleared: usize,
 }
 
+/// Cumulative loss totals for one retention reason.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetentionLossCounts {
+    /// Number of segments removed by retention.
+    pub segments: u64,
+    /// Number of bundles stored in the removed segments.
+    pub bundles: u64,
+    /// Number of logical items stored in the removed segments.
+    pub items: u64,
+    /// Persisted bytes stored in the removed segment files.
+    pub bytes: u64,
+}
+
+/// Cumulative retention-loss totals for the current engine lifetime.
+///
+/// The fields are loaded independently from monotonic atomics. A snapshot may
+/// briefly span one retention update, but later snapshots converge to the full
+/// totals and consumers can safely compute per-field deltas.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetentionLossSnapshot {
+    /// Loss caused by the DropOldest size-cap policy.
+    pub drop_oldest: RetentionLossCounts,
+    /// Loss caused by max-age expiry.
+    pub expired: RetentionLossCounts,
+}
+
 /// Primary entry point for the persistence engine.
 ///
 /// The engine coordinates:
@@ -109,7 +135,9 @@ pub struct QuiverEngine {
     force_dropped_bundles: AtomicU64,
     /// Count of individual data items lost due to force-dropped segments.
     force_dropped_items: AtomicU64,
-    /// Pending dropped bundles grouped by slot shape, for per-signal tracking.
+    /// Count of persisted bytes lost due to force-dropped segments.
+    force_dropped_bytes: AtomicU64,
+    /// Pending dropped items grouped by slot shape, for per-signal tracking.
     /// Keyed by sorted slot_ids to bound memory by unique bundle shapes.
     dropped_items_by_shape: RwLock<HashMap<Vec<crate::record_bundle::SlotId>, u64>>,
     /// Count of segments lost due to max_age retention.
@@ -118,7 +146,9 @@ pub struct QuiverEngine {
     expired_bundles: AtomicU64,
     /// Count of individual data items lost due to expired segments.
     expired_items: AtomicU64,
-    /// Pending expired bundles grouped by slot shape, for per-signal tracking.
+    /// Count of persisted bytes lost due to expired segments.
+    expired_bytes: AtomicU64,
+    /// Pending expired items grouped by slot shape, for per-signal tracking.
     /// Keyed by sorted slot_ids to bound memory by unique bundle shapes.
     expired_items_by_shape: RwLock<HashMap<Vec<crate::record_bundle::SlotId>, u64>>,
     /// Segment store for finalized segment files.
@@ -408,10 +438,12 @@ impl QuiverEngine {
             force_dropped_segments: AtomicU64::new(0),
             force_dropped_bundles: AtomicU64::new(0),
             force_dropped_items: AtomicU64::new(0),
+            force_dropped_bytes: AtomicU64::new(0),
             dropped_items_by_shape: RwLock::new(HashMap::new()),
             expired_segments: AtomicU64::new(0),
             expired_bundles: AtomicU64::new(0),
             expired_items: AtomicU64::new(0),
+            expired_bytes: AtomicU64::new(0),
             expired_items_by_shape: RwLock::new(HashMap::new()),
             segment_store,
             registry: registry.clone(),
@@ -510,8 +542,26 @@ impl QuiverEngine {
         self.force_dropped_items.load(Ordering::Relaxed)
     }
 
-    /// Drains and returns pending dropped bundles (grouped by slot shape) for per-signal classification.
-    pub fn drain_dropped_bundles_pending(&self) -> Vec<(Vec<crate::record_bundle::SlotId>, u64)> {
+    /// Returns cumulative retention-loss totals for this engine lifetime.
+    pub fn retention_loss_snapshot(&self) -> RetentionLossSnapshot {
+        RetentionLossSnapshot {
+            drop_oldest: RetentionLossCounts {
+                segments: self.force_dropped_segments(),
+                bundles: self.force_dropped_bundles(),
+                items: self.force_dropped_items(),
+                bytes: self.force_dropped_bytes.load(Ordering::Relaxed),
+            },
+            expired: RetentionLossCounts {
+                segments: self.expired_segments(),
+                bundles: self.expired_bundles(),
+                items: self.expired_items(),
+                bytes: self.expired_bytes.load(Ordering::Relaxed),
+            },
+        }
+    }
+
+    /// Drains pending dropped items grouped by slot shape for signal classification.
+    pub fn drain_dropped_items_by_shape(&self) -> Vec<(Vec<crate::record_bundle::SlotId>, u64)> {
         let map = std::mem::take(&mut *self.dropped_items_by_shape.write());
         map.into_iter().collect()
     }
@@ -544,8 +594,8 @@ impl QuiverEngine {
         self.expired_items.load(Ordering::Relaxed)
     }
 
-    /// Drains and returns pending expired bundles (grouped by slot shape) for per-signal classification.
-    pub fn drain_expired_bundles_pending(&self) -> Vec<(Vec<crate::record_bundle::SlotId>, u64)> {
+    /// Drains pending expired items grouped by slot shape for signal classification.
+    pub fn drain_expired_items_by_shape(&self) -> Vec<(Vec<crate::record_bundle::SlotId>, u64)> {
         let map = std::mem::take(&mut *self.expired_items_by_shape.write());
         map.into_iter().collect()
     }
@@ -1374,12 +1424,14 @@ impl QuiverEngine {
         let mut deleted = 0;
         let mut bundles_dropped: u64 = 0;
         let mut items_dropped: u64 = 0;
+        let mut bytes_dropped: u64 = 0;
         for seq in &to_drop {
             // Count bundles and items before deleting (single lock acquisition)
             if let Ok((bundles, items)) = self.segment_store.segment_drop_counts(*seq) {
                 bundles_dropped += bundles as u64;
                 items_dropped += items;
             }
+            let file_size = self.segment_store.segment_file_size(*seq);
             match self.segment_store.bundle_metadata(*seq) {
                 Ok(metadata) => {
                     let mut map = self.dropped_items_by_shape.write();
@@ -1399,16 +1451,18 @@ impl QuiverEngine {
                     );
                 }
             }
-            if let Err(e) = self.segment_store.delete_segment(*seq) {
-                otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, error_type = "io", reason = "force_drop");
-            } else {
-                otel_info!(
-                    "quiver.segment.drop",
-                    segment = seq.raw(),
-                    reason = "force_drop",
-                );
-                deleted += 1;
+            self.segment_store
+                .delete_segment(*seq)
+                .expect("physical deletion failures are deferred");
+            if let Ok(bytes) = file_size {
+                bytes_dropped += bytes;
             }
+            otel_info!(
+                "quiver.segment.drop",
+                segment = seq.raw(),
+                reason = "force_drop",
+            );
+            deleted += 1;
         }
 
         // Update the force-dropped counters
@@ -1421,6 +1475,9 @@ impl QuiverEngine {
         let _ = self
             .force_dropped_items
             .fetch_add(items_dropped, Ordering::Relaxed);
+        let _ = self
+            .force_dropped_bytes
+            .fetch_add(bytes_dropped, Ordering::Relaxed);
 
         // Clean up registry internal state
         if let Some(&max_dropped) = to_drop.iter().max() {
@@ -1462,12 +1519,14 @@ impl QuiverEngine {
         let mut deleted = 0;
         let mut bundles_expired: u64 = 0;
         let mut items_expired: u64 = 0;
+        let mut bytes_expired: u64 = 0;
         for seq in &expired_segments {
             // Count bundles and items before deleting (single lock acquisition)
             if let Ok((bundles, items)) = self.segment_store.segment_drop_counts(*seq) {
                 bundles_expired += bundles as u64;
                 items_expired += items;
             }
+            let file_size = self.segment_store.segment_file_size(*seq);
             match self.segment_store.bundle_metadata(*seq) {
                 Ok(metadata) => {
                     let mut map = self.expired_items_by_shape.write();
@@ -1488,23 +1547,19 @@ impl QuiverEngine {
                 }
             }
 
-            if let Err(e) = self.segment_store.delete_segment(*seq) {
-                otel_warn!(
-                    "quiver.segment.drop",
-                    segment = seq.raw(),
-                    error = %e,
-                    error_type = "io",
-                    reason = "expired",
-                );
-            } else {
-                otel_info!(
-                    "quiver.segment.drop",
-                    segment = seq.raw(),
-                    max_age_secs = max_age.as_secs(),
-                    reason = "expired",
-                );
-                deleted += 1;
+            self.segment_store
+                .delete_segment(*seq)
+                .expect("physical deletion failures are deferred");
+            if let Ok(bytes) = file_size {
+                bytes_expired += bytes;
             }
+            otel_info!(
+                "quiver.segment.drop",
+                segment = seq.raw(),
+                max_age_secs = max_age.as_secs(),
+                reason = "expired",
+            );
+            deleted += 1;
         }
 
         // Clean up registry internal state for deleted segments
@@ -1525,6 +1580,11 @@ impl QuiverEngine {
             let _ = self
                 .expired_items
                 .fetch_add(items_expired, Ordering::Relaxed);
+        }
+        if bytes_expired > 0 {
+            let _ = self
+                .expired_bytes
+                .fetch_add(bytes_expired, Ordering::Relaxed);
         }
 
         Ok(deleted)
@@ -3463,6 +3523,8 @@ mod tests {
         // when the soft cap is exceeded -- this test verifies the mechanism works.)
     }
 
+    /// Scenario: DropOldest removes one pending segment without active readers.
+    /// Guarantees: The loss snapshot reports its exact segment, bundle, and persisted-byte totals.
     #[tokio::test]
     async fn force_drop_oldest_drops_pending_segments_without_readers() {
         let temp_dir = tempdir().expect("tempdir");
@@ -3503,6 +3565,16 @@ mod tests {
         // Verify we have some segments pending
         let initial_count = engine.segment_store.segment_count();
         assert!(initial_count >= 2, "should have multiple segments");
+        let oldest = engine
+            .segment_store()
+            .segment_sequences()
+            .into_iter()
+            .min()
+            .expect("oldest segment");
+        let oldest_file_size = engine
+            .segment_store()
+            .segment_file_size(oldest)
+            .expect("segment file size");
 
         // Do NOT consume any bundles - they're all pending
         // But we also have no claimed bundles (no active reads)
@@ -3516,6 +3588,11 @@ mod tests {
 
         // Counter should be incremented
         assert_eq!(engine.force_dropped_segments(), 1);
+        let loss = engine.retention_loss_snapshot();
+        assert_eq!(loss.drop_oldest.segments, 1);
+        assert!(loss.drop_oldest.bundles > 0);
+        assert_eq!(loss.drop_oldest.bytes, oldest_file_size);
+        assert_eq!(loss.expired, RetentionLossCounts::default());
 
         // Segment count should decrease
         let new_count = engine.segment_store.segment_count();
@@ -4266,12 +4343,8 @@ mod tests {
         }
     }
 
-    /// Test that cleanup_expired_segments deletes segments older than max_age.
-    ///
-    /// This test verifies:
-    /// 1. Segments with finalization time older than max_age are deleted
-    /// 2. Segments newer than max_age are preserved
-    /// 3. The method returns the correct count of deleted segments
+    /// Scenario: All finalized segments are older than the configured max_age.
+    /// Guarantees: Expiry reports their exact segment, bundle, and persisted-byte totals.
     #[tokio::test]
     async fn cleanup_expired_segments_deletes_old_segments() {
         let dir = tempdir().expect("tempdir");
@@ -4306,6 +4379,17 @@ mod tests {
             initial_segment_count >= 1,
             "should have at least one segment"
         );
+        let expected_bytes = engine
+            .segment_store()
+            .segment_sequences()
+            .into_iter()
+            .map(|seq| {
+                engine
+                    .segment_store()
+                    .segment_file_size(seq)
+                    .expect("segment file size")
+            })
+            .sum::<u64>();
 
         // Backdate segments so they appear older than max_age
         engine
@@ -4325,6 +4409,11 @@ mod tests {
             0,
             "no segments should remain after cleanup"
         );
+        let loss = engine.retention_loss_snapshot();
+        assert_eq!(loss.expired.segments, initial_segment_count as u64);
+        assert_eq!(loss.expired.bundles, 5);
+        assert_eq!(loss.expired.bytes, expected_bytes);
+        assert_eq!(loss.drop_oldest, RetentionLossCounts::default());
     }
 
     /// Test that cleanup_expired_segments force-completes segments with claimed bundles.
