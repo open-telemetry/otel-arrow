@@ -11,13 +11,13 @@ mod client;
 #[cfg(feature = "http-client")]
 mod http_backend;
 
-pub use otap_df_admin_types::{engine, groups, operations, pipelines, telemetry};
+pub use otap_df_admin_types::{components, engine, groups, operations, pipelines, telemetry};
 pub use otap_df_config as config;
 
 #[cfg(feature = "http-client")]
 pub use crate::client::{
-    AdminClient, AdminClientBuilder, EngineClient, GroupsClient, HttpAdminClientSettings,
-    PipelinesClient, TelemetryClient,
+    AdminClient, AdminClientBuilder, ComponentsClient, EngineClient, GroupsClient,
+    HttpAdminClientSettings, PipelinesClient, TelemetryClient,
 };
 pub use crate::endpoint::{AdminAuth, AdminEndpoint, AdminScheme};
 pub use crate::error::{EndpointError, Error};

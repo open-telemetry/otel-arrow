@@ -280,6 +280,7 @@ pub enum Command {
     Groups(GroupsArgs),
     Pipelines(PipelinesArgs),
     Telemetry(TelemetryArgs),
+    Components(ComponentsArgs),
 }
 
 impl Command {
@@ -299,6 +300,7 @@ impl Command {
             Command::Groups(args) => apply_group_agent_output_default(args),
             Command::Pipelines(args) => apply_pipeline_agent_output_default(args),
             Command::Telemetry(args) => apply_telemetry_agent_output_default(args),
+            Command::Components(args) => args.output.output = ReadOutput::AgentJson,
         }
     }
 }
@@ -463,6 +465,13 @@ pub enum EngineCommand {
     Status(ReadOutputArgs),
     Livez(ReadOutputArgs),
     Readyz(ReadOutputArgs),
+}
+
+/// Arguments for `components`: list the running engine's component inventory.
+#[derive(Args, Debug, Clone)]
+pub struct ComponentsArgs {
+    #[command(flatten)]
+    pub output: ReadOutputArgs,
 }
 
 /// Arguments for group-level commands that operate across pipeline groups.

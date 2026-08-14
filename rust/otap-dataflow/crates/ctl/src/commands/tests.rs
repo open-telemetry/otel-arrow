@@ -70,6 +70,75 @@ async fn engine_status_json_command_hits_expected_route() {
     assert!(output.contains("\"generatedAt\""));
 }
 
+/// Scenario: the CLI runs `dfctl components --output json` against an admin
+/// endpoint.
+/// Guarantees: the command hits the committed `/api/v1/components` route and
+/// emits the decoded inventory response as JSON.
+#[tokio::test]
+async fn components_json_command_hits_expected_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/components"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "generatedAt": "2026-01-01T00:00:00Z",
+            "components": [
+                {
+                    "id": "urn:otel:receiver:otlp",
+                    "category": "Receiver",
+                    "description": "OTLP receiver",
+                    "attributes": { "listen_port": "4317" }
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let cli = Cli::try_parse_from([
+        "dfctl",
+        "--url",
+        &server.uri(),
+        "components",
+        "--output",
+        "json",
+    ])
+    .expect("parse");
+
+    let mut stdout = Vec::new();
+    run(cli, &mut stdout).await.expect("run");
+
+    let output = String::from_utf8(stdout).expect("utf8");
+    assert!(output.contains("\"urn:otel:receiver:otlp\""));
+    assert!(output.contains("\"Receiver\""));
+}
+
+/// Scenario: the CLI runs `dfctl components` with the default human output.
+/// Guarantees: the human table renders the category, id, and a component count
+/// so operators get a readable inventory without a format flag.
+#[tokio::test]
+async fn components_human_command_renders_table() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/components"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "generatedAt": "2026-01-01T00:00:00Z",
+            "components": [
+                { "id": "urn:otel:receiver:otlp", "category": "Receiver" }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let cli = Cli::try_parse_from(["dfctl", "--url", &server.uri(), "components"]).expect("parse");
+
+    let mut stdout = Vec::new();
+    run(cli, &mut stdout).await.expect("run");
+
+    let output = String::from_utf8(stdout).expect("utf8");
+    assert!(output.contains("urn:otel:receiver:otlp"));
+    assert!(output.contains("Receiver"));
+    assert!(output.contains("components"));
+}
+
 /// Scenario: the CLI runs a one-shot read command in agent JSON mode.
 /// Guarantees: the output includes a stable dfctl envelope with provenance and
 /// the SDK response nested under `data`.

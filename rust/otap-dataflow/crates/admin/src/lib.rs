@@ -3,6 +3,7 @@
 
 //! HTTP server for exposing admin endpoints.
 
+mod components;
 mod convert;
 mod dashboard;
 mod debug;
@@ -342,6 +343,7 @@ pub async fn run(
     };
 
     let api_routes = Router::new()
+        .merge(components::routes())
         .merge(debug::routes())
         .merge(health::routes())
         .merge(telemetry::routes())
