@@ -62,14 +62,20 @@ impl<'a> RawKeyValue<'a> {
 
         let (tag, next_pos) = match read_varint(self.buf, pos) {
             Some((tag, next_pos)) => (tag, next_pos),
-            // invalid bytes in buffer
-            None => return,
+            // invalid bytes in buffer: mark parsing exhausted so callers stop looping
+            None => {
+                self.pos.set(self.buf.len());
+                return;
+            }
         };
 
         let (start, end) = match field_value_range(self.buf, wire_types::LEN, next_pos) {
             Some(range) => range,
-            // invalid bytes in buffer
-            None => return,
+            // invalid bytes in buffer: mark parsing exhausted so callers stop looping
+            None => {
+                self.pos.set(self.buf.len());
+                return;
+            }
         };
         self.pos.set(end);
 

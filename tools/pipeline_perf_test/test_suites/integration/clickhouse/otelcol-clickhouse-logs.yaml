@@ -1,0 +1,60 @@
+name: OTel Collector ClickHouse Logs
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "2-2"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+  go-collector:
+    deployment:
+      docker:
+        image: otel/opentelemetry-collector-contrib:0.149.0@sha256:0fba96233274f6d665ac8831ad99dfe6479a9a20459f6e2719c0d20945773b46
+        network: testbed
+        cpuset_cpus: "3"
+        ports:
+          - "8086:8086"
+        volumes:
+          - 'test_suites/integration/configs/otelcol/clickhouse-logs.yaml:/etc/otelcol-contrib/config.yaml:ro'
+        environment:
+          GOMAXPROCS: "1"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8086/metrics
+
+  clickhouse:
+    deployment:
+      docker:
+        image: clickhouse/clickhouse-server:26.3.17.56@sha256:422be85ae7344058369cdd366ac0efea9daa8428b55c9cf50258e83a7d12fcb3
+        network: testbed
+        cpuset_cpus: "4-7"
+        ports:
+          - "8123:8123"
+        environment:
+          CLICKHOUSE_PASSWORD: test
+    monitoring:
+      docker_component:
+        allocated_cores: 4
+
+tests:
+  - name: OTELCOL-OTLP-TRANSFORMED-100K
+    from_template:
+      path: test_suites/integration/templates/test_steps/otelcol-clickhouse-steps-docker.yaml

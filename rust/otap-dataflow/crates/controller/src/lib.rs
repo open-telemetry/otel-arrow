@@ -80,6 +80,7 @@ use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::listener_group::ListenerGroupSnapshot;
 use otap_df_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
     MemoryPressureLevel,
@@ -89,16 +90,18 @@ use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
 };
+use otap_df_engine::topology::NumaTopology;
 use otap_df_state::store::{ObservedStateHandle, ObservedStateStore};
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
-    InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_error, otel_info,
-    otel_info_span, otel_warn, raw_error, resource_detectors, self_tracing::LogContext,
+    InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup,
+    log_filter::RuntimeLogFilterHandle, otel_error, otel_info, otel_info_span, otel_warn,
+    raw_error, resource_detectors, self_tracing::LogContext,
 };
 use smallvec::smallvec;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -118,7 +121,9 @@ pub mod error;
 /// Available controller extensions.
 pub mod extension;
 
+mod listener_group;
 mod live_control;
+mod placement;
 /// Reusable startup helpers (validation, CLI overrides, system info).
 pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
@@ -133,6 +138,7 @@ use live_control::{
     ControllerRuntime, LaunchedPipelineThread, PanicReport, RuntimeInstanceError,
     RuntimeInstanceExit,
 };
+use placement::{CorePlacement, PipelinePlacement, PlacementPlanner, PlacementSnapshot};
 
 use otap_df_engine::component_inventory;
 
@@ -1480,8 +1486,17 @@ impl<
             ),
             observability_pipeline.policies.health.clone(),
         );
-        let planned_core_assignments =
-            Self::preflight_pipeline_core_allocations(&pipelines, &all_cores)?;
+        let topology = NumaTopology::detect();
+        let observability_numa_node_id =
+            topology.numa_node_or_zero(observability_core.id as u32) as usize;
+        otel_info!(
+            "controller.numa_topology.detected",
+            completeness = format!("{:?}", topology.completeness()),
+            visible_cpu_count = topology.visible_cpus().len(),
+            visible_node_count = topology.visible_nodes().len()
+        );
+        let placement_snapshot =
+            Self::preflight_pipeline_placement(&pipelines, &all_cores, &topology)?;
 
         let runtime = Arc::new(ControllerRuntime::new(
             self.pipeline_factory,
@@ -1492,7 +1507,9 @@ impl<
             metrics_reporter.clone(),
             declared_topics,
             all_cores.clone(),
+            topology,
             telemetry_system.engine_tracing_setup(),
+            telemetry_system.log_filter_handle(),
             telemetry_reporting_interval,
             memory_pressure_tx.clone(),
             engine_config.clone(),
@@ -1547,6 +1564,7 @@ impl<
             telemetry_reporting_interval,
             &memory_pressure_tx,
             internal_tracing_setup,
+            observability_numa_node_id,
         )?;
 
         // Initialize the global subscriber AFTER the observability pipeline has signaled
@@ -1619,24 +1637,52 @@ impl<
 
         runtime.register_launched_instance(observability_pipeline_handle);
 
-        for (pipeline_entry, requested_cores) in pipelines.iter().zip(planned_core_assignments) {
-            runtime.register_committed_pipeline(pipeline_entry.clone(), 0);
-            let num_cores = requested_cores.len();
+        for (pipeline_entry, pipeline_placement) in
+            pipelines.iter().zip(placement_snapshot.pipelines.iter())
+        {
+            runtime.register_committed_pipeline(
+                pipeline_entry.clone(),
+                pipeline_placement.clone(),
+                0,
+            );
+            let num_cores = pipeline_placement.core_count();
+            let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
+                pipeline_entry,
+                pipeline_placement,
+                placement_snapshot.generation,
+            ));
 
             let core_allocation = pipeline_entry
                 .policies
                 .resources
                 .core_allocation
                 .to_string();
+            let resolved_cores = pipeline_placement
+                .cores
+                .iter()
+                .map(|core| core.core_id.id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let resolved_numa_nodes = pipeline_placement
+                .cores
+                .iter()
+                .map(|core| {
+                    core.known_numa_node_id
+                        .map_or_else(|| "unknown".to_owned(), |node| node.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(",");
             otel_info!(
                 "pipeline.core_allocation",
                 pipeline_group_id = pipeline_entry.pipeline_group_id.as_ref(),
                 pipeline_id = pipeline_entry.pipeline_id.as_ref(),
                 num_cores = num_cores,
-                core_allocation = core_allocation
+                core_allocation = core_allocation,
+                resolved_cores = resolved_cores,
+                resolved_numa_nodes = resolved_numa_nodes
             );
 
-            for core_id in &requested_cores {
+            for placement in &pipeline_placement.cores {
                 // Pass a Weak runtime handle into each pipeline thread. The thread upgrades it
                 // only when it needs to report Success/Error/Panic on exit, and silently skips
                 // that late report if shutdown has already dropped the runtime.
@@ -1645,10 +1691,12 @@ impl<
                     DeployedPipelineKey {
                         pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
                         pipeline_id: pipeline_entry.pipeline_id.clone(),
-                        core_id: core_id.id,
-                        deployment_generation: 0,
+                        core_id: placement.core_id.id,
+                        deployment_generation: placement_snapshot.generation,
                     },
-                    *core_id,
+                    placement.core_id,
+                    placement.numa_node_id,
+                    Arc::clone(&listener_group_snapshot),
                     num_cores,
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),
@@ -1745,14 +1793,14 @@ impl<
             runtime.wait_until_all_producer_instances_exit();
         }
 
-        // In standard engine mode we keep the main thread blocked until pipelines
-        // exit (driven either by an external admin shutdown or by an OS signal).
+        // In standard engine mode, keep the main thread blocked until an explicit
+        // engine-wide shutdown drains every pipeline. An empty engine, or one whose
+        // last pipeline stops independently, must remain available for live control.
         if run_mode == RunMode::ParkMainThread {
             // Listen for SIGINT/SIGTERM and trigger graceful shutdown via the
-            // control plane. This unblocks `wait_until_all_instances_exit` once
-            // all pipelines drain.
+            // control plane.
             Self::spawn_shutdown_signal_listener(signal_control_plane);
-            runtime.wait_until_all_instances_exit();
+            runtime.wait_until_global_shutdown_drains_or_released();
         }
 
         // Stop controller-owned metric producers before waiting for the phased
@@ -2017,27 +2065,26 @@ impl<
     /// will terminate either via `process::exit(1)` on a second signal, or when
     /// the process exits normally after all pipelines have drained.
     fn spawn_shutdown_signal_listener(control_plane: Arc<dyn ControlPlane>) {
+        // Construct the runtime and register handlers before spawning the waiter.
+        // This closes the window in which the thread existed but the process still
+        // had the platform's default termination behavior. Registration failures
+        // are also surfaced synchronously on the controller thread.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create signal-handler runtime");
+        let mut signals = {
+            let _runtime_guard = rt.enter();
+            TerminationSignals::register()
+        };
+
         // The JoinHandle is intentionally dropped -- the thread terminates when
         // the process exits (after pipelines drain) or on force-exit.
         drop(
             thread::Builder::new()
                 .name("os-signal-handler".into())
                 .spawn(move || {
-                    // Build a lightweight single-threaded runtime for signal handling.
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("failed to create signal-handler runtime");
-
                     rt.block_on(async {
-                        // Register the termination-signal streams once and reuse
-                        // them for both the first (graceful) and second (force-exit)
-                        // wait. Recreating them between the two waits would open a
-                        // window during the drain where a second signal is lost:
-                        // tokio only delivers a signal to streams that already
-                        // exist when it arrives.
-                        let mut signals = TerminationSignals::register();
-
                         // First signal: graceful shutdown.
                         let signal_name = signals.recv().await;
 
@@ -2099,11 +2146,43 @@ impl<
     }
 
     /// Selects which CPU cores to use based on the given allocation.
+    fn process_visible_core_ids(
+        available_core_ids: &[CoreId],
+        topology: &NumaTopology,
+    ) -> Vec<CoreId> {
+        let mut visible: Vec<_> = if !topology.visible_cpus_known() {
+            available_core_ids.to_vec()
+        } else {
+            available_core_ids
+                .iter()
+                .copied()
+                .filter(|core| topology.visible_cpus().contains(&(core.id as u32)))
+                .collect()
+        };
+        visible.sort_by_key(|core| core.id);
+        visible
+    }
+
+    #[cfg(test)]
     fn select_cores_for_allocation(
-        mut available_core_ids: Vec<CoreId>,
+        available_core_ids: Vec<CoreId>,
         core_allocation: &CoreAllocation,
     ) -> Result<Vec<CoreId>, Error> {
-        available_core_ids.sort_by_key(|c| c.id);
+        Self::select_cores_for_allocation_with_placement(
+            available_core_ids,
+            core_allocation,
+            &NumaTopology::unknown(),
+            &BTreeSet::new(),
+        )
+    }
+
+    fn select_cores_for_allocation_with_placement(
+        mut available_core_ids: Vec<CoreId>,
+        core_allocation: &CoreAllocation,
+        topology: &NumaTopology,
+        reserved_core_ids: &BTreeSet<usize>,
+    ) -> Result<Vec<CoreId>, Error> {
+        available_core_ids = Self::process_visible_core_ids(&available_core_ids, topology);
 
         let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
         let num_cores = available_core_ids.len();
@@ -2113,7 +2192,22 @@ impl<
             CoreAllocationStrategy::CoreCount => match core_allocation.count {
                 Some(count) => {
                     if count == 0 {
-                        Ok(available_core_ids)
+                        let selected = available_core_ids
+                            .iter()
+                            .copied()
+                            .filter(|core| !reserved_core_ids.contains(&core.id))
+                            .collect::<Vec<_>>();
+                        if selected.is_empty() {
+                            Err(Error::InvalidCoreAllocation {
+                                alloc: core_allocation.clone(),
+                                message:
+                                    "Requested all unreserved cores but no unreserved cores are available"
+                                        .to_owned(),
+                                available: available_core_ids.iter().map(|c| c.id).collect(),
+                            })
+                        } else {
+                            Ok(selected)
+                        }
                     } else if count > num_cores {
                         Err(Error::InvalidCoreAllocation {
                             alloc: core_allocation.clone(),
@@ -2124,10 +2218,39 @@ impl<
                             available: available_core_ids.iter().map(|c| c.id).collect(),
                         })
                     } else {
-                        Ok(available_core_ids.into_iter().take(count).collect())
+                        PlacementPlanner::new(topology)
+                            .select_core_count(&available_core_ids, reserved_core_ids, count)
+                            .map_err(|err| Error::InvalidCoreAllocation {
+                                alloc: core_allocation.clone(),
+                                message: format!(
+                                    "Requested {count} cores but placement strategy could not produce a valid unreserved core set: {err}"
+                                ),
+                                available: available_core_ids
+                                    .iter()
+                                    .filter(|core| !reserved_core_ids.contains(&core.id))
+                                    .map(|core| core.id)
+                                    .collect(),
+                            })
                     }
                 }
-                None => Ok(available_core_ids),
+                None => {
+                    let selected = available_core_ids
+                        .iter()
+                        .copied()
+                        .filter(|core| !reserved_core_ids.contains(&core.id))
+                        .collect::<Vec<_>>();
+                    if selected.is_empty() {
+                        Err(Error::InvalidCoreAllocation {
+                            alloc: core_allocation.clone(),
+                            message:
+                                "Requested all unreserved cores but no unreserved cores are available"
+                                    .to_owned(),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        })
+                    } else {
+                        Ok(selected)
+                    }
+                }
             },
             CoreAllocationStrategy::CoreSet => match &core_allocation.set {
                 Some(set) => {
@@ -2186,6 +2309,29 @@ impl<
                         }
                     }
 
+                    let available_core_id_set: BTreeSet<_> =
+                        available_core_ids.iter().map(|core| core.id).collect();
+                    let requested_core_ids: BTreeSet<_> = set
+                        .iter()
+                        .flat_map(|range| range.start..=range.end)
+                        .collect();
+                    let unavailable_core_ids: Vec<_> = requested_core_ids
+                        .difference(&available_core_id_set)
+                        .copied()
+                        .collect();
+                    if !unavailable_core_ids.is_empty() {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: core_allocation.clone(),
+                            message: format!(
+                                "Core set includes cores that are not visible to this process: {:?}",
+                                unavailable_core_ids
+                            ),
+                            available: available_core_ids.iter().map(|core| core.id).collect(),
+                        });
+                    }
+
+                    let visible_core_ids: Vec<_> =
+                        available_core_ids.iter().map(|core| core.id).collect();
                     let selected: Vec<_> = available_core_ids
                         .into_iter()
                         .filter(|c| set.iter().any(|r| r.start <= c.id && c.id <= r.end))
@@ -2195,37 +2341,141 @@ impl<
                         return Err(Error::InvalidCoreAllocation {
                             alloc: core_allocation.clone(),
                             message: "No available cores in the specified ranges".to_owned(),
-                            available: core_affinity::get_core_ids()
-                                .unwrap_or_default()
-                                .iter()
-                                .map(|c| c.id)
-                                .collect(),
+                            available: visible_core_ids,
                         });
                     }
 
                     Ok(selected)
                 }
-                None => Ok(Vec::new()),
+                None => Err(Error::InvalidCoreAllocation {
+                    alloc: core_allocation.clone(),
+                    message: "'set' is required when strategy is 'core_set'".to_owned(),
+                    available: available_core_ids.iter().map(|core| core.id).collect(),
+                }),
             },
+        }
+    }
+
+    fn add_pipeline_context_to_core_allocation_error(
+        err: Error,
+        pipeline_entry: &ResolvedPipelineConfig,
+    ) -> Error {
+        match err {
+            Error::InvalidCoreAllocation {
+                alloc,
+                message,
+                available,
+            } => Error::InvalidCoreAllocation {
+                alloc,
+                message: format!(
+                    "Pipeline {}:{} has invalid core allocation: {}",
+                    pipeline_entry.pipeline_group_id.as_ref(),
+                    pipeline_entry.pipeline_id.as_ref(),
+                    message
+                ),
+                available,
+            },
+            other => other,
         }
     }
 
     /// Pre-resolves core assignments for all regular pipelines.
     ///
     /// This validates the full pipeline set before any pipeline thread is spawned.
+    fn preflight_pipeline_placement(
+        pipelines: &[ResolvedPipelineConfig],
+        available_core_ids: &[CoreId],
+        topology: &NumaTopology,
+    ) -> Result<PlacementSnapshot, Error> {
+        let mut reserved_core_ids = BTreeSet::new();
+        let mut placements = vec![None; pipelines.len()];
+
+        for (idx, pipeline_entry) in pipelines.iter().enumerate() {
+            if !matches!(
+                pipeline_entry.policies.resources.core_allocation.strategy,
+                CoreAllocationStrategy::CoreSet
+            ) {
+                continue;
+            }
+            let selected = Self::select_cores_for_allocation_with_placement(
+                available_core_ids.to_vec(),
+                &pipeline_entry.policies.resources.core_allocation,
+                topology,
+                &BTreeSet::new(),
+            )
+            .map_err(|err| {
+                Self::add_pipeline_context_to_core_allocation_error(err, pipeline_entry)
+            })?;
+            reserved_core_ids.extend(selected.iter().map(|core| core.id));
+            placements[idx] = Some(PipelinePlacement {
+                pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
+                pipeline_id: pipeline_entry.pipeline_id.clone(),
+                cores: selected
+                    .into_iter()
+                    .map(|core_id| CorePlacement::from_core_id(core_id, topology))
+                    .collect(),
+            });
+        }
+
+        for (idx, pipeline_entry) in pipelines.iter().enumerate() {
+            if placements[idx].is_some() {
+                continue;
+            }
+            let selected = Self::select_cores_for_allocation_with_placement(
+                available_core_ids.to_vec(),
+                &pipeline_entry.policies.resources.core_allocation,
+                topology,
+                &reserved_core_ids,
+            )
+            .map_err(|err| {
+                Self::add_pipeline_context_to_core_allocation_error(err, pipeline_entry)
+            })?;
+            if matches!(
+                pipeline_entry.policies.resources.core_allocation.strategy,
+                CoreAllocationStrategy::CoreCount
+            ) {
+                reserved_core_ids.extend(selected.iter().map(|core| core.id));
+            }
+            placements[idx] = Some(PipelinePlacement {
+                pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
+                pipeline_id: pipeline_entry.pipeline_id.clone(),
+                cores: selected
+                    .into_iter()
+                    .map(|core_id| CorePlacement::from_core_id(core_id, topology))
+                    .collect(),
+            });
+        }
+
+        Ok(PlacementSnapshot::from_assignments(
+            0,
+            placements
+                .into_iter()
+                .map(|placement| placement.expect("every pipeline placement is resolved"))
+                .collect(),
+        ))
+    }
+
+    /// Pre-resolves core assignments for compatibility tests.
+    #[cfg(test)]
     fn preflight_pipeline_core_allocations(
         pipelines: &[ResolvedPipelineConfig],
         available_core_ids: &[CoreId],
     ) -> Result<Vec<Vec<CoreId>>, Error> {
-        pipelines
-            .iter()
-            .map(|pipeline_entry| {
-                Self::select_cores_for_allocation(
-                    available_core_ids.to_vec(),
-                    &pipeline_entry.policies.resources.core_allocation,
-                )
-            })
-            .collect()
+        Ok(Self::preflight_pipeline_placement(
+            pipelines,
+            available_core_ids,
+            &NumaTopology::unknown(),
+        )?
+        .pipelines
+        .into_iter()
+        .map(|placement| {
+            placement
+                .cores
+                .into_iter()
+                .map(|core| core.core_id)
+                .collect()
+        })
+        .collect())
     }
 
     fn observability_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
@@ -2248,6 +2498,8 @@ impl<
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_key: DeployedPipelineKey,
         core_id: CoreId,
+        numa_node_id: usize,
+        listener_group_snapshot: Arc<ListenerGroupSnapshot>,
         num_cores: usize,
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
@@ -2270,13 +2522,14 @@ impl<
             std_mpsc::SyncSender<Result<(), EngineError>>,
         )>,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
-        let mut pipeline_ctx = controller_ctx.pipeline_context_with_generation(
+        let mut pipeline_ctx = controller_ctx.pipeline_context_with_placement(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
             pipeline_key.core_id,
             num_cores,
             thread_id,
             pipeline_key.deployment_generation,
+            numa_node_id,
         );
         let topic_set = Self::build_pipeline_topic_set(
             config,
@@ -2286,6 +2539,7 @@ impl<
             pipeline_key.core_id,
         )?;
         pipeline_ctx.set_topic_set(topic_set);
+        pipeline_ctx.set_listener_group_snapshot_arc(listener_group_snapshot);
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
             runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
@@ -2377,6 +2631,7 @@ impl<
         telemetry_reporting_interval: Duration,
         memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
+        observability_numa_node_id: usize,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
         debug_assert_eq!(
             observability_pipeline.role,
@@ -2394,6 +2649,8 @@ impl<
             pipeline_factory,
             observability_key,
             observability_core,
+            observability_numa_node_id,
+            Arc::new(ListenerGroupSnapshot::empty()),
             1,
             pipeline_config,
             channel_capacity_policy,
@@ -2774,9 +3031,11 @@ mod tests {
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::terminal_state::TerminalState;
+    use otap_df_engine::topology::{NumaTopology, TopologyCompleteness};
     use otap_df_engine::wiring_contract::WiringContract;
     use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
     use otap_df_telemetry::metrics::MetricSetSnapshot;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -2793,6 +3052,16 @@ mod tests {
 
     fn to_ids(v: &[CoreId]) -> Vec<usize> {
         v.iter().map(|c| c.id).collect()
+    }
+
+    fn synthetic_topology(entries: &[(u32, u32)]) -> NumaTopology {
+        NumaTopology::new(
+            entries
+                .iter()
+                .map(|(cpu, node)| (*cpu, *node))
+                .collect::<BTreeMap<_, _>>(),
+            TopologyCompleteness::Complete,
+        )
     }
 
     fn minimal_pipeline_config() -> PipelineConfig {
@@ -3141,6 +3410,146 @@ groups: {{}}
             .map(|c| c.id)
             .collect();
         assert_eq!(to_ids(&result), expected_ids);
+    }
+
+    #[test]
+    fn select_core_count_prefers_single_numa_node() {
+        let topology = synthetic_topology(&[
+            (0, 0),
+            (1, 0),
+            (2, 1),
+            (3, 1),
+            (4, 1),
+            (5, 1),
+            (6, 2),
+            (7, 2),
+        ]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(3),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn select_core_count_falls_back_across_nodes_deterministically() {
+        let topology = synthetic_topology(&[
+            (0, 0),
+            (1, 0),
+            (2, 1),
+            (3, 1),
+            (4, 2),
+            (5, 2),
+            (6, 3),
+            (7, 3),
+        ]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(5),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn select_core_count_avoids_reserved_cores() {
+        let topology = synthetic_topology(&[
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (3, 0),
+            (4, 1),
+            (5, 1),
+            (6, 1),
+            (7, 1),
+        ]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(3),
+            &topology,
+            &BTreeSet::from([0, 1]),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn partial_topology_keeps_unmapped_visible_cores_usable() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::from([(0, 0), (1, 0)]),
+            BTreeSet::from([0, 1, 2, 3]),
+            TopologyCompleteness::Partial,
+        );
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_set(vec![CoreRange { start: 2, end: 2 }]),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2]);
+    }
+
+    #[test]
+    fn unknown_topology_with_visible_cpus_still_filters_available_cores() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::new(),
+            BTreeSet::from([2, 3]),
+            TopologyCompleteness::Unknown,
+        );
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::all_cores(),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2, 3]);
+    }
+
+    #[test]
+    fn known_empty_visible_cpus_do_not_fall_back_to_all_cores() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::new(),
+            BTreeSet::new(),
+            TopologyCompleteness::Unknown,
+        );
+        let err = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(1),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .expect_err("known empty visibility should not fall back to all cores");
+
+        match err {
+            Error::InvalidCoreAllocation { available, .. } => assert!(available.is_empty()),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_filters_to_topology_visible_cpus() {
+        let topology = synthetic_topology(&[(2, 0), (3, 0), (6, 1), (7, 1)]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::all_cores(),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2, 3, 6, 7]);
     }
 
     #[test]
@@ -3522,6 +3931,28 @@ groups: {{}}
     }
 
     #[test]
+    fn select_with_partially_visible_core_set_errors() {
+        let core_allocation = CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]);
+        let available_core_ids = vec![CoreId { id: 2 }, CoreId { id: 3 }];
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
+
+        match err {
+            Error::InvalidCoreAllocation {
+                message, available, ..
+            } => {
+                assert!(
+                    message.contains("not visible to this process"),
+                    "unexpected message: {message}"
+                );
+                assert_eq!(available, vec![2, 3]);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn select_with_inverted_range_errors() {
         let core_allocation = CoreAllocation::core_set(vec![CoreRange { start: 2, end: 1 }]);
         let available_core_ids = available_core_ids();
@@ -3719,6 +4150,141 @@ groups: {{}}
         assert_eq!(assignments.len(), 2);
         assert_eq!(to_ids(&assignments[0]), vec![1, 2]);
         assert_eq!(to_ids(&assignments[1]), vec![2, 3]);
+    }
+
+    #[test]
+    fn preflight_reserves_core_count_across_pipelines() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation("g1", "p1", CoreAllocation::core_count(5)),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(5)),
+        ];
+
+        let err = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect_err("core_count allocations should not oversubscribe implicit cores");
+
+        match err {
+            Error::InvalidCoreAllocation { message, .. } => {
+                assert!(
+                    message.contains(
+                        "Requested 5 cores but placement strategy could not produce a valid unreserved core set"
+                    ),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_reserves_explicit_core_set_before_later_core_count() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]),
+            ),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(2)),
+        ];
+
+        let placement = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect("preflight should succeed");
+
+        assert_eq!(
+            to_ids(
+                &placement.pipelines[0]
+                    .cores
+                    .iter()
+                    .map(|core| core.core_id)
+                    .collect::<Vec<_>>()
+            ),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            to_ids(
+                &placement.pipelines[1]
+                    .cores
+                    .iter()
+                    .map(|core| core.core_id)
+                    .collect::<Vec<_>>()
+            ),
+            vec![4, 5]
+        );
+    }
+
+    #[test]
+    fn preflight_core_count_all_uses_only_unreserved_cores() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]),
+            ),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(0)),
+        ];
+
+        let placement = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect("preflight should succeed");
+
+        assert_eq!(
+            to_ids(
+                &placement.pipelines[1]
+                    .cores
+                    .iter()
+                    .map(|core| core.core_id)
+                    .collect::<Vec<_>>()
+            ),
+            vec![4, 5, 6, 7]
+        );
+    }
+
+    #[test]
+    fn preflight_core_count_all_errors_when_no_unreserved_cores_remain() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 7 }]),
+            ),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(0)),
+        ];
+
+        let err = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect_err("preflight should reject empty effective core_count placement");
+
+        match err {
+            Error::InvalidCoreAllocation {
+                message, available, ..
+            } => {
+                assert!(
+                    message.contains("no unreserved cores are available"),
+                    "unexpected message: {message}"
+                );
+                assert_eq!(
+                    available,
+                    available_core_ids()
+                        .iter()
+                        .map(|core| core.id)
+                        .collect::<Vec<_>>()
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]
@@ -4595,10 +5161,34 @@ groups:
         assert_eq!(broadcast_messages, 1);
     }
 
-    /// Scenario: termination-signal streams are registered inside a Tokio runtime.
-    /// Guarantees: every signal source for the current platform registers without panicking.
+    /// Scenario: termination-signal streams are registered inside a Tokio runtime in a child process.
+    /// Guarantees: every platform signal source registers without altering the parent test process.
     #[test]
     fn termination_signals_register_on_current_platform() {
+        const CHILD_ENV: &str = "OTAP_DF_SIGNAL_REGISTRATION_TEST_CHILD";
+
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current test executable should be available"),
+            )
+            .args([
+                "--exact",
+                "tests::termination_signals_register_on_current_platform",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("signal-registration child process should start");
+
+            assert!(
+                output.status.success(),
+                "signal-registration child failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -4606,7 +5196,7 @@ groups:
 
         rt.block_on(async {
             // `register()` panics on failure, so a successful return is the
-            // assertion. Drop the streams immediately to unregister.
+            // assertion. Any process-global handlers disappear with this child.
             let signals = TerminationSignals::register();
             drop(signals);
         });

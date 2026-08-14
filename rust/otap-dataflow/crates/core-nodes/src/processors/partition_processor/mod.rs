@@ -28,7 +28,7 @@ use otap_df_engine::{
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::context::split_contexts::Contexts;
 use otap_df_otap::accessory::slots::Key;
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::transport_headers::{TransportHeader, ValueKind};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
 use otap_df_query_engine::parser::default_parser_options;
@@ -339,20 +339,15 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             })?;
 
                             // set the transport header
-                            let mut pdata_context = Context::default();
-                            let mut headers = inbound_context
-                                .transport_headers()
-                                .cloned()
-                                .unwrap_or_default();
+                            let mut pdata_context = inbound_context.clone_detached();
+                            let mut headers =
+                                pdata_context.take_transport_headers().unwrap_or_default();
                             headers.push(partition_value_to_transport_header(
                                 self.header_name.clone(),
                                 &self.serialization_strategy,
                                 partition.value,
                             ));
                             pdata_context.set_transport_headers(headers);
-                            if let Some(peer_addr) = inbound_context.peer_addr() {
-                                pdata_context.set_peer_addr(peer_addr);
-                            }
 
                             let outbound_batch_num_items = partition.batch.num_items();
                             let mut pdata = OtapPdata::new(pdata_context, partition.batch.into());
