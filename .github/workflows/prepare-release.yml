@@ -15,11 +15,13 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   prepare-release:
     permissions:
       contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -62,6 +64,11 @@ jobs:
       - name: Validate inputs
         run: ./.github/workflows/scripts/validate-version.sh "${{ inputs.version }}"
 
+      - name: Record release base commit
+        id: release_base
+        run: |
+          git fetch --quiet origin main
+          echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
       - name: Get last released version
         id: last_version
         run: |
@@ -199,7 +206,12 @@ jobs:
 
       - name: Create release branch and commit changes
         if: "!inputs.dry_run"
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          ./.github/workflows/scripts/verify-release-window.sh \
+            "${{ steps.release_base.outputs.sha }}"
+
           # Configure git for otelbot
           git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
           git config user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
@@ -258,6 +270,14 @@ jobs:
               --base main \
               --label release
           fi
+
+      - name: Verify release window remains stable
+        if: "!inputs.dry_run"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./.github/workflows/scripts/verify-release-window.sh \
+            "${{ steps.release_base.outputs.sha }}"
 
       - name: Summary
         run: |

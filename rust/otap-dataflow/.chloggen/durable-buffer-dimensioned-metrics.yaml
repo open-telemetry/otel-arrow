@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: Replace durable buffer processor metric series with bounded metric sets for item flow, bundle outcomes, and loss reasons.
-issues: [3300]
-subtext: |
-  Migration: Update dashboards, alerts, and queries to use the `processor.durable_buffer` metric sets, filtering on `signal`, `outcome`, and `reason` instead of the removed durable buffer metric names.

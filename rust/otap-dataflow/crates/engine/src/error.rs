@@ -489,13 +489,6 @@ pub enum Error {
         reason: String,
     },
 
-    /// Error from the prost encoder.
-    #[error("Prost encode error: {}", reason)]
-    ProtoEncodeError {
-        /// Prost error string
-        reason: String,
-    },
-
     /// No default output port is configured when multiple ports are connected.
     #[error(
         "Ambiguous default output port for node {node}: multiple ports connected and no default configured"
@@ -615,7 +608,6 @@ impl Error {
             Error::RuntimeMsgError { .. } => "RuntimeMsgError",
             Error::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
             Error::ProcessorError { .. } => "ProcessorError",
-            Error::ProtoEncodeError { .. } => "ProtoEncodeError",
             Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
             Error::ReceiverError { .. } => "ReceiverError",
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
@@ -690,14 +682,6 @@ pub fn error_summary_from(err: &Error) -> ErrorSummary {
             message: err.to_string(),
             source: None,
         },
-    }
-}
-
-impl From<prost::EncodeError> for Error {
-    fn from(e: prost::EncodeError) -> Self {
-        Self::ProtoEncodeError {
-            reason: e.to_string(),
-        }
     }
 }
 

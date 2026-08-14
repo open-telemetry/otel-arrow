@@ -7,6 +7,8 @@ use crate::exporters::clickhouse_exporter::SUPPORTED_ARROW_PAYLOAD_TYPES;
 use crate::exporters::clickhouse_exporter::transform::transform_plan::TransformationPlan;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
+pub(crate) mod logs_fast;
+pub(crate) mod logs_otlp;
 mod transform_attributes;
 pub(crate) mod transform_batch;
 mod transform_column;
@@ -26,6 +28,8 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    /// Scenario: the ClickHouse transform map is constructed for exporter startup.
+    /// Guarantees: every supported payload type receives its configured transformation plan.
     #[test]
     fn build_payload_transform_map_has_all_supported_keys_and_expected_values() {
         let m = build_payload_transform_map();

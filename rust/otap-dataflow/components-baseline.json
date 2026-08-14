@@ -96,6 +96,18 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:extension:oauth2_client_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:k8s_service_account_token_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:processor:attribute",
     "category": "Processor",
     "description": null,

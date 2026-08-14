@@ -197,19 +197,235 @@ impl<
         })
     }
 
-    /// Resolves the concrete core ids selected by a pipeline resource policy.
-    pub(super) fn assigned_cores_for_resolved(
+    /// Resolves controller-owned placement metadata for one pipeline.
+    #[cfg(test)]
+    pub(super) fn pipeline_placement_for_resolved(
         &self,
         resolved_pipeline: &ResolvedPipelineConfig,
-    ) -> Result<Vec<usize>, ControlPlaneError> {
-        Controller::<PData>::select_cores_for_allocation(
+    ) -> Result<PipelinePlacement, ControlPlaneError> {
+        self.pipeline_placement_for_resolved_with_reserved(resolved_pipeline, &BTreeSet::new())
+    }
+
+    /// Resolves placement using reservations for controller-selected `core_count` allocations.
+    pub(super) fn pipeline_placement_for_resolved_with_reserved(
+        &self,
+        resolved_pipeline: &ResolvedPipelineConfig,
+        reserved_core_ids: &BTreeSet<usize>,
+    ) -> Result<PipelinePlacement, ControlPlaneError> {
+        Controller::<PData>::select_cores_for_allocation_with_placement(
             self.available_core_ids.clone(),
             &resolved_pipeline.policies.resources.core_allocation,
+            &self.topology,
+            reserved_core_ids,
         )
-        .map(|cores| cores.into_iter().map(|core| core.id).collect())
+        .map(|cores| PipelinePlacement {
+            pipeline_group_id: resolved_pipeline.pipeline_group_id.clone(),
+            pipeline_id: resolved_pipeline.pipeline_id.clone(),
+            cores: cores
+                .into_iter()
+                .map(|core_id| CorePlacement::from_core_id(core_id, &self.topology))
+                .collect(),
+        })
         .map_err(|err| ControlPlaneError::InvalidRequest {
             message: err.to_string(),
         })
+    }
+
+    fn core_allocation_reserves_exclusive_cores(strategy: &CoreAllocationStrategy) -> bool {
+        // Explicit core_set allocations reserve cores for later controller-chosen
+        // core_count placement, while all_cores remains shared. This mirrors startup
+        // preflight: core_count avoids both explicit core_set and prior core_count cores.
+        matches!(
+            strategy,
+            CoreAllocationStrategy::CoreCount | CoreAllocationStrategy::CoreSet
+        )
+    }
+
+    fn core_allocation_claims_controller_chosen_cores(strategy: &CoreAllocationStrategy) -> bool {
+        matches!(strategy, CoreAllocationStrategy::CoreCount)
+    }
+
+    fn reserved_core_ids_except_locked(
+        state: &ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+        reserves_core: impl Fn(&CoreAllocationStrategy) -> bool,
+    ) -> BTreeSet<usize> {
+        let mut reserved_core_ids: BTreeSet<usize> = state
+            .logical_pipelines
+            .iter()
+            .filter(|(key, _)| *key != pipeline_key)
+            .filter(|(_, record)| {
+                reserves_core(&record.resolved.policies.resources.core_allocation.strategy)
+            })
+            .flat_map(|(_, record)| record.placement.cores.iter().map(|core| core.core_id.id))
+            .collect();
+
+        for (key, rollout_id) in &state.active_rollouts {
+            if key == pipeline_key {
+                continue;
+            }
+            let Some(rollout) = state.rollouts.get(rollout_id) else {
+                continue;
+            };
+            if reserves_core(&rollout.target_core_allocation_strategy) {
+                reserved_core_ids.extend(
+                    rollout
+                        .target_placement
+                        .cores
+                        .iter()
+                        .map(|core| core.core_id.id),
+                );
+            }
+        }
+
+        reserved_core_ids
+    }
+
+    fn reserved_core_ids_except(&self, pipeline_key: &PipelineKey) -> BTreeSet<usize> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::reserved_core_ids_except_locked(
+            &state,
+            pipeline_key,
+            Self::core_allocation_reserves_exclusive_cores,
+        )
+    }
+
+    fn conflicting_reserved_core_ids_locked(
+        state: &ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+        rollout: &RolloutRecord,
+    ) -> Vec<usize> {
+        // Live insertion preserves the startup overlap matrix:
+        // - core_count candidates conflict with committed/in-flight core_count and core_set.
+        // - core_set candidates conflict only with committed/in-flight core_count, preserving
+        //   explicit core_set-to-core_set overlap as operator intent.
+        // - all_cores candidates remain shared and never conflict.
+        let reserves_core = match rollout.target_core_allocation_strategy {
+            CoreAllocationStrategy::CoreCount => Self::core_allocation_reserves_exclusive_cores,
+            CoreAllocationStrategy::CoreSet => Self::core_allocation_claims_controller_chosen_cores,
+            CoreAllocationStrategy::AllCores => return Vec::new(),
+        };
+
+        let target_core_ids: BTreeSet<_> = rollout
+            .target_placement
+            .cores
+            .iter()
+            .map(|core| core.core_id.id)
+            .collect();
+        if target_core_ids.is_empty() {
+            return Vec::new();
+        }
+
+        target_core_ids
+            .intersection(&Self::reserved_core_ids_except_locked(
+                state,
+                pipeline_key,
+                reserves_core,
+            ))
+            .copied()
+            .collect()
+    }
+
+    fn conflicts_with_reserved_placement_locked(
+        state: &ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+        rollout: &RolloutRecord,
+    ) -> bool {
+        !Self::conflicting_reserved_core_ids_locked(state, pipeline_key, rollout).is_empty()
+    }
+
+    fn conflicting_projected_core_ids(
+        rollout: &RolloutRecord,
+        projected_exclusive_core_ids: &BTreeSet<usize>,
+        projected_controller_chosen_core_ids: &BTreeSet<usize>,
+    ) -> Vec<usize> {
+        // Reconcile preflights the same overlap matrix that insert-time checks
+        // enforce later:
+        //
+        // candidate  | conflicts with earlier desired placements from
+        // -----------+-----------------------------------------------
+        // core_count | core_count and core_set
+        // core_set   | core_count only
+        // all_cores  | nothing
+        //
+        // This catches order-dependent failures before any rollout mutates
+        // live state, while still preserving explicit core_set-to-core_set
+        // overlap as operator intent.
+        let reserved_core_ids = match rollout.target_core_allocation_strategy {
+            CoreAllocationStrategy::CoreCount => projected_exclusive_core_ids,
+            CoreAllocationStrategy::CoreSet => projected_controller_chosen_core_ids,
+            CoreAllocationStrategy::AllCores => return Vec::new(),
+        };
+        rollout
+            .target_placement
+            .cores
+            .iter()
+            .map(|core| core.core_id.id)
+            .filter(|core_id| reserved_core_ids.contains(core_id))
+            .collect()
+    }
+
+    fn project_rollout_reservation(
+        rollout: &RolloutRecord,
+        projected_exclusive_core_ids: &mut BTreeSet<usize>,
+        projected_controller_chosen_core_ids: &mut BTreeSet<usize>,
+    ) {
+        let target_core_ids = rollout
+            .target_placement
+            .cores
+            .iter()
+            .map(|core| core.core_id.id);
+        match rollout.target_core_allocation_strategy {
+            CoreAllocationStrategy::CoreCount => {
+                let target_core_ids: Vec<_> = target_core_ids.collect();
+                projected_exclusive_core_ids.extend(target_core_ids.iter().copied());
+                projected_controller_chosen_core_ids.extend(target_core_ids);
+            }
+            CoreAllocationStrategy::CoreSet => {
+                projected_exclusive_core_ids.extend(target_core_ids);
+            }
+            CoreAllocationStrategy::AllCores => {}
+        }
+    }
+
+    fn current_reserved_conflicting_core_ids(
+        &self,
+        pipeline_key: &PipelineKey,
+        rollout: &RolloutRecord,
+    ) -> Vec<usize> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::conflicting_reserved_core_ids_locked(&state, pipeline_key, rollout)
+    }
+
+    fn reconcile_placement_phase_for_strategy(strategy: &CoreAllocationStrategy) -> u8 {
+        match strategy {
+            CoreAllocationStrategy::CoreSet => 0,
+            CoreAllocationStrategy::CoreCount => 1,
+            CoreAllocationStrategy::AllCores => 2,
+        }
+    }
+
+    pub(super) fn live_pipeline_placement_from(
+        &self,
+        resolved_pipeline: &ResolvedPipelineConfig,
+        placement: PipelinePlacement,
+        placement_generation: u64,
+    ) -> LivePipelinePlacement {
+        let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
+            resolved_pipeline,
+            &placement,
+            placement_generation,
+        ));
+        LivePipelinePlacement {
+            placement,
+            listener_group_snapshot,
+        }
     }
 
     /// Reports which active cores still belong to the current committed generation.
@@ -409,6 +625,7 @@ impl<
             request,
             None,
             None,
+            None,
         )?;
         self.spawn_rollout(plan)
     }
@@ -427,6 +644,7 @@ impl<
             request,
             None,
             None,
+            None,
         )
     }
 
@@ -437,12 +655,13 @@ impl<
         request: &ReconfigureRequest,
         planning_config: Option<&OtelDataflowSpec>,
         engine_operation_id: Option<&str>,
+        projected_reserved_core_ids: Option<&BTreeSet<usize>>,
     ) -> Result<CandidateRolloutPlan, ControlPlaneError> {
         let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
         let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
 
-        let (live_config, current_record) = {
+        let (live_config, base_config_revision, current_record) = {
             let state = self
                 .state
                 .lock()
@@ -461,6 +680,7 @@ impl<
             }
             (
                 state.live_config.clone(),
+                state.config_revision,
                 state.logical_pipelines.get(&pipeline_key).cloned(),
             )
         };
@@ -520,12 +740,32 @@ impl<
             .ok_or_else(|| ControlPlaneError::Internal {
                 message: "candidate pipeline disappeared during resolution".to_owned(),
             })?;
-        let current_assigned_cores = if let Some(record) = current_record.as_ref() {
-            self.assigned_cores_for_resolved(&record.resolved)?
-        } else {
-            Vec::new()
-        };
-        let target_assigned_cores = self.assigned_cores_for_resolved(&resolved_pipeline)?;
+        let current_pipeline_placement = current_record
+            .as_ref()
+            .map(|record| record.placement.clone());
+        let mut reserved_core_ids = self.reserved_core_ids_except(&pipeline_key);
+        if let Some(projected_reserved_core_ids) = projected_reserved_core_ids {
+            reserved_core_ids.extend(projected_reserved_core_ids.iter().copied());
+        }
+        let target_pipeline_placement = self.pipeline_placement_for_resolved_with_reserved(
+            &resolved_pipeline,
+            &reserved_core_ids,
+        )?;
+        let mut target_listener_group_snapshot = listener_group::snapshot_for_pipeline(
+            &resolved_pipeline,
+            &target_pipeline_placement,
+            0,
+        );
+        let target_has_listener_groups = !target_listener_group_snapshot.plans.is_empty();
+        let current_assigned_cores: Vec<usize> = current_pipeline_placement
+            .as_ref()
+            .map(|placement| placement.cores.iter().map(|core| core.core_id.id).collect())
+            .unwrap_or_default();
+        let target_assigned_cores = target_pipeline_placement
+            .cores
+            .iter()
+            .map(|core| core.core_id.id)
+            .collect::<Vec<_>>();
         self.cancel_runtime_recoveries_for_pipeline(&pipeline_key);
         let current_core_set: HashSet<_> = current_assigned_cores.iter().copied().collect();
         let target_core_set: HashSet<_> = target_assigned_cores.iter().copied().collect();
@@ -569,12 +809,15 @@ impl<
             .filter(|core_id| !target_core_set.contains(core_id))
             .collect();
         let action = if let Some(record) = current_record.as_ref() {
-            let identical_update = current_assigned_cores == target_assigned_cores
-                && active_runtime_state.current_generation_cores == target_assigned_cores
+            let identical_update = current_core_set == target_core_set
+                && active_core_set == target_core_set
                 && !active_runtime_state.has_foreign_active_generations
                 && record.resolved.runtime_matches(&resolved_pipeline);
-            let resize_only = current_assigned_cores != target_assigned_cores
+            let resize_only = current_core_set != target_core_set
                 && !active_runtime_state.has_foreign_active_generations
+                // Listener snapshots are immutable per worker. Retained cores cannot
+                // participate in an in-place resize without keeping stale membership.
+                && !target_has_listener_groups
                 && record
                     .resolved
                     .runtime_shape_matches_ignoring_resources(&resolved_pipeline);
@@ -598,7 +841,7 @@ impl<
             .as_ref()
             .map(|record| record.active_generation);
 
-        let (rollout_id, target_generation) = {
+        let (rollout_id, target_generation, placement_generation) = {
             let mut state = self
                 .state
                 .lock()
@@ -631,7 +874,41 @@ impl<
                     target_generation
                 }
             };
-            (rollout_id, target_generation)
+            let placement_generation = match action {
+                RolloutAction::NoOp => current_record
+                    .as_ref()
+                    .map(|record| record.placement_generation)
+                    .ok_or_else(|| ControlPlaneError::Internal {
+                        message: format!(
+                            "rollout planner produced {:?} for {}:{} without a current placement generation",
+                            action,
+                            pipeline_key.pipeline_group_id().as_ref(),
+                            pipeline_key.pipeline_id().as_ref()
+                        ),
+                    })?,
+                RolloutAction::Create | RolloutAction::Resize | RolloutAction::Replace => {
+                    let generation = state.next_placement_generation;
+                    state.next_placement_generation += 1;
+                    generation
+                }
+            };
+            (rollout_id, target_generation, placement_generation)
+        };
+        let current_placement =
+            current_record
+                .as_ref()
+                .zip(current_pipeline_placement)
+                .map(|(record, placement)| {
+                    self.live_pipeline_placement_from(
+                        &record.resolved,
+                        placement,
+                        record.placement_generation,
+                    )
+                });
+        target_listener_group_snapshot.generation = placement_generation;
+        let target_placement = LivePipelinePlacement {
+            placement: target_pipeline_placement,
+            listener_group_snapshot: Arc::new(target_listener_group_snapshot),
         };
 
         let rollout_core_ids = match action {
@@ -683,6 +960,13 @@ impl<
                 .as_ref()
                 .map(|record| record.active_generation),
             drain_timeout_secs,
+            resolved_pipeline
+                .policies
+                .resources
+                .core_allocation
+                .strategy
+                .clone(),
+            target_placement.placement.clone(),
             cores,
         );
 
@@ -692,7 +976,10 @@ impl<
             pipeline_id,
             action,
             resolved_pipeline,
+            base_config_revision,
             current_record,
+            current_placement,
+            target_placement,
             current_assigned_cores,
             target_assigned_cores,
             current_serving_generations: active_runtime_state.serving_generations,
@@ -715,7 +1002,20 @@ impl<
         pipeline_key: &PipelineKey,
         rollout: RolloutRecord,
     ) -> Result<(), ControlPlaneError> {
-        self.insert_rollout_for_engine_operation(pipeline_key, rollout, None)
+        self.insert_rollout_for_engine_operation(pipeline_key, rollout, None, None)
+    }
+
+    #[cfg(test)]
+    pub(super) fn insert_rollout_plan(
+        &self,
+        plan: &CandidateRolloutPlan,
+    ) -> Result<(), ControlPlaneError> {
+        self.insert_rollout_for_engine_operation(
+            &plan.pipeline_key,
+            plan.rollout.clone(),
+            None,
+            Some(plan.base_config_revision),
+        )
     }
 
     fn insert_rollout_for_engine_operation(
@@ -723,6 +1023,7 @@ impl<
         pipeline_key: &PipelineKey,
         rollout: RolloutRecord,
         engine_operation_id: Option<&str>,
+        expected_config_revision: Option<u64>,
     ) -> Result<(), ControlPlaneError> {
         self.prune_retained_operation_history();
         {
@@ -733,9 +1034,15 @@ impl<
             if !Self::engine_operation_allows(&state, engine_operation_id) {
                 return Err(ControlPlaneError::RolloutConflict);
             }
+            if expected_config_revision.is_some_and(|revision| revision != state.config_revision) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
             if state.active_rollouts.contains_key(pipeline_key)
                 || state.active_shutdowns.contains_key(pipeline_key)
             {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            if Self::conflicts_with_reserved_placement_locked(&state, pipeline_key, &rollout) {
                 return Err(ControlPlaneError::RolloutConflict);
             }
             _ = state
@@ -875,15 +1182,22 @@ impl<
                 LogicalPipelineRecord {
                     resolved: plan.resolved_pipeline.clone(),
                     active_generation,
+                    placement: plan.target_placement.placement.clone(),
+                    placement_generation: plan.target_placement.listener_group_snapshot.generation,
                 },
             );
+            state.config_revision += 1;
             state
                 .runtime_recoveries
                 .retain(|(pipeline_key, _), _| pipeline_key != &plan.pipeline_key);
         }
         self.observed_state_store.set_pipeline_active_cores(
             plan.pipeline_key.clone(),
-            plan.target_assigned_cores.iter().copied(),
+            plan.target_placement
+                .placement
+                .cores
+                .iter()
+                .map(|core| core.core_id.id),
         );
         self.observed_state_store
             .set_pipeline_active_generation(plan.pipeline_key.clone(), active_generation);
@@ -1188,6 +1502,7 @@ impl<
                 message: err.to_string(),
             })?;
         state.live_config = candidate_config;
+        state.config_revision += 1;
         Ok(group)
     }
 
@@ -1201,12 +1516,15 @@ impl<
     }
 
     fn apply_reconcile_success(&self, desired_config: &OtelDataflowSpec, delete_missing: bool) {
+        self.log_filter_handle
+            .apply(&desired_config.engine.telemetry.logs.level);
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if delete_missing {
             state.live_config = desired_config.clone();
+            state.config_revision += 1;
             return;
         }
 
@@ -1228,6 +1546,7 @@ impl<
                     .insert(pipeline_id.clone(), pipeline.clone());
             }
         }
+        state.config_revision += 1;
     }
 
     fn live_pipeline_keys(&self) -> Vec<PipelineKey> {
@@ -1316,6 +1635,7 @@ impl<
             }
             let _ = state.logical_pipelines.remove(pipeline_key);
             let _ = state.generation_counters.remove(pipeline_key);
+            state.config_revision += 1;
             state
                 .runtime_recoveries
                 .retain(|(key, _), _| key != pipeline_key);
@@ -1600,6 +1920,7 @@ impl<
                 });
             }
             let _ = state.live_config.groups.remove(&pipeline_group_id);
+            state.config_revision += 1;
         }
 
         Ok(GroupDeleteStatus {
@@ -1657,14 +1978,37 @@ impl<
                 ));
             }
         }
-        desired_keys.sort_by(|(left, _), (right, _)| {
-            left.pipeline_group_id()
-                .as_ref()
-                .cmp(right.pipeline_group_id().as_ref())
+        let desired_phase_by_key: HashMap<_, _> = desired_config
+            .resolve()
+            .pipelines
+            .into_iter()
+            .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
+            .map(|pipeline| {
+                (
+                    PipelineKey::new(pipeline.pipeline_group_id, pipeline.pipeline_id),
+                    Self::reconcile_placement_phase_for_strategy(
+                        &pipeline.policies.resources.core_allocation.strategy,
+                    ),
+                )
+            })
+            .collect();
+        desired_keys.sort_by(|(left_key, _), (right_key, _)| {
+            desired_phase_by_key
+                .get(left_key)
+                .copied()
+                .unwrap_or(2)
+                .cmp(&desired_phase_by_key.get(right_key).copied().unwrap_or(2))
                 .then_with(|| {
-                    left.pipeline_id()
+                    left_key
+                        .pipeline_group_id()
                         .as_ref()
-                        .cmp(right.pipeline_id().as_ref())
+                        .cmp(right_key.pipeline_group_id().as_ref())
+                })
+                .then_with(|| {
+                    left_key
+                        .pipeline_id()
+                        .as_ref()
+                        .cmp(right_key.pipeline_id().as_ref())
                 })
         });
         let desired_key_set: HashSet<_> = desired_keys
@@ -1672,8 +2016,11 @@ impl<
             .map(|(pipeline_key, _)| pipeline_key.clone())
             .collect();
 
+        let mut projected_exclusive_core_ids = BTreeSet::new();
+        let mut projected_controller_chosen_core_ids = BTreeSet::new();
+        let mut rollout_plans = Vec::new();
         for (pipeline_key, pipeline) in desired_keys {
-            let request = ReconfigureRequest {
+            let reconfigure_request = ReconfigureRequest {
                 pipeline,
                 step_timeout_secs: request.step_timeout_secs,
                 drain_timeout_secs: request.drain_timeout_secs,
@@ -1681,11 +2028,48 @@ impl<
             let plan = self.prepare_rollout_plan_for_engine_operation(
                 pipeline_key.pipeline_group_id(),
                 pipeline_key.pipeline_id(),
-                &request,
+                &reconfigure_request,
                 Some(&desired_config),
                 Some(guard.operation_id()),
+                Some(&projected_exclusive_core_ids),
             )?;
             let action = Self::rollout_change_action(plan.action);
+            let current_conflicting_core_ids =
+                self.current_reserved_conflicting_core_ids(&pipeline_key, &plan.rollout);
+            if !current_conflicting_core_ids.is_empty() {
+                return Err(ControlPlaneError::InvalidRequest {
+                    message: format!(
+                        "desired placement for pipeline `{}`:`{}` conflicts with committed or in-flight core reservations on cores {:?}; stage the conflicting delete or resize before reconcile",
+                        pipeline_key.pipeline_group_id().as_ref(),
+                        pipeline_key.pipeline_id().as_ref(),
+                        current_conflicting_core_ids
+                    ),
+                });
+            }
+            let projected_conflicting_core_ids = Self::conflicting_projected_core_ids(
+                &plan.rollout,
+                &projected_exclusive_core_ids,
+                &projected_controller_chosen_core_ids,
+            );
+            if !projected_conflicting_core_ids.is_empty() {
+                return Err(ControlPlaneError::InvalidRequest {
+                    message: format!(
+                        "desired placement for pipeline `{}`:`{}` conflicts with earlier desired placements on cores {:?}",
+                        pipeline_key.pipeline_group_id().as_ref(),
+                        pipeline_key.pipeline_id().as_ref(),
+                        projected_conflicting_core_ids
+                    ),
+                });
+            }
+            Self::project_rollout_reservation(
+                &plan.rollout,
+                &mut projected_exclusive_core_ids,
+                &mut projected_controller_chosen_core_ids,
+            );
+            rollout_plans.push((pipeline_key, action, plan));
+        }
+
+        for (pipeline_key, action, plan) in rollout_plans {
             let initial_rollout =
                 self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id()))?;
             let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
@@ -1800,6 +2184,9 @@ impl<
             &pipeline_key,
             plan.rollout.clone(),
             engine_operation_id,
+            engine_operation_id
+                .is_none()
+                .then_some(plan.base_config_revision),
         )?;
         if matches!(plan.action, RolloutAction::NoOp) {
             self.commit_pipeline_record(&plan, plan.target_generation);
