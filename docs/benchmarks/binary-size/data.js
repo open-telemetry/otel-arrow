@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786741385272,
+  "lastUpdate": 1786743990021,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -14735,6 +14735,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-datafusion_common",
             "value": 2.9,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 69.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 113.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 100.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "8d6ef9af28194c817066ad3c51d3b928259c9e84",
+          "message": "Optimize raw OTLP log transformation in the ClickHouse exporter (#3712)\n\n# Change Summary\n\nOptimizes the ClickHouse exporter transformation path for raw OTLP log\nrequests.\n\nThe exporter now builds the final ClickHouse Arrow columns directly from\nthe\nserialized OTLP protobuf view, avoiding the intermediate conversion into\nOTAP\nArrow records and the subsequent generic transformation pipeline.\n\nIf the direct path cannot process an input, the exporter automatically\nattempts\nthe existing OTLP-to-OTAP conversion path. OTAP logs, traces, and other\npayload\ntypes continue to use their existing paths.\n\nThis PR builds on the specialized OTAP path merged in #3711 and has been\nrebased\nonto current `main`.\n\n## Performance impact\n\n### End-to-end saturation benchmark\n\nBenchmark params:\n\n- 8,192-log batches\n- synchronous ClickHouse inserts\n- `max_in_flight: 10`\n- one df_engine core\n- six ClickHouse cores\n- twelve traffic-generator cores\n- ClickHouse 25.6\n- three 60-second repetitions per scenario\n\nMedian results for DFE OTLP logs:\n\n| Metric | Current `main` | This change | Impact |\n| --- | ---: | ---: | ---: |\n| Max written throughput | 432,568 logs/s | 543,418 logs/s | +25.6% /\n1.26x |\n| DFE CPU at approximately 100,000 logs/s | 35.21% | 31.04% | -11.8% |\n\nWritten throughput at the fixed offered load remained approximately\n100,000\nlogs/s, as expected. Capacity throughput CV was 4.63% for `main` and\n1.01% for\nthis change. Final post-drain validation found no lost logs in any\nsaturation\nrepetition.\n\nThese saturation results indicate that raw OTLP log workloads can gain\napproximately 26% maximum throughput while using approximately 12% less\nDFE CPU\nat 100,000 logs/s. \n\n### Transformation microbenchmark\n\nThe 8,192-log Criterion benchmark was run on a\npinned CPU with 50 samples, a 2-second warm-up, and a 5-second\nmeasurement\nperiod:\n\n| Path | Median time | Throughput |\n| --- | ---: | ---: |\n| Legacy OTLP-to-OTAP transformation | 5.682 ms | 1.44M logs/s |\n| Direct OTLP transformation | 2.510 ms | 3.26M logs/s |\n| Impact | -55.8% | 2.26x |\n\nThis microbenchmark measures transformation only and excludes ClickHouse\nI/O.\n\n## What issue does this PR close?\n\n- Related to #3512\n\n## How are these changes tested?\n\nAutomated tests verify:\n\n- logical output parity with the existing path, including column names,\nrow\n  order, and values\n- logs with complete and omitted attribute sets\n- multiple resources and scopes with mixed content\n- nested map and slice attribute values\n- byte attributes encoded as base64\n- empty OTLP requests\n- malformed protobuf rejection by the direct transformer so the exporter\ncan\n  attempt the existing path\n- raw OTLP routing being limited to the appropriate payload format\n- independent direct-path and fallback telemetry counters\n- Arrow-to-ClickHouse binding through an ignored test that requires a\nlive\n  ClickHouse instance\n\n## Are there any user-facing changes?\n\nYes. Raw OTLP log requests are transformed more efficiently before\ninsertion\ninto ClickHouse.\n\nThere is no new configuration and no expected change to the ClickHouse\ntable\nschema or logical values. Inputs that cannot use the direct path\nautomatically\nattempt the existing conversion path.\n\n### Changelog\n\n- [x] Added a `.chloggen/*.yaml` entry\n- [ ] This PR is a `chore` (indicated in title)\n- [ ] This is a documentation-only PR.",
+          "timestamp": "2026-08-14T20:42:44Z",
+          "tree_id": "e512e9ce25edc980492ba91ffd9560d85ab80fbb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8d6ef9af28194c817066ad3c51d3b928259c9e84"
+        },
+        "date": 1786743973104,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 81.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
             "unit": "MB"
           },
           {
