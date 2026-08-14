@@ -5,6 +5,7 @@
 //! into `ScopedExpr` execution trees.
 
 use std::borrow::Cow;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use arrow::datatypes::DataType;
@@ -31,6 +32,7 @@ use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
 use datafusion::prelude::{binary_expr, lit_timestamp_nano};
 use otap_df_config::SignalType;
+use otap_df_pdata::otlp::metrics::MetricType;
 use otap_df_pdata::schema::consts;
 
 #[cfg(feature = "sha1-hash")]
@@ -358,6 +360,7 @@ impl ExprPlanner {
                     expr_type: ExprLogicalType::Boolean,
                     requires_dict_downcast: false,
                 };
+
                 let combined_scope = try_combine_scopes(&left_planned, &right_planned);
                 let left = left_planned.expr;
                 let right = right_planned.expr;
@@ -1586,6 +1589,20 @@ impl ExprPlanner {
                     "Log" => SignalType::Logs,
                     "Metric" => SignalType::Metrics,
                     "Span" => SignalType::Traces,
+                    other if let Ok(metric_type) = MetricType::from_str(other) => {
+                        // produce a plan that simply checks if the value in the "type" column
+                        // is equivalent to the metric type discriminant. This will always quickly
+                        // evaluate to `None` for non-metrics batches because projection will not
+                        // find such a column and the result will  be interpreted as `false` in a
+                        // filtering scenario
+                        return Ok(Some(ScopedExpr::Eval {
+                            scope: DataScope::Root,
+                            eval: LeafEval::new_df_expr(
+                                col(consts::METRIC_TYPE).eq(lit(metric_type as u8)),
+                                false,
+                            )?,
+                        }));
+                    }
                     _ => {
                         return Err(Error::InvalidPipelineError {
                             cause: format!("Unknown stream type name {type_name}"),

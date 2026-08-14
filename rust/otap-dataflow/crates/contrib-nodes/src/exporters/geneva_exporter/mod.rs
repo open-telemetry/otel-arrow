@@ -49,6 +49,7 @@ use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::otel_info;
+use otap_df_telemetry::otel_warn;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Deserializer};
 use std::path::PathBuf;
@@ -58,7 +59,9 @@ use std::time::Instant;
 // Geneva uploader dependencies
 use futures::StreamExt;
 use geneva_uploader::AuthMethod;
-use geneva_uploader::client::{EncodedBatch, GenevaClient, GenevaClientConfig};
+use geneva_uploader::client::{
+    EncodedBatch, GenevaClient, GenevaClientConfig, OboEventConfig, OboEventMap,
+};
 use geneva_uploader::{
     LogsEventNameMapping, LogsEventNameRoutingKey, SpanEventNameMapping, SpanEventNameRoutingKey,
 };
@@ -301,6 +304,29 @@ fn validate_events_map(
     Ok(())
 }
 
+/// Collect the destination event/table names a signal's routing can statically
+/// produce into `known`: every non-null mapping value, every source key whose
+/// mapping value is null (passthrough routes to the source value unchanged), and
+/// the explicit `default_event_name` when set. Used to flag OBO entries that can
+/// never match a reachable destination.
+fn collect_known_destinations(
+    default_event_name: Option<&str>,
+    events: Option<&std::collections::HashMap<String, Option<String>>>,
+    known: &mut std::collections::HashSet<String>,
+) {
+    if let Some(default_event_name) = default_event_name {
+        let _ = known.insert(default_event_name.to_owned());
+    }
+    if let Some(events) = events {
+        for (source, destination) in events {
+            let _ = match destination {
+                Some(destination) => known.insert(destination.clone()),
+                None => known.insert(source.clone()),
+            };
+        }
+    }
+}
+
 /// Deserializable wrapper for LogsEventNameMapping
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "LogsEventNameMappingConfigRaw")]
@@ -505,6 +531,97 @@ pub struct TracesConfig {
     pub event_name_mapping: Option<SpansEventNameMappingConfig>,
 }
 
+/// OBO (On-Behalf-Of) configuration for the Geneva exporter.
+///
+/// OBO lets a single agent upload telemetry on behalf of multiple customer
+/// identities. The map is keyed by Geneva event/table name; a batch whose
+/// event name matches an entry is uploaded with that entry's customer identity
+/// and optional annotations recipe carried as GIG query parameters. Events not
+/// present in the map are uploaded without OBO. This mirrors the uploader's
+/// flat, per-event `OboEventMap` data model (a single map shared across logs
+/// and spans, keyed by event/table name).
+///
+/// Keys are the *destination* event/table name -- the name after
+/// `logs`/`spans` `event_name_mapping` has resolved it, not the pre-mapping
+/// source value. The uploader looks up OBO by the resolved destination name.
+/// For example, if `event_name_mapping` routes source `audit` to table
+/// `AuditLogs`, the OBO entry must be keyed `AuditLogs`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "OboConfigRaw")]
+pub struct OboConfig {
+    /// Map of Geneva event/table name -> per-event OBO entry. Keys are the
+    /// destination table name (after `event_name_mapping` resolves it), not the
+    /// pre-mapping source value.
+    pub events: std::collections::HashMap<String, OboEventEntryConfig>,
+}
+
+/// A single OBO entry: the resolved customer identity and an optional
+/// annotations recipe.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OboEventEntryConfig {
+    /// Resolved OBO identity (the GIG `onbehalfid`). Must be non-empty.
+    pub identity: String,
+    /// Optional OBO annotations recipe (the GIG `onbehalfannotations`), for
+    /// example `<Config onBehalfFields="resourceId" />`. When present it must
+    /// be non-empty.
+    #[serde(default)]
+    pub annotations: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OboConfigRaw {
+    events: std::collections::HashMap<String, OboEventEntryConfig>,
+}
+
+impl TryFrom<OboConfigRaw> for OboConfig {
+    type Error = String;
+
+    fn try_from(raw: OboConfigRaw) -> Result<Self, Self::Error> {
+        if raw.events.is_empty() {
+            return Err("obo.events must be non-empty when OBO is configured".to_owned());
+        }
+        for (event_name, entry) in &raw.events {
+            if event_name.trim().is_empty() {
+                return Err("obo.events keys (event/table names) must not be blank".to_owned());
+            }
+            if entry.identity.trim().is_empty() {
+                return Err(format!(
+                    "obo.events entry for '{event_name}' must have a non-empty identity"
+                ));
+            }
+            if let Some(annotations) = &entry.annotations {
+                if annotations.trim().is_empty() {
+                    return Err(format!(
+                        "obo.events entry for '{event_name}' has an empty annotations value; \
+                         omit the field (or use null) instead of an empty string"
+                    ));
+                }
+            }
+        }
+        Ok(Self { events: raw.events })
+    }
+}
+
+impl From<OboConfig> for OboEventMap {
+    fn from(config: OboConfig) -> Self {
+        config
+            .events
+            .into_iter()
+            .map(|(event_name, entry)| {
+                (
+                    event_name,
+                    OboEventConfig {
+                        identity: entry.identity,
+                        annotations: entry.annotations,
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
 /// Configuration for the Geneva Exporter
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -537,6 +654,11 @@ pub struct Config {
     /// Span table configuration
     #[serde(default)]
     pub spans: Option<TracesConfig>,
+    /// Optional OBO (On-Behalf-Of) configuration for uploading telemetry on
+    /// behalf of multiple customer identities, keyed by the destination
+    /// event/table name (after `event_name_mapping` resolves it).
+    #[serde(default)]
+    pub obo: Option<OboConfig>,
     /// Maximum buffer size before forcing flush (default: 1000)
     /// Note: This field is currently reserved for future use and does not affect runtime behavior.
     #[serde(default = "default_buffer_size")]
@@ -593,7 +715,90 @@ impl Config {
                 return Err("region is required unless auth.type is agentfed".to_owned());
             }
         }
+        self.warn_unmatched_obo_events();
         Ok(())
+    }
+
+    /// Warn (non-fatally) about OBO entries that key on an event/table name no
+    /// statically-known destination can produce -- the common symptom of keying
+    /// OBO on the pre-mapping *source* value instead of the resolved
+    /// destination table name.
+    ///
+    /// The uploader looks up OBO by the destination event name (after
+    /// `event_name_mapping` resolves it), so an entry keyed on a source value or
+    /// a typo silently never applies. This is a warning rather than an error
+    /// because the set of reachable destinations is not fully static: a batch
+    /// can fall back to the uploader's literal default table name when
+    /// `default_event_name` is unset, and attribute-based routing derives
+    /// destinations from runtime values. We only warn when a key matches none of
+    /// the names we *can* enumerate.
+    fn warn_unmatched_obo_events(&self) {
+        for event_name in self.unmatched_obo_events() {
+            otel_warn!(
+                "geneva_exporter.obo.unmatched_event",
+                event_name = event_name.clone(),
+                message = "OBO is configured for an event/table name that no configured \
+                           routing destination or default_event_name produces; OBO keys must \
+                           be the destination table name (after event_name_mapping), not the \
+                           source value. This OBO entry may never apply."
+            );
+        }
+    }
+
+    /// Return the OBO event keys that cannot match any statically reachable
+    /// destination table name. A key is considered reachable if it is a
+    /// configured mapping destination, a passthrough source, an explicit
+    /// `default_event_name`, or, when the corresponding `default_event_name` is
+    /// unset, the uploader's literal default table name ("Log"/"Span").
+    /// Attribute-based routing can still produce destinations not listed here,
+    /// so this is best-effort typo detection.
+    fn unmatched_obo_events(&self) -> Vec<String> {
+        let Some(obo) = &self.obo else {
+            return Vec::new();
+        };
+
+        let mut known = std::collections::HashSet::new();
+
+        let logs_default = self
+            .logs
+            .as_ref()
+            .and_then(|l| l.default_event_name.as_deref());
+        let spans_default = self
+            .spans
+            .as_ref()
+            .and_then(|s| s.default_event_name.as_deref());
+
+        // When `default_event_name` is unset, the uploader falls back to its
+        // literal default table names ("Log" for logs, "Span" for spans), so
+        // OBO entries keyed on those are valid and must not warn. When the user
+        // overrides the default, that literal is never a reachable destination,
+        // so it must not be seeded (an OBO key on it is likely a typo).
+        if logs_default.is_none() {
+            let _ = known.insert("Log".to_owned());
+        }
+        if spans_default.is_none() {
+            let _ = known.insert("Span".to_owned());
+        }
+        collect_known_destinations(
+            logs_default,
+            self.logs
+                .as_ref()
+                .and_then(|l| l.event_name_mapping.as_ref().map(|m| &m.events)),
+            &mut known,
+        );
+        collect_known_destinations(
+            spans_default,
+            self.spans
+                .as_ref()
+                .and_then(|s| s.event_name_mapping.as_ref().map(|m| &m.events)),
+            &mut known,
+        );
+
+        obo.events
+            .keys()
+            .filter(|event_name| !known.contains(event_name.as_str()))
+            .cloned()
+            .collect()
     }
 
     /// Build the `geneva-uploader` `GenevaClientConfig` from this exporter
@@ -637,7 +842,7 @@ impl Config {
             msi_resource: self.auth.msi_resource(),
             logs: logs_config,
             spans: traces_config,
-            obo_event_map: None,
+            obo_event_map: self.obo.clone().map(Into::into),
         }
     }
 }
@@ -3663,6 +3868,300 @@ mod tests {
             Some(&Some("ServerSpans".to_string()))
         );
         assert_eq!(spans_mapping.events.get("CLIENT"), Some(&None));
+    }
+
+    /// Scenario: A `Config` with an `obo` block mapping two event/table names to
+    /// customer identities - one with an annotations recipe, one without - is
+    /// converted through `Config::to_geneva_client_config`.
+    /// Guarantees: The adapter populates `obo_event_map` with one entry per
+    /// configured event, preserving each identity and its optional annotations,
+    /// so OBO uploads are enabled for exactly the configured events and left off
+    /// (None) for everything else.
+    #[test]
+    fn test_config_to_geneva_client_config_with_obo() {
+        let config = serde_json::json!({
+            "endpoint": "https://geneva.example",
+            "environment": "prod-env",
+            "account": "acct-1",
+            "namespace": "ns-1",
+            "region": "westus2",
+            "config_major_version": 3,
+            "tenant": "tenant-1",
+            "role_name": "role-1",
+            "role_instance": "instance-1",
+            "obo": {
+                "events": {
+                    "AuditLogs": {
+                        "identity": "Microsoft.AuditService",
+                        "annotations": "<Config onBehalfFields=\"resourceId\" />"
+                    },
+                    "RawLogs": {
+                        "identity": "Microsoft.RawService"
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).expect("config should parse");
+        let client_config = parsed.to_geneva_client_config();
+
+        let obo = client_config
+            .obo_event_map
+            .expect("obo_event_map should be present");
+        assert_eq!(obo.len(), 2);
+
+        let audit = obo.get("AuditLogs").expect("AuditLogs entry present");
+        assert_eq!(audit.identity, "Microsoft.AuditService");
+        assert_eq!(
+            audit.annotations.as_deref(),
+            Some("<Config onBehalfFields=\"resourceId\" />")
+        );
+
+        let raw = obo.get("RawLogs").expect("RawLogs entry present");
+        assert_eq!(raw.identity, "Microsoft.RawService");
+        assert_eq!(raw.annotations, None);
+    }
+
+    /// Scenario: A `Config` with no `obo` block is converted through
+    /// `Config::to_geneva_client_config`.
+    /// Guarantees: `obo_event_map` stays `None`, so OBO remains opt-in and the
+    /// default configuration uploads without any customer identity.
+    #[test]
+    fn test_config_to_geneva_client_config_without_obo_is_none() {
+        let parsed: Config = serde_json::from_value(test_config()).expect("config should parse");
+        let client_config = parsed.to_geneva_client_config();
+        assert!(client_config.obo_event_map.is_none());
+    }
+
+    /// Scenario: An `obo` entry supplies an empty (whitespace-only) identity.
+    /// Guarantees: Deserialization fails up-front so `--validate` rejects an OBO
+    /// entry that could not identify a customer, instead of silently uploading
+    /// without OBO at pipeline startup.
+    #[test]
+    fn test_obo_rejects_empty_identity() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": {
+                "events": {
+                    "AuditLogs": { "identity": "   " }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "empty identity should be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("non-empty identity"),
+            "error should explain identity must be non-empty"
+        );
+    }
+
+    /// Scenario: An `obo` block supplies an empty `events` map.
+    /// Guarantees: Deserialization fails rather than accepting an OBO config that
+    /// enables OBO for no events, keeping `--validate` in agreement with runtime.
+    #[test]
+    fn test_obo_rejects_empty_events() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": { "events": {} },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "empty events map should be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be non-empty"),
+            "error should explain events must be non-empty"
+        );
+    }
+
+    /// Scenario: An `obo` entry maps an identity to an empty (whitespace-only)
+    /// annotations string.
+    /// Guarantees: Deserialization fails rather than silently treating the empty
+    /// annotations as "no recipe"; only omitting the field (or null) selects the
+    /// no-annotations form, so an ineffective config cannot look valid.
+    #[test]
+    fn test_obo_rejects_empty_annotations() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": {
+                "events": {
+                    "AuditLogs": { "identity": "Microsoft.AuditService", "annotations": "   " }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "empty annotations should be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("empty annotations value"),
+            "error should explain empty annotations are rejected"
+        );
+    }
+
+    /// Scenario: OBO is keyed on the uploader's literal default table names
+    /// ("Log"/"Span") while `logs`/`spans` (and their `default_event_name`) are
+    /// omitted, so the destinations exist only via the uploader's fallback.
+    /// Guarantees: These keys are treated as reachable and produce no unmatched
+    /// warning, so valid configs relying on the literal defaults stay quiet.
+    #[test]
+    fn test_obo_literal_default_names_are_matched() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": {
+                "events": {
+                    "Log": { "identity": "Microsoft.LogService" },
+                    "Span": { "identity": "Microsoft.SpanService" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let config: Config = serde_json::from_value(config).expect("config should deserialize");
+        assert!(
+            config.unmatched_obo_events().is_empty(),
+            "OBO keyed on the literal default table names must not be flagged as unmatched"
+        );
+    }
+
+    /// Scenario: OBO is keyed on a name that neither a mapping destination nor a
+    /// `default_event_name` nor the literal defaults can produce.
+    /// Guarantees: The typo-catching path reports that key as unmatched so the
+    /// warning still fires for genuinely unreachable OBO entries.
+    #[test]
+    fn test_obo_unreachable_name_is_unmatched() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": {
+                "events": {
+                    "TypoTable": { "identity": "Microsoft.SomeService" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let config: Config = serde_json::from_value(config).expect("config should deserialize");
+        assert_eq!(
+            config.unmatched_obo_events(),
+            vec!["TypoTable".to_string()],
+            "an OBO key matching no reachable destination must be reported as unmatched"
+        );
+    }
+
+    /// Scenario: The user overrides logs `default_event_name` (e.g. "MyLog") and
+    /// keys OBO on the literal "Log", which the uploader would only produce when
+    /// no default is set.
+    /// Guarantees: The literal "Log" is not treated as reachable once the
+    /// default is overridden, so the typo-prone key is reported as unmatched
+    /// while the overridden default itself is accepted.
+    #[test]
+    fn test_obo_literal_default_not_matched_when_overridden() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": { "default_event_name": "MyLog" },
+            "obo": {
+                "events": {
+                    "Log": { "identity": "Microsoft.LogService" },
+                    "MyLog": { "identity": "Microsoft.MyLogService" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let config: Config = serde_json::from_value(config).expect("config should deserialize");
+        assert_eq!(
+            config.unmatched_obo_events(),
+            vec!["Log".to_string()],
+            "the literal default must not be reachable once default_event_name is overridden"
+        );
     }
 
     /// Scenario: A logs `event_name_mapping` supplies an empty `events` map.

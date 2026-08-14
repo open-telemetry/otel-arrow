@@ -1,0 +1,12 @@
+# Changelog entry for Geneva exporter On-Behalf-Of (OBO) configuration
+
+change_type: enhancement
+
+component: pipeline
+
+note: "Geneva exporter accepts an optional `obo` configuration to upload telemetry on behalf of multiple customer identities, keyed by event/table name."
+
+issues: [3754]
+
+subtext: |
+  Add an optional top-level `obo.events` map to the Geneva exporter config. Each entry sets a customer `identity` (onbehalfid) and an optional `annotations` recipe (onbehalfannotations) for the matching event/table name. Events not listed, or an omitted `obo`, keep the previous behavior.
