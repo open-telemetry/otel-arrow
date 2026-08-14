@@ -22,5 +22,5 @@ issues: [3509]
 subtext: |
   max_in_flight defaults to 1, preserving the previous serial send order. Set
   it higher to pipeline deliveries; per-partition ordering is still preserved
-  for records sharing a key. A value of 0 is rejected. In-flight deliveries are
-  drained on shutdown and reconfiguration so no batch is silently dropped.
+  for records sharing a key. It must be in the range 1 to 100000. In-flight
+  deliveries are drained on shutdown and reconfig so no batch is dropped.
