@@ -78,7 +78,8 @@ At runtime the exporter does the following:
    tables if enabled
 3. Receives `OtapPdata` messages from the engine
 4. Converts payloads into `OtapArrowRecords`
-5. Runs the transform pipeline across supported payload types
+5. Uses the specialized transformer for canonical OTAP logs, with the generic
+   transform pipeline as a fallback and for other inputs
 6. Returns only signal batches (`Logs`, `Spans`) from the transformer
 7. Inserts those batches into the destination tables
 
@@ -109,8 +110,16 @@ Top-level config fields:
 - `username`
 - `password` (supports `${env:VAR}` / `${env:VAR:-default}` substitution, e.g. `"${env:CLICKHOUSE_PASSWORD}"`)
 - `async_insert`
+- `max_in_flight` (positive integer, defaults to `10`)
 - `table_defaults`
 - `tables`
+
+`max_in_flight` bounds the number of ClickHouse HTTP insert requests that can
+run concurrently. Values greater than one overlap synchronous inserts and may
+complete them out of order. When the limit is reached, the exporter applies
+backpressure until an insert completes. The default of `10` matches the insert
+concurrency used by the benchmark Collector configuration. Set it to `1` to
+retain serialized insert behavior.
 
 Inline attributes are always stored as `Map(LowCardinality(String), String)`;
 there is no per-group representation configuration.
@@ -171,6 +180,12 @@ string stored as the map value.
 
 ## Transform Pipeline
 
+Canonical OTAP log batches use a specialized transformation path that preserves
+the generic transformer's ClickHouse schema and values. If an input layout is
+not supported by that path, the exporter automatically falls back to the
+generic transformer. OTLP logs, traces, and other supported payloads continue
+to use the generic pipeline.
+
 The transform pipeline has two stages per payload:
 
 1. Multi-column stage
@@ -198,6 +213,11 @@ payloads remain internal to the transform process.
 - initializes configured tables
 - writes only signal payloads
 - maps `Logs -> logs table` and `Spans -> traces table`
+- runs at most `max_in_flight` insert requests concurrently
+- drains accepted insert requests until the shutdown deadline
+
+If the shutdown deadline expires, the exporter stops waiting for active
+inserts and drops queued inserts that have not started.
 
 There is no longer any special write ordering for attribute tables because
 attribute tables do not exist.

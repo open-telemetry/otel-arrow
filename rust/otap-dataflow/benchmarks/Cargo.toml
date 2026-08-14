@@ -30,7 +30,7 @@ otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
 otap-df-pdata-views = { workspace = true }
 
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["registry"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
 
 fluke-hpack.workspace = true
 futures-channel.workspace = true

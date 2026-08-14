@@ -400,7 +400,7 @@ fn measurement_metric_set_its_export_preserves_bucket_points() {
 
     let batch = registry.drain_metric_export_batch();
     assert_eq!(batch.metric_sets.len(), 2);
-    let encoder = MetricsOtlpEncoder::new(&ResourceLogs::default().encode_to_vec()).unwrap();
+    let encoder = MetricsOtlpEncoder::new(&ResourceLogs::default().encode_to_vec());
     let encoded = encoder.encode(&batch).unwrap().expect("non-empty metrics");
     let OtlpProtoBytes::ExportMetricsRequest(bytes) = encoded else {
         panic!("expected an OTLP metrics request");

@@ -25,6 +25,16 @@
     "config:best-practices",
     "helpers:pinGitHubActionDigestsToSemver"
   ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update Weaver CLI versions in GitHub workflows",
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "matchStrings": ["WEAVER_VERSION:\\s*(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "open-telemetry/weaver",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
   // NOTE: Rule ordering matters here
   // Later rules will override earlier rules
   "packageRules": [
