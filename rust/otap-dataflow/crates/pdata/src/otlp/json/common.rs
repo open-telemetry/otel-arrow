@@ -72,6 +72,27 @@ impl Serialize for ProtoU64 {
     }
 }
 
+pub(super) struct HexId<'a>(pub(super) &'a [u8]);
+
+impl Serialize for HexId<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut buffer = [0_u8; 32];
+        let encoded_len = self
+            .0
+            .len()
+            .checked_mul(2)
+            .filter(|len| *len <= buffer.len())
+            .ok_or_else(|| S::Error::custom("OTLP identifier exceeds 16 bytes"))?;
+        let encoded = &mut buffer[..encoded_len];
+        hex::encode_to_slice(self.0, &mut *encoded).map_err(S::Error::custom)?;
+        let encoded = std::str::from_utf8(encoded).map_err(S::Error::custom)?;
+        serializer.serialize_str(encoded)
+    }
+}
+
 pub(super) struct ResourceJson<'a, R: ResourceView>(pub(super) &'a R);
 
 impl<R: ResourceView> Serialize for ResourceJson<'_, R> {
@@ -337,5 +358,40 @@ impl<I: InstrumentationScopeView> Serialize for ScopeJson<'_, I> {
             map.serialize_entry("droppedAttributesCount", &dropped)?;
         }
         map.end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: OTLP span and trace identifiers contain bytes across the hexadecimal range.
+    /// Guarantees: Both fixed ID sizes serialize completely as lowercase hexadecimal strings.
+    #[test]
+    fn hex_ids_serialize_without_allocation_or_truncation() {
+        let span_id = [0x00, 0xab, 0xcd, 0xef, 0x10, 0x23, 0x45, 0x67];
+        let trace_id = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ];
+
+        assert_eq!(
+            serde_json::to_string(&HexId(&span_id)).unwrap(),
+            "\"00abcdef10234567\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HexId(&trace_id)).unwrap(),
+            "\"0123456789abcdeffedcba9876543210\""
+        );
+    }
+
+    /// Scenario: A caller attempts to serialize an identifier longer than a trace ID.
+    /// Guarantees: The stack-backed adapter reports an error instead of truncating the input.
+    #[test]
+    fn hex_id_rejects_oversized_input() {
+        let oversized_id = [0_u8; 17];
+
+        let error = serde_json::to_string(&HexId(&oversized_id)).unwrap_err();
+        assert!(error.to_string().contains("exceeds 16 bytes"));
     }
 }

@@ -8,7 +8,7 @@
 //! borrowed view iterators without converting the input into an owned protobuf message.
 
 use super::common::{
-    AttributeIterJson, ProtoDouble, ProtoI64, ProtoU64, ResourceJson, ScopeJson, Utf8,
+    AttributeIterJson, HexId, ProtoDouble, ProtoI64, ProtoU64, ResourceJson, ScopeJson, Utf8,
 };
 use super::{JsonEncodeError, write_json};
 use otap_df_pdata_views::views::metrics::{
@@ -364,10 +364,10 @@ impl<E: ExemplarView> Serialize for ExemplarJson<E> {
             serialize_value(&mut map, value)?;
         }
         if let Some(span_id) = self.0.span_id() {
-            map.serialize_entry("spanId", &hex::encode(span_id))?;
+            map.serialize_entry("spanId", &HexId(span_id))?;
         }
         if let Some(trace_id) = self.0.trace_id() {
-            map.serialize_entry("traceId", &hex::encode(trace_id))?;
+            map.serialize_entry("traceId", &HexId(trace_id))?;
         }
         map.end()
     }

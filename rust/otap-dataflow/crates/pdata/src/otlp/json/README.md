@@ -114,8 +114,8 @@ temporary or reusable byte buffer first.
 
 Serialization walks borrowed view iterators and streams fields through serde.
 It avoids building a second, owned telemetry message, which is especially
-useful for raw Protobuf and OTAP Arrow inputs. Individual field conversions,
-such as hexadecimal and base64 encoding, may still allocate.
+useful for raw Protobuf and OTAP Arrow inputs. Base64 encoding of byte-valued
+fields may still allocate.
 
 Callers can reuse a `Vec<u8>` between documents to retain capacity. Whether to
 buffer a full document or write directly to a sink is a caller-level tradeoff

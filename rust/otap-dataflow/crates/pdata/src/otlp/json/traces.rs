@@ -7,7 +7,7 @@
 //! view traits. It streams the OTLP protobuf JSON representation directly to serde, including the
 //! required hexadecimal identifiers and numeric enum values, without intermediate materialization.
 
-use super::common::{AttributeIterJson, ProtoU64, ResourceJson, ScopeJson, Utf8};
+use super::common::{AttributeIterJson, HexId, ProtoU64, ResourceJson, ScopeJson, Utf8};
 use super::{JsonEncodeError, write_json};
 use otap_df_pdata_views::views::trace::{
     EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
@@ -138,16 +138,16 @@ impl<T: SpanView> Serialize for SpanJson<T> {
     {
         let mut map = serializer.serialize_map(None)?;
         if let Some(trace_id) = self.0.trace_id() {
-            map.serialize_entry("traceId", &hex::encode(trace_id))?;
+            map.serialize_entry("traceId", &HexId(trace_id))?;
         }
         if let Some(span_id) = self.0.span_id() {
-            map.serialize_entry("spanId", &hex::encode(span_id))?;
+            map.serialize_entry("spanId", &HexId(span_id))?;
         }
         if let Some(value) = self.0.trace_state().filter(|value| !value.is_empty()) {
             map.serialize_entry("traceState", &Utf8(value))?;
         }
         if let Some(parent_span_id) = self.0.parent_span_id() {
-            map.serialize_entry("parentSpanId", &hex::encode(parent_span_id))?;
+            map.serialize_entry("parentSpanId", &HexId(parent_span_id))?;
         }
         if let Some(flags) = self.0.flags().filter(|value| *value != 0) {
             map.serialize_entry("flags", &flags)?;
@@ -257,10 +257,10 @@ impl<L: LinkView> Serialize for LinkJson<L> {
     {
         let mut map = serializer.serialize_map(None)?;
         if let Some(trace_id) = self.0.trace_id() {
-            map.serialize_entry("traceId", &hex::encode(trace_id))?;
+            map.serialize_entry("traceId", &HexId(trace_id))?;
         }
         if let Some(span_id) = self.0.span_id() {
-            map.serialize_entry("spanId", &hex::encode(span_id))?;
+            map.serialize_entry("spanId", &HexId(span_id))?;
         }
         if let Some(value) = self.0.trace_state().filter(|value| !value.is_empty()) {
             map.serialize_entry("traceState", &Utf8(value))?;

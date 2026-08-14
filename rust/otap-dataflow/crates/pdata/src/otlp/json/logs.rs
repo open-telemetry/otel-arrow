@@ -7,7 +7,9 @@
 //! streams protobuf-compatible JSON through serde. Trace context and other OTLP-specific fields
 //! are encoded in place, so owned protobuf, raw protobuf, and OTAP Arrow views share one path.
 
-use super::common::{AnyValueJson, AttributeIterJson, ProtoU64, ResourceJson, ScopeJson, Utf8};
+use super::common::{
+    AnyValueJson, AttributeIterJson, HexId, ProtoU64, ResourceJson, ScopeJson, Utf8,
+};
 use super::{JsonEncodeError, write_json};
 use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
@@ -163,10 +165,10 @@ impl<L: LogRecordView> Serialize for LogRecordJson<L> {
             map.serialize_entry("flags", &flags)?;
         }
         if let Some(trace_id) = self.0.trace_id() {
-            map.serialize_entry("traceId", &hex::encode(trace_id))?;
+            map.serialize_entry("traceId", &HexId(trace_id))?;
         }
         if let Some(span_id) = self.0.span_id() {
-            map.serialize_entry("spanId", &hex::encode(span_id))?;
+            map.serialize_entry("spanId", &HexId(span_id))?;
         }
         if let Some(value) = self.0.event_name().filter(|value| !value.is_empty()) {
             map.serialize_entry("eventName", &Utf8(value))?;
