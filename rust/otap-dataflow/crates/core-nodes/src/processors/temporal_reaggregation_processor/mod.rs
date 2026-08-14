@@ -45,7 +45,7 @@ use otap_df_pdata_views::views::metrics::{
     SummaryDataPointView, SummaryView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::Outcome;
 use otap_df_telemetry::otel_warn;
 
 mod builder;
@@ -59,7 +59,7 @@ use self::identity::{
     HashBuffer, MetricId, MetricIdRef, ResourceId, ScopeId, ScopeIdRef, StreamId, StreamIdRef,
     metric_id_of, resource_id_of, scope_id_of, stream_id_of,
 };
-use self::telemetry::TemporalReaggregationMetrics;
+use self::telemetry::{ErrorType, FlushReason, TemporalReaggregationMetrics};
 
 /// Errors that can occur during view processing.
 #[derive(thiserror::Error, Debug)]
@@ -206,7 +206,7 @@ const FLUSH_WAKEUP_SLOT: WakeupSlot = WakeupSlot(0);
 /// [`OtapArrowRecords`] batch.
 pub struct TemporalReaggregationProcessor {
     /// Processor metrics
-    metrics: MetricSet<TemporalReaggregationMetrics>,
+    metrics: TemporalReaggregationMetrics,
 
     /// The collection period for aggregating metrics before emitting a batch
     collection_period: Duration,
@@ -291,19 +291,21 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                 NodeControlMsg::Wakeup { revision, .. } => {
                     if self.wakeup_revision == Some(revision) {
                         self.wakeup_revision = None;
-                        self.metrics.flushes_timer.inc();
-                        self.flush(effect_handler, None).await?;
+                        self.flush(effect_handler, None, FlushReason::Timer).await?;
                     }
 
                     Ok(())
                 }
                 NodeControlMsg::Ack(msg) => self.handle_ack(effect_handler, msg).await,
                 NodeControlMsg::Nack(msg) => self.handle_nack(effect_handler, msg).await,
-                NodeControlMsg::Shutdown { .. } => self.flush(effect_handler, None).await,
+                NodeControlMsg::Shutdown { .. } => {
+                    self.flush(effect_handler, None, FlushReason::Shutdown)
+                        .await
+                }
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    _ = metrics_reporter.report(&mut self.metrics);
+                    _ = self.metrics.report(&mut metrics_reporter);
                     Ok(())
                 }
                 _ => Ok(()),
@@ -344,7 +346,7 @@ impl TemporalReaggregationProcessor {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<TemporalReaggregationMetrics>();
+        let metrics = TemporalReaggregationMetrics::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -623,7 +625,8 @@ impl TemporalReaggregationProcessor {
                 Ok(view) => self.process_view(effect_handler, &view).await,
                 Err(e) => {
                     otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
-                    self.metrics.batches_rejected.inc();
+                    // local failure, not a downstream refusal
+                    self.metrics.record_failure(ErrorType::ViewCreation);
                     let msg = format!("Failed to create view: {:#}", e);
                     effect_handler
                         .notify_nack(NackMsg::new_permanent(msg, pdata))
@@ -641,6 +644,7 @@ impl TemporalReaggregationProcessor {
         match result {
             Ok(agg_result) => match agg_result {
                 AggregationResult::NoAggregations => {
+                    self.metrics.record_success();
                     Ok(effect_handler.send_message_with_source_node(pdata).await?)
                 }
                 AggregationResult::SomeAggregations(records) => {
@@ -650,6 +654,7 @@ impl TemporalReaggregationProcessor {
                     self.aggregated_peer.push(pdata.peer_addr());
                     // Pass data through if there are no subscribers -- but we
                     // still need a wakeup to flush the aggregated portion.
+                    self.metrics.record_success();
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.has_subscribers() {
                         self.ensure_wakeup_scheduled(effect_handler)?;
@@ -709,6 +714,7 @@ impl TemporalReaggregationProcessor {
                     // Nothing to passthrough and no subscribers so we don't
                     // care about ack/nack -- but we still need a wakeup to
                     // flush the aggregated data.
+                    self.metrics.record_success();
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.has_subscribers() {
                         self.ensure_wakeup_scheduled(effect_handler)?;
@@ -732,11 +738,17 @@ impl TemporalReaggregationProcessor {
                 // Engine errors are fatal, we propagate those up the stack
                 ProcessingError::Engine { source } => Err(source),
 
-                // This is our classic "bad data" case where even after flushing
-                // the current batch, it failed on retry due to being oversized
-                // in some way. We can't handle it, so it gets a nack.
+                // Classic "bad data" case: even after flushing the current batch
+                // and retrying, the input is still too large to aggregate.
+                // Record the actionable error cause from source, not the control-flow reason.
                 ProcessingError::AggregationRetryFailed { source } => {
-                    self.metrics.batches_rejected.inc();
+                    let error_type = match source {
+                        AggregationError::IdOverflow => ErrorType::IdOverflow,
+                        AggregationError::StreamCardinalityExceeded => {
+                            ErrorType::StreamCardinalityExceeded
+                        }
+                    };
+                    self.metrics.record_failure(error_type);
                     let msg = format!("Failed to aggregate batch: {:#}", source);
                     effect_handler
                         .notify_nack(NackMsg::new_permanent(msg, pdata))
@@ -754,10 +766,15 @@ impl TemporalReaggregationProcessor {
     /// the data appended before the checkpoint is clean and should be sent
     /// downstream, while the partial data from the failed call is discarded
     /// by slicing the record batches.
+    /// Flush accumulated metrics up to the given checkpoint.
+    ///
+    /// Records a `flushes` metric only when records are actually emitted (non-empty flush).
+    /// The metric is recorded after the send result is known so that outcome is accurate.
     async fn flush(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         checkpoint: Option<Checkpoint>,
+        reason: FlushReason,
     ) -> Result<(), Error> {
         let records = self.builder.finish(checkpoint);
         // Snapshot the merged peer_addr from every input that contributed to
@@ -769,6 +786,7 @@ impl TemporalReaggregationProcessor {
         // scheduled whenever we start aggregating a new batch
         self.cancel_current_wakeup(effect_handler);
 
+        // Empty flush - nothing to emit, skip the metric entirely
         if records.is_empty() {
             return Ok(());
         }
@@ -782,8 +800,14 @@ impl TemporalReaggregationProcessor {
             if let Some(addr) = merged_peer {
                 pdata.set_peer_addr(addr);
             }
-            effect_handler.send_message_with_source_node(pdata).await?;
-            return Ok(());
+            let res = effect_handler.send_message_with_source_node(pdata).await;
+            let outcome = if res.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            };
+            self.metrics.record_flush(outcome, reason);
+            return Ok(res?);
         }
 
         // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
@@ -815,8 +839,14 @@ impl TemporalReaggregationProcessor {
             &mut pdata,
         );
 
-        effect_handler.send_message_with_source_node(pdata).await?;
-        Ok(())
+        let res = effect_handler.send_message_with_source_node(pdata).await;
+        let outcome = if res.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        };
+        self.metrics.record_flush(outcome, reason);
+        Ok(res?)
     }
 
     async fn process_view<V: MetricsView>(
@@ -837,9 +867,20 @@ impl TemporalReaggregationProcessor {
                 // data back into a fresh one. This prevents complex ack/nack
                 // scenarios where a single input batch has representation in
                 // multiple output batches.
-                AggregationError::IdOverflow | AggregationError::StreamCardinalityExceeded => {
-                    self.metrics.flushes_overflow.inc();
-                    self.flush(effect_handler, Some(checkpoint)).await?;
+                AggregationError::IdOverflow => {
+                    // Flush first with the correct reason, metric is recorded inside flush()
+                    // after the send result is known - not before.
+                    let flush_reason = FlushReason::IdOverflow;
+                    self.flush(effect_handler, Some(checkpoint), flush_reason)
+                        .await?;
+                    Ok(self
+                        .aggregate_view(view)
+                        .inspect_err(|_| self.clear_state())?)
+                }
+                AggregationError::StreamCardinalityExceeded => {
+                    let flush_reason = FlushReason::StreamCardinalityExceeded;
+                    self.flush(effect_handler, Some(checkpoint), flush_reason)
+                        .await?;
                     Ok(self
                         .aggregate_view(view)
                         .inspect_err(|_| self.clear_state())?)
