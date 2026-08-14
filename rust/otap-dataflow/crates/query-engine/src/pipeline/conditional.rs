@@ -169,6 +169,11 @@ impl PipelineStage for ConditionalPipelineStage {
             // update the list of rows that were already selected by branches
             already_selected_vec = or(&already_selected_vec, &predicate_selection_vec)?;
 
+            if branch_selection_vec.true_count() == 0 {
+                // no rows selected - no sense executing the branch on zero rows
+                continue;
+            }
+
             // create a batch with only the rows that match the condition
             //
             // TODO: the function we're calling here will materialize all the child record batches
