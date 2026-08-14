@@ -58,7 +58,7 @@
 //!       max_duration: "100ms"
 //! ```
 
-otap_df_telemetry::otel_component_scope!(urn = ETW_RECEIVER_URN, kind = "receiver", name = "etw",);
+otap_df_telemetry::otel_component_scope!(urn = ETW_RECEIVER_URN, target = "otel.receiver.etw",);
 
 mod arrow_records_encoder;
 mod session;

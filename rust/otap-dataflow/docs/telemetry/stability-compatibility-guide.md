@@ -156,8 +156,8 @@ For stable instrumentation scopes:
   MUST NOT be embedded in the scope name
 - changing from a package scope to a component scope is breaking for exact-name
   queries, allowlists, dashboards, and scope-based aggregation
-- preserving the old package name as a prefix MAY preserve prefix-based filter
-  directives, but does not make an exact scope-name change backward compatible
+- component scopes MUST remain a stable projection of the registered component
+  URN: remove `urn:` and replace colon separators with dots
 
 A scope-name migration MUST provide an old-to-new mapping and example query or
 filter updates. Duplicating every event under both scope names is generally not

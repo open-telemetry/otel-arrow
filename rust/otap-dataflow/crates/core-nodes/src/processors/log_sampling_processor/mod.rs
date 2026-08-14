@@ -9,8 +9,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = LOG_SAMPLING_PROCESSOR_URN,
-    kind = "processor",
-    name = "log_sampling",
+    target = "otel.processor.log_sampling",
 );
 
 mod config;

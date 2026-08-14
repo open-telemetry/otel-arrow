@@ -20,8 +20,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = OTAP_PERF_EXPORTER_URN,
-    kind = "exporter",
-    name = "perf",
+    target = "otel.exporter.perf",
 );
 
 pub mod config;

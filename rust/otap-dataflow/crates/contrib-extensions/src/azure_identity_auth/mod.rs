@@ -9,8 +9,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = AZURE_IDENTITY_AUTH_URN,
-    kind = "extension",
-    name = "azure_identity_auth",
+    target = "microsoft.extension.azure_identity_auth",
 );
 
 mod auth;

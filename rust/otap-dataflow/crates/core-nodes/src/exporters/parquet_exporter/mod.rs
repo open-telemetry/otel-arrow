@@ -23,8 +23,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = PARQUET_EXPORTER_URN,
-    kind = "exporter",
-    name = "parquet",
+    target = "otel.exporter.parquet",
 );
 
 pub mod config;

@@ -9,8 +9,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = HOST_METRICS_RECEIVER_URN,
-    kind = "receiver",
-    name = "host_metrics",
+    target = "otel.receiver.host_metrics",
 );
 
 #[cfg(target_os = "linux")]

@@ -3,8 +3,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = SYSLOG_CEF_RECEIVER_URN,
-    kind = "receiver",
-    name = "syslog_cef",
+    target = "otel.receiver.syslog_cef",
 );
 
 use self::arrow_records_encoder::ArrowRecordsBuilder;

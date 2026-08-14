@@ -11,8 +11,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = OTLP_EXPORTER_URN,
-    kind = "exporter",
-    name = "otlp_grpc",
+    target = "otel.exporter.otlp_grpc",
 );
 
 use async_trait::async_trait;

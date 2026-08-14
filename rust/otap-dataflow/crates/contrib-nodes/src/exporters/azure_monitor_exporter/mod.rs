@@ -7,8 +7,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = AZURE_MONITOR_EXPORTER_URN,
-    kind = "exporter",
-    name = "azure_monitor",
+    target = "microsoft.exporter.azure_monitor",
 );
 
 use linkme::distributed_slice;

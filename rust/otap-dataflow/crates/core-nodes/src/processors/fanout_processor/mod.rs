@@ -20,8 +20,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = FANOUT_PROCESSOR_URN,
-    kind = "processor",
-    name = "fanout",
+    target = "otel.processor.fanout",
 );
 
 use async_trait::async_trait;

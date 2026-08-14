@@ -48,8 +48,7 @@ pub const WASM_PROCESSOR_URN: &str = "urn:otel:processor:wasm_processor";
 
 otap_df_telemetry::otel_component_scope!(
     urn = WASM_PROCESSOR_URN,
-    kind = "processor",
-    name = "wasm_processor",
+    target = "otel.processor.wasm_processor",
 );
 
 /// Configuration for the WASM processor node.

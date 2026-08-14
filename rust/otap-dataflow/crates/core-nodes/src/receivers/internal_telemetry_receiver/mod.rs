@@ -30,8 +30,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = INTERNAL_TELEMETRY_RECEIVER_URN,
-    kind = "receiver",
-    name = "internal_telemetry",
+    target = "otel.receiver.internal_telemetry",
 );
 
 use async_trait::async_trait;

@@ -9,7 +9,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-otap_df_telemetry::otel_component_scope!(urn = OTAP_RECEIVER_URN, kind = "receiver", name = "otap",);
+otap_df_telemetry::otel_component_scope!(urn = OTAP_RECEIVER_URN, target = "otel.receiver.otap",);
 
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;

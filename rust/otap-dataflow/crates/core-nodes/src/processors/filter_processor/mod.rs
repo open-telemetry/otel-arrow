@@ -10,8 +10,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = FILTER_PROCESSOR_URN,
-    kind = "processor",
-    name = "filter",
+    target = "otel.processor.filter",
 );
 
 use self::config::Config;

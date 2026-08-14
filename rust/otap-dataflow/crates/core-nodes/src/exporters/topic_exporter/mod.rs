@@ -3,11 +3,7 @@
 
 //! Topic exporter.
 
-otap_df_telemetry::otel_component_scope!(
-    urn = TOPIC_EXPORTER_URN,
-    kind = "exporter",
-    name = "topic",
-);
+otap_df_telemetry::otel_component_scope!(urn = TOPIC_EXPORTER_URN, target = "otel.exporter.topic",);
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};

@@ -6,8 +6,7 @@ pub(crate) mod config;
 // settings. Lint compliance will be addressed in a follow-up.
 otap_df_telemetry::otel_component_scope!(
     urn = processor::RECORDSET_KQL_PROCESSOR_URN,
-    kind = "processor",
-    name = "recordset_kql",
+    target = "microsoft.processor.recordset_kql",
 );
 
 #[allow(

@@ -30,8 +30,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = OTAP_BATCH_PROCESSOR_URN,
-    kind = "processor",
-    name = "batch",
+    target = "otel.processor.batch",
 );
 
 use async_trait::async_trait;

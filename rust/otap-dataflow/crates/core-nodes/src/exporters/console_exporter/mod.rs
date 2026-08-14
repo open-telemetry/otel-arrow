@@ -6,8 +6,7 @@
 mod metrics;
 otap_df_telemetry::otel_component_scope!(
     urn = CONSOLE_EXPORTER_URN,
-    kind = "exporter",
-    name = "console",
+    target = "otel.exporter.console",
 );
 
 mod record_json;

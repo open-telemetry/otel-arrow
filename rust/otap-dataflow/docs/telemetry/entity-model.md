@@ -113,7 +113,9 @@ Attributes:
 
 The tracing target and exported `InstrumentationScope.name` identify the static
 component type that produced an event. They do not identify a configured node
-instance. Component events use the target convention defined in the
+instance. A component scope is derived from its canonical URN by removing the
+`urn:` prefix and replacing colons with dots. Component events use the target
+convention defined in the
 [telemetry crate README](../../crates/telemetry/README.md#logging-macros), while
 `otelcol.node.id` identifies the runtime instance and `otelcol.node.urn` carries
 the complete canonical component identity.

@@ -50,8 +50,9 @@ All events MUST be emitted using the `otel_*` macros from the
   includes the file path and line number -- which is not durable and breaks
   filtering, alerting, and dashboards whenever code is moved or reformatted.
 - **Automatic `target`.** Registered components use
-  `<package>::<kind>::<name>`; other code uses the Cargo package name. When
-  exported via OTLP, this becomes `InstrumentationScope.name`.
+  `<namespace>.<kind>.<name>`, derived from their registered URN; other code
+  uses the Cargo package name. When exported via OTLP, this becomes
+  `InstrumentationScope.name`.
 
 ### Available macros
 
@@ -103,7 +104,8 @@ otel_info!("pipeline.run.start");
 
 // Good -- message explains consequences beyond what the event name conveys:
 otel_warn!("core_affinity.set_failed",
-    message = "Failed to set core affinity for pipeline thread. Performance may be less predictable.",
+    message = "Failed to set core affinity for pipeline thread. \
+        Performance may be less predictable.",
 );
 ```
 

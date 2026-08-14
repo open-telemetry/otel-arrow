@@ -14,8 +14,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = TRANSFORM_PROCESSOR_URN,
-    kind = "processor",
-    name = "transform",
+    target = "otel.processor.transform",
 );
 
 use std::sync::Arc;

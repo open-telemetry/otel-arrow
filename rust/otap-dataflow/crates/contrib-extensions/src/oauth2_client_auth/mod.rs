@@ -9,8 +9,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = OAUTH2_CLIENT_AUTH_URN,
-    kind = "extension",
-    name = "oauth2_client_auth",
+    target = "otel.extension.oauth2_client_auth",
 );
 
 mod auth;

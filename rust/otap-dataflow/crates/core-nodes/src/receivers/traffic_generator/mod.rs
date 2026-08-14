@@ -7,8 +7,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = TRAFFIC_GENERATOR_RECEIVER_URN,
-    kind = "receiver",
-    name = "traffic_generator",
+    target = "otel.receiver.traffic_generator",
 );
 
 use crate::receivers::traffic_generator::config::Config;

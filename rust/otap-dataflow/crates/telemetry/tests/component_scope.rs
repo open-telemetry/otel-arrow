@@ -30,8 +30,7 @@ mod scoped_component {
 
     otap_df_telemetry::otel_component_scope!(
         urn = COMPONENT_URN,
-        kind = "processor",
-        name = "scope_test",
+        target = "otel.processor.scope_test",
     );
 
     pub(super) fn emit_from_root() {
@@ -62,8 +61,7 @@ mod second_scoped_component {
 
     otap_df_telemetry::otel_component_scope!(
         urn = COMPONENT_URN,
-        kind = "processor",
-        name = "second_scope_test",
+        target = "otel.processor.second_scope_test",
     );
 
     pub(super) fn emit() {
@@ -76,8 +74,7 @@ mod prefix_collision_component {
 
     otap_df_telemetry::otel_component_scope!(
         urn = COMPONENT_URN,
-        kind = "processor",
-        name = "scope_test_extra",
+        target = "otel.processor.scope_test_extra",
     );
 
     pub(super) fn emit() {
@@ -85,8 +82,21 @@ mod prefix_collision_component {
     }
 }
 
+mod namespaced_component {
+    const COMPONENT_URN: &str = "urn:microsoft:processor:scope_test";
+
+    otap_df_telemetry::otel_component_scope!(
+        urn = COMPONENT_URN,
+        target = "microsoft.processor.scope_test",
+    );
+
+    pub(super) fn emit() {
+        otel_info!("test.component.namespaced");
+    }
+}
+
 /// Scenario: a component scope emits events from its root and a child module.
-/// Guarantees: every event inherits the stable package, kind, and component target.
+/// Guarantees: every event inherits the stable target derived from the component URN.
 #[test]
 fn component_scope_applies_to_module_subtree() {
     let capture = TargetCapture::default();
@@ -102,10 +112,7 @@ fn component_scope_applies_to_module_subtree() {
         *targets
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        [
-            "otap-df-telemetry::processor::scope_test",
-            "otap-df-telemetry::processor::scope_test",
-        ]
+        ["otel.processor.scope_test", "otel.processor.scope_test",]
     );
 }
 
@@ -126,7 +133,7 @@ fn component_scope_covers_every_event_helper() {
     assert!(
         targets
             .iter()
-            .all(|target| *target == "otap-df-telemetry::processor::scope_test")
+            .all(|target| *target == "otel.processor.scope_test")
     );
 }
 
@@ -157,8 +164,8 @@ fn base_macros_support_explicit_and_default_targets() {
 fn component_targets_support_hierarchical_prefix_filtering() {
     let kind_capture = TargetCapture::default();
     let kind_targets = Arc::clone(&kind_capture.targets);
-    let kind_filter = EnvFilter::try_new("off,otap-df-telemetry::processor=debug")
-        .expect("kind filter should parse");
+    let kind_filter =
+        EnvFilter::try_new("off,otel.processor=debug").expect("kind filter should parse");
     let kind_subscriber = tracing_subscriber::registry()
         .with(kind_capture)
         .with(kind_filter);
@@ -174,14 +181,14 @@ fn component_targets_support_hierarchical_prefix_filtering() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         [
-            "otap-df-telemetry::processor::scope_test",
-            "otap-df-telemetry::processor::second_scope_test",
+            "otel.processor.scope_test",
+            "otel.processor.second_scope_test",
         ]
     );
 
     let component_capture = TargetCapture::default();
     let component_targets = Arc::clone(&component_capture.targets);
-    let component_filter = EnvFilter::try_new("off,otap-df-telemetry::processor::scope_test=info")
+    let component_filter = EnvFilter::try_new("off,otel.processor.scope_test=info")
         .expect("component filter should parse");
     let component_subscriber = tracing_subscriber::registry()
         .with(component_capture)
@@ -198,28 +205,55 @@ fn component_targets_support_hierarchical_prefix_filtering() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         [
-            "otap-df-telemetry::processor::scope_test",
-            "otap-df-telemetry::processor::scope_test_extra",
+            "otel.processor.scope_test",
+            "otel.processor.scope_test_extra",
         ]
     );
 }
 
-/// Scenario: an existing package-level directive observes a component-scoped event.
-/// Guarantees: adding component segments preserves package-prefix EnvFilter behavior.
+/// Scenario: package and component targets are selected by independent directives.
+/// Guarantees: a package filter does not accidentally enable component-scoped events.
 #[test]
-fn package_filter_continues_to_match_component_targets() {
+fn package_filter_does_not_match_component_targets() {
     let capture = TargetCapture::default();
     let targets = Arc::clone(&capture.targets);
     let filter =
         EnvFilter::try_new("off,otap-df-telemetry=info").expect("package filter should parse");
     let subscriber = tracing_subscriber::registry().with(capture).with(filter);
 
-    tracing::subscriber::with_default(subscriber, scoped_component::emit_from_root);
+    tracing::subscriber::with_default(subscriber, || {
+        scoped_component::emit_from_root();
+        otap_df_telemetry::otel_info!("test.unscoped");
+    });
 
     assert_eq!(
         *targets
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        ["otap-df-telemetry::processor::scope_test"]
+        ["otap-df-telemetry"]
+    );
+}
+
+/// Scenario: two components share kind and name but use different URN namespaces.
+/// Guarantees: namespace remains part of the target and prevents identity collisions.
+#[test]
+fn component_target_preserves_urn_namespace() {
+    let capture = TargetCapture::default();
+    let targets = Arc::clone(&capture.targets);
+    let subscriber = tracing_subscriber::registry().with(capture);
+
+    tracing::subscriber::with_default(subscriber, || {
+        scoped_component::emit_from_root();
+        namespaced_component::emit();
+    });
+
+    assert_eq!(
+        *targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        [
+            "otel.processor.scope_test",
+            "microsoft.processor.scope_test"
+        ]
     );
 }

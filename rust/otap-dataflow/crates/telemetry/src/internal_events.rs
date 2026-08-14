@@ -49,67 +49,50 @@ pub mod _private {
     ///
     /// This runs in a const context from `otel_component_scope!`, preventing
     /// the filter target from drifting away from the component identity.
-    pub const fn validate_component_urn(urn: &str, kind: &str, name: &str) {
+    pub const fn validate_component_target(urn: &str, target: &str) {
         let urn = urn.as_bytes();
-        let kind = kind.as_bytes();
-        let name = name.as_bytes();
+        let target = target.as_bytes();
 
         assert!(
-            !kind.is_empty(),
-            "component telemetry kind must not be empty"
-        );
-        assert!(
-            !name.is_empty(),
-            "component telemetry name must not be empty"
+            !target.is_empty(),
+            "component telemetry target must not be empty"
         );
         assert!(
             urn.len() > 4 && urn[0] == b'u' && urn[1] == b'r' && urn[2] == b'n' && urn[3] == b':',
             "component telemetry URN must start with urn:"
         );
 
-        let mut namespace_end = 4;
-        while namespace_end < urn.len() && urn[namespace_end] != b':' {
-            namespace_end += 1;
-        }
-        assert!(
-            namespace_end > 4,
-            "component telemetry URN namespace is empty"
-        );
-        assert!(
-            namespace_end < urn.len(),
-            "component telemetry URN has no kind"
-        );
-
-        let kind_start = namespace_end + 1;
-        let mut kind_end = kind_start;
-        while kind_end < urn.len() && urn[kind_end] != b':' {
-            kind_end += 1;
-        }
-        assert!(kind_end < urn.len(), "component telemetry URN has no name");
-        assert!(
-            kind_end - kind_start == kind.len(),
-            "component telemetry kind does not match its URN"
-        );
-
-        let mut i = 0;
-        while i < kind.len() {
-            assert!(
-                urn[kind_start + i] == kind[i],
-                "component telemetry kind does not match its URN"
-            );
+        let mut separators = 0;
+        let mut segment_start = 4;
+        let mut i = 4;
+        while i < urn.len() {
+            if urn[i] == b':' {
+                assert!(
+                    i > segment_start,
+                    "component telemetry URN segments must not be empty"
+                );
+                separators += 1;
+                segment_start = i + 1;
+            }
             i += 1;
         }
-
-        let name_start = kind_end + 1;
         assert!(
-            urn.len() - name_start == name.len(),
-            "component telemetry name does not match its URN"
+            separators == 2 && segment_start < urn.len(),
+            "component telemetry URN must contain namespace, kind, and name"
         );
+
+        assert!(
+            urn.len() - 4 == target.len(),
+            "component telemetry target does not match its URN"
+        );
+
         i = 0;
-        while i < name.len() {
+        while i < target.len() {
+            let urn_byte = urn[i + 4];
+            let expected = if urn_byte == b':' { b'.' } else { urn_byte };
             assert!(
-                urn[name_start + i] == name[i],
-                "component telemetry name does not match its URN"
+                target[i] == expected,
+                "component telemetry target does not match its URN"
             );
             i += 1;
         }
@@ -375,39 +358,44 @@ macro_rules! __log_record_impl {
 mod tests {
     use crate::error::Error;
 
-    /// Scenario: component target segments match a namespaced component URN.
-    /// Guarantees: valid registered component identities pass scope validation.
+    /// Scenario: a dot-separated component target is derived from a namespaced component URN.
+    /// Guarantees: valid registered component identities pass target validation.
     #[test]
-    fn component_urn_validation_accepts_matching_segments() {
-        super::_private::validate_component_urn(
+    fn component_target_validation_accepts_matching_urn() {
+        super::_private::validate_component_target(
             "urn:microsoft:exporter:geneva",
-            "exporter",
-            "geneva",
+            "microsoft.exporter.geneva",
         );
     }
 
-    /// Scenario: a component target kind differs from the registered URN kind.
-    /// Guarantees: target and component identities cannot silently drift apart.
+    /// Scenario: a component target differs from the registered URN namespace.
+    /// Guarantees: namespaces remain part of the stable component telemetry identity.
     #[test]
-    #[should_panic(expected = "component telemetry kind does not match its URN")]
-    fn component_urn_validation_rejects_mismatched_kind() {
-        super::_private::validate_component_urn(
+    #[should_panic(expected = "component telemetry target does not match its URN")]
+    fn component_target_validation_rejects_mismatched_namespace() {
+        super::_private::validate_component_target(
             "urn:otel:processor:transform",
-            "receiver",
-            "transform",
+            "microsoft.processor.transform",
         );
     }
 
     /// Scenario: a component target name differs from the registered URN name.
     /// Guarantees: target and component identities cannot silently drift apart.
     #[test]
-    #[should_panic(expected = "component telemetry name does not match its URN")]
-    fn component_urn_validation_rejects_mismatched_name() {
-        super::_private::validate_component_urn(
+    #[should_panic(expected = "component telemetry target does not match its URN")]
+    fn component_target_validation_rejects_mismatched_name() {
+        super::_private::validate_component_target(
             "urn:otel:processor:transform",
-            "processor",
-            "filter",
+            "otel.processor.filter",
         );
+    }
+
+    /// Scenario: a component URN contains an empty kind segment.
+    /// Guarantees: malformed component identities cannot become telemetry targets.
+    #[test]
+    #[should_panic(expected = "component telemetry URN segments must not be empty")]
+    fn component_target_validation_rejects_empty_urn_segment() {
+        super::_private::validate_component_target("urn:otel::transform", "otel..transform");
     }
 
     #[test]

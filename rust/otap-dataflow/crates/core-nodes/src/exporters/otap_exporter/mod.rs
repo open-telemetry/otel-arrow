@@ -6,7 +6,7 @@
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
-otap_df_telemetry::otel_component_scope!(urn = OTAP_EXPORTER_URN, kind = "exporter", name = "otap",);
+otap_df_telemetry::otel_component_scope!(urn = OTAP_EXPORTER_URN, target = "otel.exporter.otap",);
 
 use async_stream::stream;
 use async_trait::async_trait;

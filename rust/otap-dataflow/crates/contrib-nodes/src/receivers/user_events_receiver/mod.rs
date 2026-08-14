@@ -5,8 +5,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = USER_EVENTS_RECEIVER_URN,
-    kind = "receiver",
-    name = "user_events",
+    target = "otel.receiver.user_events",
 );
 
 mod arrow_records_encoder;

@@ -26,8 +26,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = GENEVA_EXPORTER_URN,
-    kind = "exporter",
-    name = "geneva",
+    target = "microsoft.exporter.geneva",
 );
 
 use async_trait::async_trait;

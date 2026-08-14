@@ -76,8 +76,7 @@ pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
 
 otap_df_telemetry::otel_component_scope!(
     urn = TRANSFORM_PROCESSOR_URN,
-    kind = "processor",
-    name = "transform",
+    target = "otel.processor.transform",
 );
 
 mod config;
@@ -85,9 +84,10 @@ mod routing;
 ```
 
 The component and all child modules can then use `otel_info!`, `otel_debug!`,
-and the other event macros without repeating a target. The macro checks that
-the kind and name match the URN and produces a target such as
-`otap-df-core-nodes::processor::transform`.
+and the other event macros without repeating a target. The target is the
+component URN without the `urn:` prefix and with colons replaced by dots. The
+macro validates that projection at compile time, so the target above cannot
+drift from `urn:otel:processor:transform`.
 
 The component target applies to instrumentation owned by that module subtree.
 Events emitted by shared libraries retain the shared library's target, as is
@@ -122,15 +122,16 @@ so an OpAMP or admin control plane can temporarily increase verbosity without
 restarting the engine. Failed reconciliation preserves the active filter.
 
 `EnvFilter` target directives use prefix matching. A directive for
-`<package>::<kind>::<name>` also matches another component whose target begins
-with that complete string.
+`<namespace>.<kind>.<name>` also matches another component whose target begins
+with that complete string. For example, `otel.processor.transform` also
+matches a hypothetical `otel.processor.transform_extra` target.
 
 When an investigation also needs diagnostics from a shared library, enable
 both targets. For example, OTLP receiver HTTP diagnostics include events owned
 by `otap-df-otap`:
 
 ```text
-warn,otap-df-core-nodes::receiver::otlp=debug,otap-df-otap=debug
+warn,otel.receiver.otlp=debug,otap-df-otap=debug
 ```
 
 At startup, a valid `RUST_LOG` environment variable takes precedence over

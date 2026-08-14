@@ -10,8 +10,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = DEBUG_PROCESSOR_URN,
-    kind = "processor",
-    name = "debug",
+    target = "otel.processor.debug",
 );
 
 use self::config::{Config, DisplayMode, SignalActive, Verbosity};

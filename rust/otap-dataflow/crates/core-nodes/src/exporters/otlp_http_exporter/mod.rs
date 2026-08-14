@@ -12,8 +12,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = OTLP_HTTP_EXPORTER_URN,
-    kind = "exporter",
-    name = "otlp_http",
+    target = "otel.exporter.otlp_http",
 );
 
 use std::num::NonZeroUsize;

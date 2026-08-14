@@ -21,15 +21,13 @@ use syn::{
 
 struct ComponentTelemetryScopeArgs {
     urn: syn::Expr,
-    kind: LitStr,
-    name: LitStr,
+    target: LitStr,
 }
 
 impl syn::parse::Parse for ComponentTelemetryScopeArgs {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut urn = None;
-        let mut kind = None;
-        let mut name = None;
+        let mut target = None;
 
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
@@ -40,20 +38,15 @@ impl syn::parse::Parse for ComponentTelemetryScopeArgs {
                     return Err(syn::Error::new(key.span(), "duplicate `urn` argument"));
                 }
                 urn = Some(input.parse()?);
-            } else if key == "kind" {
-                if kind.is_some() {
-                    return Err(syn::Error::new(key.span(), "duplicate `kind` argument"));
+            } else if key == "target" {
+                if target.is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `target` argument"));
                 }
-                kind = Some(input.parse()?);
-            } else if key == "name" {
-                if name.is_some() {
-                    return Err(syn::Error::new(key.span(), "duplicate `name` argument"));
-                }
-                name = Some(input.parse()?);
+                target = Some(input.parse()?);
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "unsupported argument; expected `urn`, `kind`, or `name`",
+                    "unsupported argument; expected `urn` or `target`",
                 ));
             }
 
@@ -65,8 +58,7 @@ impl syn::parse::Parse for ComponentTelemetryScopeArgs {
 
         Ok(Self {
             urn: urn.ok_or_else(|| input.error("missing `urn` argument"))?,
-            kind: kind.ok_or_else(|| input.error("missing `kind` argument"))?,
-            name: name.ok_or_else(|| input.error("missing `name` argument"))?,
+            target: target.ok_or_else(|| input.error("missing `target` argument"))?,
         })
     }
 }
@@ -74,22 +66,22 @@ impl syn::parse::Parse for ComponentTelemetryScopeArgs {
 /// Binds the `otel_*` event macros in the current module subtree to one
 /// registered component target.
 ///
-/// The kind and name are compile-time checked against `urn`. The generated
-/// target is `<cargo-package>::<kind>::<name>`.
+/// The target is compile-time checked against `urn`. It is the URN without the
+/// `urn:` prefix and with colon separators replaced by dots.
 #[proc_macro]
 pub fn otel_component_scope(input: TokenStream) -> TokenStream {
-    let ComponentTelemetryScopeArgs { urn, kind, name } =
+    let ComponentTelemetryScopeArgs { urn, target } =
         parse_macro_input!(input as ComponentTelemetryScopeArgs);
     let telemetry = quote!(::otap_df_telemetry);
 
     quote! {
-        const _: () = #telemetry::_private::validate_component_urn(#urn, #kind, #name);
+        const _: () = #telemetry::_private::validate_component_target(#urn, #target);
 
         #[allow(unused_macros)]
         macro_rules! otel_debug {
             ($($tokens:tt)*) => {
                 #telemetry::otel_debug!(
-                    target: concat!(env!("CARGO_PKG_NAME"), "::", #kind, "::", #name),
+                    target: #target,
                     $($tokens)*
                 )
             };
@@ -99,7 +91,7 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
         macro_rules! otel_info {
             ($($tokens:tt)*) => {
                 #telemetry::otel_info!(
-                    target: concat!(env!("CARGO_PKG_NAME"), "::", #kind, "::", #name),
+                    target: #target,
                     $($tokens)*
                 )
             };
@@ -109,7 +101,7 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
         macro_rules! otel_warn {
             ($($tokens:tt)*) => {
                 #telemetry::otel_warn!(
-                    target: concat!(env!("CARGO_PKG_NAME"), "::", #kind, "::", #name),
+                    target: #target,
                     $($tokens)*
                 )
             };
@@ -119,7 +111,7 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
         macro_rules! otel_error {
             ($($tokens:tt)*) => {
                 #telemetry::otel_error!(
-                    target: concat!(env!("CARGO_PKG_NAME"), "::", #kind, "::", #name),
+                    target: #target,
                     $($tokens)*
                 )
             };
@@ -129,7 +121,7 @@ pub fn otel_component_scope(input: TokenStream) -> TokenStream {
         macro_rules! otel_event {
             ($($tokens:tt)*) => {
                 #telemetry::otel_event!(
-                    target: concat!(env!("CARGO_PKG_NAME"), "::", #kind, "::", #name),
+                    target: #target,
                     $($tokens)*
                 )
             };
@@ -1447,24 +1439,19 @@ fn parse_attribute_field_attr(attr: &Attribute) -> syn::Result<Option<String>> {
 mod tests {
     use super::*;
 
-    /// Scenario: component telemetry scope arguments are supplied in every possible order.
+    /// Scenario: component telemetry scope arguments are supplied in either possible order.
     /// Guarantees: named arguments parse independently of their source order.
     #[test]
     fn component_telemetry_scope_arguments_accept_any_order() {
         let permutations = [
-            r#"urn = COMPONENT_URN, kind = "processor", name = "transform""#,
-            r#"urn = COMPONENT_URN, name = "transform", kind = "processor""#,
-            r#"kind = "processor", urn = COMPONENT_URN, name = "transform""#,
-            r#"kind = "processor", name = "transform", urn = COMPONENT_URN"#,
-            r#"name = "transform", urn = COMPONENT_URN, kind = "processor""#,
-            r#"name = "transform", kind = "processor", urn = COMPONENT_URN"#,
+            r#"urn = COMPONENT_URN, target = "otel.processor.transform""#,
+            r#"target = "otel.processor.transform", urn = COMPONENT_URN"#,
         ];
 
         for arguments in permutations {
             let parsed = syn::parse_str::<ComponentTelemetryScopeArgs>(arguments)
                 .expect("named component telemetry scope arguments should parse in any order");
-            assert_eq!(parsed.kind.value(), "processor");
-            assert_eq!(parsed.name.value(), "transform");
+            assert_eq!(parsed.target.value(), "otel.processor.transform");
         }
     }
 
@@ -1473,12 +1460,12 @@ mod tests {
     #[test]
     fn component_telemetry_scope_arguments_reject_duplicates() {
         let err = syn::parse_str::<ComponentTelemetryScopeArgs>(
-            r#"urn = COMPONENT_URN, kind = "processor", name = "transform", kind = "exporter""#,
+            r#"urn = COMPONENT_URN, target = "otel.processor.transform", target = "otel.exporter.transform""#,
         )
         .err()
         .expect("duplicate component telemetry scope arguments should fail");
 
-        assert_eq!(err.to_string(), "duplicate `kind` argument");
+        assert_eq!(err.to_string(), "duplicate `target` argument");
     }
 
     /// Scenario: A metric field declares the supported name and unit arguments.

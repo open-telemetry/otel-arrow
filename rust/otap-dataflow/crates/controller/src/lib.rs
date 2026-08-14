@@ -125,7 +125,7 @@ mod listener_group;
 /// URN of the built-in dataflow controller.
 pub const CONTROLLER_URN: &str = "urn:otel:controller:main";
 
-otap_df_telemetry::otel_component_scope!(urn = CONTROLLER_URN, kind = "controller", name = "main",);
+otap_df_telemetry::otel_component_scope!(urn = CONTROLLER_URN, target = "otel.controller.main",);
 
 mod live_control;
 mod placement;

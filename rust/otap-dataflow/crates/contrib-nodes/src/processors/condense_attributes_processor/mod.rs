@@ -11,8 +11,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = CONDENSE_ATTRIBUTES_PROCESSOR_URN,
-    kind = "processor",
-    name = "condense_attributes",
+    target = "otel.processor.condense_attributes",
 );
 
 use arrow::array::{

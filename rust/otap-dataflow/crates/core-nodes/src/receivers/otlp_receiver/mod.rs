@@ -17,7 +17,7 @@
 //! Periodic telemetry snapshots partition request lifecycle, rejection, acknowledgement, and
 //! transport counters by bounded signal, protocol, outcome, and error-type attributes.
 
-otap_df_telemetry::otel_component_scope!(urn = OTLP_RECEIVER_URN, kind = "receiver", name = "otlp",);
+otap_df_telemetry::otel_component_scope!(urn = OTLP_RECEIVER_URN, target = "otel.receiver.otlp",);
 
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::otap_grpc::otlp::server_new::{

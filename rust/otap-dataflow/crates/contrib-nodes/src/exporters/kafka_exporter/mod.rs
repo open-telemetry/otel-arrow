@@ -66,8 +66,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = exporter::KAFKA_EXPORTER_URN,
-    kind = "exporter",
-    name = "kafka",
+    target = "otel.exporter.kafka",
 );
 
 pub mod config;

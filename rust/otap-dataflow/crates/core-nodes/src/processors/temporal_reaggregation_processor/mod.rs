@@ -8,8 +8,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = TEMPORAL_REAGGREGATION_PROCESSOR_URN,
-    kind = "processor",
-    name = "temporal_reaggregation",
+    target = "otel.processor.temporal_reaggregation",
 );
 
 use std::sync::Arc;

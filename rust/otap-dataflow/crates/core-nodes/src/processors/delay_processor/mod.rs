@@ -19,8 +19,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = DELAY_PROCESSOR_URN,
-    kind = "processor",
-    name = "delay",
+    target = "otel.processor.delay",
 );
 
 use async_trait::async_trait;

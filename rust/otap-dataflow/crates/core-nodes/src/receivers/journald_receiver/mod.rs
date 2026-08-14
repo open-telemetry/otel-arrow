@@ -12,8 +12,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = JOURNALD_RECEIVER_URN,
-    kind = "receiver",
-    name = "journald",
+    target = "otel.receiver.journald",
 );
 
 #[cfg(target_os = "linux")]

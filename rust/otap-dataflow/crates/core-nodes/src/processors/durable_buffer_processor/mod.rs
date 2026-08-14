@@ -73,8 +73,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = DURABLE_BUFFER_URN,
-    kind = "processor",
-    name = "durable_buffer",
+    target = "otel.processor.durable_buffer",
 );
 
 mod bundle_adapter;

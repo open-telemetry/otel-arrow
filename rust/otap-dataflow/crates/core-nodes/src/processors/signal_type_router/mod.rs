@@ -42,8 +42,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = SIGNAL_TYPE_ROUTER_URN,
-    kind = "processor",
-    name = "type_router",
+    target = "otel.processor.type_router",
 );
 
 use async_trait::async_trait;

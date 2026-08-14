@@ -29,8 +29,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = CLICKHOUSE_EXPORTER_URN,
-    kind = "exporter",
-    name = "clickhouse",
+    target = "otel.exporter.clickhouse",
 );
 
 use async_trait::async_trait;

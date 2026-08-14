@@ -8,8 +8,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = PARTITION_PROCESSOR_URN,
-    kind = "processor",
-    name = "partition",
+    target = "otel.processor.partition",
 );
 
 use std::sync::Arc;

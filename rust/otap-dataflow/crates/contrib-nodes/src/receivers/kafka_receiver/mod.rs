@@ -3,8 +3,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = receiver::KAFKA_RECEIVER_URN,
-    kind = "receiver",
-    name = "kafka",
+    target = "otel.receiver.kafka",
 );
 
 /// Implementation of the config settings for the kafka receiver

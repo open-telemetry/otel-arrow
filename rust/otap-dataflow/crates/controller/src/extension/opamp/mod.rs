@@ -70,8 +70,7 @@ const CONTROL_EXTENSION_URN: &str = "urn:otel:extension:opamp";
 
 otap_df_telemetry::otel_component_scope!(
     urn = CONTROL_EXTENSION_URN,
-    kind = "extension",
-    name = "opamp",
+    target = "otel.extension.opamp",
 );
 
 /// Custom capability type - represents the custom message which can be sent by this OpAMP agent

@@ -41,8 +41,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = RESOURCE_VALIDATOR_PROCESSOR_URN,
-    kind = "processor",
-    name = "resource_validator",
+    target = "otel.processor.resource_validator",
 );
 
 mod config;

@@ -3,11 +3,7 @@
 
 //! Topic receiver.
 
-otap_df_telemetry::otel_component_scope!(
-    urn = TOPIC_RECEIVER_URN,
-    kind = "receiver",
-    name = "topic",
-);
+otap_df_telemetry::otel_component_scope!(urn = TOPIC_RECEIVER_URN, target = "otel.receiver.topic",);
 
 use async_trait::async_trait;
 use linkme::distributed_slice;

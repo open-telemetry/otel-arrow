@@ -58,8 +58,7 @@ pub const CONTROLLER_MONITOR_EXTENSION_URN: &str = "urn:otel:extension:controlle
 
 otap_df_telemetry::otel_component_scope!(
     urn = CONTROLLER_MONITOR_EXTENSION_URN,
-    kind = "extension",
-    name = "controller_monitor",
+    target = "otel.extension.controller_monitor",
 );
 
 /// Statically linked controller monitor extension factory.

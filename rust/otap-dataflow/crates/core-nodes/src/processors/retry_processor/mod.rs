@@ -16,8 +16,7 @@
 
 otap_df_telemetry::otel_component_scope!(
     urn = RETRY_PROCESSOR_URN,
-    kind = "processor",
-    name = "retry",
+    target = "otel.processor.retry",
 );
 
 use otap_df_otap::pdata::OtapPdata;
