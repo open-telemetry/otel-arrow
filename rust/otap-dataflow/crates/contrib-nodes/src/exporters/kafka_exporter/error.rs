@@ -51,10 +51,6 @@ pub(crate) fn is_permanent_send_error(err: &KafkaError) -> bool {
             | RDKafkaErrorCode::MessageBatchTooLarge
             | RDKafkaErrorCode::InvalidMessage
             | RDKafkaErrorCode::InvalidRecord
-            // Authorization is denied for this destination: retrying the same
-            // batch against the same topic/cluster cannot succeed.
-            | RDKafkaErrorCode::TopicAuthorizationFailed
-            | RDKafkaErrorCode::ClusterAuthorizationFailed
             // Fundamentally unsupported request shape for this broker/topic:
             // the same request will keep being rejected.
             | RDKafkaErrorCode::InvalidRequiredAcks
