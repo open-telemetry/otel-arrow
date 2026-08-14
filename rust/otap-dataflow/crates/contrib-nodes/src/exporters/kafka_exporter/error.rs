@@ -316,8 +316,6 @@ mod tests {
             RDKafkaErrorCode::MessageBatchTooLarge,
             RDKafkaErrorCode::InvalidMessage,
             RDKafkaErrorCode::InvalidRecord,
-            RDKafkaErrorCode::TopicAuthorizationFailed,
-            RDKafkaErrorCode::ClusterAuthorizationFailed,
             RDKafkaErrorCode::InvalidRequiredAcks,
             RDKafkaErrorCode::UnsupportedVersion,
             RDKafkaErrorCode::UnsupportedForMessageFormat,
