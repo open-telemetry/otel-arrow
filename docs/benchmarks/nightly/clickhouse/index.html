@@ -11,8 +11,9 @@
       background-color: #fff;
       font-size: 16px;
     }
-    body { color: #4a4a4a; margin: 8px; font-size: 1em; font-weight: 400; }
-    header { margin-bottom: 8px; display: flex; flex-direction: column; }
+    body { color: #4a4a4a; margin: 0; font-size: 1em; font-weight: 400; }
+    header { width: 100%; min-height: 64px; background-color: rgb(79, 98, 173); }
+    header nav { max-width: 1140px; min-height: 64px; margin: 0 auto; }
     main { width: 100%; display: flex; flex-direction: column; }
     a { color: #3273dc; cursor: pointer; text-decoration: none; }
     a:hover { color: #000; }
@@ -28,56 +29,61 @@
     footer { margin-top: 16px; display: flex; align-items: center; }
     .spacer { flex: auto; }
     .small { font-size: 0.75rem; }
+    .container { max-width: 1012px; margin: 0 auto; padding: 16px; }
     .header-label { margin-right: 4px; }
-    .metric-section { margin: 24px 0; }
-    .section-title { margin: 0; font-size: 2rem; text-align: center; }
-    .section-note { margin: 4px 0 16px; text-align: center; color: #666; }
     .benchmark-set { margin: 8px 0; width: 100%; display: flex; flex-direction: column; }
-    .benchmark-title { font-size: 1.5rem; font-weight: 600; word-break: break-word; text-align: center; }
+    .benchmark-title { font-size: 1.5rem; font-weight: 600; word-break: break-word; }
     .benchmark-graphs {
       display: flex;
-      flex-direction: row;
+      flex-direction: column;
       justify-content: space-around;
       align-items: center;
       flex-wrap: wrap;
       width: 100%;
+      min-width: 0;
     }
-    .benchmark-chart { max-width: 1000px; }
+    .benchmark-chart { width: 100% !important; max-width: 1000px; height: auto !important; }
     .empty { margin: 12px; padding: 16px; border: 1px dashed #aaa; text-align: center; color: #666; }
+    details summary {
+      margin-top: 16px;
+      padding: 8px;
+      border: 1px solid #ccc;
+      background-color: #f4f4f4;
+      font-size: 1.5em;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    footer { padding: 0 8px 8px; }
   </style>
 </head>
 <body>
-  <header id="header">
-    <h1>ClickHouse Nightly Benchmarks</h1>
-    <div class="header-item">
-      <strong class="header-label">Last Update:</strong><span id="last-update"></span>
-    </div>
-    <div class="header-item">
-      <strong class="header-label">Repository:</strong><a id="repository-link" rel="noopener"></a>
-    </div>
-    <div class="header-item">
-      <a href="../clickhouse-throughput/">Throughput details</a> |
-      <a href="../clickhouse-resources/">Resource details</a>
-    </div>
-  </header>
+  <header><nav></nav></header>
 
-  <main id="main">
-    <section id="throughput" class="metric-section">
-      <h2 class="section-title">ClickHouse Throughput</h2>
-      <p class="section-note">Higher is better.</p>
-      <div class="section-content"></div>
+  <div class="container">
+    <h2>ClickHouse Nightly Benchmarks</h2>
+    <div><strong class="header-label">Last Update:</strong><span id="last-update"></span></div>
+    <div><strong class="header-label">Repository:</strong><a id="repository-link" rel="noopener"></a></div>
+
+    <section style="margin-top: 20px;">
+      <h2>Additional Benchmark Dashboards</h2>
+      <ul>
+        <li><a href="../">Nightly Benchmarks</a> - Daily scheduled benchmark runs.</li>
+        <li><a href="../clickhouse-throughput/">ClickHouse Throughput Details</a> - Raw higher-is-better throughput charts.</li>
+        <li><a href="../clickhouse-resources/">ClickHouse Resource Details</a> - Raw lower-is-better CPU and memory charts.</li>
+      </ul>
     </section>
-    <section id="cpu" class="metric-section">
-      <h2 class="section-title">ClickHouse CPU and Resource Usage</h2>
-      <p class="section-note">Lower is better.</p>
-      <div class="section-content"></div>
+
+    <section style="margin-top: 24px;">
+      <h2>Benchmark Tests</h2>
+      <ul>
+        <li><strong>df_engine - OTAP - 100K</strong> - df_engine receives OTAP logs and writes to ClickHouse.</li>
+        <li><strong>df_engine - OTLP - 100K</strong> - df_engine receives OTLP logs and writes to ClickHouse.</li>
+        <li><strong>OTelCol - OTLP - 100K</strong> - OpenTelemetry Collector receives OTLP logs and writes to ClickHouse.</li>
+      </ul>
     </section>
-    <section id="memory" class="metric-section">
-      <h2 class="section-title">ClickHouse Memory Usage</h2>
-      <p class="section-note">Lower is better.</p>
-      <div class="section-content"></div>
-    </section>
-  </main>
+
+    <main id="main"></main>
+  </div>
 
   <footer>
     <button id="dl-button">Download data as JSON</button>
@@ -99,9 +105,10 @@
       repoLink.href = repoUrl;
       repoLink.textContent = repoUrl;
 
-      renderSection('throughput', collect(throughput, () => true), '#38a169', 'No throughput data available');
-      renderSection('cpu', collect(resources, name => name !== 'test_duration' && !isMemory(name)), '#e53e3e', 'No CPU or resource data available');
-      renderSection('memory', collect(resources, isMemory), '#3182ce', 'No memory data available');
+      const scenarios = new Map();
+      collect(throughput, scenarios, () => true);
+      collect(resources, scenarios, name => name !== 'test_duration');
+      renderScenarios(scenarios);
 
       document.getElementById('dl-button').onclick = () => {
         const blob = new Blob([JSON.stringify({throughput, resources}, null, 2)], {type: 'application/json'});
@@ -132,8 +139,7 @@
         });
       }
 
-      function collect(data, include) {
-        const scenarios = new Map();
+      function collect(data, scenarios, include) {
         if (!data || !data.entries) return scenarios;
         for (const entries of Object.values(data.entries)) {
           for (const entry of entries) {
@@ -167,17 +173,12 @@
         return labels[rawName] || rawName;
       }
 
-      function isMemory(name) {
-        const value = name.toLowerCase();
-        return value.includes('memory') || value.includes('ram');
-      }
-
-      function renderSection(id, scenarios, color, emptyMessage) {
-        const content = document.querySelector('#' + id + ' .section-content');
+      function renderScenarios(scenarios) {
+        const content = document.getElementById('main');
         if (!scenarios.size) {
           const empty = document.createElement('div');
           empty.className = 'empty';
-          empty.textContent = emptyMessage;
+          empty.textContent = 'No ClickHouse benchmark data available';
           content.appendChild(empty);
           return;
         }
@@ -188,9 +189,10 @@
           return (leftIndex < 0 ? order.length : leftIndex) - (rightIndex < 0 ? order.length : rightIndex);
         });
         for (const [scenarioName, metrics] of orderedScenarios) {
-          const set = document.createElement('div');
+          const set = document.createElement('details');
           set.className = 'benchmark-set';
-          const title = document.createElement('h3');
+          set.open = true;
+          const title = document.createElement('summary');
           title.className = 'benchmark-title';
           title.textContent = scenarioName;
           set.appendChild(title);
@@ -198,8 +200,30 @@
           graphs.className = 'benchmark-graphs';
           set.appendChild(graphs);
           content.appendChild(set);
-          for (const [metricName, points] of metrics) renderChart(graphs, getMetricLabel(metricName, scenarioName), points, color);
+          const metricOrder = [
+            getPipelineMetric(scenarioName, 'cpu'),
+            getPipelineMetric(scenarioName, 'ram'),
+            'logs_produced_rate',
+            'log_rows_written_rate',
+            'clickhouse_cpu_percentage_normalized_avg',
+            'clickhouse_ram_mib_max'
+          ];
+          for (const metricName of metricOrder) {
+            const points = metrics.get(metricName);
+            if (points) renderChart(graphs, getMetricLabel(metricName, scenarioName), points, getMetricColor(metricName));
+          }
         }
+      }
+
+      function getPipelineMetric(scenario, kind) {
+        const prefix = scenario.startsWith('OTelCol') ? 'go-collector' : 'df-engine';
+        return kind === 'cpu' ? prefix + '_cpu_percentage_normalized_avg' : prefix + '_ram_mib_max';
+      }
+
+      function getMetricColor(name) {
+        if (name.includes('cpu')) return '#e53e3e';
+        if (name.includes('ram')) return '#3182ce';
+        return '#38a169';
       }
 
       function getMetricLabel(name, scenario) {
@@ -217,20 +241,24 @@
       }
 
       function renderChart(parent, name, points, color) {
+        const chartTitle = document.createElement('h3');
+        chartTitle.textContent = name;
+        parent.appendChild(chartTitle);
         const canvas = document.createElement('canvas');
         canvas.className = 'benchmark-chart';
         parent.appendChild(canvas);
         new Chart(canvas, {
           type: 'line',
           data: {
-            labels: points.map(point => point.commit.id.slice(0, 7)),
+            labels: points.map(point => new Date(point.date).toISOString().slice(0, 10)),
             datasets: [{label: name, data: points.map(point => point.bench.value), borderColor: color, backgroundColor: color + '60'}]
           },
           options: {
             scales: {
-              xAxes: [{scaleLabel: {display: true, labelString: 'commit'}}],
+              xAxes: [{scaleLabel: {display: true, labelString: 'date'}}],
               yAxes: [{scaleLabel: {display: true, labelString: points[0].bench.unit || ''}, ticks: {beginAtZero: true}}]
             },
+            legend: {display: true},
             tooltips: {callbacks: {
               afterTitle: items => {
                 const point = points[items[0].index];
