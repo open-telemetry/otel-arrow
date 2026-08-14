@@ -491,21 +491,12 @@ impl KafkaExporter {
                 Ok(())
             }
             Err((kafka_err, _original_record)) => {
-                self.metrics.record_operation(
+                self.metrics.record_delivery_failure(
                     signal_type,
-                    KafkaExporterOperation::Delivery,
-                    Outcome::Failure,
+                    &kafka_err,
                     delivery_start.elapsed().as_secs_f64(),
-                );
-                self.metrics.record_failure(
-                    signal_type,
-                    KafkaExporterErrorType::from_kafka_error(&kafka_err),
-                );
-                self.metrics.record_export(
-                    signal_type,
-                    Outcome::Failure,
                     export_start.elapsed().as_secs_f64(),
-                    Some(payload_bytes.len()),
+                    payload_bytes.len(),
                 );
                 otap_df_telemetry::otel_warn!(
                     "kafka.exporter.send.failed",

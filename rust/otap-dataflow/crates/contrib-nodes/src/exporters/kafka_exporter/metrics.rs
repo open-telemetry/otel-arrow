@@ -285,6 +285,30 @@ impl KafkaExporterMetrics {
             .inc();
     }
 
+    /// Records every operational observation for a failed Kafka delivery.
+    pub fn record_delivery_failure(
+        &mut self,
+        signal: SignalType,
+        error: &KafkaError,
+        delivery_duration_seconds: f64,
+        export_duration_seconds: f64,
+        payload_size_bytes: usize,
+    ) {
+        self.record_operation(
+            signal,
+            KafkaExporterOperation::Delivery,
+            Outcome::Failure,
+            delivery_duration_seconds,
+        );
+        self.record_failure(signal, KafkaExporterErrorType::from_kafka_error(error));
+        self.record_export(
+            signal,
+            Outcome::Failure,
+            export_duration_seconds,
+            Some(payload_size_bytes),
+        );
+    }
+
     /// Records the bounded source of a successful topic-routing decision.
     pub fn record_routing(&mut self, signal: SignalType, source: KafkaTopicSource) {
         self.routing
@@ -475,6 +499,68 @@ mod tests {
                 })
                 .messages
                 .get(),
+            1
+        );
+    }
+
+    /// Scenario: Kafka reports a timed-out delivery after encoding a logs payload.
+    /// Guarantees: One helper call records the delivery phase, classified failure, terminal outcome, duration, and payload size.
+    #[test]
+    fn delivery_failure_records_the_complete_operational_context() {
+        let mut metrics = new_metrics();
+        let error = KafkaError::MessageProduction(RDKafkaErrorCode::MessageTimedOut);
+
+        metrics.record_delivery_failure(SignalType::Logs, &error, 0.25, 0.5, 128);
+
+        assert_eq!(
+            metrics
+                .operations
+                .get(KafkaExporterOperationAttributes {
+                    signal: SignalType::Logs,
+                    operation: KafkaExporterOperation::Delivery,
+                    outcome: Outcome::Failure,
+                })
+                .duration
+                .get()
+                .count(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .failures
+                .get(KafkaExporterFailureAttributes {
+                    signal: SignalType::Logs,
+                    error_type: KafkaExporterErrorType::Timeout,
+                })
+                .messages
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .pdata
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
+                .messages
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .exports_for(SignalType::Logs, Outcome::Failure)
+                .duration_seconds
+                .get()
+                .count(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .exports_for(SignalType::Logs, Outcome::Failure)
+                .payload_size_bytes
+                .get()
+                .count(),
             1
         );
     }

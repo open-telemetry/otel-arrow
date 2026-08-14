@@ -514,6 +514,21 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
+Recording several measurements for one export attempt is intentional. Each
+recording updates a bounded in-process aggregate; it does not synchronously send
+a separate request to the telemetry backend. Together, the measurements answer
+different operational questions:
+
+- `exporter.pdata.exports.messages`: Is the exporter succeeding?
+- `exporter.kafka.failures.messages`: Why is an export failing?
+- `exporter.kafka.operations.duration`: Is encoding or Kafka delivery slow?
+- `exporter.kafka.exports.duration`: What end-to-end latency does the pipeline
+  experience?
+- `exporter.kafka.exports.payload.size`: Are encoded messages approaching Kafka
+  size limits, or does payload size correlate with failures?
+- `exporter.kafka.routing.messages`: Is dynamic topic routing being used as
+  expected?
+
 #### `exporter.pdata.exports`
 
 | Metric | Unit | Attributes | Description |
