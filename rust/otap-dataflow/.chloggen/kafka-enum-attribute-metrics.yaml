@@ -2,7 +2,7 @@
 
 change_type: breaking
 component: pipeline
-note: Align shared exporter and Kafka metrics with bounded attributes, wire-byte terminology, and operational latency distributions.
+note: Align shared exporter and Kafka metrics with bounded attributes, wire-byte terminology, and end-to-end latency distributions.
 issues: [2884, 3300, 3649]
 subtext: |
-  Migration: Rename `exporter.pdata.exports.*` to `exporter.exports.*` and `receiver.kafka.messages.*` to `receiver.messages.*`. Replace Kafka payload `payload_size` or `payload.size` metrics with `bytes`. Kafka export durations use seconds (`s`).
+  Migration: Rename `exporter.pdata.exports.*` to `exporter.exports.*` and `receiver.kafka.messages.*` to `receiver.messages.*`. Replace Kafka payload size metrics with `bytes`. Use `exporter.exports.duration` (`s`) for exporter latency; Ack/Nack notification is excluded.

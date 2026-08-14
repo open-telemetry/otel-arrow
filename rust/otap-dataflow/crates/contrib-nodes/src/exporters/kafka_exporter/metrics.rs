@@ -5,7 +5,7 @@
 
 use otap_df_config::SignalType;
 use otap_df_engine::context::PipelineContext;
-use otap_df_otap::metrics::{ExporterExportDurationMetrics, ExporterExportMetrics};
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, HistogramNormal};
@@ -14,6 +14,7 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use rdkafka::error::KafkaError;
 use rdkafka::types::RDKafkaErrorCode;
+use std::time::Duration;
 
 /// Bounded reason that a Kafka export failed before or during delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -212,8 +213,6 @@ pub struct KafkaExporterRoutingMetrics {
 pub struct KafkaExporterMetrics {
     /// Generic terminal export counts shared by all aligned exporters.
     pub exports: MeasurementMetricSet<ExporterExportMetrics>,
-    /// End-to-end export latency under the shared exporter namespace.
-    pub export_durations: MeasurementMetricSet<ExporterExportDurationMetrics>,
     /// Kafka-specific encoded payload measurements.
     pub kafka_exports: MeasurementMetricSet<KafkaExporterExportMetrics>,
     /// Kafka exporter phase latency.
@@ -230,7 +229,6 @@ impl KafkaExporterMetrics {
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
             exports: ExporterExportMetrics::register(pipeline_ctx),
-            export_durations: ExporterExportDurationMetrics::register(pipeline_ctx),
             kafka_exports: KafkaExporterExportMetrics::register(pipeline_ctx),
             operations: KafkaExporterOperationMetrics::register(pipeline_ctx),
             failures: KafkaExporterFailureMetrics::register(pipeline_ctx),
@@ -243,15 +241,11 @@ impl KafkaExporterMetrics {
         &mut self,
         signal: SignalType,
         outcome: Outcome,
-        duration_seconds: f64,
+        duration: Duration,
         payload_bytes: Option<usize>,
     ) {
         let attributes = SignalOutcomeAttributes { signal, outcome };
-        self.exports.with(attributes).messages.inc();
-        self.export_durations
-            .with(attributes)
-            .duration_seconds
-            .record(duration_seconds);
+        self.exports.with(attributes).record(duration);
         if let Some(payload_bytes) = payload_bytes {
             self.kafka_exports
                 .with(attributes)
@@ -292,7 +286,7 @@ impl KafkaExporterMetrics {
         signal: SignalType,
         error: &KafkaError,
         delivery_duration_seconds: f64,
-        export_duration_seconds: f64,
+        export_duration: Duration,
         payload_bytes: usize,
     ) {
         self.record_operation(
@@ -305,7 +299,7 @@ impl KafkaExporterMetrics {
         self.record_export(
             signal,
             Outcome::Failure,
-            export_duration_seconds,
+            export_duration,
             Some(payload_bytes),
         );
     }
@@ -332,7 +326,6 @@ impl KafkaExporterMetrics {
     /// Reports every touched Kafka exporter metric bucket.
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
         reporter.report_measurement(&mut self.exports)?;
-        reporter.report_measurement(&mut self.export_durations)?;
         reporter.report_measurement(&mut self.kafka_exports)?;
         reporter.report_measurement(&mut self.operations)?;
         reporter.report_measurement(&mut self.failures)?;
@@ -342,22 +335,11 @@ impl KafkaExporterMetrics {
     /// Takes every touched Kafka exporter metric bucket for terminal handoff.
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut snapshots = self.exports.terminal_snapshots();
-        snapshots.extend(self.export_durations.terminal_snapshots());
         snapshots.extend(self.kafka_exports.terminal_snapshots());
         snapshots.extend(self.operations.terminal_snapshots());
         snapshots.extend(self.failures.terminal_snapshots());
         snapshots.extend(self.routing.terminal_snapshots());
         snapshots
-    }
-
-    #[cfg(test)]
-    fn export_duration_for(
-        &self,
-        signal: SignalType,
-        outcome: Outcome,
-    ) -> &ExporterExportDurationMetrics {
-        self.export_durations
-            .get(SignalOutcomeAttributes { signal, outcome })
     }
 
     #[cfg(test)]
@@ -434,8 +416,18 @@ mod tests {
     #[test]
     fn exporter_metrics_are_partitioned_by_context() {
         let mut metrics = new_metrics();
-        metrics.record_export(SignalType::Logs, Outcome::Success, 0.25, Some(128));
-        metrics.record_export(SignalType::Traces, Outcome::Failure, 0.5, None);
+        metrics.record_export(
+            SignalType::Logs,
+            Outcome::Success,
+            Duration::from_millis(250),
+            Some(128),
+        );
+        metrics.record_export(
+            SignalType::Traces,
+            Outcome::Failure,
+            Duration::from_millis(500),
+            None,
+        );
         metrics.record_operation(
             SignalType::Logs,
             KafkaExporterOperation::Encoding,
@@ -469,7 +461,11 @@ mod tests {
         );
         assert_eq!(
             metrics
-                .export_duration_for(SignalType::Logs, Outcome::Success)
+                .exports
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Success,
+                })
                 .duration_seconds
                 .get()
                 .count(),
@@ -527,7 +523,13 @@ mod tests {
         let mut metrics = new_metrics();
         let error = KafkaError::MessageProduction(RDKafkaErrorCode::MessageTimedOut);
 
-        metrics.record_delivery_failure(SignalType::Logs, &error, 0.25, 0.5, 128);
+        metrics.record_delivery_failure(
+            SignalType::Logs,
+            &error,
+            0.25,
+            Duration::from_millis(500),
+            128,
+        );
 
         assert_eq!(
             metrics
@@ -566,7 +568,11 @@ mod tests {
         );
         assert_eq!(
             metrics
-                .export_duration_for(SignalType::Logs, Outcome::Failure)
+                .exports
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
                 .duration_seconds
                 .get()
                 .count(),
@@ -587,18 +593,23 @@ mod tests {
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
         let mut metrics = new_metrics();
-        metrics.record_export(SignalType::Metrics, Outcome::Failure, 0.5, Some(64));
+        metrics.record_export(
+            SignalType::Metrics,
+            Outcome::Failure,
+            Duration::from_millis(500),
+            Some(64),
+        );
         metrics.record_failure(SignalType::Metrics, KafkaExporterErrorType::Encoding);
         metrics.record_routing(SignalType::Metrics, KafkaTopicSource::StaticConfig);
 
         let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 5);
+        assert_eq!(snapshots.len(), 4);
         assert_eq!(
             snapshots
                 .iter()
                 .filter(|snapshot| snapshot.descriptor().name == "exporter.exports")
                 .count(),
-            2
+            1
         );
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "exporter.exports"

@@ -193,6 +193,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
 | `exporter.exports.messages` | `{message}` | `signal`, `outcome` | PData messages whose console export reached a terminal outcome. A successful outcome means formatting and the stdout write completed without an error. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal formatting and stdout write result, excluding Ack notification. |
 | `exporter.console.failures.messages` | `{message}` | `format`, `signal`, `error.type` | Failed console exports classified by selected output format and actionable error type. |
 
 `error.type` is one of `otlp_view_creation`, `otap_view_creation`,

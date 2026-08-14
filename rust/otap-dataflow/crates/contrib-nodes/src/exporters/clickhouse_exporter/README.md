@@ -151,6 +151,8 @@ every column back). Columns bind **by name**, so column order is irrelevant,
 missing columns are server-defaulted, and an unknown column name errors on
 `end()`.
 
+<!-- markdownlint-disable MD013 -->
+
 | Emitted Arrow type | ClickHouse column type | Example columns |
 | --- | --- | --- |
 | `Map<Utf8, Utf8>` | `Map(LowCardinality(String), String)` | ResourceAttributes, ScopeAttributes, LogAttributes, SpanAttributes |
@@ -164,6 +166,8 @@ missing columns are server-defaulted, and an unknown column name errors on
 | `List<Timestamp(ns)>` | `Array(DateTime64(9))` | Events.Timestamp |
 | `List<hex Utf8>` | `Array(String)` | Links.TraceId, Links.SpanId (and event equivalents), hex-encoded like the top-level ids |
 | `List<Map<Utf8,Utf8>>` | `Array(Map(LowCardinality(String), String))` | Events.Attributes, Links.Attributes (one map per event/link) |
+
+<!-- markdownlint-enable MD013 -->
 
 No special `input_format_arrow_*` settings were required for a clean insert.
 
@@ -221,6 +225,20 @@ inserts and drops queued inserts that have not started.
 
 There is no longer any special write ordering for attribute tables because
 attribute tables do not exist.
+
+## Telemetry
+
+Input PData message volume is reported by the engine through
+`channel.receiver.messages` and is not duplicated by the exporter.
+
+<!-- markdownlint-disable MD013 -->
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose ClickHouse export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal ClickHouse write result, including conversion, queueing, and transformation. |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Snapshots and Tests
 

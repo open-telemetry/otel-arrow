@@ -302,6 +302,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                 }
 
                 Message::PData(pdata) => {
+                    let export_start = Instant::now();
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
@@ -316,8 +317,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                         signal: signal_type,
                                         outcome: Outcome::Failure,
                                     })
-                                    .messages
-                                    .inc();
+                                    .record(export_start.elapsed());
                             }
                         })?;
 
@@ -330,8 +330,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Failure,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_start.elapsed());
                         }
                         let source_detail = format_error_sources(&e);
                         Error::ExporterError {
@@ -355,8 +354,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Failure,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_start.elapsed());
                         }
                         // TODO - this is not the error handling we want long term.
                         // eventually we should have the concept of retryable & non-retryable errors and
@@ -380,8 +378,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Failure,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_start.elapsed());
                         }
                         // TODO - Ack/Nack instead of returning error
                         let source_detail = format_error_sources(&e);
@@ -423,8 +420,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                         signal: signal_type,
                                         outcome: Outcome::Success,
                                     })
-                                    .messages
-                                    .inc();
+                                    .record(export_start.elapsed());
                             }
                             if let Some(io) = self.io_metrics.as_mut() {
                                 record_io_metrics(io, stats);
@@ -438,8 +434,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                         signal: signal_type,
                                         outcome: Outcome::Failure,
                                     })
-                                    .messages
-                                    .inc();
+                                    .record(export_start.elapsed());
                             }
                             if let Some(io) = self.io_metrics.as_mut() {
                                 record_io_metrics(io, e.stats);

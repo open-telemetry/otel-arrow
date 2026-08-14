@@ -358,7 +358,7 @@ impl KafkaExporter {
                 self.metrics.record_export(
                     signal_type,
                     Outcome::Failure,
-                    export_start.elapsed().as_secs_f64(),
+                    export_start.elapsed(),
                     None,
                 );
                 let _ = reporter
@@ -382,7 +382,7 @@ impl KafkaExporter {
                     self.metrics.record_export(
                         signal_type,
                         Outcome::Failure,
-                        export_start.elapsed().as_secs_f64(),
+                        export_start.elapsed(),
                         None,
                     );
                     let _ = reporter
@@ -439,7 +439,7 @@ impl KafkaExporter {
                 self.metrics.record_export(
                     signal_type,
                     Outcome::Failure,
-                    export_start.elapsed().as_secs_f64(),
+                    export_start.elapsed(),
                     None,
                 );
                 let _ = reporter
@@ -475,7 +475,7 @@ impl KafkaExporter {
                 self.metrics.record_export(
                     signal_type,
                     Outcome::Success,
-                    export_start.elapsed().as_secs_f64(),
+                    export_start.elapsed(),
                     Some(payload_bytes.len()),
                 );
                 // Ack reporting is best-effort; Kafka send succeeded so don't fail on ack errors
@@ -495,7 +495,7 @@ impl KafkaExporter {
                     signal_type,
                     &kafka_err,
                     delivery_start.elapsed().as_secs_f64(),
-                    export_start.elapsed().as_secs_f64(),
+                    export_start.elapsed(),
                     payload_bytes.len(),
                 );
                 otap_df_telemetry::otel_warn!(

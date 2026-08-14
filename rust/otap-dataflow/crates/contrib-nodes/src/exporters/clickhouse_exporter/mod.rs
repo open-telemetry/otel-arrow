@@ -153,6 +153,7 @@ impl ClickhouseExporter {
     fn finalize_write(&mut self, completed: CompletedWrite) {
         let CompletedWrite {
             signal_type,
+            export_started_at,
             result,
         } = completed;
 
@@ -166,8 +167,7 @@ impl ClickhouseExporter {
                         signal: signal_type,
                         outcome: Outcome::Success,
                     })
-                    .messages
-                    .inc();
+                    .record(export_started_at.elapsed());
             }
             Err(error) => {
                 self.pdata_metrics
@@ -175,8 +175,7 @@ impl ClickhouseExporter {
                         signal: signal_type,
                         outcome: Outcome::Failure,
                     })
-                    .messages
-                    .inc();
+                    .record(export_started_at.elapsed());
                 otap_df_telemetry::otel_warn!(
                     "clickhouse.exporter.write.error",
                     message = format!("Error writing batch to clickhouse: {error}"),
@@ -294,6 +293,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     _ = metrics_reporter.report(&mut self.ch_metrics);
                 }
                 Message::PData(pdata) => {
+                    let export_started_at = Instant::now();
                     let signal_type = pdata.signal_type();
                     let signal_format = pdata.signal_format();
 
@@ -308,8 +308,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Failure,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_started_at.elapsed());
                             otap_df_telemetry::otel_warn!(
                                 "clickhouse.exporter.convert.error",
                                 message =
@@ -329,8 +328,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Failure,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_started_at.elapsed());
                             let source_detail = format_error_sources(&e);
                             Error::ExporterError {
                                 exporter: exporter_id.clone(),
@@ -369,8 +367,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Failure,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_started_at.elapsed());
                             otap_df_telemetry::otel_warn!(
                                 "clickhouse.exporter.transform.error",
                                 message = "Error transforming batch for export.",
@@ -385,6 +382,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         Box::pin(async move {
                             CompletedWrite {
                                 signal_type,
+                                export_started_at,
                                 result: writer.write_batches(&write_batches).await,
                             }
                         });

@@ -88,6 +88,7 @@ channel and is not duplicated by the exporter.
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
 | `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal Parquet write result, including conversion and partitioning. |
 
 #### `otap.exporter.parquet`
 

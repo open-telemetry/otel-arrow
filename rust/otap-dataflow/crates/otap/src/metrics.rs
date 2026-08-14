@@ -9,6 +9,7 @@
 use otap_df_telemetry::common_attributes::{SignalAttributes, SignalOutcomeAttributes};
 use otap_df_telemetry::instrument::{Counter, HistogramNormal};
 use otap_df_telemetry_macros::metric_set;
+use std::time::Duration;
 
 /// Completed export operations.
 #[metric_set(
@@ -20,18 +21,19 @@ pub struct ExporterExportMetrics {
     /// Number of messages whose export reached a terminal outcome.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
-}
-
-/// End-to-end export latency.
-#[metric_set(
-    name = "exporter.exports",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct ExporterExportDurationMetrics {
-    /// End-to-end time from receiving a message through its terminal export outcome.
+    /// Time from dequeuing PData through its terminal local or backend export result.
+    /// Ack/Nack notification time is excluded.
     #[metric(name = "duration", unit = "s")]
     pub duration_seconds: HistogramNormal,
+}
+
+impl ExporterExportMetrics {
+    /// Records one terminal export outcome and its end-to-end duration.
+    #[inline]
+    pub fn record(&mut self, duration: Duration) {
+        self.messages.inc();
+        self.duration_seconds.record(duration.as_secs_f64());
+    }
 }
 
 /// Lifecycle and wire bytes for messages admitted by a receiver.
@@ -69,14 +71,6 @@ mod tests {
         ExporterExportMetrics::register(&pipeline_ctx)
     }
 
-    fn new_export_duration_metrics() -> MeasurementMetricSet<ExporterExportDurationMetrics> {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        ExporterExportDurationMetrics::register(&pipeline_ctx)
-    }
-
     fn new_receiver_metrics() -> MeasurementMetricSet<ReceiverMessageMetrics> {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
@@ -86,7 +80,7 @@ mod tests {
     }
 
     /// Scenario: An exporter completes successful and failed exports for multiple signals.
-    /// Guarantees: Terminal export counts are isolated by signal and outcome.
+    /// Guarantees: Terminal counts and durations are recorded together and isolated by signal and outcome.
     #[test]
     fn exporter_metrics_are_partitioned_by_signal_and_outcome() {
         let mut metrics = new_export_metrics();
@@ -95,15 +89,13 @@ mod tests {
                 signal: SignalType::Logs,
                 outcome: Outcome::Success,
             })
-            .messages
-            .add(2);
+            .record(Duration::from_millis(250));
         metrics
             .with(SignalOutcomeAttributes {
                 signal: SignalType::Logs,
                 outcome: Outcome::Failure,
             })
-            .messages
-            .inc();
+            .record(Duration::from_millis(500));
 
         assert_eq!(
             metrics
@@ -113,7 +105,7 @@ mod tests {
                 })
                 .messages
                 .get(),
-            2
+            1
         );
         assert_eq!(
             metrics
@@ -135,6 +127,17 @@ mod tests {
                 .get(),
             0
         );
+        assert_eq!(
+            metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Success,
+                })
+                .duration_seconds
+                .get()
+                .count(),
+            1
+        );
     }
 
     /// Scenario: Export outcome metrics are handed off during terminal shutdown twice.
@@ -147,8 +150,7 @@ mod tests {
                 signal: SignalType::Traces,
                 outcome: Outcome::Success,
             })
-            .messages
-            .inc();
+            .record(Duration::from_millis(250));
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 1);
@@ -158,43 +160,6 @@ mod tests {
                 && snapshot.measurement_attribute_value("outcome") == Some("success")
         }));
         assert!(metrics.terminal_snapshots().is_empty());
-    }
-
-    /// Scenario: An exporter records terminal durations for multiple signal outcomes.
-    /// Guarantees: Duration histograms are isolated by signal and outcome under the shared namespace.
-    #[test]
-    fn exporter_duration_metrics_are_partitioned_by_signal_and_outcome() {
-        let mut metrics = new_export_duration_metrics();
-        metrics
-            .with(SignalOutcomeAttributes {
-                signal: SignalType::Logs,
-                outcome: Outcome::Success,
-            })
-            .duration_seconds
-            .record(0.25);
-
-        assert_eq!(
-            metrics
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Success,
-                })
-                .duration_seconds
-                .get()
-                .count(),
-            1
-        );
-        assert_eq!(
-            metrics
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Metrics,
-                    outcome: Outcome::Success,
-                })
-                .duration_seconds
-                .get()
-                .count(),
-            0
-        );
     }
 
     /// Scenario: A receiver admits and completes a logs message with an encoded payload.

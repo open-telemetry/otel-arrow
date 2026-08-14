@@ -13,6 +13,7 @@
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -241,6 +242,7 @@ struct CompletedExport {
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
+    export_started_at: Instant,
     /// Generation of the bearer token stamped on this request (`None` when no
     /// provider is bound). Echoed back so a 401 invalidates exactly the token
     /// that was used, not a newer one already cached (see
@@ -330,7 +332,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         // a deadline being present.
         let margin_sleep = tokio::time::sleep_until(tokio::time::Instant::now());
         tokio::pin!(margin_sleep);
-        let mut armed_margin_deadline: Option<std::time::Instant> = None;
+        let mut armed_margin_deadline: Option<Instant> = None;
 
         loop {
             // Admit pdata only when auth is ready (a usable token is cached, or no
@@ -442,6 +444,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     mut metrics_reporter,
                 }) => _ = metrics_reporter.report_measurement(&mut self.pdata_metrics),
                 Message::PData(pdata) => {
+                    let export_started_at = Instant::now();
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
 
@@ -452,6 +455,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // may yet arrive, so nothing is dropped.
                     if let Some(a) = auth.as_ref() {
                         if !a.is_ready() {
+                            let export_duration = export_started_at.elapsed();
                             // `NackMsg::new` is retryable by construction.
                             let nack = NackMsg::new(
                                 a.not_ready_reason(),
@@ -463,8 +467,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Failure,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_duration);
                             continue;
                         }
                     }
@@ -525,6 +528,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             }
 
                             if let Err(e) = encode_result {
+                                let export_duration = export_started_at.elapsed();
                                 // encoding error, we must have received an invalid structured batch
                                 let mut nack = NackMsg::new(
                                     e.to_string(),
@@ -537,8 +541,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                         signal: signal_type,
                                         outcome: Outcome::Failure,
                                     })
-                                    .messages
-                                    .inc();
+                                    .record(export_duration);
                                 continue;
                             }
 
@@ -555,6 +558,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             if let Err(e) =
                                 method.encode(uncompressed_slice, &mut compressed_buffer)
                             {
+                                let export_duration = export_started_at.elapsed();
                                 let mut nack = NackMsg::new(
                                     e.to_string(),
                                     OtapPdata::new(context, saved_payload),
@@ -566,8 +570,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                         signal: signal_type,
                                         outcome: Outcome::Failure,
                                     })
-                                    .messages
-                                    .inc();
+                                    .record(export_duration);
                                 continue;
                             }
                             Bytes::copy_from_slice(&compressed_buffer)
@@ -637,6 +640,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             context,
                             saved_payload,
                             signal_type,
+                            export_started_at,
                             token_generation,
                         }
                     })
@@ -858,8 +862,10 @@ async fn finalize_completed_export(
         context,
         saved_payload,
         signal_type,
+        export_started_at,
         token_generation,
     } = completed;
+    let export_duration = export_started_at.elapsed();
 
     let pdata = OtapPdata::new(context, saved_payload);
 
@@ -935,8 +941,7 @@ async fn finalize_completed_export(
             signal: signal_type,
             outcome,
         })
-        .messages
-        .inc();
+        .record(export_duration);
 
     rejected_generation
 }
@@ -2477,7 +2482,7 @@ mod test {
     }
 
     /// Scenario: An OTLP HTTP export finishes with a terminal service-request error.
-    /// Guarantees: Finalization records exactly one failure for the exported signal.
+    /// Guarantees: Finalization records one paired failure count and duration for the signal.
     #[test]
     fn failed_export_finalization_records_one_terminal_outcome() {
         let registry = TelemetryRegistryHandle::new();
@@ -2496,6 +2501,7 @@ mod test {
             context: Context::default(),
             saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
             signal_type: SignalType::Logs,
+            export_started_at: Instant::now(),
             token_generation: None,
         };
 
@@ -2524,6 +2530,17 @@ mod test {
                 .messages
                 .get(),
             0
+        );
+        assert_eq!(
+            metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
+                .duration_seconds
+                .get()
+                .count(),
+            1
         );
     }
 

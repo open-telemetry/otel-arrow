@@ -1596,6 +1596,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::PData(pdata) => {
+                    let export_start = Instant::now();
                     let (context, payload) = pdata.into_parts();
                     let signal_type = payload.signal_type();
 
@@ -1612,8 +1613,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Success,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_start.elapsed());
                             effect_handler
                                 .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
                                 .await?;
@@ -1624,8 +1624,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Failure,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_start.elapsed());
                             otel_info!(
                                 "geneva_exporter.error",
                                 error = e,

@@ -145,7 +145,9 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     return Ok(self.terminal_state(deadline));
                 }
                 Message::PData(pdata) => {
+                    let export_start = Instant::now();
                     let signal_type = pdata.signal_type();
+                    let export_duration = export_start.elapsed();
                     let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
                     // ToDo (LQ) We need to introduce pdata headers without hpack encoding for data coming from other nodes
@@ -191,8 +193,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                             signal: signal_type,
                             outcome: Outcome::Success,
                         })
-                        .messages
-                        .inc();
+                        .record(export_duration);
 
                     // ToDo Report disk, io, cpu, mem usage once gauge metrics are implemented
                 }

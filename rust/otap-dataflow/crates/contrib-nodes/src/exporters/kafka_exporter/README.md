@@ -534,7 +534,7 @@ different operational questions:
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
 | `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Pdata messages whose Kafka export reached a terminal outcome. |
-| `exporter.exports.duration` | `s` | `signal`, `outcome` | End-to-end time from receiving pdata through the terminal Kafka delivery result. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal Kafka delivery result, including routing and encoding but excluding Ack/Nack notification. |
 
 `signal` is one of `traces`, `metrics`, or `logs`. The Kafka exporter emits the
 terminal `outcome` values `success` and `failure`. Duration uses a bounded
