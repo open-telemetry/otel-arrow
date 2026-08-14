@@ -137,7 +137,8 @@
 //!
 //! - the previous request's observed row and payload sizes, projected from the next request's
 //!   encoded size and capped at a 16K-row equivalent to prevent persistent over-allocation
-//! - reusable resource and scope attribute arenas that keep their backing allocations
+//! - reusable resource and scope attribute arenas that keep normal-sized backing allocations but
+//!   release converted data above 64 KiB or metadata above 1,024 entries after each request
 //! - a scratch byte buffer used for `AnyValue` text/JSON conversion and ID encoding
 //! - a one-entry schema cache keyed by the sorted output column names and Arrow data types
 //!
@@ -176,6 +177,12 @@ const SERVICE_NAME_KEY: &[u8] = b"service.name";
 /// builders normally; only the projected row, string, and map capacity hints are bounded.
 const MAX_PREALLOCATED_ROWS: usize = 16 * 1024;
 
+/// Maximum converted attribute bytes retained by one resource or scope arena between requests.
+const MAX_RETAINED_ATTRIBUTE_ARENA_BYTES: usize = 64 * 1024;
+
+/// Maximum attribute entries retained by one resource or scope arena between requests.
+const MAX_RETAINED_ATTRIBUTE_ARENA_ENTRIES: usize = 1024;
+
 /// Stateful converter from serialized OTLP log requests to ClickHouse Arrow batches.
 ///
 /// The exporter keeps one instance per task and calls it sequentially. Only allocation hints,
@@ -212,6 +219,17 @@ impl OtlpLogsTransformer {
     /// coercions, or Arrow builder/schema failures. The exporter, not this method, decides whether
     /// an error is rejected or offered to the legacy transformation path.
     pub(crate) fn transform(
+        &mut self,
+        request: &[u8],
+    ) -> Result<Option<RecordBatch>, ClickhouseExporterError> {
+        let result = self.transform_request(request);
+        self.resource_attributes.clear();
+        self.scope_attributes.clear();
+        result
+    }
+
+    /// Transform one request while the reusable parent-attribute arenas contain active data.
+    fn transform_request(
         &mut self,
         request: &[u8],
     ) -> Result<Option<RecordBatch>, ClickhouseExporterError> {
@@ -392,9 +410,18 @@ struct AttributeRanges {
 }
 
 impl AttributeArena {
+    /// Clear active ranges and release backing allocations above the retained-cap policy.
     fn clear(&mut self) {
-        self.storage.clear();
-        self.entries.clear();
+        if self.storage.capacity() > MAX_RETAINED_ATTRIBUTE_ARENA_BYTES {
+            self.storage = String::new();
+        } else {
+            self.storage.clear();
+        }
+        if self.entries.capacity() > MAX_RETAINED_ATTRIBUTE_ARENA_ENTRIES {
+            self.entries = Vec::new();
+        } else {
+            self.entries.clear();
+        }
         self.service_name = None;
     }
 
@@ -1363,6 +1390,66 @@ mod tests {
                 .expect("transform sequential raw OTLP logs");
             assert_batches_match(actual, expected);
         }
+    }
+
+    /// Scenario: oversized resource and scope attribute arenas are followed by a small request.
+    /// Guarantees: oversized allocations are released and the small request retains correct data.
+    #[test]
+    fn oversized_attribute_arenas_are_released_before_small_request() {
+        let oversized_attributes = || {
+            (0..=MAX_RETAINED_ATTRIBUTE_ARENA_ENTRIES)
+                .map(|index| {
+                    KeyValue::new(
+                        format!("oversized.key.{index}"),
+                        AnyValue::new_string("x".repeat(128)),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let oversized_logs = LogsData::new(vec![ResourceLogs::new(
+            Resource::build()
+                .attributes(oversized_attributes())
+                .finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build()
+                    .attributes(oversized_attributes())
+                    .finish(),
+                vec![
+                    LogRecord::build()
+                        .body(AnyValue::new_string("oversized"))
+                        .finish(),
+                ],
+            )],
+        )]);
+        let mut transformer = OtlpLogsTransformer::default();
+        let oversized_batch = transformer
+            .transform(&request_bytes(oversized_logs))
+            .expect("transform oversized raw OTLP attributes")
+            .expect("oversized logs batch");
+
+        assert_eq!(oversized_batch.num_rows(), 1);
+        assert!(
+            transformer.resource_attributes.storage.capacity()
+                <= MAX_RETAINED_ATTRIBUTE_ARENA_BYTES
+        );
+        assert!(
+            transformer.resource_attributes.entries.capacity()
+                <= MAX_RETAINED_ATTRIBUTE_ARENA_ENTRIES
+        );
+        assert!(
+            transformer.scope_attributes.storage.capacity() <= MAX_RETAINED_ATTRIBUTE_ARENA_BYTES
+        );
+        assert!(
+            transformer.scope_attributes.entries.capacity() <= MAX_RETAINED_ATTRIBUTE_ARENA_ENTRIES
+        );
+
+        let small_bytes = request_bytes(fixtures::logs_with_full_resource_and_scope());
+        let expected = legacy_batch(&small_bytes);
+        let actual = transformer
+            .transform(&small_bytes)
+            .expect("transform small raw OTLP request after oversized attributes");
+
+        assert_batches_match(actual, expected);
     }
 
     /// Scenario: a raw OTLP log attribute contains an arbitrary byte sequence.
