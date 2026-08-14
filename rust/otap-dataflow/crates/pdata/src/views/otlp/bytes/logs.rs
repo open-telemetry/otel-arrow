@@ -22,12 +22,7 @@
 //! Resource, instrumentation-scope, attribute, and `AnyValue` submessages reuse the raw views in
 //! the sibling `resource` and `common` modules.
 //!
-//! # Validation and lazy access
-//!
-//! [`RawLogsData::try_new`] performs an allocation-free validation pass over the top-level message
-//! before exposing the view. It validates top-level protobuf framing, while length-delimited nested
-//! messages remain opaque until a consumer accesses them. Unknown fields retain protobuf forward
-//! compatibility and are skipped according to their framing.
+//! # Lazy access
 //!
 //! Child views use [`ProtoBytesParser`] to discover fields lazily. Parser clones and repeated-field
 //! iterators share scan progress and cached byte ranges through `Rc<Cell<_>>`. This avoids eagerly
