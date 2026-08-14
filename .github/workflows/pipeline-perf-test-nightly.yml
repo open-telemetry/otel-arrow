@@ -338,6 +338,7 @@ jobs:
         run: |
           echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
+          echo "[View the unified ClickHouse benchmarks](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/clickhouse/)" >> $GITHUB_STEP_SUMMARY
 
       # Bare-metal host cleanup: remove only the Docker artifacts created by
       # this job. Avoid broad commands (e.g. rm -rf /tmp/*) per the shared
@@ -723,6 +724,7 @@ jobs:
         run: |
           echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
+          echo "[View the unified ClickHouse benchmarks](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/clickhouse/)" >> $GITHUB_STEP_SUMMARY
 
   workflow-notification:
     permissions:
