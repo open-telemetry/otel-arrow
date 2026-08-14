@@ -1,6 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Shared JSON adapters for OTLP fields used by multiple signals.
+//!
+//! Lightweight `Serialize` wrappers translate pdata views and their borrowed iterators directly
+//! into protobuf JSON shapes. The adapters centralize special encodings such as decimal strings
+//! for 64-bit integers, base64 for bytes, non-finite doubles, and nested `AnyValue` values without
+//! allocating an intermediate telemetry message.
+
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use otap_df_pdata_views::views::common::{

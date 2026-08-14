@@ -1,6 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! OTLP JSON serialization for metrics pdata views.
+//!
+//! The encoder traverses `MetricsView` hierarchies and dispatches each metric data variant to a
+//! small serde adapter. Data points, exemplars, histogram buckets, and summaries are streamed from
+//! borrowed view iterators without converting the input into an owned protobuf message.
+
 use super::common::{
     AttributeIterJson, ProtoDouble, ProtoI64, ProtoU64, ResourceJson, ScopeJson, Utf8,
 };

@@ -1,6 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! OTLP JSON serialization for logs pdata views.
+//!
+//! The encoder walks the resource, scope, and log-record hierarchy through `LogsDataView` and
+//! streams protobuf-compatible JSON through serde. Trace context and other OTLP-specific fields
+//! are encoded in place, so owned protobuf, raw protobuf, and OTAP Arrow views share one path.
+
 use super::common::{AnyValueJson, AttributeIterJson, ProtoU64, ResourceJson, ScopeJson, Utf8};
 use super::{JsonEncodeError, write_json};
 use otap_df_pdata_views::views::logs::{

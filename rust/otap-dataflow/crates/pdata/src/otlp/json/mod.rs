@@ -1,7 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTLP JSON encoders for backend-agnostic pdata views.
+//! OTLP JSON encoding for backend-agnostic pdata views.
+//!
+//! The signal-specific writers traverse pdata view traits directly and stream one compact OTLP
+//! JSON document to a caller-provided writer. This avoids materializing an intermediate protobuf
+//! object while preserving OTLP rules for identifiers, enums, and 64-bit values. Callers remain
+//! responsible for framing, output limits, and recovery from partial writes.
 
 mod common;
 mod logs;

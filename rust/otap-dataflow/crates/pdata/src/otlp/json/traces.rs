@@ -1,6 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! OTLP JSON serialization for traces pdata views.
+//!
+//! The encoder walks resources, scopes, spans, events, links, and status values through the trace
+//! view traits. It streams the OTLP protobuf JSON representation directly to serde, including the
+//! required hexadecimal identifiers and numeric enum values, without intermediate materialization.
+
 use super::common::{AttributeIterJson, ProtoU64, ResourceJson, ScopeJson, Utf8};
 use super::{JsonEncodeError, write_json};
 use otap_df_pdata_views::views::trace::{
