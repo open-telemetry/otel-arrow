@@ -13,6 +13,8 @@ use crate::*;
 pub enum StringValueOrRef<'a> {
     Empty,
     Ref(&'a str),
+    /// Note: Buffer must contain valid UTF-8 bytes otherwise undefined behavior
+    /// may occur.
     Buffer(Buffer),
     Owned(Rc<String>),
     Slice(StringValueOrRefSlice<'a>),
