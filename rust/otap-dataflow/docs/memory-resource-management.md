@@ -1,5 +1,10 @@
 # Memory Resource Management
 
+> [!IMPORTANT]
+> This is a status-labelled architecture map. Only mechanisms marked **Current**
+> are implemented and available for use. Follow the linked implementation
+> documents, RFCs, and issues for authoritative behavior and configuration.
+
 This document maps the OTAP Dataflow Engine (DFE) memory signals, attribution
 models, policies, and control actions. It is an overview, not the authoritative
 configuration reference or a promise that every described mechanism is
@@ -12,6 +17,9 @@ Each mechanism is marked as one of:
   complete.
 - **Proposed:** tracked by an accepted or open design issue.
 - **Future:** a use case or policy boundary without a complete design.
+
+A status can carry a qualifier for stability, allocator backend, build feature,
+or platform availability.
 
 Detailed behavior remains in the linked implementation documents, RFCs, and
 issues.
@@ -63,9 +71,9 @@ guardrail, remains bounded, and recovers.
 | Pressure-aware receiver throttling | How quickly may this receiver admit work while pressure is active? | Receiver instance | Reduce ingress before accepting more work | Current |
 | Bounded channels and topics | Is a local transport boundary full? | Queue or topic | Apply local backpressure or configured refusal behavior | Current |
 | Durable buffering and disk budget | Can outage backlog survive restart without remaining only in volatile queues? | Durable-buffer instance | Persist backlog, bound disk use, and backpressure or drop at the storage cap | Current, experimental |
-| Pipeline allocation activity | Where do allocation and free calls execute? | Pipeline thread | Diagnose allocator churn and allocation-heavy paths | Partial: jemalloc on non-Windows platforms |
+| Pipeline allocation activity | Where do allocation and free calls execute? | Pipeline thread | Diagnose allocator churn and allocation-heavy paths | Partial: non-Windows builds with the `jemalloc` feature and jemalloc active as the global allocator |
 | Pipeline allocator inventory | Which pipeline domain originally allocated live physical memory? | Pipeline allocator domain | Diagnose physical retention, fragmentation, and retired generations | Proposed in [#3725](https://github.com/open-telemetry/otel-arrow/issues/3725) |
-| Retained-work accounting | Which component or pipeline currently retains logical work? | Retention site and work owner | Explain queue, retry, batch, and exporter retention | Proposed in [#3272](https://github.com/open-telemetry/otel-arrow/issues/3272) |
+| Retained-work accounting | Which component or pipeline currently retains logical work? | Retention site and work owner | Explain queue, retry, batch, and exporter retention | Proposed in [RFC 0000](../rfcs/0000-observe-only-retained-work-accounting.md) and tracked by [#3272](https://github.com/open-telemetry/otel-arrow/issues/3272) |
 | Pipeline retained-memory budget | Has one pipeline retained more work than allowed? | Pipeline or pipeline group | Targeted backpressure and isolation | Future |
 | Tenant-aware policy | Which tenant should consume shared capacity? | Tenant across one or more pipelines | Fairness, quotas, and tenant-specific throttling | Future |
 | Component reclaim | Can buffered state be reduced without waiting for normal completion? | Stateful component | Reclaim retry, batch, stream, or cache state | Future |
@@ -153,21 +161,6 @@ through a write-ahead log and segment storage before forwarding it downstream.
 It has a disk retention cap, applies backpressure or `drop_oldest` at that cap,
 and bounds downstream work with `max_in_flight`.
 
-```text
-Upstream
-   |
-   v
-+----------------+      +------------------+      +------------+
-| WAL and open   | ---> | Finalized disk   | ---> | Downstream |
-| segment state  |      | segments         |      | in flight  |
-+----------------+      +------------------+      +------------+
-        |                        |                       |
-        |                        +-- disk budget --------+
-        |                                |
-        +-- working memory               +-- backpressure or
-                                            drop_oldest at cap
-```
-
 Durable buffering can keep outage backlog out of ordinary volatile queues and
 survive process restart, but it is not a process memory limiter. Open segments,
 indexes, memory mappings, adapters, and in-flight bundles still consume memory.
@@ -181,13 +174,15 @@ and [Quiver documentation](../crates/quiver/README.md).
 
 Pipeline allocation activity answers where allocation and free calls execute.
 The current jemalloc implementation reads calling-thread cumulative allocation
-and deallocation counters and derives interval deltas.
+and deallocation counters and derives interval deltas. These metrics require a
+non-Windows build with the engine `jemalloc` feature and jemalloc active as the
+global allocator. If the thread counters cannot be initialized, the current
+metrics remain unchanged at zero.
 
 Activity is useful for finding:
 
-- high allocation and deallocation rates with otherwise stable process memory;
-- allocation-heavy transformations;
-- allocator churn correlated with CPU or latency changes;
+- allocation-heavy transformations and allocator churn;
+- CPU or latency changes correlated with allocation/free rates;
 - asymmetric allocation and free activity across pipeline threads.
 
 Activity does not identify physical live memory. In particular, one pipeline
@@ -218,19 +213,18 @@ of samples, not an instantaneous high-water mark.
 Calling-thread activity and origin-domain inventory are separate axes:
 
 ```text
-Pipeline A thread                           Pipeline B thread
-      |                                           |
-      | allocate 10 MiB                           |
-      v                                           |
-+-------------------+                              |
-| Origin heap A     | -- object crosses topic --> |
-| live: 10 MiB      |                              | free object
-+-------------------+ <----------------------------+
-      |                                           |
-      | live returns toward baseline              | deallocation
-      |                                           | activity +10 MiB
-      v                                           v
-Allocation activity: A +10 MiB          Deallocation activity: B +10 MiB
+Pipeline A thread                         Pipeline B thread
+      |                                         |
+      | allocate 10 MiB                         |
+      v                                         |
++-------------------+                            |
+| Origin heap A     | -- object via topic ----> | holds object
+| live: 10 MiB      |                            |
++-------------------+ <---- remote free ---------+
+      |                                         |
+      | live returns toward baseline            | free activity +10 MiB
+      v                                         v
+Allocation activity: A +10 MiB        Deallocation activity: B +10 MiB
 ```
 
 The origin domain remains A even while B logically holds the work. This makes
@@ -265,17 +259,16 @@ Logical retained size is an estimate chosen for stable, cheap accounting. It is
 not allocator RSS, usable allocation size, or an assertion that every physical
 byte can be assigned to one work item.
 
-Retained ownership can support future policies such as:
-
-- per-pipeline or per-group budgets;
-- targeted backpressure against the current retaining scope;
-- bounded attribution of retry, batch, queue, and exporter state;
-- reconciliation against allocator inventory and process memory;
-- future tenant attribution without making tenant identity an allocator label.
+Retained ownership can support future per-pipeline or per-group budgets,
+targeted backpressure, and reconciliation against allocator inventory and
+process memory. Tenant identity can be propagated alongside retained ownership
+without becoming an allocator label.
 
 Retained accounting should begin as observe-only. Enforcement needs additional
 design for reserves, fairness, shared ownership, overshoot, reclaim, recovery,
-and admission precedence. See [#3272](https://github.com/open-telemetry/otel-arrow/issues/3272).
+and admission precedence. See
+[RFC 0000: Observe-Only Retained-Work Accounting](../rfcs/0000-observe-only-retained-work-accounting.md)
+and tracking issue [#3272](https://github.com/open-telemetry/otel-arrow/issues/3272).
 
 ## Tenant-Aware Policy
 
@@ -314,58 +307,30 @@ Pipeline A -- allocate --> origin heap A
    +-- topic --> Pipeline B -- retain for retry --> exporter
 ```
 
-<!-- markdownlint-disable MD013 -->
-| Question | Answer |
-| --- | --- |
-| Is the process approaching OOM? | The process memory limiter answers from RSS/cgroup or its configured process source. |
-| Where did allocation execute? | Pipeline A's allocation activity increases. |
-| Where did deallocation execute? | The thread that eventually frees the batch records deallocation activity. |
-| Which allocator domain owns the live physical allocation? | Origin heap A until the allocation is freed and the allocator processes the remote free. |
-| Which pipeline currently retains the work? | Pipeline B's retry site in the logical retained-work model. |
-| Which tenant owns the work? | Tenant X, if trusted tenant context was extracted and propagated. |
-| Which scope should be throttled? | A separate policy decides; allocator origin alone is insufficient. |
-<!-- markdownlint-enable MD013 -->
+- The process limiter evaluates total process risk.
+- Allocator inventory attributes the physical bytes to Pipeline A.
+- Retained-work accounting attributes the outstanding work to Pipeline B's
+  retry site.
+- Tenant policy attributes the work to Tenant X.
+
+Allocation activity separately records where allocation and deallocation calls
+execute. A separate policy decides which scope, if any, should be throttled.
 
 The answers intentionally differ. Requiring them to match would erase useful
 information and could throttle the wrong scope.
-
-## Operational Use Cases
-
-<!-- markdownlint-disable MD013 -->
-| Use case | Primary signal | Supporting signals | Policy or action |
-| --- | --- | --- | --- |
-| Prevent process OOM | Process usage and pressure | Ingress and refusal rates | Global ingress shedding, readiness change, optional purge |
-| Preserve outage backlog without unbounded volatile queues | Durable-buffer disk usage and in-flight work | Process pressure and downstream health | Persist to disk, backpressure at the storage cap, or apply configured retention loss |
-| Diagnose allocator churn | Allocation/free deltas | CPU utilization and latency | Observe and optimize the allocating path |
-| Diagnose physical pipeline growth | Origin-domain live/footprint | Process RSS and retained work | Investigate allocation origin, fragmentation, or retired generations |
-| Find downstream retention | Retained-work ownership | Queue depth, retry state, exporter health | Target the retaining component or apply future budget policy |
-| Protect one pipeline from another | Pipeline retained budget | Global pressure | Targeted pipeline admission or backpressure |
-| Prevent a noisy tenant | Tenant-keyed rate or retained usage | Pipeline/group usage | Tenant quota, fairness, or throttling |
-| Recover unused allocator pages | Allocator resident/retained state | Process pressure | Bounded purge if supported and effective |
-| Handle a downstream outage | Retry/exporter retained work | Process pressure and receiver rate | Backpressure, bounded retry, reclaim, or shedding |
-| Detect stranded generations | Retired-domain inventory | Deployment generation and retained ownership | Alert and apply bounded retirement policy |
-<!-- markdownlint-enable MD013 -->
 
 ## Policy Precedence
 
 Future scoped policies must preserve an explicit precedence model:
 
-```text
-1. Process Hard pressure
-      -> remains the unconditional outer safety backstop.
-
-2. Receiver pressure-aware rate policy
-      -> limits new work at participating ingress points.
-
-3. Future retained-work budget
-      -> targets the pipeline, component, or group retaining work.
-
-4. Future tenant policy
-      -> applies fairness or quotas within its declared scope.
-
-5. Allocator activity and heap inventory
-      -> remain diagnostic unless a separate policy adopts them explicitly.
-```
+1. Process `Hard` pressure remains the unconditional outer safety backstop.
+2. Receiver pressure-aware rate policy limits new work at participating ingress
+   points.
+3. A future retained-work budget targets the pipeline, component, or group
+   retaining work.
+4. A future tenant policy applies fairness or quotas within its declared scope.
+5. Allocator activity and heap inventory remain diagnostic unless a separate
+   policy explicitly adopts them.
 
 Scoped enforcement must not weaken the process-wide backstop. Conversely,
 process pressure alone must not be presented as proof that a particular
@@ -389,18 +354,6 @@ to receiver-local admission paths, which can reject some work before full body
 accumulation or downstream processing. The Go Collector documentation warns
 that incoming data can consume memory before its memory-limiter processor can
 reject it.
-
-<!-- markdownlint-disable MD013 -->
-| Capability | Go Collector memory limiter | DFE |
-| --- | --- | --- |
-| Process memory guardrail | Current | Current |
-| Soft/hard pressure behavior | Refusal and forced Go GC | Receiver shedding, readiness, and optional jemalloc purge |
-| Backpressure surface | Retryable processor error to the preceding component | Protocol-specific receiver admission response |
-| Per-pipeline allocator inventory | Not provided by the memory limiter | Proposed |
-| Logical retained-work accounting | Not provided by the memory limiter | Proposed |
-| Pipeline-targeted retained budget | Not provided by the memory limiter | Future |
-| Tenant-aware memory fairness | Not provided by the memory limiter | Future |
-<!-- markdownlint-enable MD013 -->
 
 This comparison is limited to the Go Collector memory-limiter component. It
 does not claim that no custom or external Collector component can implement a
@@ -430,10 +383,22 @@ not proofs:
 Representative benchmarks and controlled fault scenarios are required before
 turning any diagnostic correlation into enforcement.
 
+## Maintenance
+
+Update the status table when a linked implementation PR changes a mechanism
+from proposed to partial or current, changes its supported scope, or adds an
+enforcement action.
+
+PRs implementing [#3725](https://github.com/open-telemetry/otel-arrow/issues/3725),
+[#3272](https://github.com/open-telemetry/otel-arrow/issues/3272), scoped memory
+budgets, or tenant-aware memory policy should update this document in the same
+change.
+
 ## Detailed References
 
 - [Memory Limiter - Phase 1](memory-limiter-phase1.md)
 - [RFC 0002: Pressure-Aware Rate Throttling](../rfcs/0002-pressure-aware-rate-throttling.md)
+- [RFC 0000: Observe-Only Retained-Work Accounting](../rfcs/0000-observe-only-retained-work-accounting.md)
 - [Configuration Model](configuration-model.md)
 - [Telemetry Metrics Guide](telemetry/metrics-guide.md)
 - [Engine Telemetry Inventory](../crates/engine/telemetry.md)
