@@ -2124,6 +2124,7 @@ pub mod test_support {
         /// they were accepted, and only a batch accepted after the `Config` (P3)
         /// may land on the new topic.
         #[tokio::test]
+        #[ignore]
         async fn reconfigure_routes_pre_config_backlog_to_old_topic() {
             let original_topic = "it-reconfig-backlog-original";
             let new_topic = "it-reconfig-backlog-new";

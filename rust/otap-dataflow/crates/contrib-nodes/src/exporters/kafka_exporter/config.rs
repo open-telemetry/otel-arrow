@@ -491,7 +491,7 @@ impl KafkaExporterConfigBuilder {
         self
     }
 
-    /// Set whether the broker may auto-create topics (default: `false`).
+    /// Set whether the broker may auto-create topics (default: `true`).
     #[must_use]
     pub fn with_allow_auto_create_topics(mut self, allow: bool) -> Self {
         self.allow_auto_create_topics = allow;
