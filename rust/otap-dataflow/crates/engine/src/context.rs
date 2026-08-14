@@ -12,8 +12,10 @@ use crate::attributes::{
     config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
+use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
+use data_encoding::BASE32_NOPAD;
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::telemetry::TelemetryAttribute;
 use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
@@ -28,17 +30,65 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use uuid::Uuid;
 
 /// A shared, immutable mapping from otap_df_config node names
 /// (without index numbers) to their engine-specific pipeline indices.
 pub type NodeNameIndex = Arc<HashMap<ConfigNodeId, EngineNodeId>>;
 
+// Generate a stable, unique identifier per process instance (base32-encoded UUID v7).
+static PROCESS_INSTANCE_ID: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
+    let uuid = Uuid::now_v7();
+    Cow::Owned(BASE32_NOPAD.encode(uuid.as_bytes()))
+});
+
+fn detect_host_id() -> Option<String> {
+    if let Ok(host) = std::env::var("HOSTNAME")
+        && !host.is_empty()
+    {
+        return Some(host);
+    }
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|host| host.trim().to_owned())
+        .filter(|host| !host.is_empty())
+}
+
+fn detect_container_id() -> Option<String> {
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    for line in cgroup.lines() {
+        let path = line.split(':').nth(2).unwrap_or("");
+        for part in path.split('/') {
+            let token = part.trim();
+            if (32..=128).contains(&token.len())
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() || matches!(c, '.' | '-' | '_'))
+                && token.chars().filter(|c| c.is_ascii_hexdigit()).count() >= 32
+            {
+                return Some(token.to_owned());
+            }
+        }
+    }
+    None
+}
+
+static HOST_ID: LazyLock<Cow<'static, str>> =
+    LazyLock::new(|| detect_host_id().map_or(Cow::Borrowed(""), Cow::Owned));
+static CONTAINER_ID: LazyLock<Cow<'static, str>> =
+    LazyLock::new(|| detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned));
+
 /// A lightweight/cloneable controller context.
 #[derive(Clone, Debug)]
 pub struct ControllerContext {
     telemetry_registry_handle: TelemetryRegistryHandle,
-    numa_node_id: usize,
+    /// Unique process instance identifier (base32-encoded UUID v7).
+    process_instance_id: Cow<'static, str>,
+    /// Host identifier, when available (e.g. hostname).
+    host_id: Cow<'static, str>,
+    /// Container identifier, when available (e.g. Docker or containerd container ID).
+    container_id: Cow<'static, str>,
     memory_pressure_state: MemoryPressureState,
 }
 
@@ -56,6 +106,8 @@ pub struct PipelineContextParams {
     pub num_cores: usize,
     /// Thread ID for the current pipeline execution context.
     pub thread_id: usize,
+    /// NUMA node ID resolved for the current pipeline execution context.
+    pub numa_node_id: usize,
 }
 
 /// A lightweight/cloneable pipeline context.
@@ -82,6 +134,10 @@ pub struct PipelineContext {
     /// Optional pipeline-scoped topic set injected by the controller.
     /// ToDo: Make PipelineContext generic over a TopicSet type to avoid dynamic typing here.
     topic_set: Option<Arc<dyn Any + Send + Sync>>,
+    // Immutable placement metadata shared across contexts for this pipeline instance.
+    // Consumers should cache any needed listener plan during setup rather than cloning
+    // or searching this snapshot from the per-record data path.
+    listener_group_snapshot: Arc<ListenerGroupSnapshot>,
 }
 
 /// Registrar that binds generated metric-set registration to an existing entity.
@@ -99,7 +155,30 @@ impl ControllerContext {
     pub fn new(telemetry_registry_handle: TelemetryRegistryHandle) -> Self {
         Self {
             telemetry_registry_handle,
-            numa_node_id: 0, // ToDo(LQ): Set NUMA node ID if available
+            process_instance_id: PROCESS_INSTANCE_ID.clone(),
+            host_id: HOST_ID.clone(),
+            container_id: CONTAINER_ID.clone(),
+            memory_pressure_state: MemoryPressureState::default(),
+        }
+    }
+
+    /// Creates a `ControllerContext` with explicit auto-detected identity values.
+    ///
+    /// Test-only: the production [`new`](Self::new) constructor derives these
+    /// from the host environment, which is unsuitable for asserting the
+    /// semantic-convention mapping in [`resource_attributes`](Self::resource_attributes).
+    #[cfg(test)]
+    fn new_with_identity(
+        telemetry_registry_handle: TelemetryRegistryHandle,
+        process_instance_id: impl Into<Cow<'static, str>>,
+        host_id: impl Into<Cow<'static, str>>,
+        container_id: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            telemetry_registry_handle,
+            process_instance_id: process_instance_id.into(),
+            host_id: host_id.into(),
+            container_id: container_id.into(),
             memory_pressure_state: MemoryPressureState::default(),
         }
     }
@@ -144,6 +223,33 @@ impl ControllerContext {
                 core_id,
                 num_cores,
                 thread_id,
+                numa_node_id: 0,
+            },
+            deployment_generation,
+        )
+    }
+
+    /// Returns a new pipeline context with explicit NUMA placement metadata.
+    #[must_use]
+    pub fn pipeline_context_with_placement(
+        &self,
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        core_id: usize,
+        num_cores: usize,
+        thread_id: usize,
+        deployment_generation: u64,
+        numa_node_id: usize,
+    ) -> PipelineContext {
+        PipelineContext::new_with_generation(
+            self.clone(),
+            PipelineContextParams {
+                pipeline_group_id,
+                pipeline_id,
+                core_id,
+                num_cores,
+                thread_id,
+                numa_node_id,
             },
             deployment_generation,
         )
@@ -157,6 +263,25 @@ impl ControllerContext {
     pub fn register_engine_entity(&self) -> EntityKey {
         self.telemetry_registry_handle
             .register_entity(EngineEntityAttributeSet)
+    }
+
+    /// Returns auto-detected OpenTelemetry resource semantic-convention attributes.
+    #[must_use]
+    pub fn resource_attributes(&self) -> Vec<(String, String)> {
+        let mut attributes = Vec::new();
+        if !self.host_id.is_empty() {
+            attributes.push(("host.id".to_owned(), self.host_id.to_string()));
+        }
+        if !self.container_id.is_empty() {
+            attributes.push(("container.id".to_owned(), self.container_id.to_string()));
+        }
+        if !self.process_instance_id.is_empty() {
+            attributes.push((
+                "service.instance.id".to_owned(),
+                self.process_instance_id.to_string(),
+            ));
+        }
+        attributes
     }
 
     /// Returns a handle to the telemetry registry.
@@ -201,6 +326,7 @@ impl PipelineContext {
             internal_telemetry: None,
             node_names: Arc::new(HashMap::new()),
             topic_set: None,
+            listener_group_snapshot: Arc::new(ListenerGroupSnapshot::empty()),
         }
     }
 
@@ -286,6 +412,22 @@ impl PipelineContext {
         topic_set: crate::topic::TopicSet<T>,
     ) {
         self.topic_set = Some(Arc::new(topic_set));
+    }
+
+    /// Sets the controller-resolved listener-group placement snapshot.
+    pub fn set_listener_group_snapshot(&mut self, snapshot: ListenerGroupSnapshot) {
+        self.listener_group_snapshot = Arc::new(snapshot);
+    }
+
+    /// Sets a shared controller-resolved listener-group placement snapshot.
+    pub fn set_listener_group_snapshot_arc(&mut self, snapshot: Arc<ListenerGroupSnapshot>) {
+        self.listener_group_snapshot = snapshot;
+    }
+
+    /// Returns the controller-resolved listener-group placement snapshot.
+    #[must_use]
+    pub fn listener_group_snapshot(&self) -> Arc<ListenerGroupSnapshot> {
+        Arc::clone(&self.listener_group_snapshot)
     }
 
     /// Returns the pipeline-scoped topic set, if one was injected.
@@ -494,7 +636,7 @@ impl PipelineContext {
     fn engine_attribute_set(&self) -> EngineAttributeSet {
         EngineAttributeSet {
             core_id: self.pipeline_context_params.core_id,
-            numa_node_id: self.controller_context.numa_node_id,
+            numa_node_id: self.pipeline_context_params.numa_node_id,
         }
     }
 
@@ -616,6 +758,7 @@ impl PipelineContext {
             internal_telemetry: None,
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
+            listener_group_snapshot: Arc::clone(&self.listener_group_snapshot),
         }
     }
 }
@@ -886,6 +1029,115 @@ mod tests {
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::collections::HashMap;
 
+    /// Scenario: explicit process, host, and container identities are available.
+    /// Guarantees: resource attributes map all identities to stable semantic-convention keys.
+    #[test]
+    fn resource_attributes_maps_semconv_keys() {
+        let ctx = ControllerContext::new_with_identity(
+            TelemetryRegistryHandle::new(),
+            "proc-123",
+            "machine-abc",
+            "container-xyz",
+        );
+
+        // All three identities present: emitted in a stable order under their
+        // OpenTelemetry semantic-convention keys.
+        assert_eq!(
+            ctx.resource_attributes(),
+            vec![
+                ("host.id".to_string(), "machine-abc".to_string()),
+                ("container.id".to_string(), "container-xyz".to_string()),
+                ("service.instance.id".to_string(), "proc-123".to_string()),
+            ]
+        );
+    }
+
+    /// Scenario: host and container identity values are empty.
+    /// Guarantees: resource attributes omit empty values while retaining the process identity.
+    #[test]
+    fn resource_attributes_omits_empty_values() {
+        // Empty host/container should be skipped entirely (no empty-valued
+        // attributes), leaving only the populated service.instance.id.
+        let ctx = ControllerContext::new_with_identity(
+            TelemetryRegistryHandle::new(),
+            "proc-123",
+            "",
+            "",
+        );
+
+        assert_eq!(
+            ctx.resource_attributes(),
+            vec![("service.instance.id".to_string(), "proc-123".to_string())]
+        );
+    }
+
+    /// Scenario: a pipeline context is created with an explicitly resolved NUMA node.
+    /// Guarantees: engine telemetry reports both the selected core and NUMA node identifiers.
+    #[test]
+    fn pipeline_context_uses_resolved_numa_node_for_engine_attrs() {
+        let ctx = ControllerContext::new(TelemetryRegistryHandle::new())
+            .pipeline_context_with_placement(
+                PipelineGroupId::from("g"),
+                PipelineId::from("p"),
+                4,
+                1,
+                0,
+                0,
+                2,
+            );
+
+        let attrs = ctx.pipeline_attribute_set();
+
+        assert_eq!(attrs.engine_attrs.core_id, 4);
+        assert_eq!(attrs.engine_attrs.numa_node_id, 2);
+    }
+
+    /// Scenario: a pipeline context with a listener plan is converted to a node context.
+    /// Guarantees: the node context retains the listener snapshot generation and plan lookup.
+    #[test]
+    fn pipeline_context_preserves_listener_group_snapshot_across_node_context() {
+        let addr = "127.0.0.1:4317".parse().unwrap();
+        let mut ctx = ControllerContext::new(TelemetryRegistryHandle::new()).pipeline_context_with(
+            Default::default(),
+            Default::default(),
+            0,
+            1,
+            0,
+        );
+        ctx.set_listener_group_snapshot(ListenerGroupSnapshot::new(
+            3,
+            vec![crate::listener_group::ListenerGroupPlan {
+                key: crate::listener_group::ListenerGroupKey::new(
+                    "group".into(),
+                    "pipeline".into(),
+                    "receiver".into(),
+                    addr,
+                    crate::listener_group::ListenerProtocol::Tcp,
+                ),
+                expected_members: Vec::new(),
+            }],
+        ));
+
+        let node_ctx = ctx.with_node_context(
+            "receiver".into(),
+            "urn:otel:receiver:otlp".into(),
+            NodeKind::Receiver,
+            HashMap::new(),
+        );
+
+        assert_eq!(node_ctx.listener_group_snapshot().generation, 3);
+        assert!(
+            node_ctx
+                .listener_group_snapshot()
+                .plan_for(
+                    "receiver",
+                    addr,
+                    crate::listener_group::ListenerProtocol::Tcp
+                )
+                .is_some()
+        );
+    }
+
     fn pipeline_ctx_with_custom_attrs(
         registry: TelemetryRegistryHandle,
         custom: HashMap<String, TelemetryAttribute>,
@@ -897,6 +1149,7 @@ mod tests {
             core_id: 0,
             num_cores: 1,
             thread_id: 0,
+            numa_node_id: 0,
         };
         PipelineContext::new(controller_ctx, pipeline_params).with_node_context(
             Cow::Borrowed("test-node"),
