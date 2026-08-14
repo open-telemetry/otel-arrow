@@ -21,12 +21,12 @@ groups:
       main:
         nodes:
           receiver:
-            type: urn:otel:receiver:otlp
+            type: urn:otel:receiver:otap
             config:
-              protocols:
-                grpc:
-                  listening_addr: 0.0.0.0:4317
-                  wait_for_result: {% if wait_for_result | default(false) %}true{% else %}false{% endif %}
+              listening_addr: 0.0.0.0:4317
+              response_stream_channel_size: 100
+              compression_method: {% if compression_method == "none" %}null{% else %}{{compression_method}}{% endif %}
+              wait_for_result: {% if wait_for_result | default(false) %}true{% else %}false{% endif %}
           exporter:
             # Benchmarked DFE Kafka exporter, OTAP encoding
             # (exporter-isolation suites). Aligned producer tuning injected

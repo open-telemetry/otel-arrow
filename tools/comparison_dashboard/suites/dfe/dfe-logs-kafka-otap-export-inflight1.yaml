@@ -18,7 +18,7 @@ meta:
 
 variables:
   report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
-  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp.yaml.j2
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otap.yaml.j2
   kafka_producer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-producer-otap.yaml.j2
   backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-backend-otap.yaml.j2
   protocol: otap
