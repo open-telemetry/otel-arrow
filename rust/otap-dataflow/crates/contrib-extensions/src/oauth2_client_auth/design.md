@@ -258,7 +258,7 @@ groups:
 | `client_secret_file` | `string?` (path) | *none* | Path re-read on each acquisition; takes precedence over `client_secret`. |
 | `scopes` | `[string]` | `[]` | Requested scopes. |
 | `endpoint_params` | `map<string,string>` | `{}` | Extra parameters sent to the token endpoint (e.g. `audience`). |
-| `expiry_buffer` | duration | `5m` | Refresh this far ahead of `expires_on`. Must be non-zero. |
+| `expiry_buffer` | duration | `5m` | Refresh this far ahead of `expires_on`. Must be greater than the 30 s usability margin. |
 | `default_token_lifetime` | duration | `24h` | Lifetime assumed when the token response omits `expires_in`. Must be non-zero and greater than `expiry_buffer`. See [Expiry handling](#expiry-handling). |
 | `timeout` | duration | `30s` | Per-request timeout on the token client. Must be non-zero. |
 | `connect_timeout` | duration | `10s` | Connection-establishment timeout on the token client. Must be non-zero. |
@@ -386,7 +386,7 @@ Tuning constants:
 | Constant | Value | Purpose |
 | --- | --- | --- |
 | `expiry_buffer` (config) | `5m` default | Background loop refreshes this far before `expires_on`. |
-| `TOKEN_USABLE_MARGIN` | 30s | Fast path treats a token within this margin of expiry as unusable. Much smaller than `expiry_buffer` so a still-valid token keeps being served while a background refresh is failing, and the slow path is not stampeded during a transient outage. |
+| `TOKEN_USABLE_MARGIN` | 30s | Defined by the `BearerTokenProvider` capability contract in the engine, so this provider and every consumer enforce the same window. The fast path treats a token within this margin of expiry as unusable. Much smaller than `expiry_buffer` so a still-valid token keeps being served while a background refresh is failing, and the slow path is not stampeded during a transient outage. |
 | `MIN_TOKEN_REFRESH_INTERVAL_SECS` | 10 | Floor between successful refreshes; also the earliest a jittered refresh may land. Avoids busy-looping on near-expired tokens. |
 | `TOKEN_REFRESH_RETRY_SECS` | 10 | Base reschedule delay after a failed acquisition; doubles per consecutive failure. Also the slow-path negative-cache cooldown that throttles `get_token()` retries after a failure. |
 | `MAX_TOKEN_REFRESH_RETRY_SECS` | 300 (5m) | Ceiling for the exponential retry backoff. |
@@ -448,7 +448,7 @@ backs the capability, and can consume it two ways: a cached fast-path read via
 token.
 
 The primary consumers are the **OTLP HTTP and gRPC exporters**. The OTLP HTTP
-exporter (integration in progress) subscribes to `token_stream()` and caches a
+exporter subscribes to `token_stream()` and caches a
 pre-built `Authorization: Bearer <token>` header that it clones onto each
 outgoing request, so credential work stays off the export hot path and tokens
 rotate without a restart. The refreshed bearer **overrides** any statically
