@@ -162,7 +162,7 @@ This syntax can also be used to process only certain types of metrics:
 - `is Sum` -- matches only rows from metrics batch sum metrics
 - `is Histogram` -- matches only rows from metrics batch histogram
   metrics
-- `is ExponentialHistogram` -- matches only rows from metrics batch 
+- `is ExponentialHistogram` -- matches only rows from metrics batch
   exponential metrics
 - `is Sum` -- matches only rows from metrics batch sum metrics
 
