@@ -7744,7 +7744,7 @@ dependencies = [
  "arrow",
  "arrow-ipc",
  "arrow-schema",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "ciborium",
  "criterion",
