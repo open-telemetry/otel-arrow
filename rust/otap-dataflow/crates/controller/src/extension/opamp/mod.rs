@@ -880,12 +880,14 @@ fn handle_server_to_agent_message(
                                     config_hash: remote_config.config_hash,
                                 })
                             }
-                            Err(e) => {
-                                let message = "Remote configuration was rejected; the current engine configuration remains active".to_string();
+                            Err(error) => {
+                                let message = format!(
+                                    "Remote configuration was rejected: {error}; the current engine configuration remains active"
+                                );
                                 otel_error!(
                                     "opamp.controller_extension.message.invalid_config",
                                     message = message,
-                                    error =? e,
+                                    error = error,
                                 );
                                 reply.reply_error = Some(ReplyError {
                                     message,
@@ -1921,9 +1923,17 @@ mod test {
         let applied = &requests[1];
         let status = applied.remote_config_status.as_ref().unwrap();
         assert_eq!(status.status, RemoteConfigStatuses::Failed as i32);
-        assert_eq!(
-            status.error_message,
-            "Remote configuration was rejected; the current engine configuration remains active"
+        assert!(
+            status.error_message.contains("expected value at line"),
+            "status should include the JSON parser error: {}",
+            status.error_message
+        );
+        assert!(
+            status
+                .error_message
+                .ends_with("the current engine configuration remains active"),
+            "status should explain that the existing config remains active: {}",
+            status.error_message
         );
     }
 
