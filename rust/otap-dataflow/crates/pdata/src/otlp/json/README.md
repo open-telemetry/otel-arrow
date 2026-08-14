@@ -139,6 +139,6 @@ should cover the new field.
 
 ## Related documentation
 
-- [OTLP JSON Protobuf specification](../../../../../../../proto/opentelemetry-proto/docs/specification.md)
+- [OTLP JSON Protobuf specification](https://github.com/open-telemetry/opentelemetry-proto/blob/main/docs/specification.md)
 - [OTLP pdata overview](../README.md)
 - [Pdata view traits](../../../../pdata-views/src/views)

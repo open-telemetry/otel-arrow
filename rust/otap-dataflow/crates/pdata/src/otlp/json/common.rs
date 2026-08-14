@@ -256,12 +256,9 @@ impl<'data, V: AnyValueView<'data>> Serialize for ArrayValueJson<'_, 'data, V> {
             .0
             .as_array()
             .ok_or_else(|| S::Error::custom("missing array AnyValue"))?;
+        let mut values = values.peekable();
         let mut map = serializer.serialize_map(None)?;
-        if self
-            .0
-            .as_array()
-            .is_some_and(|mut values| values.next().is_some())
-        {
+        if values.peek().is_some() {
             map.serialize_entry("values", &AnyValueIterJson::new(values))?;
         }
         map.end()
@@ -309,12 +306,9 @@ impl<'data, V: AnyValueView<'data>> Serialize for KeyValueListJson<'_, 'data, V>
             .0
             .as_kvlist()
             .ok_or_else(|| S::Error::custom("missing kvlist AnyValue"))?;
+        let mut values = values.peekable();
         let mut map = serializer.serialize_map(None)?;
-        if self
-            .0
-            .as_kvlist()
-            .is_some_and(|mut values| values.next().is_some())
-        {
+        if values.peek().is_some() {
             map.serialize_entry("values", &AttributeIterJson::new(values))?;
         }
         map.end()
