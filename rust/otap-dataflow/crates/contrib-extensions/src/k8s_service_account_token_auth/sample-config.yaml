@@ -1,0 +1,69 @@
+# Sample pipeline using the Kubernetes service-account-token auth extension.
+#
+# The `k8s_service_account_token_auth` extension authenticates inbound Kubernetes
+# service-account tokens via the TokenReview API and admits them per audience.
+# A receiver binds the `bearer_token_authorizer` capability to the extension.
+#
+# See docs/k8s-service-account-token-auth-extension.md for the full configuration
+# reference and the collector RBAC the deployment needs.
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 128
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        # The authorizer is an extension: data-path nodes consume it through
+        # their `capabilities:` map rather than configuring auth inline.
+        extensions:
+          k8s_authz:
+            type: "urn:otel:extension:k8s_service_account_token_auth"
+            config:
+              # Per-audience (per-tenant) admission entries. A token is only
+              # admitted through the entry for the audience TokenReview
+              # confirms, so an identity is trusted only for its own audience.
+              audiences:
+                # Tenant A: admit a static allow-list of service accounts.
+                - audience: "https://tenant-a.observability.svc"
+                  allowed_service_accounts:
+                    - "tenant-a/otlp-sender"
+                # Tenant B: admit via Kubernetes RBAC (SubjectAccessReview).
+                - audience: "https://tenant-b.observability.svc"
+                  resource_attributes:
+                    group: "telemetry.opentelemetry.io"
+                    resource: "telemetry"
+                    verb: "export"
+                    namespace: "tenant-b"
+              # How long a reached decision is cached (keyed by the token's
+              # SHA-256 digest), bounding TokenReview calls to the API server.
+              cache_ttl: 5m
+              cache_max_entries: 1024
+              # Bound each TokenReview and SubjectAccessReview request.
+              review_timeout: 10s
+
+        nodes:
+          otlp-receiver:
+            type: "urn:otel:receiver:otlp"
+            # Bind the authorizer capability to the extension declared above:
+            # inbound requests are authorized before their telemetry is accepted.
+            capabilities:
+              bearer_token_authorizer: k8s_authz
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "0.0.0.0:4317"
+
+          noop-exporter:
+            type: "urn:otel:exporter:noop"
+
+        connections:
+          - from: otlp-receiver
+            to: noop-exporter

@@ -46,9 +46,9 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::TryIntoWithOptions;
+use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MetricSetHandler;
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
@@ -63,6 +63,7 @@ use crate::exporters::clickhouse_exporter::metrics::ClickhouseExporterMetrics;
 use crate::exporters::clickhouse_exporter::transform::logs_fast::{
     LogsFastTransform, LogsFastTransformer,
 };
+use crate::exporters::clickhouse_exporter::transform::logs_otlp::OtlpLogsTransformer;
 use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
 use crate::exporters::clickhouse_exporter::writer::ClickHouseWriter;
 
@@ -186,6 +187,25 @@ impl ClickhouseExporter {
     }
 }
 
+fn transform_raw_otlp_logs(
+    payload: &OtapPayload,
+    transformer: &mut OtlpLogsTransformer,
+) -> Option<Result<Option<arrow::array::RecordBatch>, error::ClickhouseExporterError>> {
+    match payload {
+        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
+            Some(transformer.transform(bytes))
+        }
+        _ => None,
+    }
+}
+
+fn is_invalid_protobuf(error: &error::ClickhouseExporterError) -> bool {
+    matches!(
+        error,
+        error::ClickhouseExporterError::Child(PdataError::InvalidProtobufWireFormat)
+    )
+}
+
 /// Register Clickhouse exporter with the OTAP exporter factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
@@ -230,6 +250,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
         let mut batch_transformer = BatchTransformer::new();
         let mut logs_fast_transformer = LogsFastTransformer::default();
+        let mut otlp_logs_transformer = OtlpLogsTransformer::default();
         let clickhouse_writer =
             Rc::new(ClickHouseWriter::new(&self.config).await.map_err(|e| {
                 Error::ExporterError {
@@ -299,82 +320,128 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
                     let (_context, payload) = pdata.into_parts();
 
-                    let mut arrow_records: OtapArrowRecords = match payload.try_into_with_default()
-                    {
-                        Ok(arrow_records) => arrow_records,
-                        Err(e) => {
-                            self.pdata_metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .record(export_started_at.elapsed());
-                            otap_df_telemetry::otel_warn!(
-                                "clickhouse.exporter.convert.error",
-                                message =
-                                    format!("Failed to convert payload to OtapArrowRecords: {e:?}"),
-                                signal_type = format!("{:?}", signal_type),
-                            );
-                            continue;
-                        }
-                    };
+                    let direct_otlp_batches =
+                        match transform_raw_otlp_logs(&payload, &mut otlp_logs_transformer) {
+                            Some(result) => match result {
+                                Ok(batch) => {
+                                    self.ch_metrics.record_log_otlp_direct_path();
+                                    Some(
+                                        batch
+                                            .map(|batch| {
+                                                HashMap::from([(ArrowPayloadType::Logs, batch)])
+                                            })
+                                            .unwrap_or_default(),
+                                    )
+                                }
+                                Err(error) if is_invalid_protobuf(&error) => {
+                                    self.pdata_metrics
+                                        .with(SignalOutcomeAttributes {
+                                            signal: signal_type,
+                                            outcome: Outcome::Failure,
+                                        })
+                                        .record(export_started_at.elapsed());
+                                    otap_df_telemetry::otel_warn!(
+                                        "clickhouse.exporter.otlp.invalid_protobuf",
+                                        message = "Rejecting malformed raw OTLP logs.",
+                                        error = error.to_string(),
+                                    );
+                                    continue;
+                                }
+                                Err(error) => {
+                                    self.ch_metrics.record_log_otlp_transform_fallback();
+                                    otap_df_telemetry::otel_debug!(
+                                        "clickhouse.exporter.otlp.transform.fallback",
+                                        message =
+                                            "Using the legacy ClickHouse transform for OTLP logs.",
+                                        reason = error.to_string(),
+                                    );
+                                    None
+                                }
+                            },
+                            _ => None,
+                        };
 
-                    // decode the transport optimized IDs before joining payloads against them.
-                    arrow_records
-                        .decode_transport_optimized_ids()
-                        .map_err(|e| {
-                            self.pdata_metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .record(export_started_at.elapsed());
-                            let source_detail = format_error_sources(&e);
-                            Error::ExporterError {
-                                exporter: exporter_id.clone(),
-                                kind: ExporterErrorKind::Other,
-                                error: format!("Failed to decode transport optimized IDs: {e}"),
-                                source_detail,
-                            }
-                        })?;
-
-                    let transform_result = if signal_type == SignalType::Logs
-                        && signal_format == SignalFormat::OtapRecords
-                    {
-                        match logs_fast_transformer.try_apply(&arrow_records) {
-                            Ok(LogsFastTransform::Applied(batch)) => {
-                                self.ch_metrics.record_log_fast_path();
-                                Ok(HashMap::from([(ArrowPayloadType::Logs, batch)]))
-                            }
-                            Ok(LogsFastTransform::NotApplicable(_)) => {
-                                self.ch_metrics.record_log_transform_fallback();
-                                batch_transformer.apply_plan(arrow_records)
-                            }
-                            Err(error) => Err(error),
-                        }
+                    let write_batches = if let Some(batches) = direct_otlp_batches {
+                        batches
                     } else {
-                        if signal_type == SignalType::Logs {
-                            self.ch_metrics.record_log_transform_fallback();
-                        }
-                        batch_transformer.apply_plan(arrow_records)
-                    };
+                        let mut arrow_records: OtapArrowRecords =
+                            match payload.try_into_with_default() {
+                                Ok(arrow_records) => arrow_records,
+                                Err(e) => {
+                                    self.pdata_metrics
+                                        .with(SignalOutcomeAttributes {
+                                            signal: signal_type,
+                                            outcome: Outcome::Failure,
+                                        })
+                                        .record(export_started_at.elapsed());
+                                    otap_df_telemetry::otel_warn!(
+                                        "clickhouse.exporter.convert.error",
+                                        message = format!(
+                                            "Failed to convert payload to OtapArrowRecords: {e:?}"
+                                        ),
+                                        signal_type = format!("{:?}", signal_type),
+                                    );
+                                    continue;
+                                }
+                            };
 
-                    let write_batches = match transform_result {
-                        Ok(batches) => batches,
-                        Err(e) => {
-                            self.pdata_metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .record(export_started_at.elapsed());
-                            otap_df_telemetry::otel_warn!(
-                                "clickhouse.exporter.transform.error",
-                                message = "Error transforming batch for export.",
-                                error = e.to_string(),
-                                signal_type = format!("{:?}", signal_type),
-                            );
-                            continue;
+                        // Decode transport-optimized IDs before joining payloads against them.
+                        arrow_records
+                            .decode_transport_optimized_ids()
+                            .map_err(|e| {
+                                self.pdata_metrics
+                                    .with(SignalOutcomeAttributes {
+                                        signal: signal_type,
+                                        outcome: Outcome::Failure,
+                                    })
+                                    .record(export_started_at.elapsed());
+                                let source_detail = format_error_sources(&e);
+                                Error::ExporterError {
+                                    exporter: exporter_id.clone(),
+                                    kind: ExporterErrorKind::Other,
+                                    error: format!("Failed to decode transport optimized IDs: {e}"),
+                                    source_detail,
+                                }
+                            })?;
+
+                        let transform_result = if signal_type == SignalType::Logs
+                            && signal_format == SignalFormat::OtapRecords
+                        {
+                            match logs_fast_transformer.try_apply(&arrow_records) {
+                                Ok(LogsFastTransform::Applied(batch)) => {
+                                    self.ch_metrics.record_log_fast_path();
+                                    Ok(HashMap::from([(ArrowPayloadType::Logs, batch)]))
+                                }
+                                Ok(LogsFastTransform::NotApplicable(_)) => {
+                                    self.ch_metrics.record_log_transform_fallback();
+                                    batch_transformer.apply_plan(arrow_records)
+                                }
+                                Err(error) => Err(error),
+                            }
+                        } else {
+                            if signal_type == SignalType::Logs {
+                                self.ch_metrics.record_log_transform_fallback();
+                            }
+                            batch_transformer.apply_plan(arrow_records)
+                        };
+
+                        match transform_result {
+                            Ok(batches) => batches,
+                            Err(e) => {
+                                self.pdata_metrics
+                                    .with(SignalOutcomeAttributes {
+                                        signal: signal_type,
+                                        outcome: Outcome::Failure,
+                                    })
+                                    .record(export_started_at.elapsed());
+                                otap_df_telemetry::otel_warn!(
+                                    "clickhouse.exporter.transform.error",
+                                    message = "Error transforming batch for export.",
+                                    error = e.to_string(),
+                                    signal_type = format!("{:?}", signal_type),
+                                );
+                                continue;
+                            }
                         }
                     };
                     let writer = Rc::clone(&clickhouse_writer);
@@ -399,11 +466,39 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
 
     /// Scenario: the ClickHouse exporter is registered with its public component URN.
     /// Guarantees: configuration references continue to resolve to the exporter factory.
     #[test]
     fn test_urn_constant() {
         assert_eq!(CLICKHOUSE_EXPORTER_URN, "urn:otel:exporter:clickhouse");
+    }
+
+    /// Scenario: the exporter receives serialized OTLP logs or another payload representation.
+    /// Guarantees: only serialized OTLP log requests are selected for direct transformation.
+    #[test]
+    fn raw_otlp_log_routing_is_signal_and_format_specific() {
+        let logs = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new()));
+        let traces = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportTracesRequest(Bytes::new()));
+        let mut transformer = OtlpLogsTransformer::default();
+
+        assert!(transform_raw_otlp_logs(&logs, &mut transformer).is_some());
+        assert!(transform_raw_otlp_logs(&traces, &mut transformer).is_none());
+    }
+
+    /// Scenario: a raw OTLP logs request has malformed top-level protobuf framing.
+    /// Guarantees: the routing layer classifies it as invalid instead of using legacy fallback.
+    #[test]
+    fn malformed_raw_otlp_logs_are_not_fallback_candidates() {
+        let logs = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(
+            b"\xff",
+        )));
+        let mut transformer = OtlpLogsTransformer::default();
+        let error = transform_raw_otlp_logs(&logs, &mut transformer)
+            .expect("raw logs should select direct transformation")
+            .expect_err("malformed top-level protobuf must fail");
+
+        assert!(is_invalid_protobuf(&error));
     }
 }
