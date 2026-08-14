@@ -103,23 +103,40 @@ impl<'a> RawLogsData<'a> {
 
             pos = match wire_type {
                 wire_types::VARINT => {
-                    let (_, end) =
-                        read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
-                    end
+                    let (_, p) = read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
+                    p
                 }
                 wire_types::LEN => {
-                    let (_, end) =
-                        read_len_delim(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
+                    let (len, p) =
+                        read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
+                    let end = p
+                        .checked_add(
+                            usize::try_from(len).map_err(|_| Error::InvalidProtobufWireFormat)?,
+                        )
+                        .ok_or(Error::InvalidProtobufWireFormat)?;
+                    if end > buf.len() {
+                        return Err(Error::InvalidProtobufWireFormat);
+                    }
                     end
                 }
-                wire_types::FIXED64 => next
-                    .checked_add(8)
-                    .filter(|end| *end <= buf.len())
-                    .ok_or(Error::InvalidProtobufWireFormat)?,
-                wire_types::FIXED32 => next
-                    .checked_add(4)
-                    .filter(|end| *end <= buf.len())
-                    .ok_or(Error::InvalidProtobufWireFormat)?,
+                wire_types::FIXED64 => {
+                    let end = next
+                        .checked_add(8)
+                        .ok_or(Error::InvalidProtobufWireFormat)?;
+                    if end > buf.len() {
+                        return Err(Error::InvalidProtobufWireFormat);
+                    }
+                    end
+                }
+                wire_types::FIXED32 => {
+                    let end = next
+                        .checked_add(4)
+                        .ok_or(Error::InvalidProtobufWireFormat)?;
+                    if end > buf.len() {
+                        return Err(Error::InvalidProtobufWireFormat);
+                    }
+                    end
+                }
                 _ => return Err(Error::InvalidProtobufWireFormat),
             };
         }
@@ -618,6 +635,16 @@ mod tests {
     fn try_new_rejects_truncated_length_delimited_field() {
         assert!(matches!(
             RawLogsData::try_new(&[0x0a, 0x05, 0x00]),
+            Err(Error::InvalidProtobufWireFormat)
+        ));
+    }
+
+    /// Scenario: a top-level field declares a length larger than a 32-bit address space.
+    /// Guarantees: validation rejects lengths that overflow `usize` or exceed the input buffer.
+    #[test]
+    fn try_new_rejects_oversized_length_delimited_field() {
+        assert!(matches!(
+            RawLogsData::try_new(&[0x0a, 0x80, 0x80, 0x80, 0x80, 0x10]),
             Err(Error::InvalidProtobufWireFormat)
         ));
     }
