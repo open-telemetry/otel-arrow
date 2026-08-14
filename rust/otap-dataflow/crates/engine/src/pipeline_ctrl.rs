@@ -1483,6 +1483,7 @@ mod tests {
             core_id: 0,
             num_cores: 1,
             thread_id: 0,
+            numa_node_id: 0,
         };
         let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
@@ -1539,6 +1540,7 @@ mod tests {
             core_id,
             num_cores: 1,
             thread_id: 0,
+            numa_node_id: 0,
         };
         let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
@@ -2020,6 +2022,7 @@ mod tests {
                     core_id,
                     num_cores: 1,
                     thread_id: 0,
+                    numa_node_id: 0,
                 };
                 let pipeline_context =
                     PipelineContext::new(controller_context, pipeline_context_params);
@@ -3269,6 +3272,7 @@ mod tests {
             core_id: 0,
             num_cores: 1,
             thread_id: 0,
+            numa_node_id: 0,
         };
         let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
@@ -3609,6 +3613,7 @@ mod tests {
             core_id: 0,
             num_cores: 1,
             thread_id: 0,
+            numa_node_id: 0,
         };
         let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
@@ -3689,6 +3694,7 @@ mod tests {
             core_id: 0,
             num_cores: 1,
             thread_id: 0,
+            numa_node_id: 0,
         };
         let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
@@ -3812,6 +3818,7 @@ mod tests {
             core_id: 0,
             num_cores: 1,
             thread_id: 0,
+            numa_node_id: 0,
         };
         let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();

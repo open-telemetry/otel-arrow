@@ -56,6 +56,9 @@ pub enum Error {
         error: TryFromPrimitiveError<MetricType>,
     },
 
+    #[error("Cannot recognize metric type name: {metric_type_name}")]
+    UnrecognizedMetricTypeName { metric_type_name: String },
+
     #[error("Unable to handle empty metric type")]
     EmptyMetricType,
 
