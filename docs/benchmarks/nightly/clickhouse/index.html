@@ -263,7 +263,8 @@
               afterTitle: items => {
                 const point = points[items[0].index];
                 const user = point.commit.committer.username || point.commit.committer.name;
-                return '\n' + point.commit.message + '\n\n' + point.commit.timestamp + ' committed by @' + user + '\n';
+                const message = point.commit.message.split('\n')[0] || point.commit.id.slice(0, 7);
+                return '\n' + message + '\n\n' + point.commit.timestamp + ' committed by @' + user + '\n';
               },
               label: item => item.value + ' ' + (points[item.index].bench.unit || ''),
               afterLabel: item => points[item.index].bench.extra ? '\n' + points[item.index].bench.extra : ''
