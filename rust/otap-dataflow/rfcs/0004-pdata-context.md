@@ -4,30 +4,40 @@
 
 ## Overview
 
-A **Pdata context** is request-scoped metadata attached to an
+**Message context** is message-scoped metadata attached to an
 `OtapPdata` and carried through the pipeline. We use a policy
-declaration language consisting of optional **context fields** and
-**identities**.
+declaration language consisting of optional **context entries**
+containing various structured data. 
 
-Context fields hold individual or multiple values, including transport
-headers, authorized identity fields, and other contextual information
-(e.g. peer IP address, idempotency key, constant
-information). Identities holds qualified sets of specific fields used
-to distinctly identify the request. Requests carry multiple identities.
+The use of context entries is an optional feature of the DFE, and the
+explicit configuration mechanisms discussed here can be safely omitted
+in configurations that do not require features meant to address
+requirements in multitenant environments. Configuration that interacts
+with context entries remains in the associated domains, for example:
 
-A **Pdata context compiler** computes a set of tables describing the
-engine configuration, containing information needed by:
+- Authorized identity fields can be placed into context entries using
+  authorization configuration. This design calls for new
+  `authorized_identity` policies to set context entries from standard
+  information returned by authorization extensions.
+- One or more transport headers can be placed into context entries
+  using transport header configuration. The existing
+  `policies::transport_headers` section already has a mechanism for
+  defining context entries though its `store_as` verb.
+- Network information such as source address can be placed into 
+  context entries using network configuration, and so on.
 
-- **extractors** which configure how to form a context field from a carrier
-- **injectors** which configure how to place a context field into a carrier
-- **predicate** which can parition or condition by identities and fields.
+For users with extensive multitenant requirements, we introduce a form
+of **composite context entry** capable of binding multiple context
+entries into a single context entry. Composite context entries are
+subject to conditions, so these entries are conceptually present or
+absent, and if present, they are defined by multiple primitive context
+entries. A new section `policies::context::composite_entries` will be
+introduced.
 
-For an efficient implementation, nodes and extensions are required to
-declare policy bindings in their respective configuration areas. For
-example, the batch processor after validating its configuration will
-bind an identity policy. The Pdata context compiler, taking all of the
-policy bindings together, computes or recomputes the tables used in
-the implementation provided for the binding.
+Users will not be required to configure or learn underlying concepts
+used in the implementation of context entries. This deisgn includes
+the outline of a technical approach that encodes the set of context
+entries in a compact byte array including an index for fast lookup.
 
 ## User stories
 
