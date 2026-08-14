@@ -7497,6 +7497,7 @@ dependencies = [
  "prost 0.14.4",
  "serde",
  "serde_json",
+ "serde_yaml",
  "smallvec",
  "sysinfo",
  "thiserror 2.0.20",
