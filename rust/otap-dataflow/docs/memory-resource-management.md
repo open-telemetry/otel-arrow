@@ -35,25 +35,14 @@ No single measurement can answer all of these questions:
 
 DFE therefore separates measurement, attribution, policy, and action:
 
-```text
-+----------------+     +----------------+     +----------------+
-| Measurement    | --> | Attribution    | --> | Policy         |
-|                |     |                |     |                |
-| RSS / cgroup   |     | Process        |     | Memory limiter |
-| Alloc activity |     | Origin heap    |     | Rate limiter   |
-| Heap inventory |     | Retained owner |     | Future budgets |
-+----------------+     | Tenant         |     +--------+-------+
-                       +----------------+              |
-                                                       v
-                                              +----------------+
-                                              | Action         |
-                                              |                |
-                                              | Reject / retry |
-                                              | Backpressure   |
-                                              | Readiness      |
-                                              | Purge / reclaim|
-                                              | Observe only   |
-                                              +----------------+
+```mermaid
+flowchart LR
+    M["Measurement<br/>RSS / cgroup<br/>Allocation activity<br/>Heap inventory"]
+    A["Attribution<br/>Process<br/>Origin heap<br/>Retained owner<br/>Tenant"]
+    P["Policy<br/>Memory limiter<br/>Rate limiter<br/>Future budgets"]
+    X["Action<br/>Reject / retry<br/>Backpressure<br/>Readiness<br/>Purge / reclaim<br/>Observe only"]
+
+    M --> A --> P --> X
 ```
 
 An attribution mechanism does not automatically become an enforcement signal.
@@ -84,22 +73,17 @@ The current memory limiter is the outer safety boundary. It periodically
 samples process memory, classifies it as `Normal`, `Soft`, or `Hard`, and
 publishes pressure changes through the control plane.
 
-```text
-RSS / cgroup / supported allocator probe
-                  |
-                  v
-         +------------------+
-         | Process sampler  |
-         +--------+---------+
-                  |
-                  v
-        Normal / Soft / Hard
-                  |
-        +---------+----------+
-        |                    |
-        v                    v
-Receiver-local state   Readiness and optional
-and admission gates    jemalloc purge
+```mermaid
+flowchart TD
+    M[RSS / cgroup / supported allocator probe]
+    S[Process sampler]
+    P[Normal / Soft / Hard]
+    R[Receiver-local state and admission gates]
+    A[Readiness and optional jemalloc purge]
+
+    M --> S --> P
+    P --> R
+    P --> A
 ```
 
 In enforce mode, `Hard` pressure sheds work at supported receiver boundaries.
@@ -120,13 +104,21 @@ protocol behavior, metrics, readiness, purge behavior, and limitations.
 Pressure-aware throttling combines the process pressure level with a
 receiver-instance rate bucket:
 
-```text
-Current process pressure --------+
-                                 |
-Observed receiver traffic -------+--> Admission decision
-                                 |      | admit
-Configured rate and burst -------+      | would throttle
-                                        | throttle / oversized
+```mermaid
+flowchart LR
+    P[Current process pressure]
+    T[Observed receiver traffic]
+    R[Configured rate and burst]
+    D{Admission decision}
+    A[Admit]
+    W[Would throttle]
+    X[Throttle or oversized]
+
+    P --> D
+    T --> D
+    R --> D
+    D --> A
+    D --> W --> X
 ```
 
 The first implementation applies to participating OTLP and Syslog / CEF
@@ -248,12 +240,16 @@ is retained. Unlike allocator-origin inventory, ownership follows the work
 through queues, topics, batchers, retry buffers, exporters, and other retaining
 boundaries.
 
-```text
-Ingress       Topic          Retry processor       Exporter
-  |             |                   |                  |
-  | owner=A     | transfer          | owner=B/retry    |
-  +------------>+------------------>+----------------->|
-                                      retained here
+```mermaid
+flowchart LR
+    I[Ingress]
+    T[Topic]
+    R[Retry processor]
+    E[Exporter]
+
+    I -->|owner A| T
+    T -->|transfer ownership| R
+    R -->|owner B / retry| E
 ```
 
 Logical retained size is an estimate chosen for stable, cheap accounting. It is
@@ -279,12 +275,11 @@ measurement nor an allocator property.
 A future tenant-aware limiter could combine tenant identity with an explicitly
 selected usage dimension:
 
-```text
-Tenant identity + request rate ------------> Tenant rate policy
-
-Tenant identity + logical retained bytes --> Tenant memory policy
-
-Allocator-origin heap bytes ---------------> Diagnosis only by default
+```mermaid
+flowchart LR
+    R[Tenant identity + request rate] --> RP[Tenant rate policy]
+    M[Tenant identity + logical retained bytes] --> MP[Tenant memory policy]
+    H[Allocator-origin heap bytes] --> D[Diagnosis only by default]
 ```
 
 Tenant policy requires bounded key cardinality, trusted identity extraction,
@@ -299,13 +294,18 @@ it is different from fairness among tenants sharing one receiver or pipeline.
 Consider a batch allocated by Pipeline A, transferred through a topic, retained
 for retry by Pipeline B, and associated with Tenant X:
 
-```text
-Tenant X
-   |
-   v
-Pipeline A -- allocate --> origin heap A
-   |
-   +-- topic --> Pipeline B -- retain for retry --> exporter
+```mermaid
+flowchart LR
+    X[Tenant X]
+    A[Pipeline A]
+    H[Origin heap A]
+    B[Pipeline B]
+    E[Exporter]
+
+    X -. tenant context .-> A
+    A -->|allocate| H
+    A -->|topic transfer| B
+    B -->|retain for retry| E
 ```
 
 - The process limiter evaluates total process risk.
