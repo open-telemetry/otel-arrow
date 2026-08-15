@@ -8,7 +8,56 @@ use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 
+use crate::error::Error;
 use crate::proto::consts::wire_types;
+
+/// Validates the wire framing of one protobuf message without decoding nested messages.
+pub(super) fn validate_message_wire_format(buf: &[u8]) -> Result<(), Error> {
+    let mut pos = 0;
+    while pos < buf.len() {
+        let (tag, next) = read_varint(buf, pos).ok_or(Error::InvalidProtobufWireFormat)?;
+        if tag > u64::from(u32::MAX) {
+            return Err(Error::InvalidProtobufWireFormat);
+        }
+        let field_num = tag >> 3;
+        let wire_type = tag & 7;
+        if field_num == 0 {
+            return Err(Error::InvalidProtobufWireFormat);
+        }
+        pos = match wire_type {
+            wire_types::VARINT => {
+                let (_, next) = read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
+                next
+            }
+            wire_types::LEN => {
+                let (len, next) = read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
+                let end = next
+                    .checked_add(
+                        usize::try_from(len).map_err(|_| Error::InvalidProtobufWireFormat)?,
+                    )
+                    .ok_or(Error::InvalidProtobufWireFormat)?;
+                if end > buf.len() {
+                    return Err(Error::InvalidProtobufWireFormat);
+                }
+                end
+            }
+            wire_types::FIXED64 => checked_fixed_end(next, 8, buf.len())?,
+            wire_types::FIXED32 => checked_fixed_end(next, 4, buf.len())?,
+            _ => return Err(Error::InvalidProtobufWireFormat),
+        };
+    }
+    Ok(())
+}
+
+fn checked_fixed_end(start: usize, width: usize, buffer_len: usize) -> Result<usize, Error> {
+    let end = start
+        .checked_add(width)
+        .ok_or(Error::InvalidProtobufWireFormat)?;
+    if end > buffer_len {
+        return Err(Error::InvalidProtobufWireFormat);
+    }
+    Ok(end)
+}
 
 /// Clones the parser, sharing the underlying buffer and interior-mutability state.
 /// The cloned instance will share offsets and position with the original.
@@ -723,5 +772,22 @@ pub fn read_dropped_count(buf: Option<&[u8]>) -> u32 {
             None => 0,
         },
         None => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: A protobuf message starts with a varint key equal to `u32::MAX + 1`.
+    /// Guarantees: Top-level wire validation rejects keys outside protobuf's 32-bit key range.
+    #[test]
+    fn rejects_key_larger_than_u32_max() {
+        let oversized_key = [0x80, 0x80, 0x80, 0x80, 0x10, 0x00];
+
+        assert!(matches!(
+            validate_message_wire_format(&oversized_key),
+            Err(Error::InvalidProtobufWireFormat)
+        ));
     }
 }

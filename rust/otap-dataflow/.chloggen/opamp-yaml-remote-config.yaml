@@ -1,0 +1,5 @@
+change_type: enhancement
+component: observability
+note: Accept JSON and YAML engine configuration from OpAMP servers.
+issues: [3387]
+subtext: YAML is selected by its content type or detected when the OpAMP config file omits a content type, as the opamp-go example server does.
