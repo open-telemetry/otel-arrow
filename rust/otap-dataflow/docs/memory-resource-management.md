@@ -6,14 +6,14 @@
 > limitations. Follow the linked implementation documents, RFCs, and issues for
 > authoritative behavior and configuration.
 
-This document maps the OTAP Dataflow Engine (DFE) memory signals, attribution
+This document maps the OTAP Dataflow Engine (DFE) memory measurements, attribution
 models, policies, and control actions. It is an overview, not the authoritative
 configuration reference.
 
 Each mechanism is marked as one of:
 
 - **Current:** implemented on `main`.
-- **Partial:** some signals or backends exist, but the stated use case is not
+- **Partial:** some measurements or backends exist, but the stated use case is not
   complete.
 - **Proposed:** tracked by an accepted or open design issue.
 - **Future:** a use case or policy boundary without a complete design.
@@ -57,9 +57,9 @@ flowchart LR
     M --> A --> P --> X
 ```
 
-An attribution mechanism does not automatically become an enforcement signal.
-New policy must define how a signal activates, composes with the process-wide
-guardrail, remains bounded, and recovers.
+An attribution mechanism does not automatically become an enforcement input.
+New policy must define its activation conditions, how it composes with the
+process-wide guardrail, how it remains bounded, and how it recovers.
 
 ## Mechanisms at a Glance
 
@@ -386,7 +386,7 @@ References:
 - [Go Collector memory limiter](https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/memorylimiterprocessor)
 - [Scaling the OpenTelemetry Collector](https://opentelemetry.io/docs/collector/scaling/)
 
-## Reading the Signals Together
+## Reading the Measurements Together
 
 The following combinations are useful for investigation. They are hypotheses,
 not proofs:
@@ -398,7 +398,7 @@ not proofs:
 | Rising origin-domain live bytes and rising retained-work bytes | Real retained growth associated with accepted work |
 | Rising origin-domain live bytes with flat retained-work bytes | Missing retained charge, allocator slack, non-PData state, or shared capacity |
 | Rising retained-work bytes with flat origin-domain live bytes | Logical overestimate, shared backing allocation, or allocation in another origin domain |
-| Flat pipeline signals with rising process usage | Allocations outside pipeline domains, allocator overhead, runtime state, or incomplete coverage |
+| Flat pipeline measurements with rising process usage | Allocations outside pipeline domains, allocator overhead, runtime state, or incomplete coverage |
 | High process pressure with one dominant retained owner | Candidate for targeted future budget or reclaim policy |
 <!-- markdownlint-enable MD013 -->
 
