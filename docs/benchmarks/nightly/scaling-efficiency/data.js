@@ -1,60 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786759105766,
+  "lastUpdate": 1786816066589,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "sapatrjv",
-            "username": "sapatrjv",
-            "email": "sapatrjv@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "efad8b7b360246b4e5db2384d408981860814f72",
-          "message": "Point to Weaver main branch to include gix fix to not build openssl on windows platform and fix tag parsing issue causing crashes in latest weaver release bit. (#2910)\n\n# Change Summary\nPoint to Weaver main branch to include gix fix to not build openssl on\nwindows platform and fix tag parsing issue causing crashes in latest\nweaver release bit.\n\n## What issue does this PR close?\n\nPart of https://github.com/open-telemetry/otel-arrow/issues/2697\n\n## How are these changes tested?\n\nSearch cargo tree and check on windows platform no openssl dependency.\nRan Cargo xtast check\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->",
-          "timestamp": "2026-05-12T01:20:06Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/efad8b7b360246b4e5db2384d408981860814f72"
-        },
-        "date": 1778552552335,
-        "tool": "customBiggerIsBetter",
-        "benches": [
-          {
-            "name": "otlp_scaling_efficiency_2_cores",
-            "value": 1.0085,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_4_cores",
-            "value": 0.2528,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_8_cores",
-            "value": 0.2867,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_16_cores",
-            "value": 0.1006,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_avg",
-            "value": 0.4122,
-            "unit": "",
-            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -6998,6 +6946,82 @@ window.BENCHMARK_DATA = {
           {
             "name": "otap_scaling_efficiency_avg",
             "value": 0.8879,
+            "unit": "",
+            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "c1ly",
+            "username": "c1ly",
+            "email": "129437996+c1ly@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "5abeaf8efbd37b6c8519fc8edcd519281e988bbd",
+          "message": "[otap-dataflow] Kafka Exporter enhancement + integration tests (#3683)\n\n# Change Summary\n\n- Updated to immediately send a permanent nack for unretryable errors\nthat occur when attempting to send data\n- Add live reconfiguration support\n- Updated config to allow control of dynamic topics via allowlist and\nregex\n- Updated config to allow user to directly update config setting for\nautomatic topic creation\n- Added and reorganized test under various scenario types\n  - Security\n  - Shutdown & Live Reconfiguration\n  - Retry expectations\n  - Delivery semantics\n  - Kafka Integration\n  - Telemetry/Observability\n  - Configuration\n  \n## What issue does this PR close?\n\n* Completes part of #3509 \n\n## How are these changes tested?\n\nintegration tests and unit tests\n\n## Are there any user-facing changes?\n\nyes, allow_auto_create_topics is now exposed directly in the Kafka\nExporter config and overwrites any changes set in the producer_config\nhash map (if configured)\n\n### Changelog\n\n* [ x ] Added a `.chloggen/*.yaml` entry\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-08-15T01:02:30Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5abeaf8efbd37b6c8519fc8edcd519281e988bbd"
+        },
+        "date": 1786816065665,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.8073,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.8624,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.8368,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.8242,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.8327,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          },
+          {
+            "name": "otap_scaling_efficiency_2_cores",
+            "value": 0.9893,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_4_cores",
+            "value": 0.9699,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_8_cores",
+            "value": 0.7264,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_avg",
+            "value": 0.8952,
             "unit": "",
             "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
