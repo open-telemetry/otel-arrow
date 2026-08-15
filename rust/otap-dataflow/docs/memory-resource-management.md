@@ -36,6 +36,7 @@ No single measurement can answer all of these questions:
 
 DFE therefore separates measurement, attribution, policy, and action:
 
+<!-- markdownlint-disable MD013 -->
 ```mermaid
 flowchart LR
     subgraph S1["1. Measurement"]
@@ -56,6 +57,11 @@ flowchart LR
 
     M --> A --> P --> X
 ```
+<!-- markdownlint-enable MD013 -->
+
+This is a vocabulary and responsibility model, not a required execution path;
+individual mechanisms may skip stages. For example, the process limiter applies
+policy directly to a process-wide measurement.
 
 An attribution mechanism does not automatically become an enforcement input.
 New policy must define its activation conditions, how it composes with the
@@ -121,13 +127,16 @@ flowchart LR
     P[Current process pressure]
     T[Observed receiver traffic]
     R[Configured rate and burst]
+    G{Pressure active?}
     D{Admission decision}
     A[Admit]
     W[Would throttle]
     X[Throttle]
     O[Oversized]
 
-    P --> D
+    P --> G
+    G -->|No| A
+    G -->|Yes| D
     T --> D
     R --> D
     D --> A
@@ -142,10 +151,12 @@ provide group-wide or tenant fairness. Receiver behavior is protocol-specific:
 some transports can return retry guidance, while others can only close a
 connection or drop a datagram.
 
-During `Normal` pressure, the receiver updates its rate state but does not reject
-traffic for exceeding the configured rate. At `Soft` or higher pressure, an
-enforcing rate limiter may throttle over-limit traffic. At `Hard`, global
-memory-limiter shedding also applies when the memory limiter is enforcing.
+During `Normal` pressure, all rate-policy decisions admit, including a payload
+that exceeds the configured burst capacity, while the receiver continues to
+update its rate state. At `Soft` or higher pressure, observe-only mode reports
+`WouldThrottle` but still admits; enforcing mode may reject over-limit traffic as
+`Throttle` or `Oversized`. At `Hard`, global memory-limiter shedding also applies
+when the memory limiter is enforcing.
 
 The admission hot path consumes receiver-local pressure state rather than
 sampling process memory directly. This keeps ingress decisions cheap and avoids
@@ -162,6 +173,11 @@ bounded queue applies its configured backpressure or refusal behavior without
 waiting for the process memory sampler. These local capacity controls limit
 message counts or tracked in-flight work; they do not impose a shared byte
 budget across the process.
+
+Receiver transport limits, such as OTLP HTTP body-size and gRPC decoding-size
+limits, separately bound individual requests before or during decoding. They are
+local input bounds, not process-wide memory budgets or pressure policies. See the
+[OTLP receiver documentation](otlp-receiver.md) for current configuration.
 
 The current topic runtime uses bounded queues or rings according to topic mode.
 See [Topic Architecture](topic-architecture.md) for the in-memory structures and
@@ -206,9 +222,10 @@ threads. A downstream pipeline that frees more than it allocates can appear
 idle. [Issue #3725](https://github.com/open-telemetry/otel-arrow/issues/3725)
 tracks the allocator-neutral activity and physical-inventory model.
 
-The metric is expected to be removed rather than renamed. Use the allocation
-and deallocation deltas to diagnose churn; the proposed `pipeline.heap.live`
-view would report physical live memory.
+Discussion in [issue #3725](https://github.com/open-telemetry/otel-arrow/issues/3725)
+proposes removing the metric rather than renaming it. In the current
+implementation, use the allocation and deallocation deltas to diagnose churn;
+the proposed `pipeline.heap.live` view would report physical live memory.
 
 See the [engine telemetry inventory](../crates/engine/telemetry.md) for the
 currently emitted metrics.
@@ -232,9 +249,9 @@ sequenceDiagram
 
     A->>H: allocate 10 MiB
     Note over A: allocation activity +10 MiB
+    Note over H: application-live +10 MiB
     A->>T: transfer object
     T->>B: deliver object
-    Note over H: application-live +10 MiB
     B-->>H: remote free
     Note over B: deallocation activity +10 MiB
     Note over H: application-live returns toward baseline
@@ -271,9 +288,9 @@ flowchart LR
     R[Retry processor]
     E[Exporter]
 
-    I -->|owner A| T
+    I -->|ingress ownership| T
     T -->|transfer ownership| R
-    R -->|owner B / retry| E
+    R -->|retry ownership| E
 ```
 
 Logical retained size is an estimate chosen for stable, cheap accounting. It is
@@ -392,7 +409,7 @@ scoped policy.
 
 References:
 
-- [Go Collector memory limiter](https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/memorylimiterprocessor)
+- [Go Collector memory limiter functionality](https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/memorylimiterprocessor#functionality)
 - [Scaling the OpenTelemetry Collector](https://opentelemetry.io/docs/collector/scaling/)
 
 ## Reading the Memory Views Together
