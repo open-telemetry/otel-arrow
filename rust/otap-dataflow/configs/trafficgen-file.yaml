@@ -1,0 +1,28 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              traffic_config:
+                max_signal_count: 30
+                max_batch_size: 5
+                signals_per_second: 10
+                log_weight: 1
+                metric_weight: 1
+                trace_weight: 1
+          file:
+            type: exporter:file
+            config:
+              path: "/tmp/otel-capture-{signal}-{core_id}-{generation}.jsonl"
+              open_mode: append
+              durability: write
+
+        connections:
+          - from: generator
+            to: file
