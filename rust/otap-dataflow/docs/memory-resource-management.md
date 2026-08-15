@@ -1,9 +1,10 @@
 # Memory Resource Management
 
 > [!IMPORTANT]
-> This is a status-labelled architecture map. Only mechanisms marked **Current**
-> are implemented and available for use. Follow the linked implementation
-> documents, RFCs, and issues for authoritative behavior and configuration.
+> This is a status-labelled architecture map. **Proposed** and **Future**
+> mechanisms are not implemented; **Partial** mechanisms have the stated
+> limitations. Follow the linked implementation documents, RFCs, and issues for
+> authoritative behavior and configuration.
 
 This document maps the OTAP Dataflow Engine (DFE) memory signals, attribution
 models, policies, and control actions. It is an overview, not the authoritative
@@ -112,13 +113,16 @@ flowchart LR
     D{Admission decision}
     A[Admit]
     W[Would throttle]
-    X[Throttle or oversized]
+    X[Throttle]
+    O[Oversized]
 
     P --> D
     T --> D
     R --> D
     D --> A
-    D --> W --> X
+    D --> W
+    D --> X
+    D --> O
 ```
 
 The first implementation applies to participating OTLP and Syslog / CEF
@@ -129,8 +133,8 @@ connection or drop a datagram.
 
 During `Normal` pressure, the receiver updates its rate state but does not reject
 traffic for exceeding the configured rate. At `Soft` or higher pressure, an
-enforcing rate limiter may throttle over-limit traffic; at `Hard`, the global
-memory-limiter shedding policy also applies.
+enforcing rate limiter may throttle over-limit traffic. At `Hard`, global
+memory-limiter shedding also applies when the memory limiter is enforcing.
 
 The admission hot path consumes receiver-local pressure state rather than
 sampling process memory directly. This keeps ingress decisions cheap and avoids
@@ -329,7 +333,8 @@ information and could throttle the wrong scope.
 
 Future scoped policies must preserve an explicit precedence model:
 
-1. Process `Hard` pressure remains the unconditional outer safety backstop.
+1. When the memory limiter is enforcing, process `Hard` pressure remains the
+   outer safety backstop.
 2. Receiver pressure-aware rate policy limits new work at participating ingress
    points.
 3. A future retained-work budget targets the pipeline, component, or group
@@ -399,6 +404,9 @@ PRs implementing [#3725](https://github.com/open-telemetry/otel-arrow/issues/372
 [#3272](https://github.com/open-telemetry/otel-arrow/issues/3272), scoped memory
 budgets, or tenant-aware memory policy should update this document in the same
 change.
+
+When the observe-only retained-work accounting RFC receives its final number,
+update its title and links in this document.
 
 ## Detailed References
 
