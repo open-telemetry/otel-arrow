@@ -7,8 +7,7 @@
 
 This document maps the OTAP Dataflow Engine (DFE) memory signals, attribution
 models, policies, and control actions. It is an overview, not the authoritative
-configuration reference or a promise that every described mechanism is
-implemented.
+configuration reference.
 
 Each mechanism is marked as one of:
 
@@ -73,7 +72,7 @@ guardrail, remains bounded, and recovers.
 | Durable buffering and disk budget | Can outage backlog survive restart without remaining only in volatile queues? | Durable-buffer instance | Persist backlog, bound disk use, and backpressure or drop at the storage cap | Current, experimental |
 | Pipeline allocation activity | Where do allocation and free calls execute? | Pipeline thread | Diagnose allocator churn and allocation-heavy paths | Partial: non-Windows builds with the `jemalloc` feature and jemalloc active as the global allocator |
 | Pipeline allocator inventory | Which pipeline domain originally allocated live physical memory? | Pipeline allocator domain | Diagnose physical retention, fragmentation, and retired generations | Proposed in [#3725](https://github.com/open-telemetry/otel-arrow/issues/3725) |
-| Retained-work accounting | Which component or pipeline currently retains logical work? | Retention site and work owner | Explain queue, retry, batch, and exporter retention | Proposed in [RFC 0000](../rfcs/0000-observe-only-retained-work-accounting.md) and tracked by [#3272](https://github.com/open-telemetry/otel-arrow/issues/3272) |
+| Retained-work accounting | Which component or pipeline currently retains logical work? | Retention site and work owner | Explain queue, retry, batch, and exporter retention | Proposed in the [Observe-Only Retained-Work Accounting RFC (number pending)](../rfcs/0000-observe-only-retained-work-accounting.md) and tracked by [#3272](https://github.com/open-telemetry/otel-arrow/issues/3272) |
 | Pipeline retained-memory budget | Has one pipeline retained more work than allowed? | Pipeline or pipeline group | Targeted backpressure and isolation | Future |
 | Tenant-aware policy | Which tenant should consume shared capacity? | Tenant across one or more pipelines | Fairness, quotas, and tenant-specific throttling | Future |
 | Component reclaim | Can buffered state be reduced without waiting for normal completion? | Stateful component | Reclaim retry, batch, stream, or cache state | Future |
@@ -212,19 +211,21 @@ of samples, not an instantaneous high-water mark.
 
 Calling-thread activity and origin-domain inventory are separate axes:
 
-```text
-Pipeline A thread                         Pipeline B thread
-      |                                         |
-      | allocate 10 MiB                         |
-      v                                         |
-+-------------------+                            |
-| Origin heap A     | -- object via topic ----> | holds object
-| live: 10 MiB      |                            |
-+-------------------+ <---- remote free ---------+
-      |                                         |
-      | live returns toward baseline            | free activity +10 MiB
-      v                                         v
-Allocation activity: A +10 MiB        Deallocation activity: B +10 MiB
+```mermaid
+sequenceDiagram
+    participant A as Pipeline A thread
+    participant H as Origin heap A
+    participant T as Topic
+    participant B as Pipeline B thread
+
+    A->>H: allocate 10 MiB
+    Note over A: allocation activity +10 MiB
+    A->>T: transfer object
+    T->>B: deliver object
+    Note over H: application-live +10 MiB
+    B-->>H: remote free
+    Note over B: deallocation activity +10 MiB
+    Note over H: application-live returns toward baseline
 ```
 
 The origin domain remains A even while B logically holds the work. This makes
@@ -267,7 +268,7 @@ without becoming an allocator label.
 Retained accounting should begin as observe-only. Enforcement needs additional
 design for reserves, fairness, shared ownership, overshoot, reclaim, recovery,
 and admission precedence. See
-[RFC 0000: Observe-Only Retained-Work Accounting](../rfcs/0000-observe-only-retained-work-accounting.md)
+[Observe-Only Retained-Work Accounting RFC (number pending)](../rfcs/0000-observe-only-retained-work-accounting.md)
 and tracking issue [#3272](https://github.com/open-telemetry/otel-arrow/issues/3272).
 
 ## Tenant-Aware Policy
@@ -398,7 +399,7 @@ change.
 
 - [Memory Limiter - Phase 1](memory-limiter-phase1.md)
 - [RFC 0002: Pressure-Aware Rate Throttling](../rfcs/0002-pressure-aware-rate-throttling.md)
-- [RFC 0000: Observe-Only Retained-Work Accounting](../rfcs/0000-observe-only-retained-work-accounting.md)
+- [Observe-Only Retained-Work Accounting RFC (number pending)](../rfcs/0000-observe-only-retained-work-accounting.md)
 - [Configuration Model](configuration-model.md)
 - [Telemetry Metrics Guide](telemetry/metrics-guide.md)
 - [Engine Telemetry Inventory](../crates/engine/telemetry.md)
