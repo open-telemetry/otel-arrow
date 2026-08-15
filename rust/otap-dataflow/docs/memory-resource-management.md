@@ -428,6 +428,9 @@ change.
 When the observe-only retained-work accounting RFC receives its final number,
 update its title and links in this document.
 
+When the Pdata Context RFC merges, replace its pull-request links with the
+repository-relative RFC path.
+
 ## Detailed References
 
 - [Memory Limiter - Phase 1](memory-limiter-phase1.md)
