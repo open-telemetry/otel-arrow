@@ -127,6 +127,11 @@ provide group-wide or tenant fairness. Receiver behavior is protocol-specific:
 some transports can return retry guidance, while others can only close a
 connection or drop a datagram.
 
+During `Normal` pressure, the receiver updates its rate state but does not reject
+traffic for exceeding the configured rate. At `Soft` or higher pressure, an
+enforcing rate limiter may throttle over-limit traffic; at `Hard`, the global
+memory-limiter shedding policy also applies.
+
 The admission hot path consumes receiver-local pressure state rather than
 sampling process memory directly. This keeps ingress decisions cheap and avoids
 turning the global sampler into a point of contention.
