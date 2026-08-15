@@ -39,19 +39,19 @@ DFE therefore separates measurement, attribution, policy, and action:
 ```mermaid
 flowchart LR
     subgraph S1["1. Measurement"]
-        M["RSS / cgroup<br/>Allocation activity<br/>Heap inventory"]
+        M["- RSS / cgroup<br/>- Allocation activity<br/>- Heap inventory"]
     end
 
     subgraph S2["2. Attribution"]
-        A["Process<br/>Origin heap<br/>Retained owner<br/>Tenant"]
+        A["- Process<br/>- Origin heap<br/>- Retained owner<br/>- Tenant"]
     end
 
     subgraph S3["3. Policy"]
-        P["Memory limiter<br/>Rate limiter<br/>Future budgets"]
+        P["- Memory limiter<br/>- Rate limiter<br/>- Future budgets"]
     end
 
     subgraph S4["4. Action"]
-        X["Reject / retry<br/>Backpressure<br/>Readiness<br/>Purge / reclaim<br/>Observe only"]
+        X["- Reject / retry<br/>- Backpressure<br/>- Readiness<br/>- Purge / reclaim<br/>- Observe only"]
     end
 
     M --> A --> P --> X
