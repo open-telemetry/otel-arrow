@@ -4,7 +4,7 @@ This document describes the **Phase 1 implementation** of the process-wide memor
 limiter. It covers current behavior only. The longer-term hierarchical
 lease-and-ticket design is planned for a separate document.
 
-For a status-labelled map of process memory signals, allocator telemetry,
+For a status-labelled map of process memory views, allocator telemetry,
 retained-work attribution, throttling, and control actions, see
 [Memory Resource Management](memory-resource-management.md).
 

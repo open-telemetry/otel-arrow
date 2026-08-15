@@ -6,14 +6,14 @@
 > limitations. Follow the linked implementation documents, RFCs, and issues for
 > authoritative behavior and configuration.
 
-This document maps the OTAP Dataflow Engine (DFE) memory measurements, attribution
+This document maps the OTAP Dataflow Engine (DFE) memory views, attribution
 models, policies, and control actions. It is an overview, not the authoritative
 configuration reference.
 
 Each mechanism is marked as one of:
 
 - **Current:** implemented on `main`.
-- **Partial:** some measurements or backends exist, but the stated use case is not
+- **Partial:** some capabilities or backends exist, but the stated use case is not
   complete.
 - **Proposed:** tracked by an accepted or open design issue.
 - **Future:** a use case or policy boundary without a complete design.
@@ -390,7 +390,7 @@ References:
 - [Go Collector memory limiter](https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/memorylimiterprocessor)
 - [Scaling the OpenTelemetry Collector](https://opentelemetry.io/docs/collector/scaling/)
 
-## Reading the Measurements Together
+## Reading the Memory Views Together
 
 The following combinations are useful for investigation. They are hypotheses,
 not proofs:
@@ -402,7 +402,7 @@ not proofs:
 | Rising origin-domain live bytes and rising retained-work bytes | Real retained growth associated with accepted work |
 | Rising origin-domain live bytes with flat retained-work bytes | Missing retained charge, allocator slack, non-PData state, or shared capacity |
 | Rising retained-work bytes with flat origin-domain live bytes | Logical overestimate, shared backing allocation, or allocation in another origin domain |
-| Flat pipeline measurements with rising process usage | Allocations outside pipeline domains, allocator overhead, runtime state, or incomplete coverage |
+| Flat pipeline views with rising process usage | Allocations outside pipeline domains, allocator overhead, runtime state, or incomplete coverage |
 | High process pressure with one dominant retained owner | Candidate for targeted future budget or reclaim policy |
 <!-- markdownlint-enable MD013 -->
 
