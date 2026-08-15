@@ -253,6 +253,10 @@ Per-pipeline domains also introduce costs and lifecycle requirements:
 
 These costs must be measured before changing the default allocation topology.
 
+See [issue #3725](https://github.com/open-telemetry/otel-arrow/issues/3725) for
+the proposed allocator-domain metrics, backend requirements, lifecycle, and
+validation criteria.
+
 ## Proposed Logical Retained-Work Accounting
 
 Retained-work accounting answers who currently holds accepted work and where it
