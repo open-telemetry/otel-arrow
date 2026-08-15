@@ -75,7 +75,7 @@ process-wide guardrail, how it remains bounded, and how it recovers.
 | Pipeline allocator inventory | Which pipeline domain originally allocated live physical memory? | Pipeline allocator domain | Diagnose physical retention, fragmentation, and retired generations | Proposed in [#3725](https://github.com/open-telemetry/otel-arrow/issues/3725) |
 | Retained-work accounting | Which component or pipeline currently retains logical work? | Retention site and work owner | Explain queue, retry, batch, and exporter retention | Proposed in the [Observe-Only Retained-Work Accounting RFC (number pending)](../rfcs/0000-observe-only-retained-work-accounting.md) and tracked by [#3272](https://github.com/open-telemetry/otel-arrow/issues/3272) |
 | Pipeline retained-memory budget | Has one pipeline retained more work than allowed? | Pipeline or pipeline group | Targeted backpressure and isolation | Future |
-| Tenant-aware policy | Which tenant should consume shared capacity? | Tenant across one or more pipelines | Fairness, quotas, and tenant-specific throttling | Future |
+| Tenant-aware policy | Which tenant should consume shared capacity? | Tenant across one or more pipelines | Fairness, quotas, and tenant-specific throttling | Future; identity foundation proposed in the [Pdata Context RFC](https://github.com/open-telemetry/otel-arrow/pull/3742) |
 | Component reclaim | Can buffered state be reduced without waiting for normal completion? | Stateful component | Reclaim retry, batch, stream, or cache state | Future |
 <!-- markdownlint-enable MD013 -->
 
@@ -312,6 +312,11 @@ Raw tenant identities must not become unbounded metric attributes.
 
 Routing tenants into separate pipelines can provide macro-scale isolation, but
 it is different from fairness among tenants sharing one receiver or pipeline.
+
+The draft [Pdata Context RFC](https://github.com/open-telemetry/otel-arrow/pull/3742)
+provides the message-scoped identity and propagation foundation for these
+policies. It does not itself define tenant memory measurement, budgets,
+fairness, or enforcement.
 
 ## Example: One Batch, Four Answers
 
