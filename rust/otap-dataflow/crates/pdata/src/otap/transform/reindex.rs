@@ -79,8 +79,8 @@ use std::ops::{Add, AddAssign, Range, Sub, SubAssign};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, DictionaryArray,
-    PrimitiveArray, RecordBatch,
+    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, DictionaryArray, NullArray,
+    PrimitiveArray, RecordBatch, StructArray,
 };
 use arrow::buffer::ScalarBuffer;
 use arrow::datatypes::{
@@ -89,10 +89,11 @@ use arrow::datatypes::{
 };
 
 use crate::error::{Error, Result};
+use crate::otap::transform::concatenate::concatenate;
 use crate::otap::transform::transport_optimize::remove_transport_optimized_encodings;
 use crate::otap::transform::util::{
     extract_id_column, payload_to_idx, remove_record_batch_ranges, replace_column,
-    sort_record_batch_by_indices,
+    sort_record_batch_by_indices, struct_column_name,
 };
 use crate::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -116,6 +117,28 @@ pub fn reindex<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Resu
         Logs::COUNT => reindex_logs::<{ N }>(batches),
         Metrics::COUNT => reindex_metrics::<{ N }>(batches),
         Traces::COUNT => reindex_traces::<{ N }>(batches),
+        _ => unreachable!(),
+    }
+}
+
+/// Reindex and concatenate OTAP batches, applying offset-only reindexing to the
+/// final coalesced buffers when the relation columns support it.
+pub(crate) fn reindex_and_concatenate<const N: usize>(
+    batches: &mut [[Option<RecordBatch>; N]],
+) -> Result<[Option<RecordBatch>; N]> {
+    if batches.len() <= 1 {
+        return concatenate(batches);
+    }
+    // Planning costs more than the avoided allocations for a two-batch merge.
+    if batches.len() == 2 {
+        reindex(batches)?;
+        return concatenate(batches);
+    }
+
+    match N {
+        Logs::COUNT => reindex_and_concatenate_store::<Logs, N>(batches),
+        Metrics::COUNT => reindex_and_concatenate_store::<Metrics, N>(batches),
+        Traces::COUNT => reindex_and_concatenate_store::<Traces, N>(batches),
         _ => unreachable!(),
     }
 }
@@ -194,6 +217,15 @@ where
         store.remove_transport_optimized_encodings(*payload_type)?;
     }
 
+    reindex_decoded_batch_store(store)
+}
+
+fn reindex_decoded_batch_store<S, const N: usize>(
+    store: &mut MultiBatchStore<'_, S, N>,
+) -> Result<()>
+where
+    S: OtapBatchStore,
+{
     for &payload_type in S::allowed_payload_types() {
         let info = payload_relations(payload_type);
 
@@ -229,6 +261,402 @@ where
         }
     }
 
+    Ok(())
+}
+
+fn reindex_and_concatenate_store<S, const N: usize>(
+    batches: &mut [[Option<RecordBatch>; N]],
+) -> Result<[Option<RecordBatch>; N]>
+where
+    S: OtapBatchStore,
+{
+    let plan = {
+        let mut store = MultiBatchStore::<S, N>::new(batches);
+        for payload_type in S::allowed_payload_types() {
+            store.remove_transport_optimized_encodings(*payload_type)?;
+        }
+        try_build_fused_reindex_plan(&store)?
+    };
+
+    if let Some(plan) = plan {
+        let mut result = concatenate(batches)?;
+        plan.apply(&mut result)?;
+        return Ok(result);
+    }
+
+    let mut store = MultiBatchStore::<S, N>::new(batches);
+    reindex_decoded_batch_store(&mut store)?;
+    concatenate(batches)
+}
+
+#[derive(Debug, Default)]
+struct FusedReindexPlan {
+    columns: Vec<PlannedColumn>,
+}
+
+#[derive(Debug)]
+struct PlannedColumn {
+    payload_index: usize,
+    column_path: &'static str,
+    id_type: IdColumnType,
+    offsets: Vec<PlannedOffset>,
+}
+
+#[derive(Debug)]
+struct PlannedOffset {
+    range: Range<usize>,
+    offset: u64,
+    sign: Sign,
+}
+
+impl FusedReindexPlan {
+    fn push(
+        &mut self,
+        payload_index: usize,
+        column_path: &'static str,
+        id_type: IdColumnType,
+        range: Range<usize>,
+        offset: u64,
+        sign: Sign,
+    ) {
+        if range.is_empty() || offset == 0 {
+            return;
+        }
+
+        if let Some(column) = self.columns.iter_mut().find(|column| {
+            column.payload_index == payload_index && column.column_path == column_path
+        }) {
+            column.offsets.push(PlannedOffset {
+                range,
+                offset,
+                sign,
+            });
+            return;
+        }
+
+        self.columns.push(PlannedColumn {
+            payload_index,
+            column_path,
+            id_type,
+            offsets: vec![PlannedOffset {
+                range,
+                offset,
+                sign,
+            }],
+        });
+    }
+
+    fn apply<const N: usize>(self, result: &mut [Option<RecordBatch>; N]) -> Result<()> {
+        for (payload_index, result_batch) in result.iter_mut().enumerate() {
+            if !self
+                .columns
+                .iter()
+                .any(|column| column.payload_index == payload_index)
+            {
+                continue;
+            }
+
+            let batch = result_batch
+                .take()
+                .ok_or_else(|| Error::UnexpectedRecordBatchState {
+                    reason: format!(
+                        "Fused reindex output is missing payload index {payload_index}"
+                    ),
+                })?;
+            let (schema, mut columns, _) = batch.into_parts();
+            for column in self
+                .columns
+                .iter()
+                .filter(|column| column.payload_index == payload_index)
+            {
+                apply_planned_column(schema.as_ref(), &mut columns, column)?;
+            }
+            *result_batch = Some(RecordBatch::try_new(schema, columns).map_err(|source| {
+                Error::UnexpectedRecordBatchState {
+                    reason: format!("Failed to rebuild fused reindex output: {source}"),
+                }
+            })?);
+        }
+
+        Ok(())
+    }
+}
+
+fn try_build_fused_reindex_plan<S, const N: usize>(
+    store: &MultiBatchStore<'_, S, N>,
+) -> Result<Option<FusedReindexPlan>>
+where
+    S: OtapBatchStore,
+{
+    let mut running_rows = [0usize; N];
+    let row_ranges = store
+        .batches
+        .iter()
+        .map(|batch| {
+            std::array::from_fn(|payload_index| {
+                let start = running_rows[payload_index];
+                running_rows[payload_index] += batch[payload_index]
+                    .as_ref()
+                    .map_or(0, RecordBatch::num_rows);
+                start..running_rows[payload_index]
+            })
+        })
+        .collect::<Vec<[_; N]>>();
+
+    let mut plan = FusedReindexPlan::default();
+    for &payload_type in S::allowed_payload_types() {
+        let info = payload_relations(payload_type);
+        if let Some(ref primary_id_info) = info.primary_id {
+            check_primary_id_for_overflow(store, payload_type, primary_id_info)?;
+        }
+
+        for relation in info.relations {
+            let is_primary = Some(relation.key_col) == info.primary_id.as_ref().map(|id| id.name);
+            let supported = match relation.size {
+                IdColumnType::U16 => try_plan_offset_reindex::<UInt16Type, S, N>(
+                    store,
+                    &row_ranges,
+                    &mut plan,
+                    payload_type,
+                    relation.child_types,
+                    relation.key_col,
+                    is_primary,
+                    relation.size,
+                )?,
+                IdColumnType::U32 => try_plan_offset_reindex::<UInt32Type, S, N>(
+                    store,
+                    &row_ranges,
+                    &mut plan,
+                    payload_type,
+                    relation.child_types,
+                    relation.key_col,
+                    is_primary,
+                    relation.size,
+                )?,
+            };
+            if !supported {
+                return Ok(None);
+            }
+        }
+    }
+
+    Ok(Some(plan))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_plan_offset_reindex<T, S, const N: usize>(
+    store: &MultiBatchStore<'_, S, N>,
+    row_ranges: &[[Range<usize>; N]],
+    plan: &mut FusedReindexPlan,
+    parent_payload_type: ArrowPayloadType,
+    child_payload_types: &[ArrowPayloadType],
+    id_column_path: &'static str,
+    is_primary: bool,
+    id_type: IdColumnType,
+) -> Result<bool>
+where
+    T: ArrowNumericType,
+    T::Native: Ord
+        + Copy
+        + Add<Output = T::Native>
+        + Sub<Output = T::Native>
+        + From<u8>
+        + ArrowNativeTypeOp,
+    S: OtapBatchStore,
+{
+    let stats = gather_column_stats::<T, S, N>(
+        store,
+        parent_payload_type,
+        child_payload_types,
+        id_column_path,
+        is_primary,
+    )?;
+
+    let total_ids_needed = stats
+        .iter()
+        .filter_map(Option::as_ref)
+        .map(|stat| stat.max_ids_needed as u64)
+        .sum::<u64>();
+    if total_ids_needed > id_type.max()
+        || stats
+            .iter()
+            .flatten()
+            .any(|stat| stat.strategy == ReindexStrategy::CompactOnly)
+    {
+        return Ok(false);
+    }
+
+    let parent_index = payload_to_idx(parent_payload_type);
+    let mut offset = T::Native::from(0);
+    for (batch_index, stat) in stats.iter().enumerate() {
+        let Some(stat) = stat else {
+            continue;
+        };
+
+        let parent_batch = store.batches[batch_index][parent_index]
+            .as_ref()
+            .expect("batch must exist for non-None stat");
+        if !plain_non_null_id_column::<T>(parent_batch, id_column_path) {
+            return Ok(false);
+        }
+        for &child_payload_type in child_payload_types {
+            let child_index = payload_to_idx(child_payload_type);
+            if let Some(child_batch) = &store.batches[batch_index][child_index]
+                && !plain_non_null_id_column::<T>(child_batch, PARENT_ID)
+            {
+                return Ok(false);
+            }
+        }
+
+        let (adjustment, sign) = if stat.min <= offset {
+            (offset - stat.min, Sign::Positive)
+        } else {
+            (stat.min - offset, Sign::Negative)
+        };
+        let span = stat.max - stat.min + T::Native::from(1);
+
+        if adjustment != T::Native::from(0) {
+            plan.push(
+                parent_index,
+                id_column_path,
+                id_type,
+                row_ranges[batch_index][parent_index].clone(),
+                adjustment.as_usize() as u64,
+                sign,
+            );
+            for &child_payload_type in child_payload_types {
+                let child_index = payload_to_idx(child_payload_type);
+                if store.batches[batch_index][child_index].is_some() {
+                    plan.push(
+                        child_index,
+                        PARENT_ID,
+                        id_type,
+                        row_ranges[batch_index][child_index].clone(),
+                        adjustment.as_usize() as u64,
+                        sign,
+                    );
+                }
+            }
+        }
+
+        offset = offset + span;
+    }
+
+    Ok(true)
+}
+
+fn plain_non_null_id_column<T>(batch: &RecordBatch, column_path: &str) -> bool
+where
+    T: ArrowPrimitiveType,
+{
+    extract_id_column(batch, column_path)
+        .is_ok_and(|column| column.data_type() == &T::DATA_TYPE && column.null_count() == 0)
+}
+
+fn apply_planned_column(
+    schema: &arrow_schema::Schema,
+    columns: &mut [ArrayRef],
+    plan: &PlannedColumn,
+) -> Result<()> {
+    if let Some(struct_name) = struct_column_name(plan.column_path) {
+        let struct_index = schema
+            .index_of(struct_name)
+            .map_err(|_| Error::ColumnNotFound {
+                name: plan.column_path.to_string(),
+            })?;
+        let original = take_array(&mut columns[struct_index]);
+        let struct_array = original.as_struct().clone();
+        drop(original);
+        let struct_len = struct_array.len();
+        let (fields, mut struct_columns, nulls) = struct_array.into_parts();
+        let (id_index, _) = fields.find(ID).ok_or_else(|| Error::ColumnNotFound {
+            name: plan.column_path.to_string(),
+        })?;
+        let id_column = take_array(&mut struct_columns[id_index]);
+        struct_columns[id_index] = apply_planned_offsets(id_column, plan)?;
+        columns[struct_index] = Arc::new(
+            StructArray::try_new_with_length(fields, struct_columns, nulls, struct_len)
+                .map_err(|source| Error::Batching { source })?,
+        );
+        return Ok(());
+    }
+
+    let column_index = schema
+        .index_of(plan.column_path)
+        .map_err(|_| Error::ColumnNotFound {
+            name: plan.column_path.to_string(),
+        })?;
+    let column = take_array(&mut columns[column_index]);
+    columns[column_index] = apply_planned_offsets(column, plan)?;
+    Ok(())
+}
+
+fn take_array(array: &mut ArrayRef) -> ArrayRef {
+    std::mem::replace(array, Arc::new(NullArray::new(0)))
+}
+
+fn apply_planned_offsets(array: ArrayRef, plan: &PlannedColumn) -> Result<ArrayRef> {
+    match plan.id_type {
+        IdColumnType::U16 => apply_planned_primitive_offsets::<UInt16Type>(array, &plan.offsets),
+        IdColumnType::U32 => apply_planned_primitive_offsets::<UInt32Type>(array, &plan.offsets),
+    }
+}
+
+fn apply_planned_primitive_offsets<T>(
+    array: ArrayRef,
+    offsets: &[PlannedOffset],
+) -> Result<ArrayRef>
+where
+    T: ArrowPrimitiveType,
+    T::Native: AddAssign + SubAssign + Copy + ArrowNativeType,
+{
+    if array.data_type() != &T::DATA_TYPE {
+        return Err(Error::ColumnDataTypeMismatch {
+            name: ID.to_string(),
+            expect: T::DATA_TYPE,
+            actual: array.data_type().clone(),
+        });
+    }
+
+    let primitive = array.as_primitive::<T>().clone();
+    drop(array);
+    match primitive.into_builder() {
+        Ok(mut builder) => {
+            apply_offset_ranges(builder.values_slice_mut(), offsets)?;
+            Ok(Arc::new(builder.finish()))
+        }
+        Err(primitive) => {
+            let mut values = primitive.values().to_vec();
+            apply_offset_ranges(&mut values, offsets)?;
+            Ok(Arc::new(PrimitiveArray::<T>::new(
+                ScalarBuffer::from(values),
+                primitive.nulls().cloned(),
+            )))
+        }
+    }
+}
+
+fn apply_offset_ranges<T>(values: &mut [T], offsets: &[PlannedOffset]) -> Result<()>
+where
+    T: AddAssign + SubAssign + Copy + ArrowNativeType,
+{
+    for planned in offsets {
+        let values_len = values.len();
+        let range = values.get_mut(planned.range.clone()).ok_or_else(|| {
+            Error::UnexpectedRecordBatchState {
+                reason: format!(
+                    "Fused reindex range {:?} exceeds ID column length {values_len}",
+                    planned.range
+                ),
+            }
+        })?;
+        let offset = T::from_usize(planned.offset as usize).ok_or_else(|| {
+            Error::UnexpectedRecordBatchState {
+                reason: format!("Fused reindex offset {} does not fit", planned.offset),
+            }
+        })?;
+        apply_uniform_offset(range, offset, planned.sign);
+    }
     Ok(())
 }
 
@@ -1369,6 +1797,227 @@ mod tests {
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
         ]);
+    }
+
+    /// Scenario: overlapping plain log, resource, and scope IDs are merged from
+    /// multiple batches using uniform offsets.
+    /// Guarantees: The fused path is selected and produces exactly the same
+    /// root and child IDs as the legacy reindex-then-concatenate sequence.
+    #[test]
+    fn test_fused_reindex_and_concatenate_matches_legacy_logs() {
+        let stores = vec![
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, vec![0u16, 1]),
+                    ("resource.id", UInt16, vec![0u16, 0]),
+                    ("scope.id", UInt16, vec![0u16, 0])
+                ),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 1])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 0])),
+                (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 0]))
+            ),
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, vec![0u16, 1]),
+                    ("resource.id", UInt16, vec![0u16, 0]),
+                    ("scope.id", UInt16, vec![0u16, 0])
+                ),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 1])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 0])),
+                (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 0]))
+            ),
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, vec![0u16, 1]),
+                    ("resource.id", UInt16, vec![0u16, 0]),
+                    ("scope.id", UInt16, vec![0u16, 0])
+                ),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 1])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 0])),
+                (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 0]))
+            ),
+        ];
+        let batches = stores
+            .into_iter()
+            .map(OtapBatchStore::into_batches)
+            .collect::<Vec<_>>();
+
+        let mut planned = batches.clone();
+        let plan = {
+            let mut store = MultiBatchStore::<Logs, { Logs::COUNT }>::new(&mut planned);
+            for payload_type in Logs::allowed_payload_types() {
+                store
+                    .remove_transport_optimized_encodings(*payload_type)
+                    .unwrap();
+            }
+            try_build_fused_reindex_plan(&store).unwrap()
+        };
+        assert!(plan.is_some());
+
+        let mut legacy = batches.clone();
+        reindex(&mut legacy).unwrap();
+        let expected = concatenate(&mut legacy).unwrap();
+
+        let mut fused = batches;
+        let actual = reindex_and_concatenate(&mut fused).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    /// Scenario: a log child contains parent IDs outside its parent ID range.
+    /// Guarantees: Fused offset planning declines the batch and the fallback
+    /// preserves legacy compaction and orphan-row removal exactly.
+    #[test]
+    fn test_fused_reindex_falls_back_for_orphan_parent_ids() {
+        let stores = vec![
+            logs!(
+                (Logs, ("id", UInt16, vec![1u16, 2, 4])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 1, 2, 3, 4, 5]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![1u16, 2, 4])),
+                (LogAttrs, ("parent_id", UInt16, vec![1u16, 2, 4]))
+            ),
+        ];
+        let batches = stores
+            .into_iter()
+            .map(OtapBatchStore::into_batches)
+            .collect::<Vec<_>>();
+
+        let mut planned = batches.clone();
+        let plan = {
+            let mut store = MultiBatchStore::<Logs, { Logs::COUNT }>::new(&mut planned);
+            for payload_type in Logs::allowed_payload_types() {
+                store
+                    .remove_transport_optimized_encodings(*payload_type)
+                    .unwrap();
+            }
+            try_build_fused_reindex_plan(&store).unwrap()
+        };
+        assert!(plan.is_none());
+
+        let mut legacy = batches.clone();
+        reindex(&mut legacy).unwrap();
+        let expected = concatenate(&mut legacy).unwrap();
+
+        let mut fused = batches;
+        let actual = reindex_and_concatenate(&mut fused).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    /// Scenario: a UInt32 child relation uses dictionary-encoded parent IDs.
+    /// Guarantees: Fused primitive-buffer planning declines the relation and
+    /// the fallback preserves dictionary reindexing and concatenation exactly.
+    #[test]
+    fn test_fused_reindex_falls_back_for_dictionary_parent_ids() {
+        let stores = vec![
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, vec![0u32, 1]),
+                    ("parent_id", UInt16, vec![0u16, 1])
+                ),
+                (
+                    NumberDpAttrs,
+                    ("parent_id", (UInt8, UInt32), (vec![0u8, 1], vec![0u32, 1]))
+                )
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
+                (
+                    NumberDataPoints,
+                    ("id", UInt32, vec![0u32, 1]),
+                    ("parent_id", UInt16, vec![0u16, 1])
+                ),
+                (
+                    NumberDpAttrs,
+                    ("parent_id", (UInt8, UInt32), (vec![0u8, 1], vec![0u32, 1]))
+                )
+            ),
+        ];
+        let batches = stores
+            .into_iter()
+            .map(OtapBatchStore::into_batches)
+            .collect::<Vec<_>>();
+
+        let mut planned = batches.clone();
+        let plan = {
+            let mut store = MultiBatchStore::<Metrics, { Metrics::COUNT }>::new(&mut planned);
+            for payload_type in Metrics::allowed_payload_types() {
+                store
+                    .remove_transport_optimized_encodings(*payload_type)
+                    .unwrap();
+            }
+            try_build_fused_reindex_plan(&store).unwrap()
+        };
+        assert!(plan.is_none());
+
+        let mut legacy = batches.clone();
+        reindex(&mut legacy).unwrap();
+        let expected = concatenate(&mut legacy).unwrap();
+
+        let mut fused = batches;
+        let actual = reindex_and_concatenate(&mut fused).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    /// Scenario: a plain primary ID column contains a null value.
+    /// Guarantees: Fused in-place offset planning declines nullable ID buffers
+    /// and the fallback preserves the legacy null semantics exactly.
+    #[test]
+    fn test_fused_reindex_falls_back_for_nullable_ids() {
+        let stores = vec![
+            logs!((Logs, ("id", UInt16, vec![Some(0u16), None]))),
+            logs!((Logs, ("id", UInt16, vec![Some(0u16), Some(1)]))),
+        ];
+        let batches = stores
+            .into_iter()
+            .map(OtapBatchStore::into_batches)
+            .collect::<Vec<_>>();
+
+        let mut planned = batches.clone();
+        let plan = {
+            let mut store = MultiBatchStore::<Logs, { Logs::COUNT }>::new(&mut planned);
+            for payload_type in Logs::allowed_payload_types() {
+                store
+                    .remove_transport_optimized_encodings(*payload_type)
+                    .unwrap();
+            }
+            try_build_fused_reindex_plan(&store).unwrap()
+        };
+        assert!(plan.is_none());
+
+        let mut legacy = batches.clone();
+        reindex(&mut legacy).unwrap();
+        let expected = concatenate(&mut legacy).unwrap();
+
+        let mut fused = batches;
+        let actual = reindex_and_concatenate(&mut fused).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    /// Scenario: a uniquely owned coalesced primitive ID buffer receives a
+    /// planned offset for one input-batch range.
+    /// Guarantees: Offsets are applied correctly while retaining the original
+    /// values-buffer allocation.
+    #[test]
+    fn test_fused_offset_reuses_primitive_values_buffer() {
+        let array = Arc::new(PrimitiveArray::<UInt16Type>::from(vec![0u16, 1, 0, 1])) as ArrayRef;
+        let original_values = array.as_primitive::<UInt16Type>().values().as_ptr();
+        let offsets = [PlannedOffset {
+            range: 2..4,
+            offset: 2,
+            sign: Sign::Positive,
+        }];
+
+        let result = apply_planned_primitive_offsets::<UInt16Type>(array, &offsets).unwrap();
+        let result = result.as_primitive::<UInt16Type>();
+
+        assert_eq!(result.values(), &[0u16, 1, 2, 3]);
+        assert_eq!(result.values().as_ptr(), original_values);
     }
 
     #[test]

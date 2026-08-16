@@ -16,7 +16,7 @@ use crate::{
 use arrow::array::RecordBatch;
 use otap_df_config::SignalType;
 
-use super::transform::{concatenate::concatenate, split};
+use super::transform::split;
 
 /// Represents a sequence of OtapArrowRecords that all share exactly
 /// the same signal.  Invarients:
@@ -270,8 +270,7 @@ fn concatenate_emitter<const N: usize>(
     current: &mut Vec<[Option<RecordBatch>; N]>,
     result: &mut Vec<[Option<RecordBatch>; N]>,
 ) -> Result<()> {
-    super::transform::reindex::reindex(current)?;
-    result.push(concatenate(current)?);
+    result.push(super::transform::reindex::reindex_and_concatenate(current)?);
     assert_all_empty(current);
     current.clear();
     Ok(())
