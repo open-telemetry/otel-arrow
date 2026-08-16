@@ -852,7 +852,7 @@ where
         .expect("batch must exist for non-None stat");
 
     let id_col = extract_id_column(&parent_rb, id_column_path)?;
-    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+    let id_values = materialize_id_values::<T>(id_col)?;
 
     let mut ids = id_values.values().to_vec();
     apply_uniform_offset(&mut ids, off, sign);
@@ -900,7 +900,7 @@ where
         .expect("batch must exist for non-None stat");
 
     let id_col = extract_id_column(&parent_rb, id_column_path)?;
-    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+    let id_values = materialize_id_values::<T>(id_col)?;
     let mut ids = id_values.values().to_vec();
 
     let (mappings, new_offset) = if ids.is_sorted() {
@@ -952,7 +952,7 @@ where
     let Ok(child_col) = extract_id_column(child_batch, PARENT_ID) else {
         return Ok(true);
     };
-    let Some((child_min, child_max)) = id_column_min_max::<T>(child_col.as_ref())? else {
+    let Some((child_min, child_max)) = id_column_min_max::<T>(child_col)? else {
         return Ok(true);
     };
     Ok(child_min >= parent_min && child_max <= parent_max)
@@ -982,7 +982,7 @@ where
     T::Native: Ord + Copy + AddAssign + SubAssign + ArrowNativeType,
 {
     let id_col = extract_id_column(&rb, column_path)?;
-    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+    let id_values = materialize_id_values::<T>(id_col)?;
     let mut new_values = id_values.values().to_vec();
     apply_uniform_offset(&mut new_values, offset, sign);
     replace_id_column::<T>(rb, column_path, new_values)
@@ -1004,7 +1004,7 @@ where
     // Materialize the id values. In the case of a dictionary this is the
     // values array and does not include the keys.
     let id_col = extract_id_column(&rb, column_path)?;
-    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+    let id_values = materialize_id_values::<T>(id_col)?;
     let mut id_values = id_values.values().to_vec();
 
     let value_sort_indices = sort_vec_to_indices(&id_values);
@@ -1029,14 +1029,12 @@ where
             DataType::Dictionary(key_type, _) => {
                 // Determine which value violations correspond to actual rows.
                 let key_redactions = match key_type.as_ref() {
-                    DataType::UInt8 => map_value_redactions_to_key_redactions::<UInt8Type>(
-                        id_col.as_ref(),
-                        &violations,
-                    ),
-                    DataType::UInt16 => map_value_redactions_to_key_redactions::<UInt16Type>(
-                        id_col.as_ref(),
-                        &violations,
-                    ),
+                    DataType::UInt8 => {
+                        map_value_redactions_to_key_redactions::<UInt8Type>(id_col, &violations)
+                    }
+                    DataType::UInt16 => {
+                        map_value_redactions_to_key_redactions::<UInt16Type>(id_col, &violations)
+                    }
                     _ => {
                         return Err(Error::UnsupportedDictionaryKeyType {
                             expect_oneof: vec![DataType::UInt8, DataType::UInt16],
@@ -1052,7 +1050,7 @@ where
                 let rb = if !key_redactions.is_empty() {
                     // Genuine violations - sort batch by the same key order
                     // used to produce the key redaction ranges, then remove.
-                    let sort_indices = arrow::compute::sort_to_indices(&id_col, None, None)
+                    let sort_indices = arrow::compute::sort_to_indices(id_col, None, None)
                         .map_err(|e| Error::Batching { source: e })?;
                     let rb = sort_record_batch_by_indices(rb, &sort_indices)?;
                     remove_record_batch_ranges(&rb, &key_redactions)
@@ -1216,10 +1214,9 @@ where
     T: ArrowPrimitiveType,
     T::Native: ArrowNativeType,
 {
-    let id_col = extract_id_column(&rb, column_path)?;
     let new_ids_array = PrimitiveArray::<T>::new(ScalarBuffer::from(new_ids), None);
+    let new_column = replace_ids::<T>(extract_id_column(&rb, column_path)?, new_ids_array);
     let (schema, mut columns, _) = rb.into_parts();
-    let new_column = replace_ids::<T>(id_col.as_ref(), new_ids_array);
     replace_column(column_path, None, &schema, &mut columns, new_column);
     let rb =
         RecordBatch::try_new(schema, columns).map_err(|e| Error::UnexpectedRecordBatchState {
@@ -1373,12 +1370,12 @@ where
             }
         };
 
-        let Some((min, max)) = id_column_min_max::<T>(id_col.as_ref())? else {
+        let Some((min, max)) = id_column_min_max::<T>(id_col)? else {
             stats.push(None);
             continue;
         };
 
-        let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+        let id_values = materialize_id_values::<T>(id_col)?;
         let len = id_values.len();
         let span = max.as_usize() - min.as_usize() + 1;
 

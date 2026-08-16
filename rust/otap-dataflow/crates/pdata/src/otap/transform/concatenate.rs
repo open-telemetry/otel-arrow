@@ -133,22 +133,14 @@ fn concatenate_with_def<const N: usize>(
             Arc::ptr_eq(batch.schema_ref(), shared_schema) || batch.schema_ref() == shared_schema
         }) && dictionary_keys_have_capacity(items, i, first)?
         {
-            let row_count = select_all(items, i)
-                .flatten()
-                .map(RecordBatch::num_rows)
-                .sum();
-            let mut batcher = arrow::compute::BatchCoalescer::new(shared_schema.clone(), row_count);
-            for payload in select_all_mut(items, i) {
-                if let Some(batch) = payload.take() {
-                    batcher
-                        .push_batch(batch)
-                        .map_err(|source| Error::Batching { source })?;
-                }
-            }
-            batcher
-                .finish_buffered_batch()
-                .map_err(|source| Error::Batching { source })?;
-            result[i] = batcher.next_completed_batch();
+            let shared_schema = Arc::clone(shared_schema);
+            let batches = select_all_mut(items, i)
+                .filter_map(Option::take)
+                .collect::<Vec<_>>();
+            result[i] = Some(
+                arrow::compute::concat_batches(&shared_schema, batches.iter())
+                    .map_err(|source| Error::Batching { source })?,
+            );
             continue;
         }
 

@@ -308,10 +308,15 @@ fn sort_two_columns_packed<T: ArrowNativeType>(
     sort_record_batch_by_indices(rb, &indices_arr)
 }
 
-/// Extracts an ID column from a record batch
-pub(crate) fn extract_id_column(rb: &RecordBatch, column_path: &str) -> Result<ArrayRef> {
-    access_column(column_path, &rb.schema(), rb.columns()).ok_or_else(|| Error::ColumnNotFound {
-        name: column_path.to_string(),
+/// Borrows an ID column from a record batch.
+pub(crate) fn extract_id_column<'a>(
+    rb: &'a RecordBatch,
+    column_path: &str,
+) -> Result<&'a dyn Array> {
+    access_column_ref(column_path, rb.schema_ref(), rb.columns()).ok_or_else(|| {
+        Error::ColumnNotFound {
+            name: column_path.to_string(),
+        }
     })
 }
 
@@ -348,6 +353,22 @@ pub(crate) fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -
     // otherwise just return column by name
     let (column_idx, _) = schema.fields.find(path)?;
     columns.get(column_idx).cloned()
+}
+
+/// Borrows the column associated with a possibly nested path.
+pub(crate) fn access_column_ref<'a>(
+    path: &str,
+    schema: &Schema,
+    columns: &'a [ArrayRef],
+) -> Option<&'a dyn Array> {
+    if let Some(struct_col_name) = struct_column_name(path) {
+        let struct_col_idx = schema.index_of(struct_col_name).ok()?;
+        let struct_col = columns.get(struct_col_idx)?.as_struct();
+        return struct_col.column_by_name(ID).map(AsRef::as_ref);
+    }
+
+    let (column_idx, _) = schema.fields.find(path)?;
+    columns.get(column_idx).map(AsRef::as_ref)
 }
 
 /// if configured to encode the ID column in the nested resource/scope struct array, this
