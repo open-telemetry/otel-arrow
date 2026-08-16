@@ -18,7 +18,10 @@ use async_trait::async_trait;
 use config::RenderedPaths;
 use encoding::{FrameEncodeError, encode_logs, encode_metrics, encode_traces};
 use linkme::distributed_slice;
-use metrics::{FileFailureMetrics, FileOperation, FileSignalMetrics, SignalOperationAttributes};
+use metrics::{
+    FileExporterExportMetrics, FileFailureMetrics, FileOperation, FileSignalMetrics,
+    SignalOperationAttributes,
+};
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
@@ -32,13 +35,13 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::views::otap::{OtapLogsView, OtapMetricsView, OtapTracesView};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
+use otap_df_telemetry::attributes::AttributeEnum as _;
 use otap_df_telemetry::common_attributes::{Outcome, SignalAttributes, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::{otel_error, otel_info, otel_warn};
@@ -56,7 +59,7 @@ pub struct FileExporter {
     writers: [Option<SignalWriter>; 3],
     frame: Vec<u8>,
     failure_active: [bool; 3],
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    export_metrics: MeasurementMetricSet<FileExporterExportMetrics>,
     signal_metrics: MeasurementMetricSet<FileSignalMetrics>,
     failure_metrics: MeasurementMetricSet<FileFailureMetrics>,
 }
@@ -80,7 +83,7 @@ pub static FILE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             paths,
             writers: std::array::from_fn(|_| None),
             failure_active: [false; 3],
-            pdata_metrics: ExporterPDataExportMetrics::register(&pipeline),
+            export_metrics: FileExporterExportMetrics::register(&pipeline),
             signal_metrics: FileSignalMetrics::register(&pipeline),
             failure_metrics: FileFailureMetrics::register(&pipeline),
         };
@@ -104,28 +107,30 @@ impl Exporter<OtapPdata> for FileExporter {
     ) -> Result<TerminalState, Error> {
         otel_info!(
             "otelcol.node.file.start",
-            open_mode = ?self.config.open_mode,
-            durability = ?self.config.durability,
+            format = self.config.format.as_str(),
+            create_directories = self.config.create_directories,
+            open_mode = self.config.open_mode.as_str(),
+            durability = self.config.durability.as_str(),
+            tail_recovery = self
+                .config
+                .effective_tail_recovery()
+                .map_or("disabled", |recovery| recovery.as_str()),
             max_frame_bytes = self.config.max_frame_bytes,
-            message = "File exporter started"
         );
         loop {
             match inbox.recv().await? {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
+                    _ = metrics_reporter.report_measurement(&mut self.export_metrics);
                     _ = metrics_reporter.report_measurement(&mut self.signal_metrics);
                     _ = metrics_reporter.report_measurement(&mut self.failure_metrics);
                 }
                 Message::Control(NodeControlMsg::Config { .. }) => {}
-                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
                     self.finalize(deadline, &effect_handler).await?;
-                    otel_info!(
-                        "otelcol.node.file.stop",
-                        message = "File exporter stopped gracefully"
-                    );
-                    let mut snapshots = self.pdata_metrics.terminal_snapshots();
+                    otel_info!("otelcol.node.file.stop", reason = reason.as_str(),);
+                    let mut snapshots = self.export_metrics.terminal_snapshots();
                     snapshots.extend(self.signal_metrics.terminal_snapshots());
                     snapshots.extend(self.failure_metrics.terminal_snapshots());
                     return Ok(TerminalState::new(deadline, snapshots));
@@ -148,7 +153,7 @@ impl FileExporter {
         let signal = pdata.signal_type();
         if pdata.is_empty() {
             effect_handler.notify_ack(AckMsg::new(pdata)).await?;
-            self.record_pdata(signal, Outcome::Success);
+            self.record_export_outcome(signal, Outcome::Success);
             return Ok(());
         }
         if let Err(error) = encode_payload(
@@ -156,7 +161,7 @@ impl FileExporter {
             &mut self.frame,
             self.config.max_frame_bytes,
         ) {
-            self.record_pdata(signal, Outcome::Failure);
+            self.record_export_outcome(signal, Outcome::Failure);
             let reason = match error {
                 EncodeFailure::Frame(FrameEncodeError::FrameTooLarge { .. }) => {
                     "file exporter frame exceeds max_frame_bytes; split the batch upstream"
@@ -171,7 +176,7 @@ impl FileExporter {
         }
         if let Err(failure) = self.ensure_writer(signal).await {
             self.record_io_failure(signal, &failure);
-            self.record_pdata(signal, Outcome::Failure);
+            self.record_export_outcome(signal, Outcome::Failure);
             self.log_write_failure(signal, &failure);
             let fatal = failure.rollback_error.is_some();
             effect_handler
@@ -195,7 +200,7 @@ impl FileExporter {
         }
         let index = signal_index(signal);
         let Some(writer) = self.writers[index].as_mut() else {
-            self.record_pdata(signal, Outcome::Failure);
+            self.record_export_outcome(signal, Outcome::Failure);
             effect_handler
                 .notify_nack(NackMsg::new(
                     "file writer unavailable after readiness",
@@ -210,7 +215,7 @@ impl FileExporter {
         };
         if let Err(failure) = writer.write_frame(&self.frame).await {
             self.record_io_failure(signal, &failure);
-            self.record_pdata(signal, Outcome::Failure);
+            self.record_export_outcome(signal, Outcome::Failure);
             self.log_write_failure(signal, &failure);
             let fatal = failure.rollback_error.is_some();
             effect_handler
@@ -241,7 +246,7 @@ impl FileExporter {
             .with(SignalAttributes { signal })
             .bytes
             .add(self.frame.len() as u64);
-        self.record_pdata(signal, Outcome::Success);
+        self.record_export_outcome(signal, Outcome::Success);
         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
         Ok(())
     }
@@ -263,23 +268,19 @@ impl FileExporter {
                 .add(recovery.recovered_bytes);
             otel_warn!(
                 "otelcol.node.file.tail.recover",
-                signal = signal_name(signal),
+                signal = signal.as_str(),
                 recovered_bytes = recovery.recovered_bytes,
                 message = "Removed an incomplete final OTLP JSON frame"
             );
         }
         self.writers[index] = Some(writer);
         self.failure_active[index] = false;
-        otel_info!(
-            "otelcol.node.file.writer.start",
-            signal = signal_name(signal),
-            message = "Signal file writer passed its readiness probe"
-        );
+        otel_info!("otelcol.node.file.writer.start", signal = signal.as_str(),);
         Ok(())
     }
 
-    fn record_pdata(&mut self, signal: SignalType, outcome: Outcome) {
-        self.pdata_metrics
+    fn record_export_outcome(&mut self, signal: SignalType, outcome: Outcome) {
+        self.export_metrics
             .with(SignalOutcomeAttributes { signal, outcome })
             .messages
             .inc();
@@ -291,7 +292,7 @@ impl FileExporter {
                 signal,
                 operation: failure.operation,
             })
-            .write_failures
+            .failures
             .inc();
         if failure.rollback_error.is_some() {
             self.failure_metrics
@@ -299,7 +300,7 @@ impl FileExporter {
                     signal,
                     operation: FileOperation::Rollback,
                 })
-                .write_failures
+                .failures
                 .inc();
         }
     }
@@ -309,17 +310,17 @@ impl FileExporter {
         if let Some(rollback_error) = failure.rollback_error.as_deref() {
             otel_error!(
                 "otelcol.node.file.rollback.fail",
-                signal = signal_name(signal),
-                operation = operation_name(failure.operation),
+                signal = signal.as_str(),
+                operation = failure.operation.as_str(),
                 error = failure.error.as_str(),
                 rollback_error = rollback_error,
                 message = "File write rollback failed"
             );
         } else if !self.failure_active[index] {
             otel_warn!(
-                "otelcol.node.file.write.fail",
-                signal = signal_name(signal),
-                operation = operation_name(failure.operation),
+                "otelcol.node.file.operation.fail",
+                signal = signal.as_str(),
+                operation = failure.operation.as_str(),
                 error = failure.error.as_str(),
                 message = "File writer entered a failure state"
             );
@@ -433,23 +434,6 @@ const fn signal_from_index(index: usize) -> SignalType {
         0 => SignalType::Logs,
         1 => SignalType::Metrics,
         _ => SignalType::Traces,
-    }
-}
-
-const fn signal_name(signal: SignalType) -> &'static str {
-    match signal {
-        SignalType::Logs => "logs",
-        SignalType::Metrics => "metrics",
-        SignalType::Traces => "traces",
-    }
-}
-
-const fn operation_name(operation: FileOperation) -> &'static str {
-    match operation {
-        FileOperation::Open => "open",
-        FileOperation::Write => "write",
-        FileOperation::Sync => "sync",
-        FileOperation::Rollback => "rollback",
     }
 }
 

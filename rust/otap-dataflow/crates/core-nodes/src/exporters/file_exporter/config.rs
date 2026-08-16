@@ -5,19 +5,48 @@
 //!
 //! Validation rejects ambiguous file ownership before filesystem access. Runtime rendering then
 //! substitutes the closed signal name and numeric core and deployment-generation identifiers.
+//!
+//! # Configuration
+//!
+//! - `path` is required and must be an absolute template containing `{signal}`, `{core_id}`, and
+//!   `{generation}` exactly once.
+//! - `create_directories` controls whether missing parent directories are created and defaults to
+//!   `false`.
+//! - `format` selects the output encoding and currently supports only `otlp_json`.
+//! - `open_mode` controls first-open behavior (`append`, `truncate`, or `create_new`) and defaults
+//!   to `append`.
+//! - `durability` controls whether ACK follows `write` or `sync_data` and defaults to `write`.
+//! - `max_frame_bytes` bounds each JSONL frame, including its newline, and defaults to 64 MiB.
+//! - `tail_recovery` controls incomplete-tail handling in append mode (`truncate_partial` or
+//!   `fail`) and defaults to `truncate_partial`.
+//!
+//! Unknown fields, invalid path templates, out-of-range frame limits, and `tail_recovery` outside
+//! append mode are rejected during configuration validation.
+//!
+//! # Future evolutions
+//!
+//! Planned configuration extensions include typed output formats such as plain text, human-readable
+//! signal renderings, framed protobuf, and structured per-record envelopes. Bounded size- and
+//! time-based rotation, backup retention, and standard file-level zstd compression may follow once
+//! their ownership, recovery, and failure semantics are defined. Profiles can be supported after
+//! OTAP provides a stable profile signal representation and file format.
 
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
+use otap_df_telemetry_macros::AttributeEnum;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 
+/// Default maximum encoded JSONL frame size, including its newline.
 const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+/// Hard upper bound accepted for the maximum encoded frame size.
 const MAX_MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
+/// Runtime substitution tokens required exactly once in every path template.
 const TOKENS: [&str; 3] = ["{signal}", "{core_id}", "{generation}"];
 
 /// File format supported by the exporter.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, AttributeEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum FileFormat {
     /// Compact OTLP ProtoJSON with one pdata batch per line.
@@ -26,7 +55,7 @@ pub enum FileFormat {
 }
 
 /// Behavior when a signal file is first opened.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, AttributeEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum OpenMode {
     /// Retain complete existing frames and append new frames.
@@ -39,7 +68,7 @@ pub enum OpenMode {
 }
 
 /// Durability point that must complete before an ACK is routed.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, AttributeEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum Durability {
     /// ACK after the operating system accepts and flushes the write operation.
@@ -50,7 +79,7 @@ pub enum Durability {
 }
 
 /// Recovery policy for an incomplete append-mode file tail.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, AttributeEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum TailRecovery {
     /// Remove a bounded incomplete final frame.
@@ -224,6 +253,7 @@ fn invalid(error: impl Into<String>) -> ConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_telemetry::attributes::AttributeEnum as _;
     use serde_json::json;
 
     fn absolute_template() -> String {
@@ -246,6 +276,20 @@ mod tests {
             config.effective_tail_recovery(),
             Some(TailRecovery::TruncatePartial)
         );
+    }
+
+    /// Scenario: Configuration enums are emitted as internal telemetry event attributes.
+    /// Guarantees: Their bounded values remain identical to the accepted snake-case config values.
+    #[test]
+    fn configuration_enum_attribute_values_are_stable() {
+        assert_eq!(FileFormat::OtlpJson.as_str(), "otlp_json");
+        assert_eq!(OpenMode::Append.as_str(), "append");
+        assert_eq!(OpenMode::Truncate.as_str(), "truncate");
+        assert_eq!(OpenMode::CreateNew.as_str(), "create_new");
+        assert_eq!(Durability::Write.as_str(), "write");
+        assert_eq!(Durability::SyncData.as_str(), "sync_data");
+        assert_eq!(TailRecovery::TruncatePartial.as_str(), "truncate_partial");
+        assert_eq!(TailRecovery::Fail.as_str(), "fail");
     }
 
     /// Scenario: A path omits, repeats, or misspells a required runtime token.

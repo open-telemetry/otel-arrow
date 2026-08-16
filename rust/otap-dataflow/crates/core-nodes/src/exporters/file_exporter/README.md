@@ -104,10 +104,10 @@ mount policy, and cross-process ownership remain operator responsibilities.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Pdata batches whose export reached a terminal outcome. |
+| `exporter.file.exports.messages` | `{message}` | `signal`, `outcome` | Telemetry messages whose file export reached a terminal outcome. |
 | `exporter.file.items` | `{item}` | `signal` | Signal items in successfully written frames. |
 | `exporter.file.bytes` | `By` | `signal` | Successfully written bytes including delimiters. |
-| `exporter.file.write_failures` | `{failure}` | `signal`, `operation` | Open, write, sync, or rollback failures. |
+| `exporter.file.failures` | `{failure}` | `signal`, `operation` | Open, write, sync, or rollback failures. |
 | `exporter.file.tail_recoveries` | `{recovery}` | `signal` | Incomplete final frames repaired at open. |
 | `exporter.file.tail_recovered_bytes` | `By` | `signal` | Bytes removed by successful tail repair. |
 
@@ -115,14 +115,14 @@ No metric contains a destination path.
 
 ### Events
 
-| Event | Severity | Description |
-| --- | --- | --- |
-| `otelcol.node.file.start` | `info` | Exporter startup with bounded mode and durability fields. |
-| `otelcol.node.file.writer.start` | `info` | A signal writer passed its lazy readiness probe. |
-| `otelcol.node.file.tail.recover` | `warn` | An incomplete final frame was removed. |
-| `otelcol.node.file.write.fail` | `warn` | A signal writer entered an I/O failure state. |
-| `otelcol.node.file.rollback.fail` | `error` | Rollback failed and the node will terminate. |
-| `otelcol.node.file.stop` | `info` | Graceful shutdown completed. |
+| Event | Severity | Attributes | Description |
+| --- | --- | --- | --- |
+| `otelcol.node.file.start` | `info` | `format`, `create_directories`, `open_mode`, `durability`, `tail_recovery`, `max_frame_bytes` | Exporter startup with its non-sensitive bounded configuration. |
+| `otelcol.node.file.writer.start` | `info` | `signal` | A signal writer passed its lazy readiness probe. |
+| `otelcol.node.file.tail.recover` | `warn` | `signal`, `recovered_bytes` | An incomplete final frame was removed. |
+| `otelcol.node.file.operation.fail` | `warn` | `signal`, `operation`, `error` | A signal writer entered an I/O failure state. |
+| `otelcol.node.file.rollback.fail` | `error` | `signal`, `operation`, `error`, `rollback_error` | Rollback failed and the node will terminate. |
+| `otelcol.node.file.stop` | `info` | `reason` | Graceful shutdown completed. |
 
 ## Limits
 
@@ -133,6 +133,7 @@ if its write succeeded but its ACK was not observed before a crash.
 
 ## Related Docs
 
+- [Architecture and design decisions](ARCHITECTURE.md)
 - [Example configuration](../../../../../configs/trafficgen-file.yaml)
 - [Configuration model](../../../../../docs/configuration-model.md)
 - [Core node catalog](../../../README.md)
