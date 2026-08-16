@@ -912,6 +912,12 @@ fn encode_metric(
                 metric: metric.field.name,
             })?;
             buffer.encode_len_delimited(METRIC_SUM, |buffer| {
+                buffer.encode_field_tag(SUM_AGGREGATION_TEMPORALITY, wire_types::VARINT)?;
+                buffer.encode_varint(encode_temporality(temporality))?;
+                if matches!(metric.field.instrument, Instrument::Counter) {
+                    buffer.encode_field_tag(SUM_IS_MONOTONIC, wire_types::VARINT)?;
+                    buffer.encode_varint(1)?;
+                }
                 for point in &metric.points {
                     let start_time_unix_nano = match temporality {
                         Temporality::Delta => point.metric_set.delta_start_time_unix_nano,
@@ -926,39 +932,33 @@ fn encode_metric(
                         )
                     })?;
                 }
-                buffer.encode_field_tag(SUM_AGGREGATION_TEMPORALITY, wire_types::VARINT)?;
-                buffer.encode_varint(encode_temporality(temporality))?;
-                if matches!(metric.field.instrument, Instrument::Counter) {
-                    buffer.encode_field_tag(SUM_IS_MONOTONIC, wire_types::VARINT)?;
-                    buffer.encode_varint(1)?;
-                }
                 Ok::<(), Error>(())
             })?;
         }
         Instrument::Mmsc => {
             buffer.encode_len_delimited(METRIC_HISTOGRAM, |buffer| {
+                buffer.encode_field_tag(HISTOGRAM_AGGREGATION_TEMPORALITY, wire_types::VARINT)?;
+                buffer.encode_varint(encode_temporality(Temporality::Delta))?;
                 for point in &metric.points {
                     buffer.encode_len_delimited(HISTOGRAM_DATA_POINTS, |buffer| {
                         encode_mmsc_data_point(buffer, point, time_unix_nano)
                     })?;
                 }
-                buffer.encode_field_tag(HISTOGRAM_AGGREGATION_TEMPORALITY, wire_types::VARINT)?;
-                buffer.encode_varint(encode_temporality(Temporality::Delta))?;
                 Ok::<(), Error>(())
             })?;
         }
         Instrument::ExponentialHistogram => {
             buffer.encode_len_delimited(METRIC_EXPONENTIAL_HISTOGRAM, |buffer| {
-                for point in &metric.points {
-                    buffer.encode_len_delimited(EXPONENTIAL_HISTOGRAM_DATA_POINTS, |buffer| {
-                        encode_exponential_histogram_data_point(buffer, point, time_unix_nano)
-                    })?;
-                }
                 buffer.encode_field_tag(
                     EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY,
                     wire_types::VARINT,
                 )?;
                 buffer.encode_varint(encode_temporality(Temporality::Delta))?;
+                for point in &metric.points {
+                    buffer.encode_len_delimited(EXPONENTIAL_HISTOGRAM_DATA_POINTS, |buffer| {
+                        encode_exponential_histogram_data_point(buffer, point, time_unix_nano)
+                    })?;
+                }
                 Ok::<(), Error>(())
             })?;
         }
@@ -1594,6 +1594,23 @@ mod tests {
                 (number == field_number && wire_type == wire_types::LEN).then_some(payload)
             })
             .unwrap_or_else(|| panic!("missing message field {field_number}"))
+    }
+
+    fn metric_data_fields(
+        encoded: &OtlpProtoBytes,
+        metric_index: usize,
+        data_field: u64,
+    ) -> Vec<(u64, u64, &[u8])> {
+        let resource_metrics = message_field(encoded.as_bytes(), METRICS_DATA_RESOURCE_METRICS);
+        let scope_metrics = message_field(resource_metrics, RESOURCE_METRICS_SCOPE_METRICS);
+        let metric = protobuf_fields(scope_metrics)
+            .into_iter()
+            .filter_map(|(number, wire_type, payload)| {
+                (number == SCOPE_METRICS_METRICS && wire_type == wire_types::LEN).then_some(payload)
+            })
+            .nth(metric_index)
+            .unwrap_or_else(|| panic!("missing metric at index {metric_index}"));
+        protobuf_fields(message_field(metric, data_field))
     }
 
     fn only_scope(request: &ExportMetricsServiceRequest) -> &ScopeMetrics {
@@ -2372,6 +2389,139 @@ mod tests {
         assert_eq!(point.max, Some(9.0));
         assert!(point.explicit_bounds.is_empty());
         assert!(point.bucket_counts.is_empty());
+    }
+
+    /// Scenario: Direct encoding emits aggregation metadata and two ordered data points for every
+    /// sum and histogram message kind.
+    /// Guarantees: Metadata physically precedes repeated data points, false monotonicity remains
+    /// omitted, and repeated data-point order is preserved.
+    #[test]
+    fn encodes_aggregation_metadata_before_ordered_data_points() {
+        let attributes = empty_attributes();
+        let mut first = metric_set(
+            &ALL_METRICS_DESCRIPTOR,
+            attributes.clone(),
+            vec![
+                MetricValue::U64(1),
+                MetricValue::U64(2),
+                MetricValue::F64(-1.0),
+                MetricValue::F64(3.0),
+                mmsc_value(1.0, 2.0, 3.0, 2),
+            ],
+        );
+        first.item_attributes = vec![("bucket".to_owned(), "first".to_owned())];
+        let mut second = metric_set(
+            &ALL_METRICS_DESCRIPTOR,
+            attributes.clone(),
+            vec![
+                MetricValue::U64(4),
+                MetricValue::U64(5),
+                MetricValue::F64(-2.0),
+                MetricValue::F64(6.0),
+                mmsc_value(3.0, 4.0, 7.0, 2),
+            ],
+        );
+        second.item_attributes = vec![("bucket".to_owned(), "second".to_owned())];
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![first, second],
+        };
+
+        let encoded = empty_resource_encoder()
+            .encode(&batch)
+            .expect("mixed metrics batch should encode")
+            .expect("mixed metrics batch should produce a request");
+
+        assert_eq!(
+            metric_data_fields(&encoded, 0, METRIC_SUM)
+                .iter()
+                .map(|(number, _, _)| *number)
+                .collect::<Vec<_>>(),
+            vec![
+                SUM_AGGREGATION_TEMPORALITY,
+                SUM_IS_MONOTONIC,
+                SUM_DATA_POINTS,
+                SUM_DATA_POINTS,
+            ]
+        );
+        assert_eq!(
+            metric_data_fields(&encoded, 2, METRIC_SUM)
+                .iter()
+                .map(|(number, _, _)| *number)
+                .collect::<Vec<_>>(),
+            vec![
+                SUM_AGGREGATION_TEMPORALITY,
+                SUM_DATA_POINTS,
+                SUM_DATA_POINTS,
+            ]
+        );
+        assert_eq!(
+            metric_data_fields(&encoded, 4, METRIC_HISTOGRAM)
+                .iter()
+                .map(|(number, _, _)| *number)
+                .collect::<Vec<_>>(),
+            vec![
+                HISTOGRAM_AGGREGATION_TEMPORALITY,
+                HISTOGRAM_DATA_POINTS,
+                HISTOGRAM_DATA_POINTS,
+            ]
+        );
+
+        let request = decode_request(encoded);
+        let Some(metric::Data::Sum(sum)) = metric_named(only_scope(&request), "counter.delta")
+            .data
+            .as_ref()
+        else {
+            panic!("expected sum metric")
+        };
+        assert_eq!(sum.data_points.len(), 2);
+        assert!(matches!(
+            sum.data_points[0].attributes[0]
+                .value
+                .as_ref()
+                .and_then(|value| value.value.as_ref()),
+            Some(any_value::Value::StringValue(value)) if value == "first"
+        ));
+        assert!(matches!(
+            sum.data_points[1].attributes[0]
+                .value
+                .as_ref()
+                .and_then(|value| value.value.as_ref()),
+            Some(any_value::Value::StringValue(value)) if value == "second"
+        ));
+
+        let mut first = metric_set(
+            &DISTRIBUTION_ONLY_DESCRIPTOR,
+            attributes.clone(),
+            vec![MetricValue::from(normal_distribution(&[1.0, 2.0]))],
+        );
+        first.item_attributes = vec![("bucket".to_owned(), "first".to_owned())];
+        let mut second = metric_set(
+            &DISTRIBUTION_ONLY_DESCRIPTOR,
+            attributes,
+            vec![MetricValue::from(normal_distribution(&[4.0, 8.0]))],
+        );
+        second.item_attributes = vec![("bucket".to_owned(), "second".to_owned())];
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![first, second],
+        };
+        let encoded = empty_resource_encoder()
+            .encode(&batch)
+            .expect("exponential histogram batch should encode")
+            .expect("exponential histogram batch should produce a request");
+
+        assert_eq!(
+            metric_data_fields(&encoded, 0, METRIC_EXPONENTIAL_HISTOGRAM)
+                .iter()
+                .map(|(number, _, _)| *number)
+                .collect::<Vec<_>>(),
+            vec![
+                EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY,
+                EXPONENTIAL_HISTOGRAM_DATA_POINTS,
+                EXPONENTIAL_HISTOGRAM_DATA_POINTS,
+            ]
+        );
     }
 
     /// Scenario: A batch contains populated and empty MMSC fields and sets.
