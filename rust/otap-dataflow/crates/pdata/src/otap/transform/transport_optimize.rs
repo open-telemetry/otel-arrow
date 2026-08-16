@@ -930,6 +930,13 @@ pub fn remove_transport_optimized_encodings(
         | ArrowPayloadType::Spans => {
             // remove delta encoding from ID column on struct arrays ..
             let schema = record_batch.schema_ref();
+            if [RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, consts::ID]
+                .iter()
+                .all(|path| is_column_encoded(path, schema) != Some(true))
+            {
+                return Ok(record_batch.clone());
+            }
+
             let mut columns = record_batch.columns().to_vec();
             let mut fields = schema.fields.to_vec();
             for struct_id_path in [RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH] {
@@ -1261,6 +1268,40 @@ mod test {
     use crate::schema::FieldExt;
 
     use super::*;
+
+    /// Scenario: all ID fields in an OTAP root batch are already marked with
+    /// plain encoding.
+    /// Guarantees: Removing transport encodings is a zero-copy no-op for both
+    /// the schema and columns.
+    #[test]
+    fn test_remove_transport_encodings_plain_root_is_zero_copy() {
+        let id_fields: Fields =
+            vec![Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()].into();
+        let root_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+            Field::new(consts::RESOURCE, DataType::Struct(id_fields.clone()), true),
+            Field::new(consts::SCOPE, DataType::Struct(id_fields.clone()), true),
+        ]));
+        let root_ids = Arc::new(UInt16Array::from_iter_values([0, 1])) as ArrayRef;
+        let resource = Arc::new(StructArray::new(
+            id_fields.clone(),
+            vec![Arc::new(UInt16Array::from_iter_values([0, 0]))],
+            None,
+        )) as ArrayRef;
+        let scope = Arc::new(StructArray::new(
+            id_fields,
+            vec![Arc::new(UInt16Array::from_iter_values([0, 0]))],
+            None,
+        )) as ArrayRef;
+        let input = RecordBatch::try_new(root_schema.clone(), vec![root_ids, resource, scope])
+            .expect("valid root batch");
+
+        let result = remove_transport_optimized_encodings(ArrowPayloadType::Logs, &input)
+            .expect("plain root should remain valid");
+
+        assert!(Arc::ptr_eq(result.schema_ref(), &root_schema));
+        assert!(Arc::ptr_eq(result.column(0), input.column(0)));
+    }
 
     #[test]
     fn test_access_column_basic() {

@@ -124,6 +124,34 @@ fn concatenate_with_def<const N: usize>(
 
     #[allow(clippy::needless_range_loop)]
     for i in 0..N {
+        let Some(first) = select_all(items, i).flatten().next() else {
+            continue;
+        };
+
+        let shared_schema = first.schema_ref();
+        if select_all(items, i).flatten().all(|batch| {
+            Arc::ptr_eq(batch.schema_ref(), shared_schema) || batch.schema_ref() == shared_schema
+        }) && dictionary_keys_have_capacity(items, i, first)?
+        {
+            let row_count = select_all(items, i)
+                .flatten()
+                .map(RecordBatch::num_rows)
+                .sum();
+            let mut batcher = arrow::compute::BatchCoalescer::new(shared_schema.clone(), row_count);
+            for payload in select_all_mut(items, i) {
+                if let Some(batch) = payload.take() {
+                    batcher
+                        .push_batch(batch)
+                        .map_err(|source| Error::Batching { source })?;
+                }
+            }
+            batcher
+                .finish_buffered_batch()
+                .map_err(|source| Error::Batching { source })?;
+            result[i] = batcher.next_completed_batch();
+            continue;
+        }
+
         let payload_def = get_def(i);
 
         let index = index_records(select_all(items, i))?;
@@ -164,6 +192,73 @@ fn concatenate_with_def<const N: usize>(
     }
 
     Ok(result)
+}
+
+/// Returns whether coalescing batches that share a schema can retain every
+/// dictionary's current key width. Arrow appends physical dictionary value
+/// arrays while coalescing, so their summed lengths are the safe bound even
+/// when values overlap.
+fn dictionary_keys_have_capacity<const N: usize>(
+    batches: &[[Option<RecordBatch>; N]],
+    payload_index: usize,
+    first: &RecordBatch,
+) -> Result<bool> {
+    for column_index in 0..first.num_columns() {
+        match first.column(column_index).data_type() {
+            DataType::Dictionary(key_type, _) => {
+                let arrays = select_all(batches, payload_index)
+                    .flatten()
+                    .map(|batch| batch.column(column_index));
+                if !dictionary_value_lengths_fit(arrays, key_type)? {
+                    return Ok(false);
+                }
+            }
+            DataType::Struct(fields) => {
+                for field_index in 0..fields.len() {
+                    let DataType::Dictionary(key_type, _) = first
+                        .column(column_index)
+                        .as_struct()
+                        .column(field_index)
+                        .data_type()
+                    else {
+                        continue;
+                    };
+                    let arrays = select_all(batches, payload_index)
+                        .flatten()
+                        .map(|batch| batch.column(column_index).as_struct().column(field_index));
+                    if !dictionary_value_lengths_fit(arrays, key_type)? {
+                        return Ok(false);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(true)
+}
+
+fn dictionary_value_lengths_fit<'a>(
+    arrays: impl Iterator<Item = &'a ArrayRef>,
+    key_type: &DataType,
+) -> Result<bool> {
+    let capacity = match key_type {
+        DataType::UInt8 => MAX_U8_CARDINALITY,
+        DataType::UInt16 => MAX_U16_CARDINALITY,
+        actual => {
+            return Err(Error::UnsupportedDictionaryKeyType {
+                expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                actual: actual.clone(),
+            });
+        }
+    };
+    let mut physical_values = 0usize;
+    for array in arrays {
+        physical_values = physical_values.saturating_add(get_dictionary_values(array)?.len());
+        if physical_values > capacity {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Convert the columns from one schema to another. The arguments deal in

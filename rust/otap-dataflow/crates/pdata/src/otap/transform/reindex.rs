@@ -83,7 +83,6 @@ use arrow::array::{
     PrimitiveArray, RecordBatch,
 };
 use arrow::buffer::ScalarBuffer;
-use arrow::compute::kernels::aggregate::{max_array, min_array};
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, ArrowNumericType, DataType, UInt8Type, UInt16Type,
     UInt32Type,
@@ -365,16 +364,20 @@ where
 fn id_column_min_max<T>(col: &dyn Array) -> Result<Option<(T::Native, T::Native)>>
 where
     T: ArrowNumericType,
-    T::Native: ArrowNativeTypeOp,
+    T::Native: ArrowNativeTypeOp + Ord + Copy,
 {
     let values = materialize_id_values::<T>(col)?;
-    let Some(min) = min_array::<T, _>(values) else {
-        return Ok(None);
-    };
-    // SAFETY: presence of a min value implies at least one non-null element,
-    // so max must also be Some.
-    let max = max_array::<T, _>(values).expect("max must exist when min exists");
-    Ok(Some((min, max)))
+    if values.null_count() == 0 {
+        return Ok(min_max_values(values.values().iter().copied()));
+    }
+    Ok(min_max_values(values.iter().flatten()))
+}
+
+fn min_max_values<T: Ord + Copy>(mut values: impl Iterator<Item = T>) -> Option<(T, T)> {
+    let first = values.next()?;
+    Some(values.fold((first, first), |(min, max), value| {
+        (min.min(value), max.max(value))
+    }))
 }
 
 /// Fast path: apply a uniform offset to the ID column and all child parent_id
@@ -405,6 +408,16 @@ where
         + ArrowNativeTypeOp,
     S: OtapBatchStore,
 {
+    let (off, sign) = if min <= offset {
+        (offset - min, Sign::Positive)
+    } else {
+        (min - offset, Sign::Negative)
+    };
+    let span = max - min + T::Native::from(1);
+    if off == T::Native::from(0) {
+        return Ok(offset + span);
+    }
+
     let parent_idx = payload_to_idx(parent_payload_type);
     let parent_rb = store.get_mut(batch_index)[parent_idx]
         .take()
@@ -412,12 +425,6 @@ where
 
     let id_col = extract_id_column(&parent_rb, id_column_path)?;
     let id_values = materialize_id_values::<T>(id_col.as_ref())?;
-
-    let (off, sign) = if min <= offset {
-        (offset - min, Sign::Positive)
-    } else {
-        (min - offset, Sign::Negative)
-    };
 
     let mut ids = id_values.values().to_vec();
     apply_uniform_offset(&mut ids, off, sign);
@@ -432,7 +439,6 @@ where
         }
     }
 
-    let span = max - min + T::Native::from(1);
     Ok(offset + span)
 }
 

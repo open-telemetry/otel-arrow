@@ -242,9 +242,10 @@ fn generic_concatenate<const N: usize>(
     batches: Vec<[Option<RecordBatch>; N]>,
     max_items: Option<NonZeroU64>,
 ) -> Result<Vec<[Option<RecordBatch>; N]>> {
-    let mut result = Vec::new();
+    let input_count = batches.len();
+    let mut result = Vec::with_capacity(if max_items.is_none() { 1 } else { input_count });
 
-    let mut current = Vec::new();
+    let mut current = Vec::with_capacity(input_count);
     let mut current_num_items = 0;
 
     for input in batches {
