@@ -28,23 +28,29 @@ impl<'a> MapValueOrRef<'a> {
 impl Hash for MapValueOrRef<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         [8].hash(state);
+        let mut acc = 0u64;
         match self {
             MapValueOrRef::Ref(m) => {
                 m.len().hash(state);
                 m.get_items(&mut |k, v| {
-                    k.hash(state);
-                    Into::<ValueOrRef>::into(v).hash(state);
+                    let mut h = ahash::AHasher::default();
+                    k.hash(&mut h);
+                    Into::<ValueOrRef>::into(v).hash(&mut h);
+                    acc = acc.wrapping_add(h.finish()); // order-independent
                     true
                 });
             }
             MapValueOrRef::Owned(m) => {
                 m.len().hash(state);
                 for (k, v) in &m.values {
-                    k.hash(state);
-                    v.hash(state);
+                    let mut h = ahash::AHasher::default();
+                    k.hash(&mut h);
+                    v.hash(&mut h);
+                    acc = acc.wrapping_add(h.finish()); // order-independent
                 }
             }
         }
+        acc.hash(state);
     }
 }
 
