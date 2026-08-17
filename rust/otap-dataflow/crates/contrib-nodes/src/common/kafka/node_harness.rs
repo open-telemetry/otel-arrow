@@ -647,6 +647,21 @@ mod receiver_harness {
             }
         }
 
+        /// Negatively-acknowledges a consumed `pdata` with a transient
+        /// (non-permanent) nack, folding `next_nack` + `NackMsg::new` +
+        /// control-channel send. Mirrors [`nack_permanent`](Self::nack_permanent)
+        /// but leaves `permanent = false`; used to prove the receiver treats a
+        /// transient nack as terminal (advances past the message) identically to
+        /// a permanent nack, since transient retry is delegated to a downstream
+        /// `processor:retry` node.
+        pub(crate) fn nack_transient(&self, reason: impl Into<String>, pdata: OtapPdata) {
+            if let Some((_node_id, nack)) = next_nack(NackMsg::new(reason.into(), pdata)) {
+                self.control_tx
+                    .send(NodeControlMsg::Nack(nack))
+                    .expect("send nack to receiver");
+            }
+        }
+
         /// Requests a graceful shutdown with the given `deadline` from now.
         pub(crate) fn shutdown(&self, deadline: Duration) {
             self.control_tx

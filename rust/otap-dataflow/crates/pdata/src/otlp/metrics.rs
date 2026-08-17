@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::str::FromStr;
+
 use crate::arrays::{
     Int32ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
     get_bool_array_opt, get_u8_array, get_u16_array,
@@ -56,6 +58,24 @@ pub enum MetricType {
     Histogram = 3,
     ExponentialHistogram = 4,
     Summary = 5,
+}
+
+impl FromStr for MetricType {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "Empty" => Ok(Self::Empty),
+            "Gauge" => Ok(Self::Gauge),
+            "Sum" => Ok(Self::Sum),
+            "Histogram" => Ok(Self::Histogram),
+            "ExponentialHistogram" => Ok(Self::ExponentialHistogram),
+            "Summary" => Ok(Self::Summary),
+            other => Err(Error::UnrecognizedMetricTypeName {
+                metric_type_name: other.to_string(),
+            }),
+        }
+    }
 }
 
 pub(crate) struct MetricsArrays<'a> {

@@ -1,8 +1,37 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module contains the implementation of the pdata View traits for serialized OTLP protobuf
-//! bytes for messages defined in logs.proto
+//! Borrowed pdata views over serialized OTLP log protobuf messages.
+//!
+//! # Purpose
+//!
+//! The types in this module expose the pdata log view traits without first decoding the protobuf
+//! into an owned Prost object tree. Field values remain slices of the caller-owned byte buffer,
+//! and nested messages are represented by lightweight borrowed views. This is useful on paths
+//! that only need selected fields or want to transform OTLP bytes directly into another format.
+//!
+//! The view hierarchy follows the OTLP logs schema:
+//!
+//! ```text
+//! RawLogsData
+//!   `- ResourceLogsIter -> RawResourceLogs
+//!        `- ScopeLogsIter -> RawScopeLogs
+//!             `- LogRecordsIter -> RawLogRecord
+//! ```
+//!
+//! Resource, instrumentation-scope, attribute, and `AnyValue` submessages reuse the raw views in
+//! the sibling `resource` and `common` modules.
+//!
+//! # Lazy access
+//!
+//! Child views use [`ProtoBytesParser`] to discover fields lazily. Parser clones and repeated-field
+//! iterators share scan progress and cached byte ranges through `Rc<Cell<_>>`. This avoids eagerly
+//! indexing every field, but means these views are intentionally not `Send` and are not designed
+//! for concurrent access. Malformed or wrongly typed nested fields may appear absent or stop the
+//! affected iterator, matching the best-effort behavior of the other raw OTLP byte views.
+//!
+//! [`RawLogsData::new`] and [`RawLogRecord::new`] are unchecked constructors for trusted or
+//! internal bytes when the caller does not need top-level framing validation.
 
 use std::cell::Cell;
 use std::num::NonZeroUsize;
@@ -25,7 +54,7 @@ use crate::views::otlp::bytes::common::{
 use crate::views::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
     from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim, read_varint,
-    to_nonzero_range,
+    to_nonzero_range, validate_message_wire_format,
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use otap_df_pdata_views::views::logs::{
@@ -55,56 +84,7 @@ impl<'a> RawLogsData<'a> {
     /// `ResourceLogs`, `ScopeLogs`, and `LogRecord` content is interpreted lazily on access
     /// via the view APIs.
     pub fn try_new(buf: &'a [u8]) -> Result<Self, Error> {
-        let mut pos = 0;
-        while pos < buf.len() {
-            let (tag, next) = read_varint(buf, pos).ok_or(Error::InvalidProtobufWireFormat)?;
-            let field_num = tag >> 3;
-            let wire_type = tag & 7;
-
-            if field_num == 0 {
-                return Err(Error::InvalidProtobufWireFormat);
-            }
-
-            pos = match wire_type {
-                wire_types::VARINT => {
-                    let (_, p) = read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
-                    p
-                }
-                wire_types::LEN => {
-                    let (len, p) =
-                        read_varint(buf, next).ok_or(Error::InvalidProtobufWireFormat)?;
-                    let end = p
-                        .checked_add(
-                            usize::try_from(len).map_err(|_| Error::InvalidProtobufWireFormat)?,
-                        )
-                        .ok_or(Error::InvalidProtobufWireFormat)?;
-                    if end > buf.len() {
-                        return Err(Error::InvalidProtobufWireFormat);
-                    }
-                    end
-                }
-                wire_types::FIXED64 => {
-                    let end = next
-                        .checked_add(8)
-                        .ok_or(Error::InvalidProtobufWireFormat)?;
-                    if end > buf.len() {
-                        return Err(Error::InvalidProtobufWireFormat);
-                    }
-                    end
-                }
-                wire_types::FIXED32 => {
-                    let end = next
-                        .checked_add(4)
-                        .ok_or(Error::InvalidProtobufWireFormat)?;
-                    if end > buf.len() {
-                        return Err(Error::InvalidProtobufWireFormat);
-                    }
-                    end
-                }
-                _ => return Err(Error::InvalidProtobufWireFormat),
-            };
-        }
-
+        validate_message_wire_format(buf)?;
         Ok(Self { buf })
     }
 }
@@ -569,12 +549,16 @@ impl LogRecordView for RawLogRecord<'_> {
 mod tests {
     use super::*;
 
+    /// Scenario: an empty byte slice represents an empty OTLP logs request.
+    /// Guarantees: validation accepts the request and exposes no resources.
     #[test]
     fn try_new_accepts_valid_empty_request() {
         let logs = RawLogsData::try_new(&[]).expect("empty request is valid protobuf");
         assert_eq!(logs.resources().count(), 0);
     }
 
+    /// Scenario: a top-level protobuf tag is an unterminated varint.
+    /// Guarantees: validation rejects malformed top-level wire framing.
     #[test]
     fn try_new_rejects_malformed_varint() {
         assert!(matches!(
@@ -583,6 +567,8 @@ mod tests {
         ));
     }
 
+    /// Scenario: a top-level length-delimited field extends beyond the request buffer.
+    /// Guarantees: validation rejects the truncated field before a view can traverse it.
     #[test]
     fn try_new_rejects_truncated_length_delimited_field() {
         assert!(matches!(
@@ -591,6 +577,18 @@ mod tests {
         ));
     }
 
+    /// Scenario: a top-level field declares a length larger than a 32-bit address space.
+    /// Guarantees: validation rejects lengths that overflow `usize` or exceed the input buffer.
+    #[test]
+    fn try_new_rejects_oversized_length_delimited_field() {
+        assert!(matches!(
+            RawLogsData::try_new(&[0x0a, 0x80, 0x80, 0x80, 0x80, 0x10]),
+            Err(Error::InvalidProtobufWireFormat)
+        ));
+    }
+
+    /// Scenario: a top-level varint value is truncated at the end of the request.
+    /// Guarantees: validation rejects trailing partial values.
     #[test]
     fn try_new_rejects_trailing_partial_varint() {
         assert!(matches!(
@@ -599,6 +597,8 @@ mod tests {
         ));
     }
 
+    /// Scenario: a protobuf tag uses the reserved field number zero.
+    /// Guarantees: validation rejects invalid field numbers.
     #[test]
     fn try_new_rejects_field_number_zero() {
         assert!(matches!(
@@ -607,8 +607,28 @@ mod tests {
         ));
     }
 
+    /// Scenario: a valid unknown top-level length-delimited field is present.
+    /// Guarantees: validation preserves protobuf forward compatibility for unknown fields.
     #[test]
     fn try_new_accepts_unknown_fields() {
         assert!(RawLogsData::try_new(&[0xa2, 0x06, 0x00]).is_ok());
+    }
+
+    /// Scenario: a nested ScopeLogs field declares a length beyond its ResourceLogs boundary.
+    /// Guarantees: top-level construction succeeds and lazy scope traversal ignores the field.
+    #[test]
+    fn try_new_accepts_truncated_nested_field() {
+        let logs = RawLogsData::try_new(&[0x0a, 0x03, 0x1a, 0x05, 0x00])
+            .expect("top-level framing is valid");
+        let resource_logs = logs.resources().next().expect("resource logs");
+
+        assert_eq!(resource_logs.scopes().count(), 0);
+    }
+
+    /// Scenario: a known nested ResourceLogs field uses the wrong protobuf wire type.
+    /// Guarantees: top-level construction defers interpretation to the lazy nested view.
+    #[test]
+    fn try_new_accepts_wrong_wire_type_for_nested_field() {
+        assert!(RawLogsData::try_new(&[0x0a, 0x02, 0x08, 0x01]).is_ok());
     }
 }

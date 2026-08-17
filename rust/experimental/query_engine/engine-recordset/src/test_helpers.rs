@@ -136,9 +136,9 @@ impl MapValue for TestRecord {
         Ok(self.values.get(key).map(|v| v as &dyn AsStaticValue))
     }
 
-    fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool {
         for (k, v) in &self.values {
-            if !item_callback.next(k, v.to_value()) {
+            if !(item_callback)(k, v.to_value()) {
                 return false;
             }
         }
@@ -177,7 +177,7 @@ impl MapValueMut for TestRecord {
         }
     }
 
-    fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback) {
-        self.values.retain(|k, v| item_callback.next(k, v));
+    fn retain(&mut self, item_callback: &mut MapValueMutIteratorCallback<'_>) {
+        self.values.retain(|k, v| (item_callback)(k, v));
     }
 }

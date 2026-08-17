@@ -124,7 +124,7 @@ pub(super) struct LossAttributes {
     pub(super) reason: LossReason,
 }
 
-/// Segment and bundle loss metrics partitioned by retention reason.
+/// Loss metrics partitioned by retention reason.
 #[metric_set(
     name = "processor.durable_buffer.loss",
     measurement_attributes = LossAttributes
@@ -137,6 +137,9 @@ pub(super) struct DurableBufferLossMetrics {
     /// Number of bundles lost.
     #[metric(unit = "{bundle}")]
     pub(super) bundles: Counter<u64>,
+    /// Persisted segment bytes lost.
+    #[metric(unit = "By")]
+    pub(super) bytes: Counter<u64>,
 }
 
 #[attribute_set(item, measurement)]

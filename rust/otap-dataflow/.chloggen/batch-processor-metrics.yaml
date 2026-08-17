@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: Remove the batch processor's per-signal `consumed.batches.*` and `produced.batches.*` counters.
-issues: [3530]
-subtext: |
-  Migration: Update dashboards, alerts, and queries to use `node.consumer.consumed.messages` and `node.producer.produced.messages` instead of the removed counters.

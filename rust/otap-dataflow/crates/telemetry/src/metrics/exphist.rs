@@ -12,9 +12,11 @@
 //! All points are emitted with delta temporality by the caller; these
 //! functions only build the per-point payload.
 
-use crate::instrument::DistributionValue;
+#[cfg(test)]
 use otap_df_expohisto::HistogramView;
+#[cfg(test)]
 use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue;
+#[cfg(test)]
 use otap_df_pdata::proto::opentelemetry::metrics::v1::{
     ExponentialHistogramDataPoint, exponential_histogram_data_point::Buckets,
 };
@@ -54,6 +56,7 @@ pub(crate) fn otlp_histogram_sum(count: u64, sum: f64, min: f64) -> Option<f64> 
 /// sum for non-negative populations so consumers can treat it as monotonic,
 /// for compatibility with OpenMetrics, which is the same rule the MMSC
 /// encoder applies.
+#[cfg(test)]
 pub(crate) fn exponential_histogram_data_point<const N: usize>(
     view: &HistogramView<'_, N>,
     start_time_unix_nano: u64,
@@ -86,36 +89,6 @@ pub(crate) fn exponential_histogram_data_point<const N: usize>(
     }
 
     builder.finish()
-}
-
-/// Projects a [`DistributionValue`] onto an OTLP `ExponentialHistogramDataPoint`,
-/// dispatching each bucketed tier onto the matching primitive.
-///
-/// The caller validates that this function is used only for a true
-/// exponential-histogram instrument.
-pub(crate) fn distribution_exponential_histogram_data_point(
-    distribution: &DistributionValue,
-    start_time_unix_nano: u64,
-    time_unix_nano: u64,
-    attributes: &[KeyValue],
-) -> ExponentialHistogramDataPoint {
-    match distribution {
-        DistributionValue::Basic(_) => {
-            unreachable!("basic MMSC distributions use explicit-boundary histograms")
-        }
-        DistributionValue::Normal(hist) => exponential_histogram_data_point(
-            &hist.view(),
-            start_time_unix_nano,
-            time_unix_nano,
-            attributes,
-        ),
-        DistributionValue::Detailed(hist) => exponential_histogram_data_point(
-            &hist.view(),
-            start_time_unix_nano,
-            time_unix_nano,
-            attributes,
-        ),
-    }
 }
 
 #[cfg(test)]
