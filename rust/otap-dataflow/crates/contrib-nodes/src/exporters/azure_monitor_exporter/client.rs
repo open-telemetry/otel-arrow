@@ -37,9 +37,6 @@ pub struct LogsIngestionClient {
     http_client: Client,
     endpoint: String,
 
-    // Pre-formatted authorization header provider
-    auth_header: HeaderValue,
-
     /// Optional ARM resource ID header for Azure Monitor source tracking.
     resource_id_header: Option<HeaderValue>,
 
@@ -113,15 +110,14 @@ impl LogsIngestionClientPool {
 impl LogsIngestionClient {
     /// Creates a new Azure Monitor logs ingestion client instance from provided components.
     ///
-    /// Primarily used for testing. The auth header is initialized with a placeholder
-    /// and should be updated via `update_auth()` before making requests.
+    /// Primarily used for testing.
     ///
     /// # Arguments
     /// * `http_client` - The HTTP client to use for requests
     /// * `endpoint` - The full endpoint URL for the Azure Monitor ingestion API
     ///
     /// # Returns
-    /// A configured client instance with a placeholder auth header
+    /// A configured client instance
     #[must_use]
     pub fn from_parts(
         http_client: Client,
@@ -131,16 +127,12 @@ impl LogsIngestionClient {
         Self {
             http_client,
             endpoint,
-            auth_header: HeaderValue::from_static("Bearer "), // placeholder, will be updated on first use
             resource_id_header: None,
             metrics,
         }
     }
 
     /// Creates a new Azure Monitor logs ingestion client instance from the configuration.
-    ///
-    /// The auth header is initialized with a placeholder and should be updated
-    /// via `update_auth()` before making requests.
     ///
     /// # Arguments
     /// * `config` - The API configuration containing endpoint, DCR, and stream info
@@ -170,32 +162,34 @@ impl LogsIngestionClient {
         Ok(Self {
             http_client,
             endpoint,
-            auth_header: HeaderValue::from_static("Bearer "), // placeholder, will be updated on first use
             resource_id_header,
             metrics,
         })
-    }
-
-    /// Update the authorization header with a new access token.
-    pub fn update_auth(&mut self, header: HeaderValue) {
-        self.auth_header = header;
     }
 
     /// Export compressed data to Log Analytics ingestion API with automatic retry.
     ///
     /// Retries on:
     /// - Network errors
-    /// - 401 (after token refresh)
     /// - 429 (rate limiting) - uses Retry-After header if present
     /// - 5xx (server errors)
     ///
+    /// A 401 is not retried here: every attempt would replay `auth_header`, so
+    /// recovery belongs to the caller, which invalidates the rejected token and
+    /// re-dispatches once a fresh one is cached.
+    ///
     /// # Arguments
     /// * `body` - The gzip-compressed JSON data to send
+    /// * `auth_header` - The authorization header for this request
     ///
     /// # Returns
     /// * `Ok(Duration)` - Total time spent (including retries) if successful
     /// * `Err(String)` - Error message if all retries exhausted or non-retryable error
-    pub async fn export(&mut self, body: Bytes) -> Result<Duration, Error> {
+    pub async fn export(
+        &mut self,
+        body: Bytes,
+        auth_header: &HeaderValue,
+    ) -> Result<Duration, Error> {
         let mut attempt = 0u32;
         let mut rng = SmallRng::seed_from_u64(
             std::time::SystemTime::now()
@@ -206,7 +200,7 @@ impl LogsIngestionClient {
         );
 
         loop {
-            match self.try_export(body.clone()).await {
+            match self.try_export(body.clone(), auth_header).await {
                 Ok(duration) => return Ok(duration),
                 Err(e) if !e.is_retryable() => {
                     return Err(Error::ExportFailed {
@@ -249,7 +243,11 @@ impl LogsIngestionClient {
     }
 
     /// Single export attempt without retry logic.
-    async fn try_export(&mut self, body: Bytes) -> Result<Duration, Error> {
+    async fn try_export(
+        &mut self,
+        body: Bytes,
+        auth_header: &HeaderValue,
+    ) -> Result<Duration, Error> {
         let start = Instant::now();
 
         let mut request = self
@@ -257,7 +255,7 @@ impl LogsIngestionClient {
             .post(&self.endpoint)
             .header(CONTENT_TYPE, "application/json")
             .header(CONTENT_ENCODING, "gzip")
-            .header(AUTHORIZATION, &self.auth_header);
+            .header(AUTHORIZATION, auth_header);
 
         if let Some(ref resource_id) = self.resource_id_header {
             request = request.header(AZURE_MONITOR_SOURCE_RESOURCEID_HEADER, resource_id);
@@ -438,67 +436,6 @@ mod tests {
         );
 
         assert_eq!(client.endpoint, "https://example.com/endpoint");
-        // auth_header is placeholder
-        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
-    }
-
-    #[test]
-    fn test_new_initial_state() {
-        let http_client = create_test_http_client();
-        let api_config = create_test_api_config();
-
-        let client =
-            LogsIngestionClient::new(&api_config, http_client, create_test_metrics()).unwrap();
-
-        // Auth header is placeholder
-        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
-    }
-
-    // ==================== Auth Header Update Tests ====================
-
-    #[test]
-    fn test_update_auth_changes_header() {
-        let mut client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            create_test_metrics(),
-        );
-
-        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
-
-        client.update_auth(HeaderValue::from_static("Bearer new_token"));
-
-        assert_eq!(
-            client.auth_header,
-            HeaderValue::from_static("Bearer new_token")
-        );
-    }
-
-    #[test]
-    fn test_update_auth_multiple_times() {
-        let mut client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            create_test_metrics(),
-        );
-
-        client.update_auth(HeaderValue::from_static("Bearer token1"));
-        assert_eq!(
-            client.auth_header,
-            HeaderValue::from_static("Bearer token1")
-        );
-
-        client.update_auth(HeaderValue::from_static("Bearer token2"));
-        assert_eq!(
-            client.auth_header,
-            HeaderValue::from_static("Bearer token2")
-        );
-
-        client.update_auth(HeaderValue::from_static("Bearer token3"));
-        assert_eq!(
-            client.auth_header,
-            HeaderValue::from_static("Bearer token3")
-        );
     }
 
     // ==================== LogsIngestionClientPool Tests ====================
@@ -604,45 +541,6 @@ mod tests {
         let client2 = client1.clone();
 
         assert_eq!(client1.endpoint, client2.endpoint);
-    }
-
-    #[test]
-    fn test_client_clone_has_same_auth_header() {
-        let mut client1 = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            create_test_metrics(),
-        );
-
-        client1.update_auth(HeaderValue::from_static("Bearer test_token"));
-        let client2 = client1.clone();
-
-        assert_eq!(client1.auth_header, client2.auth_header);
-    }
-
-    #[test]
-    fn test_client_clone_has_independent_header() {
-        let mut client1 = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            create_test_metrics(),
-        );
-
-        client1.update_auth(HeaderValue::from_static("Bearer token1"));
-        let mut client2 = client1.clone();
-
-        // Modify client2's header
-        client2.update_auth(HeaderValue::from_static("Bearer token2"));
-
-        // client1's header should be unchanged
-        assert_eq!(
-            client1.auth_header,
-            HeaderValue::from_static("Bearer token1")
-        );
-        assert_eq!(
-            client2.auth_header,
-            HeaderValue::from_static("Bearer token2")
-        );
     }
 
     // ==================== Edge Cases ====================

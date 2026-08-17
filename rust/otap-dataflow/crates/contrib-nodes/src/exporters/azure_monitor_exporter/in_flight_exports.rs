@@ -117,8 +117,7 @@ impl InFlightExports {
     ) -> LocalBoxFuture<'static, CompletedExport> {
         Box::pin(async move {
             let body_size_bytes = body.len() as u64;
-            client.update_auth(auth_header);
-            let result = client.export(body).await;
+            let result = client.export(body, &auth_header).await;
             CompletedExport {
                 batch_id,
                 client,
