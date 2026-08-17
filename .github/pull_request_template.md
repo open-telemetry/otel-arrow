@@ -12,8 +12,12 @@
 
 ## Validation
 
-<!--How did you confirm your change has intended effect?-->
+<!--How did you confirm your change has the intended effect?-->
 
 ## User-facing changes
 
-<!-- Describe the impact, or write `None`. -->
+<!--
+Describe the impact, or write `None`.
+User-facing changes require a `.chloggen/*.yaml` entry. If no entry is needed,
+include `chore` in the PR title. Documentation-only changes are exempt.
+-->
