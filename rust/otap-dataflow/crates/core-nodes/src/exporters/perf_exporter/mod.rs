@@ -148,6 +148,16 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     let export_start = Instant::now();
                     let signal_type = pdata.signal_type();
                     let export_duration = export_start.elapsed();
+
+                    // The local no-op export is complete at dequeue. Record it
+                    // independently of whether the upstream Ack can be routed.
+                    self.pdata_metrics
+                        .with(SignalOutcomeAttributes {
+                            signal: signal_type,
+                            outcome: Outcome::Success,
+                        })
+                        .record(export_duration);
+
                     let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
                     // ToDo (LQ) We need to introduce pdata headers without hpack encoding for data coming from other nodes
@@ -186,14 +196,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     //         self.config.smoothing_factor() as f64,
                     //     );
                     // }
-
-                    // Successful perf reporting: mark as exported for this signal
-                    self.pdata_metrics
-                        .with(SignalOutcomeAttributes {
-                            signal: signal_type,
-                            outcome: Outcome::Success,
-                        })
-                        .record(export_duration);
 
                     // ToDo Report disk, io, cpu, mem usage once gauge metrics are implemented
                 }

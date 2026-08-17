@@ -916,22 +916,10 @@ async fn finalize_completed_export(
         }
     };
 
-    let export_and_notify_success = match err {
-        None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
-        Some((err_msg, retryable)) => {
-            otel_warn!(
-                "otlp.exporter.http.export_error",
-                message = err_msg,
-                retryable = retryable
-            );
-            let mut nack = NackMsg::new(&err_msg, pdata);
-            nack.permanent = !retryable;
-            _ = effect_handler.notify_nack(nack).await;
-            false
-        }
-    };
-
-    let outcome = if export_and_notify_success {
+    // Record the backend result before routing its Ack/Nack. Notification
+    // delivery is a separate pipeline concern and must not redefine or suppress
+    // the terminal HTTP export outcome.
+    let outcome = if err.is_none() {
         Outcome::Success
     } else {
         Outcome::Failure
@@ -942,6 +930,34 @@ async fn finalize_completed_export(
             outcome,
         })
         .record(export_duration);
+
+    match err {
+        None => {
+            if let Err(error) = effect_handler.notify_ack(AckMsg::new(pdata)).await {
+                otel_warn!(
+                    "otlp.exporter.http.notification_error",
+                    message = "Failed to route the terminal OTLP HTTP Ack notification",
+                    error = %error
+                );
+            }
+        }
+        Some((err_msg, retryable)) => {
+            otel_warn!(
+                "otlp.exporter.http.export_error",
+                message = err_msg,
+                retryable = retryable
+            );
+            let mut nack = NackMsg::new(&err_msg, pdata);
+            nack.permanent = !retryable;
+            if let Err(error) = effect_handler.notify_nack(nack).await {
+                otel_warn!(
+                    "otlp.exporter.http.notification_error",
+                    message = "Failed to route the terminal OTLP HTTP Nack notification",
+                    error = %error
+                );
+            }
+        }
+    }
 
     rejected_generation
 }
@@ -2541,6 +2557,64 @@ mod test {
                 .get()
                 .count(),
             1
+        );
+    }
+
+    /// Scenario: An HTTP export succeeds but its upstream Ack notification cannot be delivered.
+    /// Guarantees: The backend success is still recorded once and is not relabeled as a failure.
+    #[test]
+    fn successful_export_is_recorded_when_ack_notification_fails() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = ExporterExportMetrics::register(&pipeline_ctx);
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);
+        let (completion_tx, completion_rx) =
+            otap_df_engine::control::pipeline_completion_msg_channel(1);
+        drop(completion_rx);
+        effect_handler.set_pipeline_completion_msg_sender(completion_tx);
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
+            .test_subscribe_to(Interests::ACKS, TestCallData::default().into(), 123);
+        let (context, saved_payload) = pdata.into_parts();
+        let completed = CompletedExport {
+            result: Ok(ServiceResponse {
+                partial_success: None,
+            }),
+            context,
+            saved_payload,
+            signal_type: SignalType::Logs,
+            export_started_at: Instant::now(),
+            token_generation: None,
+        };
+
+        let _ = Runtime::new().unwrap().block_on(finalize_completed_export(
+            completed,
+            &effect_handler,
+            &mut metrics,
+        ));
+
+        assert_eq!(
+            metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Success,
+                })
+                .messages
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
+                .messages
+                .get(),
+            0
         );
     }
 

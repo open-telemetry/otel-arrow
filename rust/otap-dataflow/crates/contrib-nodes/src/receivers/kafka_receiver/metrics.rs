@@ -195,6 +195,12 @@ pub struct KafkaReceiverOffsetCommitMetrics {
 #[metric_set(name = "receiver.kafka.consumer")]
 #[derive(Debug, Default, Clone)]
 pub struct KafkaReceiverConsumerMetrics {
+    /// Kafka records delivered by the consumer before filtering or decoding.
+    #[metric(name = "records.received", unit = "{message}")]
+    pub records_received: Counter<u64>,
+    /// Kafka record payload bytes delivered before filtering or decoding.
+    #[metric(name = "records.bytes", unit = "By")]
+    pub record_bytes: Counter<u64>,
     /// Current number of delivered records awaiting acknowledgement and commit progress.
     #[metric(name = "records.inflight", unit = "{message}")]
     pub records_in_flight: ObserveUpDownCounter<u64>,
@@ -246,7 +252,7 @@ pub struct KafkaReceiverMetrics {
     pub rejections: MeasurementMetricSet<KafkaReceiverRejectionMetrics>,
     /// Offset commit outcome metrics.
     pub offset_commits: MeasurementMetricSet<KafkaReceiverOffsetCommitMetrics>,
-    /// Fixed consumer health metrics.
+    /// Fixed consumer ingress and health metrics.
     pub consumer: MetricSet<KafkaReceiverConsumerMetrics>,
     /// Fixed transport metrics.
     pub transport: MeasurementMetricSet<KafkaReceiverTransportMetrics>,
@@ -263,6 +269,14 @@ impl KafkaReceiverMetrics {
             offset_commits: KafkaReceiverOffsetCommitMetrics::register(pipeline_ctx),
             consumer: pipeline_ctx.register_metrics::<KafkaReceiverConsumerMetrics>(),
             transport: KafkaReceiverTransportMetrics::register(pipeline_ctx),
+        }
+    }
+
+    /// Records one Kafka consumer delivery before filtering or decoding.
+    pub fn record_consumed_record(&mut self, payload_bytes: u64) {
+        self.consumer.records_received.inc();
+        if payload_bytes > 0 {
+            self.consumer.record_bytes.add(payload_bytes);
         }
     }
 
@@ -425,6 +439,7 @@ mod tests {
     #[test]
     fn receiver_metrics_are_partitioned_by_context() {
         let mut metrics = new_test_metrics();
+        metrics.record_consumed_record(42);
         metrics.record_message_admitted(SignalType::Logs, 42);
         metrics.record_message_completed(SignalType::Logs);
         metrics.record_acknowledgement(SignalType::Logs, Outcome::Refused);
@@ -447,6 +462,8 @@ mod tests {
         assert_eq!(messages.started.get(), 1);
         assert_eq!(messages.completed.get(), 1);
         assert_eq!(messages.bytes.get(), 42);
+        assert_eq!(metrics.consumer.records_received.get(), 1);
+        assert_eq!(metrics.consumer.record_bytes.get(), 42);
         assert_eq!(
             metrics
                 .messages
@@ -511,6 +528,28 @@ mod tests {
                 .commits
                 .get(),
             1
+        );
+    }
+
+    /// Scenario: Kafka delivers a record that has not yet passed filtering or decoding.
+    /// Guarantees: Transport ingress is counted without marking the record as pipeline-admitted.
+    #[test]
+    fn consumed_records_are_distinct_from_admitted_messages() {
+        let mut metrics = new_test_metrics();
+
+        metrics.record_consumed_record(128);
+
+        assert_eq!(metrics.consumer.records_received.get(), 1);
+        assert_eq!(metrics.consumer.record_bytes.get(), 128);
+        assert_eq!(
+            metrics
+                .messages
+                .get(SignalAttributes {
+                    signal: SignalType::Logs,
+                })
+                .started
+                .get(),
+            0
         );
     }
 

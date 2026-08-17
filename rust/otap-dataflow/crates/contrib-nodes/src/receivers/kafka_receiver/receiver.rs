@@ -1004,6 +1004,7 @@ impl KafkaReceiver {
                             let offset = data.offset();
 
                             let payload_bytes = data.payload().map_or(0, |payload| payload.len() as u64);
+                            self.metrics.record_consumed_record(payload_bytes);
 
                             // Assign a compact u32 ID for this actual topic name.
                             // The registry remembers the mapping for Ack/Nack lookup.

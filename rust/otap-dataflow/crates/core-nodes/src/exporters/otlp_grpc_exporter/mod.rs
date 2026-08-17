@@ -973,6 +973,15 @@ fn is_auth_failure(result: &Result<(), tonic::Status>, auth_bound: bool) -> bool
     auth_bound && matches!(result, Err(status) if status.code() == Code::Unauthenticated)
 }
 
+/// Maps the backend RPC result to the shared terminal export outcome.
+fn export_outcome(result: &Result<(), tonic::Status>) -> Outcome {
+    if result.is_ok() {
+        Outcome::Success
+    } else {
+        Outcome::Failure
+    }
+}
+
 /// NACKs `pdata` because no usable bearer token is available, and records the
 /// failure.
 ///
@@ -1028,28 +1037,24 @@ async fn finalize_completed_export(
     let auth_failure = is_auth_failure(&result, token_generation.is_some());
     let rejected_generation = if auth_failure { token_generation } else { None };
 
-    match route_export_result(result, context, saved_payload, effect_handler, auth_failure).await {
-        Ok(()) => {
-            pdata_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: signal_type,
-                    outcome: Outcome::Success,
-                })
-                .record(export_duration);
-        }
-        Err(e) => {
-            otel_warn!(
-                "otlp.exporter.grpc.export_error",
-                message = "OTLP Exporter gRPC service request did not succeed",
-                error = %e
-            );
-            pdata_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: signal_type,
-                    outcome: Outcome::Failure,
-                })
-                .record(export_duration);
-        }
+    // The shared outcome describes the backend RPC, independently of whether
+    // its Ack/Nack notification can be delivered to the upstream subscriber.
+    let outcome = export_outcome(&result);
+    pdata_metrics
+        .with(SignalOutcomeAttributes {
+            signal: signal_type,
+            outcome,
+        })
+        .record(export_duration);
+
+    if let Err(e) =
+        route_export_result(result, context, saved_payload, effect_handler, auth_failure).await
+    {
+        otel_warn!(
+            "otlp.exporter.grpc.notification_error",
+            message = "Failed to route the terminal OTLP gRPC Ack/Nack notification",
+            error = %e
+        );
     }
 
     (client, rejected_generation)
@@ -2471,6 +2476,17 @@ mod tests {
     /// Helper builds a [`tonic::Status`] with the given code, no details.
     fn status_with_code(code: Code) -> tonic::Status {
         tonic::Status::new(code, "test error")
+    }
+
+    /// Scenario: A dispatched OTLP gRPC request returns either success or a backend status error.
+    /// Guarantees: The shared outcome follows the RPC result rather than Ack/Nack delivery.
+    #[test]
+    fn export_outcome_is_derived_from_the_rpc_result() {
+        assert_eq!(export_outcome(&Ok(())), Outcome::Success);
+        assert_eq!(
+            export_outcome(&Err(status_with_code(Code::Unavailable))),
+            Outcome::Failure
+        );
     }
 
     /// Helper builds a [`tonic::Status`] carrying a `RetryInfo` in its

@@ -2017,8 +2017,6 @@ mod tests {
 
     /// Scenario: Stream creation fails after the request stream correlates its first PData batch.
     /// Guarantees: The correlated batch is drained and reported as a terminal export failure.
-    /// Scenario: Stream creation repeatedly fails while the worker is in reconnect backoff.
-    /// Guarantees: Shutdown interrupts the backoff and reports every accepted batch as failed.
     #[tokio::test]
     async fn test_stream_arrow_batches_drain_correlation_on_error() {
         use super::{PDataMetricsUpdate, StreamBatch, stream_arrow_batches};
@@ -2083,6 +2081,8 @@ mod tests {
         }
     }
 
+    /// Scenario: Stream creation repeatedly fails while the worker is in reconnect backoff.
+    /// Guarantees: Shutdown interrupts the backoff and reports every accepted batch as failed.
     #[tokio::test]
     async fn test_stream_arrow_batches_shutdown_interrupts_retry_backoff() {
         use super::{PDataMetricsUpdate, StreamBatch, stream_arrow_batches};

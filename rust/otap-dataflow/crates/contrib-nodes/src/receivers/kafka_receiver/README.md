@@ -929,6 +929,8 @@ commit mode because librdkafka owns offset management in auto-commit mode.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
+| `receiver.kafka.consumer.records.received` | `{message}` | Records delivered by Kafka before duplicate filtering, topic routing, or decoding. |
+| `receiver.kafka.consumer.records.bytes` | `By` | Kafka payload bytes delivered before duplicate filtering, topic routing, or decoding. |
 | `receiver.kafka.consumer.records.inflight` | `{message}` | Current delivered records awaiting acknowledgement and commit progress. |
 | `receiver.kafka.consumer.records.duplicates` | `{message}` | Records skipped because their offsets were already tracked in the current ownership generation. |
 | `receiver.kafka.consumer.group.rebalances` | `{rebalance}` | Consumer-group assignment events observed by this consumer. |
@@ -939,9 +941,10 @@ commit mode because librdkafka owns offset management in auto-commit mode.
 | `receiver.kafka.consumer.group.lag` | `{message}` | Mean broker-committed consumer-group lag across every owned partition. |
 | `receiver.kafka.consumer.group.feedback.after_revocation` | `{response}` | Ack or nack responses ignored because their partition ownership was stale. |
 
-Consumer-group metrics are active only in manual commit mode. Lag is also
-opt-in via `lag_refresh_interval_ms`; incomplete refreshes retain the previous
-value, and an empty assignment resets it to zero.
+Record ingress metrics are active in both commit modes. Consumer-group metrics
+are active only in manual commit mode. Lag is also opt-in via
+`lag_refresh_interval_ms`; incomplete refreshes retain the previous value, and
+an empty assignment resets it to zero.
 
 #### `receiver.kafka.transport`
 
@@ -956,9 +959,9 @@ value, and an empty assignment resets it to zero.
 
 | Legacy metric | Replacement |
 | --- | --- |
-| `receiver.kafka.messages_received` | Sum `receiver.messages.started` across `signal`. |
-| `receiver.kafka.bytes_received` | Sum `receiver.messages.bytes` across `signal`. |
-| `receiver.kafka.log_msgs_received`, `metric_msgs_received`, `trace_msgs_received` | `receiver.messages.started` filtered by `signal`. |
+| `receiver.kafka.messages_received` | `receiver.kafka.consumer.records.received`. |
+| `receiver.kafka.bytes_received` | `receiver.kafka.consumer.records.bytes`. |
+| `receiver.kafka.log_msgs_received`, `metric_msgs_received`, `trace_msgs_received` | Sum `receiver.messages.started` and `receiver.kafka.rejections.messages{reason="decode"}`, filtered by `signal`. |
 | `receiver.kafka.acks_received`, `nacks_received` | `receiver.kafka.acknowledgements.responses` with `outcome="success"` or `outcome="refused"`. |
 | `receiver.kafka.processing_errors` | Sum `receiver.kafka.rejections.messages` across its bounded attributes. |
 | `receiver.kafka.unmarshal_failed_traces`, `unmarshal_failed_metrics`, `unmarshal_failed_logs` | `receiver.kafka.rejections.messages{reason="decode"}` filtered by `signal`. |
