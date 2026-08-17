@@ -26,7 +26,7 @@ pub struct FileExporterExportMetrics {
 /// Bounded file operation associated with an I/O failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum FileOperation {
-    /// File acquisition, directory creation, open, probe, or tail validation.
+    /// File acquisition, directory creation, open, or tail validation.
     Open,
     /// Frame write or flush.
     Write,

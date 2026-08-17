@@ -42,8 +42,8 @@ For logs on core 3 in deployment generation 7, the example resolves to
 | `tail_recovery` | `truncate_partial` | Append-mode handling: `truncate_partial` or `fail`. |
 
 Unknown fields, relative paths, missing or repeated tokens, unknown tokens,
-and explicit `tail_recovery` settings outside append mode are rejected during
-configuration validation.
+tokens removed by lexical parent traversal, and explicit `tail_recovery`
+settings outside append mode are rejected during configuration validation.
 
 ### Open modes
 
@@ -53,8 +53,9 @@ configuration validation.
 - `truncate` explicitly discards existing contents when a signal first opens.
 - `create_new` rejects a signal path that already exists.
 
-Unused signal files are not created. A signal writer is opened, checked, and
-reversibly probed when the first non-empty batch for that signal arrives.
+Unused signal files are not created. A signal writer is opened and its append
+tail is checked when the first non-empty batch for that signal arrives. The
+first actual frame exercises the write path.
 
 ### Durability and failures
 
@@ -118,7 +119,7 @@ No metric contains a destination path.
 | Event | Severity | Attributes | Description |
 | --- | --- | --- | --- |
 | `otelcol.node.file.start` | `info` | `format`, `create_directories`, `open_mode`, `durability`, `tail_recovery`, `max_frame_bytes` | Exporter startup with its non-sensitive bounded configuration. |
-| `otelcol.node.file.writer.start` | `info` | `signal` | A signal writer passed its lazy readiness probe. |
+| `otelcol.node.file.writer.start` | `info` | `signal` | A signal writer opened successfully on first use. |
 | `otelcol.node.file.tail.recover` | `warn` | `signal`, `recovered_bytes` | An incomplete final frame was removed. |
 | `otelcol.node.file.operation.fail` | `warn` | `signal`, `operation`, `error` | A signal writer entered an I/O failure state. |
 | `otelcol.node.file.rollback.fail` | `error` | `signal`, `operation`, `error`, `rollback_error` | Rollback failed and the node will terminate. |

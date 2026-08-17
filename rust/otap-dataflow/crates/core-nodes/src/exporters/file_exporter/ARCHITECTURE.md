@@ -87,9 +87,9 @@ periodic flush task, mutex on the hot path, internal queue, or retry loop.
 | Module | Responsibility |
 | --- | --- |
 | [`mod.rs`](mod.rs) | Factory registration, local run loop, representation dispatch, ACK/NACK routing, shutdown, and event emission. |
-| [`config.rs`](config.rs) | Typed configuration, cross-field validation, path-token substitution, and cross-signal collision checks. |
+| [`config.rs`](config.rs) | Typed configuration, cross-field validation, path-token substitution, ownership-token isolation, and path collision checks. |
 | [`encoding.rs`](encoding.rs) | Exporter-local size bound and JSON Lines framing around the shared serializers. |
-| [`writer.rs`](writer.rs) | Path leases, directory and file creation, open modes, readiness probing, tail recovery, transactional writes, rollback, and final synchronization. |
+| [`writer.rs`](writer.rs) | Path leases, directory and file creation, open modes, tail recovery, transactional writes, rollback, and final synchronization. |
 | [`metrics.rs`](metrics.rs) | Component-specific counters with closed signal, outcome, and operation attributes. |
 | [`otap_df_pdata::otlp::json`](../../../../pdata/src/otlp/json/README.md) | Canonical view-based OTLP JSON serialization shared with other producers and consumers. |
 
@@ -105,7 +105,8 @@ The factory performs these steps before the run loop starts:
    access.
 3. Substitute the pipeline core ID and deployment generation into the three
    signal paths.
-4. Lexically normalize the paths and reject cross-signal collisions.
+4. Verify that every ownership token changes the normalized destination and
+   reject cross-signal collisions.
 5. Register metric sets and allocate a small reusable frame buffer.
 
 The instance retains:
@@ -168,11 +169,13 @@ tokens would make a configuration unsafe after scaling or reconfiguration and
 would require hidden suffix rules. Unknown or repeated tokens are rejected.
 Telemetry values never participate in path construction.
 
-Configuration-time lexical normalization catches collisions among the three
-rendered signal paths. On first use, `PathLease` resolves the existing path or
-its closest existing ancestor and acquires a process-local lease for the
-normalized destination. The lease prevents two writers in this process from
-owning the same path and is released with the writer.
+Configuration-time lexical normalization verifies that changing each required
+token changes the destination and catches collisions among the three rendered
+signal paths. On first use, `PathLease` resolves the original filesystem path
+or its closest existing ancestor before appending any missing suffix. This
+preserves symlink and parent-component traversal order. The resulting
+process-local lease prevents two writers in this process from owning the same
+path and is released with the writer.
 
 The lease is not a filesystem lock or security boundary. It does not exclude a
 different process, and changes to symlinks after acquisition are outside its
@@ -184,12 +187,12 @@ path. On Unix, new directories request mode `0700` and new files request mode
 
 ## Writer Lifecycle
 
-### Lazy Open and Readiness
+### Lazy Open and First Write
 
 Writers are created independently on the first valid, non-empty batch for each
 signal. Lazy open avoids creating two unused files in a single-signal pipeline.
 It also means node readiness does not prove that an unused signal destination
-is writable.
+can be opened or written.
 
 Opening a writer follows this order:
 
@@ -197,14 +200,12 @@ Opening a writer follows this order:
 2. Optionally create parent directories.
 3. Open with `append`, `truncate`, or `create_new` semantics.
 4. In append mode, validate or repair the final frame boundary.
-5. Write the valid empty object `{}` followed by `\n` as a readiness probe.
-6. Apply the configured probe durability, truncate back to the prior length,
-   and synchronize the rollback.
 
-The writer is installed in the signal slot only when every step succeeds. A
-crash during the probe can leave a valid empty JSON object, never malformed
-JSON. A failed open or probe receives a retryable NACK, and a later batch may
-retry the lazy open.
+The writer is installed in the signal slot only when every step succeeds. The
+exporter does not write a synthetic readiness frame into the destination. The
+first actual frame exercises write, flush, and configured durability behavior
+through the normal transactional path. A failed open receives a retryable
+NACK, and a later batch may retry the lazy open.
 
 ### Append-tail Recovery
 
@@ -248,7 +249,7 @@ shutdown error. Previously issued ACKs are not revoked.
 | Empty pdata | ACK; no encoding, open, or write. |
 | Malformed view or JSON serialization failure | Permanent NACK; no file modification; continue. |
 | Frame exceeds `max_frame_bytes` | Permanent NACK with upstream-splitting guidance; continue. |
-| Open, tail validation, or readiness probe fails | Retryable NACK; leave writer unopened; continue. |
+| Open or tail validation fails | Retryable NACK; leave writer unopened; continue. |
 | Write or `sync_data` fails and rollback succeeds | Retryable NACK; continue. |
 | Rollback fails | Retryable NACK, error event, and fatal exporter error because file state is indeterminate. |
 | ACK routing fails after a successful write | Fatal exporter error; a later replay may duplicate the frame. |
@@ -307,7 +308,7 @@ otherwise.
 | Buffering | A buffered writer and `flush_interval` can defer writes. | One frame is awaited directly; there is no flush ticker. | Preserve direct backpressure and simple completion ownership. |
 | Durability | Flush timing is configurable but ACK durability is not exposed as the same explicit contract. | `write` and `sync_data` define the pre-ACK durability point. | Make completion semantics reviewable and testable. |
 | Write recovery | No equivalent bounded append-tail and per-frame rollback contract is exposed. | Append-tail repair is bounded; failed writes attempt rollback to the prior length. | Keep JSON Lines replayable after common interruption and I/O failures. |
-| Writer readiness | Writer lifecycle follows the Go component startup model. | Each valid signal destination is opened and reversibly probed on first use. | Avoid unused files while failing the triggering batch if the destination is not writable. |
+| Writer readiness | Writer lifecycle follows the Go component startup model. | Each valid signal destination is opened on first use; the first actual frame exercises the write path. | Avoid unused and synthetic frames while failing the triggering batch if the destination is not writable. |
 | Rotation and retention | Optional size/age rotation and backup cleanup. | Not yet supported. | Ownership, cleanup bounds, and crash semantics need an OTAP-specific design. |
 | Compression | zstd support includes historical per-message framing and native file-level behavior. | Not yet supported. | Avoid a legacy wire format; future compression should produce standard files. |
 | Dynamic grouping | Resource attributes can select paths, with an LRU bounded by `max_open_files`. | Telemetry cannot influence paths; each instance has at most three writers. | Avoid path injection, cardinality growth, churn, and hot-path synchronization. |

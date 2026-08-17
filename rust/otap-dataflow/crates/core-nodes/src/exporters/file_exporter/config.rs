@@ -149,18 +149,10 @@ impl FileExporterConfig {
         core_id: usize,
         deployment_generation: u64,
     ) -> Result<RenderedPaths, ConfigError> {
-        let render = |signal: &str| {
-            PathBuf::from(
-                self.path
-                    .replace("{signal}", signal)
-                    .replace("{core_id}", &core_id.to_string())
-                    .replace("{generation}", &deployment_generation.to_string()),
-            )
-        };
         let paths = RenderedPaths {
-            logs: render("logs"),
-            metrics: render("metrics"),
-            traces: render("traces"),
+            logs: self.render_path("logs", core_id, deployment_generation),
+            metrics: self.render_path("metrics", core_id, deployment_generation),
+            traces: self.render_path("traces", core_id, deployment_generation),
         };
         let normalized = [
             normalize_lexically(&paths.logs),
@@ -176,6 +168,31 @@ impl FileExporterConfig {
             ));
         }
         Ok(paths)
+    }
+
+    fn render_path(&self, signal: &str, core_id: usize, deployment_generation: u64) -> PathBuf {
+        PathBuf::from(
+            self.path
+                .replace("{signal}", signal)
+                .replace("{core_id}", &core_id.to_string())
+                .replace("{generation}", &deployment_generation.to_string()),
+        )
+    }
+
+    fn validate_ownership_tokens(&self) -> Result<(), ConfigError> {
+        let baseline = normalize_lexically(&self.render_path("logs", 0, 0));
+        for (token, rendered) in [
+            ("{signal}", self.render_path("metrics", 0, 0)),
+            ("{core_id}", self.render_path("logs", 1, 0)),
+            ("{generation}", self.render_path("logs", 0, 1)),
+        ] {
+            if baseline == normalize_lexically(&rendered) {
+                return Err(invalid(format!(
+                    "file.path must preserve {token} after lexical normalization"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
@@ -195,6 +212,7 @@ impl FileExporterConfig {
         if without_known_tokens.contains('{') || without_known_tokens.contains('}') {
             return Err(invalid("file.path contains an unknown or malformed token"));
         }
+        self.validate_ownership_tokens()?;
         if !(1..=MAX_MAX_FRAME_BYTES).contains(&self.max_frame_bytes) {
             return Err(invalid(format!(
                 "file.max_frame_bytes must be in the range 1..={MAX_MAX_FRAME_BYTES}"
@@ -360,14 +378,18 @@ mod tests {
         );
     }
 
-    /// Scenario: Lexical parent components make three rendered signal paths equivalent.
-    /// Guarantees: Configuration-time path ownership validation rejects cross-signal collisions.
+    /// Scenario: Lexical parent components remove a required runtime token from the destination.
+    /// Guarantees: Configuration rejects paths that do not isolate signals, cores, or generations.
     #[test]
-    fn rejects_normalized_cross_signal_collision() {
+    fn rejects_normalized_ownership_token_collisions() {
         let root = std::env::temp_dir().to_string_lossy().into_owned();
-        let path = format!("{root}/{{signal}}/../same-{{core_id}}-{{generation}}.jsonl");
-        let config = FileExporterConfig::parse(&json!({"path": path})).unwrap();
-        assert!(config.render_paths(1, 2).is_err());
+        for path in [
+            format!("{root}/{{signal}}/../same-{{core_id}}-{{generation}}.jsonl"),
+            format!("{root}/{{core_id}}/../same-{{signal}}-{{generation}}.jsonl"),
+            format!("{root}/{{generation}}/../same-{{signal}}-{{core_id}}.jsonl"),
+        ] {
+            assert!(FileExporterConfig::parse(&json!({"path": path})).is_err());
+        }
     }
 
     /// Scenario: Absolute paths contain parent components at and above the filesystem root.

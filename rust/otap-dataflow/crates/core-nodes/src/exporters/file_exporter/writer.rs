@@ -6,7 +6,7 @@
 //! Each signal writer owns one file and a process-local path lease. Opening and rollback use
 //! bounded blocking helpers where needed, while frame writes stay ordered on the local runtime.
 
-use super::config::{Durability, FileExporterConfig, OpenMode, TailRecovery, normalize_lexically};
+use super::config::{Durability, FileExporterConfig, OpenMode, TailRecovery};
 use super::metrics::FileOperation;
 use std::collections::HashSet;
 use std::io;
@@ -58,7 +58,7 @@ pub struct SignalWriter {
 }
 
 impl SignalWriter {
-    /// Opens, repairs, and probes a signal writer before returning it as ready.
+    /// Opens and repairs a signal writer before returning it as ready.
     pub async fn open(
         path: &Path,
         config: &FileExporterConfig,
@@ -105,7 +105,6 @@ impl SignalWriter {
         } else {
             TailRecoveryResult::default()
         };
-        writer.probe().await?;
         Ok((writer, recovery))
     }
 
@@ -157,36 +156,6 @@ impl SignalWriter {
         }
     }
 
-    async fn probe(&mut self) -> Result<(), WriterFailure> {
-        let start_len = self
-            .file
-            .metadata()
-            .await
-            .map_err(|error| WriterFailure::new(FileOperation::Open, error))?
-            .len();
-        let result = async {
-            _ = self.file.seek(io::SeekFrom::End(0)).await?;
-            self.file.write_all(b"{}\n").await?;
-            self.file.flush().await?;
-            if self.durability == Durability::SyncData {
-                self.file.sync_data().await?;
-            }
-            Ok::<(), io::Error>(())
-        }
-        .await;
-        if let Err(error) = result {
-            let failure = WriterFailure::new(FileOperation::Open, error);
-            return match self.rollback(start_len).await {
-                Ok(()) => Err(failure),
-                Err(rollback_error) => Err(failure.with_rollback(rollback_error)),
-            };
-        }
-        self.rollback(start_len).await.map_err(|error| {
-            WriterFailure::new(FileOperation::Open, "file readiness probe rollback failed")
-                .with_rollback(error)
-        })
-    }
-
     async fn rollback(&mut self, length: u64) -> io::Result<()> {
         self.file.set_len(length).await?;
         _ = self.file.seek(io::SeekFrom::End(0)).await?;
@@ -235,37 +204,34 @@ impl SignalWriter {
 }
 
 struct PathLease {
-    normalized_path: PathBuf,
+    leased_path: PathBuf,
 }
 
 impl PathLease {
     async fn acquire(path: &Path) -> io::Result<Self> {
         let path = path.to_owned();
-        let normalized_path = tokio::task::spawn_blocking(move || normalize_for_lease(&path))
+        let leased_path = tokio::task::spawn_blocking(move || resolve_for_lease(&path))
             .await
-            .map_err(|error| {
-                io::Error::other(format!("path normalization task failed: {error}"))
-            })??;
+            .map_err(|error| io::Error::other(format!("path resolution task failed: {error}")))??;
         let leases = PATH_LEASES.get_or_init(|| Mutex::new(HashSet::new()));
         let mut leases = leases
             .lock()
             .map_err(|_| io::Error::other("file path lease registry is poisoned"))?;
-        if !leases.insert(normalized_path.clone()) {
+        if !leases.insert(leased_path.clone()) {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "resolved file path is already leased by another writer",
             ));
         }
-        Ok(Self { normalized_path })
+        Ok(Self { leased_path })
     }
 }
 
-fn normalize_for_lease(path: &Path) -> io::Result<PathBuf> {
-    let normalized = normalize_lexically(path);
-    if let Ok(canonical) = std::fs::canonicalize(&normalized) {
+fn resolve_for_lease(path: &Path) -> io::Result<PathBuf> {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
         return Ok(canonical);
     }
-    let mut ancestor = normalized.as_path();
+    let mut ancestor = path;
     let mut suffix = Vec::new();
     let canonical_ancestor = loop {
         if let Ok(canonical) = std::fs::canonicalize(ancestor) {
@@ -296,7 +262,7 @@ impl Drop for PathLease {
         if let Some(leases) = PATH_LEASES.get()
             && let Ok(mut leases) = leases.lock()
         {
-            let _ = leases.remove(&self.normalized_path);
+            let _ = leases.remove(&self.leased_path);
         }
     }
 }
@@ -345,9 +311,9 @@ mod tests {
     }
 
     /// Scenario: Append mode opens a file ending in a complete JSON line and writes another frame.
-    /// Guarantees: Existing complete frames are retained and the readiness probe leaves no bytes.
+    /// Guarantees: Existing complete frames are retained before the first exporter frame is written.
     #[tokio::test]
-    async fn append_preserves_existing_frames_and_probe_is_reversible() {
+    async fn append_preserves_existing_frames() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("data-logs-0-1.jsonl");
         tokio::fs::write(&path, b"{\"old\":true}\n").await.unwrap();
@@ -464,6 +430,26 @@ mod tests {
         std::os::unix::fs::symlink(&target, &alias).unwrap();
         let target_path = target.join("data-logs-0-1.jsonl");
         let alias_path = alias.join("data-logs-0-1.jsonl");
+        let config = config(&template_path(&target), json!({}));
+        let (writer, _) = SignalWriter::open(&target_path, &config).await.unwrap();
+        assert!(SignalWriter::open(&alias_path, &config).await.is_err());
+        drop(writer);
+        assert!(SignalWriter::open(&alias_path, &config).await.is_ok());
+    }
+
+    #[cfg(unix)]
+    /// Scenario: A symlink followed by `..` aliases the destination owned by another live writer.
+    /// Guarantees: Lease resolution follows filesystem traversal order and rejects the alias.
+    #[tokio::test]
+    async fn live_writers_cannot_bypass_leases_with_symlinked_parent_traversal() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target");
+        let child = target.join("child");
+        let alias = dir.path().join("alias");
+        std::fs::create_dir_all(&child).unwrap();
+        std::os::unix::fs::symlink(&child, &alias).unwrap();
+        let target_path = target.join("data-logs-0-1.jsonl");
+        let alias_path = alias.join("../data-logs-0-1.jsonl");
         let config = config(&template_path(&target), json!({}));
         let (writer, _) = SignalWriter::open(&target_path, &config).await.unwrap();
         assert!(SignalWriter::open(&alias_path, &config).await.is_err());

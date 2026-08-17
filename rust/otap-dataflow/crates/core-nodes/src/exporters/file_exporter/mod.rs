@@ -178,39 +178,21 @@ impl FileExporter {
             self.record_io_failure(signal, &failure);
             self.record_export_outcome(signal, Outcome::Failure);
             self.log_write_failure(signal, &failure);
-            let fatal = failure.rollback_error.is_some();
             effect_handler
-                .notify_nack(NackMsg::new(
-                    if fatal {
-                        "file readiness probe failed and rollback left file state indeterminate"
-                    } else {
-                        "file writer is not ready"
-                    },
-                    pdata,
-                ))
+                .notify_nack(NackMsg::new("file writer is not ready", pdata))
                 .await?;
-            if fatal {
-                return Err(exporter_error(
-                    effect_handler,
-                    ExporterErrorKind::Transport,
-                    "file readiness probe rollback failed",
-                ));
-            }
             return Ok(());
         }
         let index = signal_index(signal);
         let Some(writer) = self.writers[index].as_mut() else {
             self.record_export_outcome(signal, Outcome::Failure);
             effect_handler
-                .notify_nack(NackMsg::new(
-                    "file writer unavailable after readiness",
-                    pdata,
-                ))
+                .notify_nack(NackMsg::new("file writer unavailable after open", pdata))
                 .await?;
             return Err(exporter_error(
                 effect_handler,
                 ExporterErrorKind::Other,
-                "file writer missing after successful readiness check",
+                "file writer missing after successful open",
             ));
         };
         if let Err(failure) = writer.write_frame(&self.frame).await {
