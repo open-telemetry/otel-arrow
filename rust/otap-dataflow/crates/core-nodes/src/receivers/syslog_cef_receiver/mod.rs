@@ -1043,7 +1043,6 @@ pub struct SyslogCefRejectionAttributes {
     pub error_type: ReceiverRejectionErrorType,
 }
 
-
 /// Log records observed at the socket before parsing.
 #[metric_set(
     name = "receiver.syslog_cef.received",
@@ -1145,8 +1144,6 @@ impl SyslogCefReceiverMetrics {
         }
     }
 
-    /// Records a delivery
-
     /// Records total logs received at socket layer
     pub fn record_received(&mut self, protocol: SyslogCefProtocol) {
         self.received
@@ -1196,7 +1193,7 @@ impl SyslogCefReceiverMetrics {
     }
 
     /// Records an active connection
-        pub fn record_connection_rejection(&mut self) {
+    pub fn record_connection_rejection(&mut self) {
         self.connections.rejected.inc();
     }
 
@@ -1214,7 +1211,8 @@ impl SyslogCefReceiverMetrics {
         &mut self,
         reporter: &mut otap_df_telemetry::reporter::MetricsReporter,
     ) -> Result<(), otap_df_telemetry::error::Error> {
-        reporter.report_measurement(&mut self.received)?; reporter.report_measurement(&mut self.forwards)?;
+        reporter.report_measurement(&mut self.received)?;
+        reporter.report_measurement(&mut self.forwards)?;
         reporter.report_measurement(&mut self.rejections)?;
         reporter.report_measurement(&mut self.transport)?;
         reporter.report(&mut self.truncations)?;
