@@ -32,6 +32,8 @@ impl StringValueOrRef<'_> {
     ///
     /// The bytes passed in must be valid UTF-8.
     pub unsafe fn new_utf8_unvalidated(buffer: Buffer) -> StringValueOrRef<'static> {
+        // Note: Debug assert here exists as a sanity check not enforcement
+        debug_assert!(std::str::from_utf8(&buffer).is_ok(), "invalid UTF-8");
         StringValueOrRef::Buffer(Utf8Buffer { buffer })
     }
 
