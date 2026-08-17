@@ -3,6 +3,7 @@
 
 //! Configuration structures for the Kafka exporter.
 
+use super::topic_regex;
 pub use crate::common::kafka::TlsConfig;
 use crate::common::kafka::auth::Auth;
 use crate::common::kafka::security::{apply_sasl_config, resolve_security_protocol};
@@ -27,6 +28,7 @@ pub(crate) const MANAGED_PRODUCER_CONFIG_KEYS: &[&str] = &[
     "message.max.bytes",
     "linger.ms",
     "partitioner",
+    "allow.auto.create.topics",
     "security.protocol",
     "ssl.ca.location",
     "ssl.certificate.location",
@@ -80,6 +82,36 @@ pub struct SignalConfig {
     /// which hashing algorithm librdkafka uses to map the key to a partition.
     #[serde(default)]
     partition_by_transport_headers: bool,
+
+    /// Operator allowlist of exact topic names permitted for
+    /// header-supplied (dynamic) routing.
+    ///
+    /// When non-empty, a topic selected via `topic_from_transport_header` must
+    /// exactly match one of these entries (or fully match a pattern in
+    /// [`SignalConfig::allowed_topics_regex`]); otherwise the batch is
+    /// permanently nacked. Empty (the default) means no exact-match constraint.
+    ///
+    /// This constrains where a client-controlled routing header may direct data;
+    /// it does not affect the static `topic`, which the operator already
+    /// controls.
+    #[serde(default)]
+    allowed_topics: Vec<String>,
+
+    /// Operator allowlist of regex patterns permitted for header-supplied
+    /// (dynamic) routing.
+    ///
+    /// When non-empty, a topic selected via `topic_from_transport_header` must
+    /// match one of these regex patterns (or exactly match an entry in
+    /// [`SignalConfig::allowed_topics`]); otherwise the batch is permanently
+    /// nacked. Empty (the default) means no regex constraint. Entries must be
+    /// valid regular expressions and are compiled once at exporter construction
+    /// (and on reconfigure); an invalid pattern is a configuration error.
+    ///
+    /// This constrains where a client-controlled routing header may direct data;
+    /// it does not affect the static `topic`, which the operator already
+    /// controls.
+    #[serde(default)]
+    allowed_topics_regex: Vec<String>,
 }
 
 impl SignalConfig {
@@ -91,6 +123,8 @@ impl SignalConfig {
             encoding,
             topic_from_transport_header: None,
             partition_by_transport_headers: false,
+            allowed_topics: Vec::new(),
+            allowed_topics_regex: Vec::new(),
         }
     }
 
@@ -129,6 +163,45 @@ impl SignalConfig {
     #[must_use]
     pub fn with_partition_by_transport_headers(mut self, enabled: bool) -> Self {
         self.partition_by_transport_headers = enabled;
+        self
+    }
+
+    /// The exact-match allowlist of topics permitted for header-supplied
+    /// routing. Empty means no exact-match constraint.
+    #[must_use]
+    pub fn allowed_topics(&self) -> &[String] {
+        &self.allowed_topics
+    }
+
+    /// Set the exact-match allowlist of topics permitted for header-supplied
+    /// routing.
+    #[must_use]
+    pub fn with_allowed_topics<I, S>(mut self, topics: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allowed_topics = topics.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The regex allowlist for topics permitted for header-supplied routing.
+    /// Empty means no regex constraint. Entries must be valid regular
+    /// expressions and are matched against the header-supplied topic.
+    #[must_use]
+    pub fn allowed_topics_regex(&self) -> &[String] {
+        &self.allowed_topics_regex
+    }
+
+    /// Set the regex allowlist for topics permitted for header-supplied
+    /// routing.
+    #[must_use]
+    pub fn with_allowed_topics_regex<I, S>(mut self, patterns: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allowed_topics_regex = patterns.into_iter().map(Into::into).collect();
         self
     }
 }
@@ -238,6 +311,21 @@ pub struct KafkaExporterConfigBuilder {
     #[serde(default = "default_partitioning_strategy")]
     partitioning_strategy: PartitionerStrategy,
 
+    /// Whether the broker may auto-create topics this exporter produces to
+    /// (maps to librdkafka `allow.auto.create.topics`).
+    ///
+    /// Defaults to `true`, This value is always written to the
+    /// client config and takes precedence over any `producer_config` entry for
+    /// the same key.
+    ///
+    /// Security note: because a client-controlled routing header
+    /// (`topic_from_transport_header`) can select the destination topic, leaving
+    /// auto-creation enabled lets a client cause the broker to spawn arbitrary
+    /// topics. Operators who route by header (or otherwise want default-deny)
+    /// should set this to `false`.
+    #[serde(default = "default_allow_auto_create_topics")]
+    allow_auto_create_topics: bool,
+
     /// Kafka header key for the message format indicator.
     ///
     /// The exporter writes the encoding format (`otlp` or `otap`) under this
@@ -311,6 +399,7 @@ impl KafkaExporterConfigBuilder {
             auth: None,
             tls: None,
             partitioning_strategy: default_partitioning_strategy(),
+            allow_auto_create_topics: default_allow_auto_create_topics(),
             message_format_header: default_message_format_header(),
             debug: None,
             log_level: None,
@@ -402,6 +491,13 @@ impl KafkaExporterConfigBuilder {
         self
     }
 
+    /// Set whether the broker may auto-create topics (default: `true`).
+    #[must_use]
+    pub fn with_allow_auto_create_topics(mut self, allow: bool) -> Self {
+        self.allow_auto_create_topics = allow;
+        self
+    }
+
     /// Set the message format header key.
     ///
     /// Defaults to `"MessageFormat"` when not explicitly set.
@@ -466,6 +562,18 @@ impl KafkaExporterConfigBuilder {
         // Partitioner strategy
         _ = config.set("partitioner", self.partitioning_strategy.as_kafka_value());
 
+        // Topic auto-creation posture. Always written (rather than relying on
+        // the librdkafka default) so the emitted value is explicit and takes
+        // precedence over any `producer_config` override.
+        _ = config.set(
+            "allow.auto.create.topics",
+            if self.allow_auto_create_topics {
+                "true"
+            } else {
+                "false"
+            },
+        );
+
         // Security protocol, TLS, and SASL settings (shared with receiver)
         let protocol = resolve_security_protocol(self.tls.as_ref(), self.auth.as_ref());
         _ = config.set("security.protocol", protocol);
@@ -501,6 +609,38 @@ impl KafkaExporterConfigBuilder {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "KafkaExporterConfigBuilder")]
 pub struct KafkaExporterConfig(KafkaExporterConfigBuilder);
+
+/// Validates a signal's static topic and its dynamic-routing allowlist entries.
+///
+/// Errors are prefixed with the field name (e.g. `topic:`,
+/// `allowed_topics[0]:`, `allowed_topics_regex[1]:`) so the caller can prepend
+/// the signal name.
+///
+/// Each `allowed_topics_regex` pattern is compiled via
+/// `topic_regex::compile_anchor_and_validate` -- validated
+/// as a standalone regex and then anchored to a whole-topic match as
+/// `\A(?:<pattern>)\z` -- so an invalid pattern (including one crafted to break
+/// out of the anchoring wrapper) fails fast at config time, including through
+/// the factory `validate_config` path, which runs this validation without
+/// constructing an exporter.
+fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
+    validate_kafka_topic(&signal.topic).map_err(|e| format!("topic: {e}"))?;
+    for (i, t) in signal.allowed_topics.iter().enumerate() {
+        validate_kafka_topic(t).map_err(|e| format!("allowed_topics[{i}]: {e}"))?;
+    }
+    for (i, p) in signal.allowed_topics_regex.iter().enumerate() {
+        // Compile via the same helper the exporter uses at runtime so validation
+        // and runtime compilation stay in lock-step -- including the standalone
+        // check that rejects a pattern which would otherwise break out of the
+        // whole-topic anchoring wrapper.
+        topic_regex::compile_anchor_and_validate(p)
+            .map(drop)
+            .map_err(|message| {
+                format!("allowed_topics_regex[{i}]: invalid regex '{p}': {message}")
+            })?;
+    }
+    Ok(())
+}
 
 impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
     type Error = String;
@@ -543,15 +683,15 @@ impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
             ));
         }
 
-        // Validate topic names for each configured signal
+        // Validate topic names and dynamic-routing allowlists for each signal.
         if let Some(ref signal) = builder.traces {
-            validate_kafka_topic(&signal.topic).map_err(|e| format!("traces.topic: {e}"))?;
+            validate_signal_topics(signal).map_err(|e| format!("traces.{e}"))?;
         }
         if let Some(ref signal) = builder.metrics {
-            validate_kafka_topic(&signal.topic).map_err(|e| format!("metrics.topic: {e}"))?;
+            validate_signal_topics(signal).map_err(|e| format!("metrics.{e}"))?;
         }
         if let Some(ref signal) = builder.logs {
-            validate_kafka_topic(&signal.topic).map_err(|e| format!("logs.topic: {e}"))?;
+            validate_signal_topics(signal).map_err(|e| format!("logs.{e}"))?;
         }
 
         // Validate auth configuration when present
@@ -672,6 +812,12 @@ impl KafkaExporterConfig {
         self.0.partitioning_strategy
     }
 
+    /// Whether the broker may auto-create topics this exporter produces to.
+    #[must_use]
+    pub fn allow_auto_create_topics(&self) -> bool {
+        self.0.allow_auto_create_topics
+    }
+
     /// The Kafka header key used for the message format indicator.
     ///
     /// Defaults to `"MessageFormat"`. The format header is always written on
@@ -744,6 +890,11 @@ fn default_linger_ms() -> u32 {
 /// Default partitioner strategy.
 fn default_partitioning_strategy() -> PartitionerStrategy {
     PartitionerStrategy::ConsistentRandom
+}
+
+/// Default topic auto-creation posture.
+fn default_allow_auto_create_topics() -> bool {
+    true
 }
 
 /// Compression type for Kafka messages.
@@ -827,6 +978,7 @@ impl PartitionerStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rdkafka::config::RDKafkaLogLevel;
 
     // ---- SignalConfig ----
 
@@ -1009,6 +1161,10 @@ mod tests {
         assert!(KafkaExporterConfig::try_from(builder).is_ok());
     }
 
+    /// Scenario (configuration and packaging: timeout limits): a config sets `timeout_ms` to `0`.
+    /// Guarantees: validation rejects `0` (which maps to librdkafka's infinite
+    /// `message.timeout.ms`), so an infinite delivery timeout can never block
+    /// the exporter's bounded shutdown; the error names `timeout_ms`.
     #[test]
     fn test_try_from_zero_timeout_fails() {
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
@@ -1018,6 +1174,11 @@ mod tests {
         assert!(err.contains("timeout_ms"));
     }
 
+    /// Scenario (configuration and packaging: timeout limits): a config sets `timeout_ms` just
+    /// above `MAX_TIMEOUT_MS`.
+    /// Guarantees: validation rejects any value greater than the 30s ceiling,
+    /// so an unreasonably large delivery timeout cannot delay shutdown; the
+    /// error names `timeout_ms`.
     #[test]
     fn test_try_from_excessive_timeout_fails() {
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
@@ -1027,6 +1188,10 @@ mod tests {
         assert!(err.contains("timeout_ms"));
     }
 
+    /// Scenario (configuration and packaging: timeout limits): a config sets `timeout_ms` exactly
+    /// to `MAX_TIMEOUT_MS`.
+    /// Guarantees: the inclusive upper bound is accepted, so the documented
+    /// maximum is usable (the bound is `<=`, not `<`).
     #[test]
     fn test_try_from_max_timeout_succeeds() {
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
@@ -1035,9 +1200,13 @@ mod tests {
         assert!(KafkaExporterConfig::try_from(builder).is_ok());
     }
 
+    /// Scenario (configuration and packaging: timeout limits): a config omits `timeout_ms` and
+    /// takes the serde default.
+    /// Guarantees: the default (5000 ms) is within the valid range and is
+    /// applied, so an unconfigured exporter has a bounded, valid delivery
+    /// timeout.
     #[test]
     fn test_try_from_default_timeout_succeeds() {
-        // The serde default (5000) must remain valid.
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
             .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto));
         let config = KafkaExporterConfig::try_from(builder).unwrap();
@@ -1220,6 +1389,34 @@ mod tests {
             let config: KafkaExporterConfig =
                 serde_json::from_str(&json).unwrap_or_else(|_| panic!("should parse {name}"));
             assert_eq!(config.compression().unwrap().as_str(), expected);
+        }
+    }
+
+    /// Scenario (Kafka integration: compression): a config built with each supported
+    /// `CompressionType` is turned into an rdkafka client config.
+    /// Guarantees: every codec is written to librdkafka's `compression.type`
+    /// with the exact wire string (`gzip`/`snappy`/`lz4`/`zstd`), so the
+    /// operator-selected codec actually reaches the producer for all four
+    /// variants (not just the two validated end-to-end).
+    #[test]
+    fn build_client_config_maps_each_compression_codec() {
+        for (codec, expected) in [
+            (CompressionType::Gzip, "gzip"),
+            (CompressionType::Snappy, "snappy"),
+            (CompressionType::Lz4, "lz4"),
+            (CompressionType::Zstd, "zstd"),
+        ] {
+            let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+                .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+                .with_compression(codec)
+                .try_into()
+                .unwrap();
+            let client = config.build_client_config();
+            assert_eq!(
+                client.get("compression.type"),
+                Some(expected),
+                "unexpected compression.type for {expected}"
+            );
         }
     }
 
@@ -1538,6 +1735,11 @@ mod tests {
 
     // ---- overridden_producer_config_keys ----
 
+    /// Scenario (configuration and packaging: escape-hatch precedence): `producer_config` mixes
+    /// keys managed by first-class fields with an unmanaged custom key.
+    /// Guarantees: `overridden_producer_config_keys` reports exactly the managed
+    /// keys (the operator-warning surface) and ignores unmanaged keys, so the
+    /// exporter warns only about settings a first-class field will overwrite.
     #[test]
     fn overridden_keys_detects_conflicts() {
         let overrides = HashMap::from([
@@ -1557,6 +1759,11 @@ mod tests {
         assert_eq!(conflicts, vec!["bootstrap.servers", "linger.ms"]);
     }
 
+    /// Scenario (configuration and packaging: escape-hatch precedence): `producer_config` contains
+    /// only keys with no first-class-field counterpart.
+    /// Guarantees: `overridden_producer_config_keys` is empty, so purely
+    /// advanced tuning knobs pass through the escape hatch without triggering a
+    /// spurious override warning.
     #[test]
     fn overridden_keys_empty_when_no_conflicts() {
         let custom = HashMap::from([("custom.setting".into(), "value".into())]);
@@ -1568,6 +1775,209 @@ mod tests {
             .unwrap();
 
         assert!(config.overridden_producer_config_keys().is_empty());
+    }
+
+    // ---- allow.auto.create.topics ----
+
+    /// Scenario (configuration and packaging: escape-hatch precedence): build the librdkafka
+    /// client config from a default exporter config.
+    /// Guarantees: `allow.auto.create.topics` is explicitly set to `true` by default
+    #[test]
+    fn build_client_config_defaults_auto_create_to_true() {
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .try_into()
+            .unwrap();
+        let client = config.build_client_config();
+        assert_eq!(client.get("allow.auto.create.topics"), Some("true"));
+    }
+
+    /// Scenario (configuration and packaging: escape-hatch precedence): an operator explicitly
+    /// opts out of broker auto-creation (default-deny).
+    /// Guarantees: `with_allow_auto_create_topics(false)` sets
+    /// `allow.auto.create.topics` to `false` in the built client config, so a
+    /// client-controlled routing header cannot rely on the broker auto-creating
+    /// arbitrary topics.
+    #[test]
+    fn build_client_config_disables_auto_create_when_opted_out() {
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_allow_auto_create_topics(false)
+            .try_into()
+            .unwrap();
+        let client = config.build_client_config();
+        assert_eq!(client.get("allow.auto.create.topics"), Some("false"));
+    }
+
+    /// Scenario (configuration and packaging: escape-hatch precedence): a `producer_config`
+    /// passthrough tries to set `allow.auto.create.topics` while the first-class
+    /// field is set to the opposite value.
+    /// Guarantees: the key is a managed key -- the first-class field wins in the
+    /// built config, and the conflict is reported by
+    /// `overridden_producer_config_keys` so the operator is warned.
+    #[test]
+    fn auto_create_key_is_managed_and_first_class_field_wins() {
+        // Field explicitly false; passthrough tries to force true.
+        let overrides =
+            HashMap::from([("allow.auto.create.topics".to_string(), "true".to_string())]);
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_allow_auto_create_topics(false)
+            .with_producer_config(overrides)
+            .try_into()
+            .unwrap();
+
+        // The managed first-class value wins over the passthrough.
+        let client = config.build_client_config();
+        assert_eq!(client.get("allow.auto.create.topics"), Some("false"));
+
+        // And the conflict is surfaced for an operator warning.
+        assert!(
+            config
+                .overridden_producer_config_keys()
+                .contains(&"allow.auto.create.topics"),
+            "auto-create should be a managed key so the override is reported"
+        );
+    }
+
+    // ---- Configuration & packaging: timeout mapping and escape-hatch precedence ----
+
+    /// Scenario (configuration and packaging: timeout limits): a validated `timeout_ms` is turned
+    /// into an rdkafka client config.
+    /// Guarantees: `timeout_ms` maps to librdkafka's `message.timeout.ms` with
+    /// the exact configured value, so the per-delivery deadline the exporter
+    /// relies on for bounded shutdown is actually applied to the producer.
+    #[test]
+    fn build_client_config_maps_timeout_to_message_timeout_ms() {
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_timeout_ms(1234)
+            .try_into()
+            .unwrap();
+        let client = config.build_client_config();
+        assert_eq!(client.get("message.timeout.ms"), Some("1234"));
+    }
+
+    /// Scenario (configuration and packaging: escape-hatch precedence): `producer_config` supplies
+    /// values for keys that also have first-class fields, alongside the
+    /// first-class fields themselves.
+    /// Guarantees: `producer_config` is applied first and every managed
+    /// first-class field overrides the conflicting passthrough in the built
+    /// client config, so an operator cannot accidentally (or maliciously)
+    /// subvert a managed setting through the escape hatch.
+    #[test]
+    fn first_class_fields_override_producer_config_passthrough() {
+        let overrides = HashMap::from([
+            ("bootstrap.servers".to_string(), "evil:9999".to_string()),
+            ("client.id".to_string(), "evil-client".to_string()),
+            ("message.timeout.ms".to_string(), "0".to_string()),
+            ("compression.type".to_string(), "gzip".to_string()),
+            ("request.required.acks".to_string(), "0".to_string()),
+            ("linger.ms".to_string(), "99999".to_string()),
+            ("partitioner".to_string(), "murmur2".to_string()),
+        ]);
+        let config: KafkaExporterConfig =
+            KafkaExporterConfigBuilder::new("real-broker:9092", "real-client")
+                .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+                .with_timeout_ms(2000)
+                .with_compression(CompressionType::Zstd)
+                .with_required_acks(RequiredAcks::All)
+                .with_linger_ms(5)
+                .with_partitioning_strategy(PartitionerStrategy::ConsistentRandom)
+                .with_producer_config(overrides)
+                .try_into()
+                .unwrap();
+
+        let client = config.build_client_config();
+        // Each first-class field wins over the conflicting passthrough value.
+        assert_eq!(client.get("bootstrap.servers"), Some("real-broker:9092"));
+        assert_eq!(client.get("client.id"), Some("real-client"));
+        assert_eq!(client.get("message.timeout.ms"), Some("2000"));
+        assert_eq!(client.get("compression.type"), Some("zstd"));
+        assert_eq!(client.get("request.required.acks"), Some("-1"));
+        assert_eq!(client.get("linger.ms"), Some("5"));
+        assert_eq!(client.get("partitioner"), Some("consistent_random"));
+
+        // The conflicts are also reported so the exporter can warn the operator.
+        let mut conflicts = config.overridden_producer_config_keys();
+        conflicts.sort_unstable();
+        assert_eq!(
+            conflicts,
+            vec![
+                "bootstrap.servers",
+                "client.id",
+                "compression.type",
+                "linger.ms",
+                "message.timeout.ms",
+                "partitioner",
+                "request.required.acks",
+            ]
+        );
+    }
+
+    /// Scenario (configuration and packaging: escape-hatch precedence): `producer_config` sets a
+    /// tuning knob that is not managed by any first-class field.
+    /// Guarantees: an unmanaged passthrough key survives unchanged into the
+    /// built client config (the escape hatch remains usable for advanced
+    /// librdkafka knobs) and is not flagged as an overridden key.
+    #[test]
+    fn unmanaged_producer_config_passes_through() {
+        let overrides = HashMap::from([(
+            "queue.buffering.max.messages".to_string(),
+            "100000".to_string(),
+        )]);
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_producer_config(overrides)
+            .try_into()
+            .unwrap();
+
+        let client = config.build_client_config();
+        assert_eq!(client.get("queue.buffering.max.messages"), Some("100000"));
+        assert!(config.overridden_producer_config_keys().is_empty());
+    }
+
+    /// Scenario (configuration and packaging: escape-hatch precedence): both `producer_config` and
+    /// the first-class `debug` field try to set librdkafka's `debug` contexts.
+    /// Guarantees: the first-class `debug` field is applied last and overrides
+    /// the `producer_config` passthrough, so debug logging is driven by the
+    /// managed field rather than the escape hatch.
+    #[test]
+    fn debug_field_overrides_producer_config_debug() {
+        let overrides = HashMap::from([("debug".to_string(), "broker".to_string())]);
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_producer_config(overrides)
+            .with_debug(vec![DebugContext::Security])
+            .try_into()
+            .unwrap();
+
+        let client = config.build_client_config();
+        assert_eq!(
+            client.get("debug"),
+            Some("security"),
+            "the first-class debug field is applied last and wins"
+        );
+    }
+
+    /// Scenario (configuration and packaging: escape-hatch precedence): the first-class
+    /// `log_level` field is configured.
+    /// Guarantees: `build_client_config` applies the configured log level to the
+    /// rdkafka client (a first-class-only setting with no `producer_config`
+    /// string equivalent), so operator-selected verbosity takes effect.
+    #[test]
+    fn log_level_first_class_is_applied() {
+        let config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_log_level(LogLevel::Debug)
+            .try_into()
+            .unwrap();
+        let client = config.build_client_config();
+        // RDKafkaLogLevel does not implement PartialEq, so compare via Debug.
+        assert_eq!(
+            format!("{:?}", client.log_level),
+            format!("{:?}", RDKafkaLogLevel::Debug)
+        );
     }
 
     // ---- Dynamic topic routing fields (per-signal) ----
@@ -1608,6 +2018,89 @@ mod tests {
 
         assert_eq!(signal.topic_from_transport_header(), Some("x_target_topic"));
         assert_eq!(signal.topic(), "otlp_logs");
+    }
+
+    // ---- Security: dynamic-routing allowlist config ----
+
+    /// Scenario: build a config with valid exact allowlist and regex allowlist
+    /// entries.
+    /// Guarantees: valid exact/regex entries are accepted and readable, and the
+    /// config as a whole validates (regex patterns compile).
+    #[test]
+    fn allowlist_config_is_accepted() {
+        let signal = SignalConfig::new("static".into(), MessageFormat::OtlpProto)
+            .with_topic_from_transport_header("x-target-topic")
+            .with_allowed_topics(["approved"])
+            .with_allowed_topics_regex(["tenant_.*"]);
+
+        assert_eq!(signal.allowed_topics(), &["approved".to_string()]);
+        assert_eq!(signal.allowed_topics_regex(), &["tenant_.*".to_string()]);
+
+        // The config as a whole validates (regex compiles).
+        let _config: KafkaExporterConfig = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(signal)
+            .try_into()
+            .expect("config with allowlist should be valid");
+    }
+
+    /// Scenario: an exact allowlist entry is not a syntactically valid Kafka
+    /// topic.
+    /// Guarantees: config validation rejects it (with a field-scoped message),
+    /// so an operator cannot configure an unusable exact allowlist entry.
+    #[test]
+    fn invalid_exact_allowlist_entry_is_rejected() {
+        let result: Result<KafkaExporterConfig, _> = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(
+                SignalConfig::new("static".into(), MessageFormat::OtlpProto)
+                    .with_allowed_topics(["bad topic/name"]),
+            )
+            .try_into();
+        let err = result.expect_err("invalid allowlist entry should be rejected");
+        assert!(
+            err.contains("allowed_topics[0]"),
+            "error should point at the offending entry, got: {err}"
+        );
+    }
+
+    /// Scenario: a regex allowlist entry is not a valid regular expression.
+    /// Guarantees: config validation rejects it at config time (fail fast,
+    /// including through the factory validate path), naming the field so an
+    /// operator can fix it.
+    #[test]
+    fn invalid_regex_allowlist_entry_is_rejected() {
+        let result: Result<KafkaExporterConfig, _> = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(
+                SignalConfig::new("static".into(), MessageFormat::OtlpProto)
+                    .with_allowed_topics_regex(["tenant_(", "["]),
+            )
+            .try_into();
+        let err = result.expect_err("invalid regex entry should be rejected");
+        assert!(
+            err.contains("allowed_topics_regex[0]"),
+            "error should point at the offending pattern, got: {err}"
+        );
+    }
+
+    /// Scenario: a regex allowlist entry is crafted to break out of the
+    /// whole-topic anchoring wrapper (`tenant_.)\z|(?:evil.`), which compiles
+    /// only because its parentheses balance against the wrapper.
+    /// Guarantees: config validation rejects it at config time (fail fast,
+    /// including through the factory validate path), naming the offending entry,
+    /// so a pattern that would under-anchor an alternation and permit unintended
+    /// header-routed topics can never be accepted into a validated config.
+    #[test]
+    fn anchor_breakout_regex_allowlist_entry_is_rejected() {
+        let result: Result<KafkaExporterConfig, _> = KafkaExporterConfigBuilder::new("b", "c")
+            .with_logs(
+                SignalConfig::new("static".into(), MessageFormat::OtlpProto)
+                    .with_allowed_topics_regex([r"tenant_.)\z|(?:evil."]),
+            )
+            .try_into();
+        let err = result.expect_err("anchor-breakout regex entry should be rejected");
+        assert!(
+            err.contains("allowed_topics_regex[0]"),
+            "error should point at the offending pattern, got: {err}"
+        );
     }
 
     #[test]

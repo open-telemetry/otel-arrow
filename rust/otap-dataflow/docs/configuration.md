@@ -240,6 +240,73 @@ Policy overrides apply by policy family rather than by deep-merging every
 nested field. The process-wide memory limiter is only supported at top-level
 `policies.resources.memory_limiter`.
 
+### Pipeline Core Allocation
+
+Use `policies.resources.core_allocation` to select the worker cores assigned to
+each regular pipeline. The policy can be set at the top-level, group, or
+pipeline scope using the policy precedence described above. The default is
+`all_cores`.
+
+Use every process-visible core:
+
+```yaml
+policies:
+    resources:
+        core_allocation:
+            type: all_cores
+```
+
+Have the controller select a fixed number of cores:
+
+```yaml
+policies:
+    resources:
+        core_allocation:
+            type: core_count
+            count: 4
+```
+
+Or assign explicit inclusive core ranges:
+
+```yaml
+policies:
+    resources:
+        core_allocation:
+            type: core_set
+            set:
+                - start: 0
+                  end: 1
+                - start: 4
+                  end: 5
+```
+
+The allocation strategies have different sharing behavior:
+
+- `all_cores` uses every core visible to the process. It neither reserves cores
+  from other pipelines nor observes their reservations.
+- `core_count` is controller-selected and exclusive. The controller excludes
+  cores assigned to `core_count` and `core_set` pipelines and rejects the
+  configuration if the requested positive count cannot be satisfied. A count
+  of `0`, or an omitted count accepted from programmatic configuration, means
+  all currently unreserved visible cores and fails if none remain.
+- `core_set` uses exactly the configured ranges. Core IDs must be visible to
+  the process, ranges must be valid and non-overlapping within the allocation,
+  and the set cannot be empty. Explicit `core_set` allocations may overlap one
+  another, but their cores are unavailable to controller-selected
+  `core_count` allocations.
+
+On Linux, the controller discovers the CPUs available through process affinity
+and cgroup restrictions and their NUMA topology. For `core_count`, it
+deterministically prefers enough cores from one NUMA node, then falls back to
+ascending visible core IDs when one node cannot satisfy the request. On
+platforms where NUMA topology is unavailable, selection remains deterministic
+by ascending visible core ID.
+
+The controller resolves and validates all regular-pipeline placements before
+starting pipeline workers. Resource policies on the system observability
+pipeline are rejected. Its worker runs on one core that is not reserved and may
+overlap any regular-pipeline allocation.
+
 For detailed policy guides, see:
 
 - [Node and flow metrics](node-and-flow-metrics.md)

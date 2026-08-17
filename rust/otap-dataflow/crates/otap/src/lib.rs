@@ -54,6 +54,10 @@ pub mod otlp_http;
 /// Cloud specific auth utilities
 pub mod cloud_auth;
 
+/// Consumer-side adapter over a bound `bearer_token_provider` capability,
+/// shared by every node that authenticates with a bearer token.
+pub mod bearer_auth;
+
 /// Redacted string type for sensitive values.
 pub mod opaque_string;
 

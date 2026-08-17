@@ -49,7 +49,7 @@ compression results.
   with OpenTelemetry metrics data model
   ([design](./multivariate-design.md))
 - Benchmark suite comparing CPU/memory/compression performance against
-  OTLP ([results](./benchmarks.md))
+  OTLP ([results](./benchmarks-phase1.md))
 - Unit tests and validation tools (this repository)
 - OpenTelemetry Collector-contrib
   [exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md)
