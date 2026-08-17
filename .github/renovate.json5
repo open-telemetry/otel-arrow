@@ -50,6 +50,24 @@
       ]
     },
     {
+      // keep Go patch updates separate from other ecosystems
+      "groupName": "go patch versions",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch"],
+      "schedule": [
+        "before 8am on Monday"
+      ]
+    },
+    {
+      // keep Rust patch updates separate from other ecosystems
+      "groupName": "rust patch versions",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["patch"],
+      "schedule": [
+        "before 8am on Monday"
+      ]
+    },
+    {
       // avoids these Renovate PRs from trickling in throughout the week
       // (consolidating the review process)
       "matchUpdateTypes": [
