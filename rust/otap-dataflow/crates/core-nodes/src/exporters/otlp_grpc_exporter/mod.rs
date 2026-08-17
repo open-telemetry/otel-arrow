@@ -631,7 +631,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
 /// `auth_failure` marks a rejection of the bearer token this request carried; it
 /// forces the NACK to be retryable even though `UNAUTHENTICATED` is otherwise a
 /// permanent status.
-/// 
+///
 /// This returns OK(()) if the result Ack/Nack was successfully routed regardless of
 /// whether the request actually succeeded. E.g. it does not return `Err` for an
 /// unsuccessful request.
@@ -649,7 +649,7 @@ async fn route_export_result<T>(
                 .await?;
         }
         Err(e) => {
-            let retryable = is_retryable_grpc_status(&e) || auth_failure;
+            let retryable = is_retryable_grpc_status(e) || auth_failure;
             let error_msg = e.to_string();
 
             // TODO(https://github.com/open-telemetry/otel-arrow/issues/3404):
@@ -657,7 +657,7 @@ async fn route_export_result<T>(
             // server's advisory RetryInfo delay into the human-readable reason.
             // Replace this with a structured field once #3404 lands.
             let mut reason = error_msg.clone();
-            if let Some(delay) = retry_after(&e) {
+            if let Some(delay) = retry_after(e) {
                 reason.push_str(&format!(" (retry after {})", format_retry_delay(&delay)));
             }
 
@@ -1031,7 +1031,6 @@ async fn finalize_completed_export(
                     .inc();
             }
             Err(status) => {
-                println!("{:?}", status);
                 otel_warn!(
                     "otlp.exporter.grpc.export_error",
                     message = "service request error",
