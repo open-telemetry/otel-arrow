@@ -33,14 +33,6 @@ The specification also discusses SDK environment variables, stdout, and
 programmatic exporter configuration. Those provisions do not map directly to
 an OTAP Dataflow node and are not part of this component's contract.
 
-The Go Collector [file exporter][go-fileexporter] is compatibility evidence
-and operational prior art, not the specification. The original design review
-used release `v0.157.0` and commit
-[`21196c805ba7091d0928434ec9ca145ed0386cab`][go-pin]. Revisit both the
-specification and current Go implementation when proposing compatibility work;
-do not copy a newer behavior without evaluating it against the invariants in
-this document.
-
 ## Goals and Non-goals
 
 The current design optimizes for a small, bounded capture-and-replay sink:
@@ -316,11 +308,11 @@ otherwise.
 | Durability | Flush timing is configurable but ACK durability is not exposed as the same explicit contract. | `write` and `sync_data` define the pre-ACK durability point. | Make completion semantics reviewable and testable. |
 | Write recovery | No equivalent bounded append-tail and per-frame rollback contract is exposed. | Append-tail repair is bounded; failed writes attempt rollback to the prior length. | Keep JSON Lines replayable after common interruption and I/O failures. |
 | Writer readiness | Writer lifecycle follows the Go component startup model. | Each valid signal destination is opened and reversibly probed on first use. | Avoid unused files while failing the triggering batch if the destination is not writable. |
-| Rotation and retention | Optional size/age rotation and backup cleanup. | Not supported. | Ownership, cleanup bounds, and crash semantics need an OTAP-specific design. |
-| Compression | zstd support includes historical per-message framing and native file-level behavior. | Not supported. | Avoid a legacy wire format; future compression should produce standard files. |
+| Rotation and retention | Optional size/age rotation and backup cleanup. | Not yet supported. | Ownership, cleanup bounds, and crash semantics need an OTAP-specific design. |
+| Compression | zstd support includes historical per-message framing and native file-level behavior. | Not yet supported. | Avoid a legacy wire format; future compression should produce standard files. |
 | Dynamic grouping | Resource attributes can select paths, with an LRU bounded by `max_open_files`. | Telemetry cannot influence paths; each instance has at most three writers. | Avoid path injection, cardinality growth, churn, and hot-path synchronization. |
 | Directory permissions | Directory mode is configurable and defaults to `0755`. | New Unix directories request `0700`; files request `0600`. | Default to private storage for full telemetry. |
-| Profiles | Profiles are under development in the Go component. | Unsupported. | Wait for stable OTAP profile views and a specified top-level file representation. |
+| Profiles | Profiles are under development in the Go component. | Not yet supported. | Wait for stable OTAP profile views and a specified top-level file representation. |
 | Retry and persistent buffering | Collector exporter helpers compose queue and retry behavior. | Engine ACK/NACK, retry, and durable-buffer components are composed explicitly. | Keep policy and retained work visible at the pipeline level. |
 
 These differences are deliberate, not a backlog to reach option parity. A
