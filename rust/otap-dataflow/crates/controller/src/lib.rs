@@ -2692,11 +2692,10 @@ impl<
                     pipeline_completion_msg_rx,
                 )
                 .map_err(|e| {
-                    let error = e.to_string();
                     otel_error!(
                         "controller.pipeline_runtime_failed",
                         core_id = core_id.id,
-                        error = error.as_str(),
+                        error = %e,
                         message = "Pipeline terminated with a runtime error"
                     );
                     Error::PipelineRuntimeError {
