@@ -75,13 +75,13 @@ impl SignalWriter {
         _ = options.read(true);
         match config.open_mode {
             OpenMode::Append => {
-                _ = options.append(true).create(true);
+                _ = options.write(true).append(true).create(true);
             }
             OpenMode::Truncate => {
                 _ = options.write(true).create(true).truncate(true);
             }
             OpenMode::CreateNew => {
-                _ = options.append(true).create_new(true);
+                _ = options.write(true).append(true).create_new(true);
             }
         }
         #[cfg(unix)]

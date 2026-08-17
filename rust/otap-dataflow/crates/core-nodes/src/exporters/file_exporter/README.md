@@ -99,6 +99,11 @@ live exporter writers from owning the same normalized path. It does not
 coordinate separate processes. Filesystem quotas, retention, encryption,
 mount policy, and cross-process ownership remain operator responsibilities.
 
+Do not delete, rename, replace, or externally rotate an active destination
+file. The exporter retains the open file handle and does not re-resolve the
+configured path after opening it. Stop the exporter before performing
+destination lifecycle operations.
+
 ## Telemetry
 
 ### Metric sets
