@@ -4078,7 +4078,7 @@ dependencies = [
 [[package]]
 name = "geneva-uploader"
 version = "0.5.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=f101f2a7bc48a1ca214c2432931e0f253a51a963#f101f2a7bc48a1ca214c2432931e0f253a51a963"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=7819998d4bd015b7ae7576b1e26aaa56314f03e6#7819998d4bd015b7ae7576b1e26aaa56314f03e6"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
@@ -7399,7 +7399,7 @@ dependencies = [
  "aws-config",
  "aws-msk-iam-sasl-signer",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "clap",
@@ -7519,7 +7519,7 @@ dependencies = [
  "arrow-schema",
  "async-stream",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "byte-unit",
  "bytes",
@@ -7678,7 +7678,7 @@ dependencies = [
  "async-trait",
  "azure_core 1.2.0-beta.1",
  "azure_identity 1.1.0-beta.1",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "cfg-if",
  "flate2",
@@ -7748,7 +7748,7 @@ dependencies = [
  "arrow",
  "arrow-ipc",
  "arrow-schema",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "ciborium",
  "criterion",
@@ -7851,7 +7851,7 @@ version = "0.51.0"
 dependencies = [
  "arrow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "data_engine_parser_abstractions",
  "otap-df-pdata",
  "otap-df-query-engine",
@@ -12011,7 +12011,7 @@ dependencies = [
 [[package]]
 name = "weaver_common"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "dirs",
  "flate2",
@@ -12036,7 +12036,7 @@ dependencies = [
 [[package]]
 name = "weaver_diff"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "serde_json",
  "similar",
@@ -12046,7 +12046,7 @@ dependencies = [
 [[package]]
 name = "weaver_forge"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "convert_case 0.11.0",
  "dirs",
@@ -12081,7 +12081,7 @@ dependencies = [
 [[package]]
 name = "weaver_resolved_schema"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "log",
  "schemars 1.2.2",
@@ -12095,7 +12095,7 @@ dependencies = [
 [[package]]
 name = "weaver_resolver"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "globset",
  "itertools 0.15.0",
@@ -12119,7 +12119,7 @@ dependencies = [
 [[package]]
 name = "weaver_semconv"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "glob",
  "globset",
@@ -12143,7 +12143,7 @@ dependencies = [
 [[package]]
 name = "weaver_version"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "schemars 1.2.2",
  "semver",
