@@ -312,6 +312,12 @@ impl KafkaReceiver {
         )
     }
 
+    /// Returns the shared rebalance state for synchronization in component tests.
+    #[cfg(test)]
+    pub(crate) fn rebalance_state_for_test(&self) -> Arc<RebalanceState> {
+        Arc::clone(&self.rebalance_state)
+    }
+
     /// Returns the signal selected by the configured include and exclude rules.
     fn signal_type_for_topic(&self, topic: &str) -> Option<SignalType> {
         if matches_any_topic(
@@ -4537,10 +4543,18 @@ mod tests {
                 let trigger =
                     RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(30))
                         .await;
-
-                // Give the receiver's loop time to observe and reconcile the
-                // revoke before the stale acks arrive.
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                let revoked_partition = trigger
+                    .assignment()
+                    .into_iter()
+                    .find_map(|(topic, partition)| (topic == TOPIC).then_some(partition))
+                    .expect("rebalance trigger should own a partition from the test topic");
+                receiver
+                    .wait_for_partition_revocation(
+                        TOPIC,
+                        revoked_partition,
+                        Duration::from_secs(10),
+                    )
+                    .await;
 
                 // Ack the in-flight records now that at least one of their
                 // partitions has been revoked. The acks for revoked partitions
@@ -4548,18 +4562,27 @@ mod tests {
                 for pdata in in_flight {
                     receiver.ack(pdata);
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
 
+                // Ack and Shutdown share the same FIFO control channel, so the
+                // feedback is handled before the terminal snapshot is taken.
                 receiver.shutdown(Duration::from_secs(5));
                 let terminal = receiver.await_terminal_state().await;
                 drop(trigger);
 
                 let mut m = FoldedMetrics::new();
                 m.fold_all(terminal.metrics());
+                let acknowledgements = measurement_counter(
+                    terminal.metrics(),
+                    "receiver.kafka.acknowledgements",
+                    &[("signal", "traces"), ("outcome", "success")],
+                    "responses",
+                );
                 assert!(
                     m.value("group.feedback.after_revocation") >= 1,
-                    "at least one ack for a revoked partition should be counted and dropped, got {}",
+                    "at least one ack for a revoked partition should be counted and dropped, got \
+                     {}; acknowledgements={acknowledgements}, revocations={}",
                     m.value("group.feedback.after_revocation"),
+                    m.value("group.partition.revocations"),
                 );
             },
         )
@@ -4611,10 +4634,18 @@ mod tests {
                 let trigger =
                     RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(30))
                         .await;
-
-                // Give the receiver's loop time to observe and reconcile the
-                // revoke before the stale nacks arrive.
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                let revoked_partition = trigger
+                    .assignment()
+                    .into_iter()
+                    .find_map(|(topic, partition)| (topic == TOPIC).then_some(partition))
+                    .expect("rebalance trigger should own a partition from the test topic");
+                receiver
+                    .wait_for_partition_revocation(
+                        TOPIC,
+                        revoked_partition,
+                        Duration::from_secs(10),
+                    )
+                    .await;
 
                 // Permanently nack the in-flight records now that at least one of
                 // their partitions has been revoked. A terminal Nack for a revoked
@@ -4623,18 +4654,27 @@ mod tests {
                 for pdata in in_flight {
                     receiver.nack_permanent("stale after revoke", pdata);
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
 
+                // Nack and Shutdown share the same FIFO control channel, so the
+                // feedback is handled before the terminal snapshot is taken.
                 receiver.shutdown(Duration::from_secs(5));
                 let terminal = receiver.await_terminal_state().await;
                 drop(trigger);
 
                 let mut m = FoldedMetrics::new();
                 m.fold_all(terminal.metrics());
+                let acknowledgements = measurement_counter(
+                    terminal.metrics(),
+                    "receiver.kafka.acknowledgements",
+                    &[("signal", "traces"), ("outcome", "refused")],
+                    "responses",
+                );
                 assert!(
                     m.value("group.feedback.after_revocation") >= 1,
-                    "at least one nack for a revoked partition should be counted and dropped, got {}",
+                    "at least one nack for a revoked partition should be counted and dropped, got \
+                     {}; acknowledgements={acknowledgements}, revocations={}",
                     m.value("group.feedback.after_revocation"),
+                    m.value("group.partition.revocations"),
                 );
             },
         )
