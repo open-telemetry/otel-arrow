@@ -13,9 +13,7 @@ use crate::*;
 pub enum StringValueOrRef<'a> {
     Empty,
     Ref(&'a str),
-    /// Note: Buffer must contain valid UTF-8 bytes otherwise undefined behavior
-    /// may occur.
-    Buffer(Buffer),
+    Buffer(Utf8Buffer),
     Owned(Rc<String>),
     Slice(StringValueOrRefSlice<'a>),
 }
@@ -23,6 +21,18 @@ pub enum StringValueOrRef<'a> {
 impl StringValueOrRef<'_> {
     pub fn new_owned(value: String) -> StringValueOrRef<'static> {
         StringValueOrRef::Owned(value.into())
+    }
+
+    pub fn new_utf8(buffer: Buffer) -> StringValueOrRef<'static> {
+        assert!(std::str::from_utf8(&buffer).is_ok(), "invalid UTF-8");
+        StringValueOrRef::Buffer(Utf8Buffer { buffer })
+    }
+
+    /// # Safety
+    ///
+    /// The bytes passed in must be valid UTF-8.
+    pub unsafe fn new_utf8_unvalidated(buffer: Buffer) -> StringValueOrRef<'static> {
+        StringValueOrRef::Buffer(Utf8Buffer { buffer })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -33,7 +43,7 @@ impl StringValueOrRef<'_> {
         match self {
             StringValueOrRef::Empty => 0,
             StringValueOrRef::Ref(s) => s.len(),
-            StringValueOrRef::Buffer(b) => b.len(),
+            StringValueOrRef::Buffer(b) => b.buffer.len(),
             StringValueOrRef::Owned(s) => s.len(),
             StringValueOrRef::Slice(s) => s.len(),
         }
@@ -43,9 +53,9 @@ impl StringValueOrRef<'_> {
         match self {
             StringValueOrRef::Empty => 0,
             StringValueOrRef::Ref(s) => s.chars().count(),
-            StringValueOrRef::Buffer(b) => {
-                unsafe { std::str::from_utf8_unchecked(b) }.chars().count()
-            }
+            StringValueOrRef::Buffer(b) => unsafe { std::str::from_utf8_unchecked(&b.buffer) }
+                .chars()
+                .count(),
             StringValueOrRef::Owned(s) => s.chars().count(),
             StringValueOrRef::Slice(s) => s.char_len(),
         }
@@ -55,9 +65,9 @@ impl StringValueOrRef<'_> {
         match self {
             StringValueOrRef::Empty => CharIndices::String("".char_indices()),
             StringValueOrRef::Ref(s) => CharIndices::String(s.char_indices()),
-            StringValueOrRef::Buffer(b) => {
-                CharIndices::String(unsafe { std::str::from_utf8_unchecked(b) }.char_indices())
-            }
+            StringValueOrRef::Buffer(b) => CharIndices::String(
+                unsafe { std::str::from_utf8_unchecked(&b.buffer) }.char_indices(),
+            ),
             StringValueOrRef::Owned(s) => CharIndices::String(s.char_indices()),
             StringValueOrRef::Slice(s) => s.char_indices(),
         }
@@ -68,7 +78,7 @@ impl StringValueOrRef<'_> {
             StringValueOrRef::Empty => {}
             StringValueOrRef::Ref(s) => value.push_str(s),
             StringValueOrRef::Buffer(b) => {
-                value.push_str(unsafe { std::str::from_utf8_unchecked(b.as_ref()) })
+                value.push_str(unsafe { std::str::from_utf8_unchecked(&b.buffer) })
             }
             StringValueOrRef::Owned(s) => value.push_str(&s),
             StringValueOrRef::Slice(s) => s.append_to(value),
@@ -87,7 +97,7 @@ impl AsRef<str> for StringValueOrRef<'_> {
         match self {
             StringValueOrRef::Empty => "",
             StringValueOrRef::Ref(s) => s,
-            StringValueOrRef::Buffer(b) => unsafe { std::str::from_utf8_unchecked(b) },
+            StringValueOrRef::Buffer(b) => unsafe { std::str::from_utf8_unchecked(&b.buffer) },
             StringValueOrRef::Owned(s) => s,
             StringValueOrRef::Slice(s) => s.get_value(),
         }
@@ -110,7 +120,7 @@ impl From<StringValueOrRef<'_>> for String {
             StringValueOrRef::Empty => String::new(),
             StringValueOrRef::Ref(s) => s.into(),
             StringValueOrRef::Buffer(b) => {
-                unsafe { std::str::from_utf8_unchecked(b.as_ref()) }.into()
+                unsafe { std::str::from_utf8_unchecked(&b.buffer) }.into()
             }
             StringValueOrRef::Owned(s) => match Rc::try_unwrap(s) {
                 Ok(s) => s,
@@ -138,6 +148,11 @@ impl PartialEq for StringValueOrRef<'_> {
 }
 
 impl Eq for StringValueOrRef<'_> {}
+
+#[derive(Debug, Clone)]
+pub struct Utf8Buffer {
+    pub(crate) buffer: Buffer,
+}
 
 #[derive(Debug, Clone)]
 pub struct StringValueOrRefSlice<'a> {
