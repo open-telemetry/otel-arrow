@@ -184,14 +184,21 @@ impl Error {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            Error::Network { .. }
-                | Error::Auth {
-                    kind: AuthErrorKind::Unauthorized,
-                    ..
-                }
-                | Error::RateLimited { .. }
-                | Error::ServerError { .. }
+            Error::Network { .. } | Error::RateLimited { .. } | Error::ServerError { .. }
         )
+    }
+
+    /// Returns true if this error was caused by an HTTP 401 response.
+    #[must_use]
+    pub fn is_unauthorized(&self) -> bool {
+        match self {
+            Error::Auth {
+                kind: AuthErrorKind::Unauthorized,
+                ..
+            } => true,
+            Error::ExportFailed { last_error, .. } => last_error.is_unauthorized(),
+            _ => false,
+        }
     }
 
     /// Returns the retry-after duration if specified by the server.
@@ -374,7 +381,6 @@ mod tests {
     #[test]
     fn test_is_retryable() {
         // Retryable
-        assert!(Error::unauthorized(String::new()).is_retryable());
         assert!(
             Error::RateLimited {
                 body: String::new(),
@@ -392,6 +398,7 @@ mod tests {
         );
 
         // Not retryable
+        assert!(!Error::unauthorized(String::new()).is_retryable());
         assert!(!Error::forbidden(String::new()).is_retryable());
         assert!(!Error::PayloadTooLarge.is_retryable());
         assert!(
@@ -401,6 +408,19 @@ mod tests {
             }
             .is_retryable()
         );
+    }
+
+    /// Scenario: an export wraps the HTTP 401 that terminated its retry loop.
+    /// Guarantees: completion handling can still identify the auth rejection and
+    /// invalidate the bearer-token generation used by the request.
+    #[test]
+    fn wrapped_unauthorized_error_is_identified() {
+        let error = Error::ExportFailed {
+            attempts: 1,
+            last_error: Box::new(Error::unauthorized("rejected".to_string())),
+        };
+
+        assert!(error.is_unauthorized());
     }
 
     // ==================== Display Tests ====================

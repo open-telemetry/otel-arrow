@@ -99,12 +99,6 @@ impl LogsIngestionClientPool {
         Ok(())
     }
 
-    pub fn update_auth(&mut self, header: HeaderValue) {
-        for client in &mut self.clients {
-            client.update_auth(header.clone());
-        }
-    }
-
     #[inline(always)]
     pub fn take(&mut self) -> LogsIngestionClient {
         self.clients.pop().expect("client pool is empty")

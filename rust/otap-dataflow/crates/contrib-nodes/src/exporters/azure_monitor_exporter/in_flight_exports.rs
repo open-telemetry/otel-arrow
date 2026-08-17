@@ -5,6 +5,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use futures::future::LocalBoxFuture;
 use futures::stream::FuturesUnordered;
+use http::HeaderValue;
 use tokio::time::Duration;
 
 use super::client::LogsIngestionClient;
@@ -16,6 +17,7 @@ pub struct CompletedExport {
     pub result: Result<Duration, Error>,
     pub row_count: u64,
     pub body_size_bytes: u64,
+    pub token_generation: u64,
 }
 
 pub struct InFlightExports {
@@ -89,8 +91,17 @@ impl InFlightExports {
         batch_id: u64,
         row_count: u64,
         body: Bytes,
+        auth_header: HeaderValue,
+        token_generation: u64,
     ) -> Option<CompletedExport> {
-        let fut = Self::make_export_future(client, batch_id, row_count, body);
+        let fut = Self::make_export_future(
+            client,
+            batch_id,
+            row_count,
+            body,
+            auth_header,
+            token_generation,
+        );
         self.queued_rows = self.queued_rows.saturating_add(row_count);
         self.push(fut).await
     }
@@ -101,9 +112,12 @@ impl InFlightExports {
         batch_id: u64,
         row_count: u64,
         body: Bytes,
+        auth_header: HeaderValue,
+        token_generation: u64,
     ) -> LocalBoxFuture<'static, CompletedExport> {
         Box::pin(async move {
             let body_size_bytes = body.len() as u64;
+            client.update_auth(auth_header);
             let result = client.export(body).await;
             CompletedExport {
                 batch_id,
@@ -111,6 +125,7 @@ impl InFlightExports {
                 result,
                 row_count,
                 body_size_bytes,
+                token_generation,
             }
         })
     }
@@ -186,8 +201,13 @@ mod tests {
                 result,
                 row_count,
                 body_size_bytes: 0,
+                token_generation: 1,
             }
         })
+    }
+
+    fn test_auth() -> (HeaderValue, u64) {
+        (HeaderValue::from_static("Bearer test-token"), 1)
     }
 
     // ==================== Construction Tests ====================
@@ -277,8 +297,16 @@ mod tests {
         let client = create_test_client();
 
         // This should not block because we are under the limit
+        let (auth_header, token_generation) = test_auth();
         let result = exports
-            .push_export(client, 1, 10, Bytes::from("data"))
+            .push_export(
+                client,
+                1,
+                10,
+                Bytes::from("data"),
+                auth_header,
+                token_generation,
+            )
             .await;
 
         assert!(result.is_none());
@@ -300,8 +328,16 @@ mod tests {
         // 2. Now call push_export. Since we are at limit (1), it must wait for a completion.
         // It should receive the completion from our dummy future immediately.
         let client = create_test_client();
+        let (auth_header, token_generation) = test_auth();
         let result = exports
-            .push_export(client, 2, 20, Bytes::from("data"))
+            .push_export(
+                client,
+                2,
+                20,
+                Bytes::from("data"),
+                auth_header,
+                token_generation,
+            )
             .await;
 
         // Should get the completed dummy export
@@ -320,13 +356,29 @@ mod tests {
         // Under the limit, push_export does not block and increments the
         // in-flight record tally by the enqueued row count. The real export
         // future stays pending.
+        let (auth_header, token_generation) = test_auth();
         let _ = exports
-            .push_export(create_test_client(), 1, 100, Bytes::from("data"))
+            .push_export(
+                create_test_client(),
+                1,
+                100,
+                Bytes::from("data"),
+                auth_header,
+                token_generation,
+            )
             .await;
         assert_eq!(exports.queued_rows(), 100);
 
+        let (auth_header, token_generation) = test_auth();
         let _ = exports
-            .push_export(create_test_client(), 2, 50, Bytes::from("data"))
+            .push_export(
+                create_test_client(),
+                2,
+                50,
+                Bytes::from("data"),
+                auth_header,
+                token_generation,
+            )
             .await;
         assert_eq!(exports.queued_rows(), 150);
     }
@@ -343,8 +395,16 @@ mod tests {
 
         // At capacity, push_export(+25) pops the completed future (-10) before
         // adding the new one: 10 + 25 - 10 = 25.
+        let (auth_header, token_generation) = test_auth();
         let completed = exports
-            .push_export(create_test_client(), 2, 25, Bytes::from("data"))
+            .push_export(
+                create_test_client(),
+                2,
+                25,
+                Bytes::from("data"),
+                auth_header,
+                token_generation,
+            )
             .await;
         assert!(completed.is_some());
         assert_eq!(completed.unwrap().row_count, 10);
