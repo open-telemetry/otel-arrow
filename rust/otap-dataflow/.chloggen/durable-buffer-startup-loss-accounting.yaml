@@ -1,0 +1,7 @@
+change_type: bug_fix
+component: pipeline
+note: Report durable-buffer loss when finalized segments or WAL-only bundles expire during startup.
+issues: [3705]
+subtext: |
+  Startup validates existing segment files and decodes expired WAL entries without changing on-disk formats.
+  Finalized-segment loss includes persisted bytes; WAL-only expiry reports bundle, item, and signal counts.
