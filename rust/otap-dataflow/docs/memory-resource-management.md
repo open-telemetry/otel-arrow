@@ -235,8 +235,9 @@ currently emitted metrics.
 Per-pipeline allocator domains would answer where physical heap memory
 originated. Each pinned pipeline thread would allocate from a dedicated
 allocator domain, and inventory metrics would sample that domain's live and
-footprint values. Any DFE-maintained peak based on periodic sampling is a peak
-of samples, not an instantaneous high-water mark.
+footprint values. If DFE reports a peak from these periodic samples, it can
+report only the largest sampled value. A higher value between samples would be
+missed, so this peak is not an instantaneous high-water mark.
 
 Calling-thread activity and origin-domain inventory are separate axes:
 
@@ -410,6 +411,7 @@ scoped policy.
 References:
 
 - [Go Collector memory limiter functionality](https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/memorylimiterprocessor#functionality)
+- [Go Collector memory limiter extension](https://github.com/open-telemetry/opentelemetry-collector/blob/main/extension/memorylimiterextension/README.md)
 - [Scaling the OpenTelemetry Collector](https://opentelemetry.io/docs/collector/scaling/)
 
 ## Reading the Memory Views Together
