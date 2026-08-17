@@ -3,24 +3,11 @@
 
 //! Encoding logic for converting OTAP payloads to bytes for Kafka.
 
+use super::error::KafkaExporterError;
 use otap_df_pdata::{OtapArrowRecords, Producer as PdataProducer};
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
 
 use prost::Message as ProstMessage;
-
-/// Errors that can occur during encoding.
-#[derive(Debug, thiserror::Error)]
-pub enum EncodingError {
-    /// Failed to convert payload to OTLP bytes.
-    #[error("Failed to convert payload to OTLP bytes: {0}")]
-    OTLPConversionError(String),
-    /// Failed to convert payload to OtapArrowRecords.
-    #[error("Failed to convert payload to OtapArrowRecords: {0}")]
-    OtapArrowRecordsConversionError(String),
-    /// Failed to convert OtapArrowRecords to BatchArrowRecord bytes.
-    #[error("Failed to convert OtapArrowRecords to BatchArrowRecord bytes: {0}")]
-    BatchArrowRecordConversionError(String),
-}
 
 /// Encodes an OTAP payload to OTLP protobuf bytes.
 ///
@@ -36,14 +23,14 @@ pub enum EncodingError {
 ///
 /// A vector of bytes containing the OTLP protobuf representation,
 /// ready to be sent to Kafka.
-pub fn encode_to_otlp_bytes(payload: OtapPayload) -> Result<Vec<u8>, EncodingError> {
+pub fn encode_to_otlp_bytes(payload: OtapPayload) -> Result<Vec<u8>, KafkaExporterError> {
     // Convert payload to OTLP protobuf bytes
     // This uses the built-in TryFrom implementation that handles both cases:
     // - OtlpProtoBytes -> return as-is
     // - OtapArrowRecords -> encode using LogsProtoBytesEncoder, MetricsProtoBytesEncoder, etc.
     let otlp_bytes: OtlpProtoBytes = payload
         .try_into_with_default()
-        .map_err(|e| EncodingError::OTLPConversionError(format!("{}", e)))?;
+        .map_err(|e| KafkaExporterError::OtlpConversion(format!("{}", e)))?;
 
     // Extract the bytes from the OTLP wrapper
     Ok(otlp_bytes.as_bytes().to_vec())
@@ -63,16 +50,16 @@ pub fn encode_to_otlp_bytes(payload: OtapPayload) -> Result<Vec<u8>, EncodingErr
 pub fn encode_to_batch_arrow_record_bytes(
     payload: OtapPayload,
     producer: &mut PdataProducer,
-) -> Result<Vec<u8>, EncodingError> {
+) -> Result<Vec<u8>, KafkaExporterError> {
     let mut otap_records: OtapArrowRecords = payload
         .try_into_with_default()
-        .map_err(|e| EncodingError::OtapArrowRecordsConversionError(format!("{}", e)))?;
+        .map_err(|e| KafkaExporterError::OtapArrowRecordsConversion(format!("{}", e)))?;
     let bar = producer
         .produce_bar(&mut otap_records)
-        .map_err(|e| EncodingError::BatchArrowRecordConversionError(format!("{}", e)))?;
+        .map_err(|e| KafkaExporterError::BatchArrowRecordConversion(format!("{}", e)))?;
     producer
         .reset_streams()
-        .map_err(|e| EncodingError::BatchArrowRecordConversionError(format!("{}", e)))?;
+        .map_err(|e| KafkaExporterError::BatchArrowRecordConversion(format!("{}", e)))?;
     Ok(bar.encode_to_vec())
 }
 

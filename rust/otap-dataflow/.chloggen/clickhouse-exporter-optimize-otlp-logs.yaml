@@ -1,0 +1,9 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+change_type: enhancement
+component: pipeline
+note: "Reduce CPU used to export raw OTLP logs to ClickHouse."
+issues: [3512]
+subtext: |
+  Raw OTLP log requests now build ClickHouse columns directly. Inputs that cannot use the direct path automatically use the existing conversion path.
