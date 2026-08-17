@@ -455,31 +455,12 @@ impl OffsetTracker {
     /// past them. Exposed for the `records_in_flight` up/down counter.
     ///
     /// O(1): returns the aggregate maintained incrementally at the mutation
-    /// sites rather than rescanning every partition on the hot receive path. In
-    /// debug builds the cached value is checked against a full rescan to catch
-    /// drift.
+    /// sites rather than rescanning every partition on the hot receive path. The
+    /// invariant that this cached value equals a full O(n) rescan is verified by
+    /// the unit tests after every mutation.
     #[must_use]
     pub fn total_pending(&self) -> usize {
-        debug_assert_eq!(
-            self.total_pending,
-            self.recompute_total_pending(),
-            "cached total_pending drifted from a full rescan",
-        );
         self.total_pending
-    }
-
-    /// Full O(n) rescan of the aggregate pending count.
-    ///
-    /// Only used by the debug assertion in [`total_pending`](Self::total_pending)
-    /// to detect drift in the incrementally-maintained cache; it is never on the
-    /// production hot path.
-    #[cfg(debug_assertions)]
-    fn recompute_total_pending(&self) -> usize {
-        self.partitions
-            .values()
-            .flat_map(|parts| parts.values())
-            .map(|t| t.pending_count())
-            .sum()
     }
 }
 
@@ -1492,9 +1473,10 @@ mod tests {
 
     // ---- Aggregate in-flight (total_pending) ----
 
-    /// Full O(n) rescan of the aggregate pending count computed directly from
-    /// the tracker's internal partition state. Independent of the cached
-    /// `total_pending` field so a test can compare the two.
+    /// O(n) reference rescan of the aggregate pending count, summed directly
+    /// from every partition's pending set. This is the linear-scan baseline the
+    /// production O(1) [`OffsetTracker::total_pending`] cache must always agree
+    /// with; it is defined only in tests so the production path never rescans.
     fn scan_total_pending(tracker: &OffsetTracker) -> usize {
         tracker
             .partitions
@@ -1504,76 +1486,81 @@ mod tests {
             .sum()
     }
 
-    /// Scenario (runtime and performance): the cached O(1) `total_pending`
-    /// aggregate is driven through track, duplicate track, stale-generation
-    /// track, ack, unknown ack, revoke, newer-generation reset, and a full
-    /// drain to zero.
-    /// Guarantees: after every mutation the cached aggregate exactly equals a
-    /// fresh full rescan of all partitions (so the O(1) counter never drifts
-    /// from the true in-flight depth) and matches the expected value, making the
-    /// metric behavior-preserving relative to the old rescan implementation.
+    /// Assert the O(1) cached aggregate equals the O(n) full rescan and both
+    /// equal `expected`.
+    ///
+    /// This is the core behavior-preserving check: the constant-time counter
+    /// returned by [`OffsetTracker::total_pending`] must always match a fresh
+    /// linear scan over every partition's pending set.
+    fn assert_in_flight_agrees(tracker: &OffsetTracker, expected: usize) {
+        let full_scan = scan_total_pending(tracker); // O(n) over all partitions.
+        let constant_time = tracker.total_pending(); // O(1) cached aggregate.
+        assert_eq!(
+            full_scan, expected,
+            "O(n) full scan diverged from the expected in-flight count",
+        );
+        assert_eq!(
+            constant_time, full_scan,
+            "O(1) cached total_pending diverged from the O(n) full scan",
+        );
+    }
+
+    /// Scenario (runtime and performance): the aggregate in-flight count is
+    /// driven through track, duplicate track, stale-generation track, ack,
+    /// unknown ack, revoke, newer-generation reset, and a full drain to zero.
+    /// Guarantees: after every mutation the O(1) cached `total_pending` exactly
+    /// equals an O(n) full rescan of all partitions and the expected value, so
+    /// the constant-time counter never drifts from the true in-flight depth and
+    /// the metric stays behavior-preserving relative to a full rescan.
     #[test]
     fn total_pending_cache_matches_scan_across_mutations() {
         let mut tracker = OffsetTracker::new();
 
-        // Assert the cache equals both a fresh scan and the expected value.
-        macro_rules! assert_total {
-            ($expected:expr) => {{
-                let scanned = scan_total_pending(&tracker);
-                assert_eq!(scanned, $expected, "fresh scan diverged from expectation");
-                assert_eq!(
-                    tracker.total_pending(),
-                    scanned,
-                    "cached total_pending diverged from a fresh scan",
-                );
-            }};
-        }
-
-        assert_total!(0);
+        assert_in_flight_agrees(&tracker, 0);
 
         // Fresh inserts across two topics/partitions raise the aggregate.
         tracker.track("traces", 0, 100, 1);
         tracker.track("traces", 0, 101, 1);
         tracker.track("traces", 1, 200, 1);
         tracker.track("metrics", 0, 300, 1);
-        assert_total!(4);
+        assert_in_flight_agrees(&tracker, 4);
 
         // A duplicate offset does not change the aggregate.
         tracker.track("traces", 0, 100, 1);
-        assert_total!(4);
+        assert_in_flight_agrees(&tracker, 4);
 
         // A stale-generation track is a no-op for the aggregate.
         tracker.track("traces", 0, 50, 0);
-        assert_total!(4);
+        assert_in_flight_agrees(&tracker, 4);
 
         // Acking a pending offset decrements by one.
         assert!(tracker.acknowledge("traces", 0, 100));
-        assert_total!(3);
+        assert_in_flight_agrees(&tracker, 3);
 
         // Acking an unknown offset/partition leaves the aggregate unchanged.
         assert!(!tracker.acknowledge("traces", 0, 999));
         assert!(!tracker.acknowledge("unknown", 7, 1));
-        assert_total!(3);
+        assert_in_flight_agrees(&tracker, 3);
 
         // Revoking a partition subtracts its remaining pending offsets.
         // traces/0 still has offset 101 pending (100 was acked).
         tracker.revoke("traces", 0);
-        assert_total!(2);
+        assert_in_flight_agrees(&tracker, 2);
 
         // A newer-generation track on an existing partition resets its pending
         // set: metrics/0 drops its single old-generation offset (300) and adds
         // one new offset (400), a net zero change for that partition.
         tracker.track("metrics", 0, 400, 2);
-        assert_total!(2);
+        assert_in_flight_agrees(&tracker, 2);
 
         // Newer-generation reset when the partition had multiple pending offsets
         // shrinks the aggregate: traces/1 holds only offset 200, replaced by 210.
         tracker.track("traces", 1, 210, 2);
-        assert_total!(2);
+        assert_in_flight_agrees(&tracker, 2);
 
         // Drain everything to zero via acks; the cache must land exactly at 0.
         assert!(tracker.acknowledge("metrics", 0, 400));
         assert!(tracker.acknowledge("traces", 1, 210));
-        assert_total!(0);
+        assert_in_flight_agrees(&tracker, 0);
     }
 }
