@@ -237,7 +237,7 @@ impl KafkaExporterMetrics {
     }
 
     /// Records the terminal outcome, duration, and optional encoded bytes of one export.
-    pub fn record_export(
+    fn record_export(
         &mut self,
         signal: SignalType,
         outcome: Outcome,
@@ -252,6 +252,11 @@ impl KafkaExporterMetrics {
                 .bytes
                 .record(payload_bytes as f64);
         }
+    }
+
+    /// Records one successful terminal Kafka export.
+    pub fn record_success(&mut self, signal: SignalType, duration: Duration, payload_bytes: usize) {
+        self.record_export(signal, Outcome::Success, duration, Some(payload_bytes));
     }
 
     /// Records the latency and outcome of one bounded export phase.
@@ -272,8 +277,15 @@ impl KafkaExporterMetrics {
             .record(duration_seconds);
     }
 
-    /// Records an actionable Kafka export failure reason.
-    pub fn record_failure(&mut self, signal: SignalType, error_type: KafkaExporterErrorType) {
+    /// Records one failed terminal Kafka export and exactly one diagnostic category.
+    pub fn record_failure(
+        &mut self,
+        signal: SignalType,
+        error_type: KafkaExporterErrorType,
+        duration: Duration,
+        payload_bytes: Option<usize>,
+    ) {
+        self.record_export(signal, Outcome::Failure, duration, payload_bytes);
         self.failures
             .with(KafkaExporterFailureAttributes { signal, error_type })
             .messages
@@ -295,10 +307,9 @@ impl KafkaExporterMetrics {
             Outcome::Failure,
             delivery_duration_seconds,
         );
-        self.record_failure(signal, KafkaExporterErrorType::from_kafka_error(error));
-        self.record_export(
+        self.record_failure(
             signal,
-            Outcome::Failure,
+            KafkaExporterErrorType::from_kafka_error(error),
             export_duration,
             Some(payload_bytes),
         );
@@ -412,19 +423,14 @@ mod tests {
     }
 
     /// Scenario: Successful and failed exports span signals, phases, failures, and routing sources.
-    /// Guarantees: Every measurement remains isolated by its bounded enum attributes.
+    /// Guarantees: Terminal failures are paired with one diagnostic category and every measurement remains isolated by its bounded attributes.
     #[test]
     fn exporter_metrics_are_partitioned_by_context() {
         let mut metrics = new_metrics();
-        metrics.record_export(
-            SignalType::Logs,
-            Outcome::Success,
-            Duration::from_millis(250),
-            Some(128),
-        );
-        metrics.record_export(
+        metrics.record_success(SignalType::Logs, Duration::from_millis(250), 128);
+        metrics.record_failure(
             SignalType::Traces,
-            Outcome::Failure,
+            KafkaExporterErrorType::Transport,
             Duration::from_millis(500),
             None,
         );
@@ -434,7 +440,6 @@ mod tests {
             Outcome::Success,
             0.01,
         );
-        metrics.record_failure(SignalType::Traces, KafkaExporterErrorType::Transport);
         metrics.record_routing(SignalType::Logs, KafkaTopicSource::Header);
 
         assert_eq!(
@@ -593,13 +598,12 @@ mod tests {
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
         let mut metrics = new_metrics();
-        metrics.record_export(
+        metrics.record_failure(
             SignalType::Metrics,
-            Outcome::Failure,
+            KafkaExporterErrorType::Encoding,
             Duration::from_millis(500),
             Some(64),
         );
-        metrics.record_failure(SignalType::Metrics, KafkaExporterErrorType::Encoding);
         metrics.record_routing(SignalType::Metrics, KafkaTopicSource::StaticConfig);
 
         let snapshots = metrics.terminal_snapshots();

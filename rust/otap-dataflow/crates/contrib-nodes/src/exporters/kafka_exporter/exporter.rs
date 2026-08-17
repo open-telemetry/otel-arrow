@@ -429,11 +429,9 @@ impl KafkaExporter {
                     signal_type = ?signal_type,
                     error = %e,
                 );
-                self.metrics
-                    .record_failure(signal_type, KafkaExporterErrorType::UnconfiguredSignal);
-                self.metrics.record_export(
+                self.metrics.record_failure(
                     signal_type,
-                    Outcome::Failure,
+                    KafkaExporterErrorType::UnconfiguredSignal,
                     export_start.elapsed(),
                     None,
                 );
@@ -468,11 +466,9 @@ impl KafkaExporter {
         ) {
             Ok(t) => t,
             Err(e) => {
-                self.metrics
-                    .record_failure(signal_type, KafkaExporterErrorType::InvalidTopic);
-                self.metrics.record_export(
+                self.metrics.record_failure(
                     signal_type,
-                    Outcome::Failure,
+                    KafkaExporterErrorType::InvalidTopic,
                     export_start.elapsed(),
                     None,
                 );
@@ -525,11 +521,9 @@ impl KafkaExporter {
                     Outcome::Failure,
                     encoding_start.elapsed().as_secs_f64(),
                 );
-                self.metrics
-                    .record_failure(signal_type, KafkaExporterErrorType::Encoding);
-                self.metrics.record_export(
+                self.metrics.record_failure(
                     signal_type,
-                    Outcome::Failure,
+                    KafkaExporterErrorType::Encoding,
                     export_start.elapsed(),
                     None,
                 );
@@ -563,11 +557,10 @@ impl KafkaExporter {
                     Outcome::Success,
                     delivery_start.elapsed().as_secs_f64(),
                 );
-                self.metrics.record_export(
+                self.metrics.record_success(
                     signal_type,
-                    Outcome::Success,
                     export_start.elapsed(),
-                    Some(payload_bytes.len()),
+                    payload_bytes.len(),
                 );
                 // Ack reporting is best-effort; Kafka send succeeded so don't fail on ack errors
                 if let Err(e) = reporter.ack(OtapPdata::new(context, payload)).await {
