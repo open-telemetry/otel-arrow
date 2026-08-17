@@ -1,6 +1,6 @@
 # Summary
 
-> Opening a chore PR? [Use the chore PR template](?template=chore.md).
+> Chore PR? Open **Preview**, then [use the chore template](?template=chore.md).
 
 <!--Replace with a brief summary of the change in this PR-->
 
