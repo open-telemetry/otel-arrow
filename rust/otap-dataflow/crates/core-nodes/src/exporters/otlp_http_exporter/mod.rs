@@ -51,8 +51,6 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
     ExportTracePartialSuccess, ExportTraceServiceResponse,
 };
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
@@ -62,12 +60,14 @@ use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
-use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use otap_df_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use otap_df_otap::pdata::{Context, OtapPdata};
 
 mod config;
+mod metrics;
+
+use self::metrics::{OtlpHttpExporterErrorType, OtlpHttpExporterMetrics};
 
 /// The URN for the OTLP HTTP exporter
 pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
@@ -89,7 +89,7 @@ const HTTP_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
 /// Exporter that sends OTLP data via HTTP
 pub struct OtlpHttpExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
+    metrics: OtlpHttpExporterMetrics,
     /// Optional bearer token provider resolved from the
     /// `bearer_token_provider` capability. When bound, a fresh
     /// `Authorization: Bearer <token>` is injected on every outgoing
@@ -156,7 +156,7 @@ impl OtlpHttpExporter {
         config: &serde_json::Value,
         token_provider: Option<Box<dyn BearerTokenProvider>>,
     ) -> Result<Self, ConfigError> {
-        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
+        let metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -230,7 +230,7 @@ impl OtlpHttpExporter {
 
         Ok(Self {
             config,
-            pdata_metrics,
+            metrics,
             token_provider,
         })
     }
@@ -397,7 +397,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         let rejected_generation = finalize_completed_export(
                             completed,
                             &effect_handler,
-                            &mut self.pdata_metrics,
+                            &mut self.metrics,
                         )
                         .await;
                         // Server rejected the token this request used (401); drop
@@ -427,7 +427,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             let rejected_generation = finalize_completed_export(
                                 completed,
                                 &effect_handler,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                             )
                             .await;
                             // Honor a 401 even while draining, so a later
@@ -437,12 +437,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     }
                     return Ok(TerminalState::new(
                         deadline,
-                        self.pdata_metrics.terminal_snapshots(),
+                        self.metrics.terminal_snapshots(),
                     ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
-                }) => _ = metrics_reporter.report_measurement(&mut self.pdata_metrics),
+                }) => _ = self.metrics.report(&mut metrics_reporter),
                 Message::PData(pdata) => {
                     let export_started_at = Instant::now();
                     let signal_type = pdata.signal_type();
@@ -462,12 +462,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 OtapPdata::new(context, payload),
                             );
                             _ = effect_handler.notify_nack(nack).await;
-                            self.pdata_metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .record(export_duration);
+                            self.metrics.record_failure(
+                                signal_type,
+                                OtlpHttpExporterErrorType::Authentication,
+                                export_duration,
+                            );
                             continue;
                         }
                     }
@@ -536,12 +535,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 );
                                 nack.permanent = true;
                                 _ = effect_handler.notify_nack(nack).await;
-                                self.pdata_metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Failure,
-                                    })
-                                    .record(export_duration);
+                                self.metrics.record_failure(
+                                    signal_type,
+                                    OtlpHttpExporterErrorType::Encoding,
+                                    export_duration,
+                                );
                                 continue;
                             }
 
@@ -565,12 +563,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 );
                                 nack.permanent = true;
                                 _ = effect_handler.notify_nack(nack).await;
-                                self.pdata_metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Failure,
-                                    })
-                                    .record(export_duration);
+                                self.metrics.record_failure(
+                                    signal_type,
+                                    OtlpHttpExporterErrorType::Compression,
+                                    export_duration,
+                                );
                                 continue;
                             }
                             Bytes::copy_from_slice(&compressed_buffer)
@@ -601,7 +598,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 let rejected_generation = finalize_completed_export(
                                     completed,
                                     &effect_handler,
-                                    &mut self.pdata_metrics,
+                                    &mut self.metrics,
                                 )
                                 .await;
                                 // Honor a 401 here too, so the next force-drained
@@ -731,6 +728,23 @@ enum ServiceRequestError {
 }
 
 impl ServiceRequestError {
+    /// Classifies this terminal request failure for bounded diagnostic metrics.
+    fn error_type(&self) -> OtlpHttpExporterErrorType {
+        match self {
+            Self::RequestError { err } => {
+                if err.is_timeout() {
+                    OtlpHttpExporterErrorType::Timeout
+                } else if let Some(status) = err.status() {
+                    OtlpHttpExporterErrorType::from_status(status)
+                } else {
+                    OtlpHttpExporterErrorType::Transport
+                }
+            }
+            Self::DecodeError(_) => OtlpHttpExporterErrorType::ResponseDecode,
+            Self::BodyTooLarge { .. } => OtlpHttpExporterErrorType::ResponseTooLarge,
+        }
+    }
+
     fn is_retryable(&self) -> bool {
         match self {
             Self::RequestError { err: req_err } => {
@@ -855,7 +869,7 @@ async fn collect_body(response: Response, max_len: usize) -> Result<Bytes, Servi
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterExportMetrics>,
+    metrics: &mut OtlpHttpExporterMetrics,
 ) -> Option<u64> {
     let CompletedExport {
         result,
@@ -896,6 +910,7 @@ async fn finalize_completed_export(
                         partial_success.error_message, partial_success.rejected
                     ),
                     retryable,
+                    OtlpHttpExporterErrorType::PartialRejection,
                 ))
             }
         }),
@@ -912,24 +927,19 @@ async fn finalize_completed_export(
                 rejected_generation = token_generation;
             }
             let retryable = e.is_retryable() || auth_failure;
-            Some((e.to_string(), retryable))
+            let error_type = e.error_type();
+            Some((e.to_string(), retryable, error_type))
         }
     };
 
     // Record the backend result before routing its Ack/Nack. Notification
     // delivery is a separate pipeline concern and must not redefine or suppress
     // the terminal HTTP export outcome.
-    let outcome = if err.is_none() {
-        Outcome::Success
+    if let Some((_, _, error_type)) = &err {
+        metrics.record_failure(signal_type, *error_type, export_duration);
     } else {
-        Outcome::Failure
-    };
-    pdata_metrics
-        .with(SignalOutcomeAttributes {
-            signal: signal_type,
-            outcome,
-        })
-        .record(export_duration);
+        metrics.record_success(signal_type, export_duration);
+    }
 
     match err {
         None => {
@@ -941,7 +951,7 @@ async fn finalize_completed_export(
                 );
             }
         }
-        Some((err_msg, retryable)) => {
+        Some((err_msg, retryable, _)) => {
             otel_warn!(
                 "otlp.exporter.http.export_error",
                 message = err_msg,
@@ -1091,6 +1101,7 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
+    use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
 
@@ -1612,7 +1623,7 @@ mod test {
         ExporterWrapper::local(
             OtlpHttpExporter {
                 config,
-                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
                 token_provider: Some(Box::new(provider)),
             },
             node_id,
@@ -2130,7 +2141,7 @@ mod test {
         let exporter = ExporterWrapper::local(
             OtlpHttpExporter {
                 config,
-                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
                 token_provider: None,
             },
             node_id.clone(),
@@ -2505,7 +2516,7 @@ mod test {
         let controller = ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let mut metrics = ExporterExportMetrics::register(&pipeline_ctx);
+        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);
@@ -2529,6 +2540,7 @@ mod test {
 
         assert_eq!(
             metrics
+                .exports
                 .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Failure,
@@ -2539,6 +2551,7 @@ mod test {
         );
         assert_eq!(
             metrics
+                .exports
                 .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Success,
@@ -2549,6 +2562,7 @@ mod test {
         );
         assert_eq!(
             metrics
+                .exports
                 .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Failure,
@@ -2558,17 +2572,24 @@ mod test {
                 .count(),
             1
         );
+        let snapshots = metrics.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.otlp_http.failures"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("error.type") == Some("response_too_large")
+                && snapshot.get_metrics()[0].to_u64_lossy() == 1
+        }));
     }
 
-    /// Scenario: An HTTP export succeeds but its upstream Ack notification cannot be delivered.
-    /// Guarantees: The backend success is still recorded once and is not relabeled as a failure.
+    /// Scenario: A zero-rejection partial success cannot deliver its upstream Ack notification.
+    /// Guarantees: The backend success is recorded once without a failure classification.
     #[test]
     fn successful_export_is_recorded_when_ack_notification_fails() {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let mut metrics = ExporterExportMetrics::register(&pipeline_ctx);
+        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);
@@ -2581,7 +2602,10 @@ mod test {
         let (context, saved_payload) = pdata.into_parts();
         let completed = CompletedExport {
             result: Ok(ServiceResponse {
-                partial_success: None,
+                partial_success: Some(PartialSuccess {
+                    rejected: 0,
+                    error_message: "informational warning".to_owned(),
+                }),
             }),
             context,
             saved_payload,
@@ -2598,6 +2622,7 @@ mod test {
 
         assert_eq!(
             metrics
+                .exports
                 .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Success,
@@ -2608,6 +2633,7 @@ mod test {
         );
         assert_eq!(
             metrics
+                .exports
                 .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Failure,
@@ -2615,6 +2641,12 @@ mod test {
                 .messages
                 .get(),
             0
+        );
+        assert!(
+            metrics
+                .terminal_snapshots()
+                .iter()
+                .all(|snapshot| snapshot.descriptor().name != "exporter.otlp_http.failures")
         );
     }
 

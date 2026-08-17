@@ -30,7 +30,6 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
 use otap_df_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
@@ -42,8 +41,6 @@ use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
 use std::collections::VecDeque;
@@ -56,6 +53,10 @@ use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 
 use otap_df_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
+
+mod metrics;
+
+use metrics::{OtlpGrpcExporterErrorType, OtlpGrpcExporterMetrics};
 
 /// The URN for the OTLP gRPC exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
@@ -102,7 +103,7 @@ pub(crate) const fn default_num_connections() -> usize {
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
+    metrics: OtlpGrpcExporterMetrics,
     /// Optional bearer token provider resolved from the
     /// `bearer_token_provider` capability. When bound, a fresh
     /// `authorization: Bearer <token>` is injected on every outgoing request;
@@ -166,7 +167,7 @@ impl OTLPExporter {
         config: &serde_json::Value,
         token_provider: Option<Box<dyn BearerTokenProvider>>,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
+        let metrics = OtlpGrpcExporterMetrics::register(&pipeline_ctx);
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -176,7 +177,7 @@ impl OTLPExporter {
 
         Ok(Self {
             config,
-            pdata_metrics,
+            metrics,
             token_provider,
         })
     }
@@ -285,12 +286,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // Backpressure guard: when full and a message is parked, only drain completions.
             if inflight_exports.len() >= max_in_flight && pending_msg.is_some() {
                 if let Some(completed) = inflight_exports.next_completion().await {
-                    let (client, rejected_generation) = finalize_completed_export(
-                        completed,
-                        &effect_handler,
-                        &mut self.pdata_metrics,
-                    )
-                    .await;
+                    let (client, rejected_generation) =
+                        finalize_completed_export(completed, &effect_handler, &mut self.metrics)
+                            .await;
                     apply_auth_rejection(&mut auth, rejected_generation);
                     grpc_clients.release(client);
                 }
@@ -301,8 +299,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
             while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten()
             {
                 let (client, rejected_generation) =
-                    finalize_completed_export(completed, &effect_handler, &mut self.pdata_metrics)
-                        .await;
+                    finalize_completed_export(completed, &effect_handler, &mut self.metrics).await;
                 apply_auth_rejection(&mut auth, rejected_generation);
                 grpc_clients.release(client);
             }
@@ -385,7 +382,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             let (client, rejected_generation) = finalize_completed_export(
                                 completed,
                                 &effect_handler,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                             )
                             .await;
                             // Server rejected the token this request used
@@ -435,7 +432,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             reason,
                             export_started_at,
                             &effect_handler,
-                            &mut self.pdata_metrics,
+                            &mut self.metrics,
                         )
                         .await;
                     }
@@ -444,7 +441,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             let (client, rejected_generation) = finalize_completed_export(
                                 completed,
                                 &effect_handler,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                             )
                             .await;
                             // Honor a rejection even while draining, so a later
@@ -455,13 +452,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     }
                     return Ok(TerminalState::new(
                         deadline,
-                        self.pdata_metrics.terminal_snapshots(),
+                        self.metrics.terminal_snapshots(),
                     ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
+                    _ = self.metrics.report(&mut metrics_reporter);
                 }
                 Message::PData(pdata) => {
                     let export_started_at = parked_export_started_at.unwrap_or_else(Instant::now);
@@ -491,7 +488,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 reason,
                                 export_started_at,
                                 &effect_handler,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                             )
                             .await;
                             continue;
@@ -543,7 +540,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                                 &effect_handler,
                             )
                             .await;
@@ -563,7 +560,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                                 &effect_handler,
                             )
                             .await;
@@ -583,7 +580,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics,
+                                &mut self.metrics,
                                 &effect_handler,
                             )
                             .await;
@@ -903,7 +900,7 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     encoder: &mut Enc,
     make_future: MakeFuture,
     inflight: &mut InFlightExports<Fut, CompletedExport>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterExportMetrics>,
+    metrics: &mut OtlpGrpcExporterMetrics,
     effect_handler: &EffectHandler<OtapPdata>,
 ) where
     Enc: ProtoBytesEncoder,
@@ -924,12 +921,11 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
             inflight.push(make_future(encoded));
         }
         Err(error) => {
-            pdata_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: signal_type,
-                    outcome: Outcome::Failure,
-                })
-                .record(export_started_at.elapsed());
+            metrics.record_failure(
+                signal_type,
+                OtlpGrpcExporterErrorType::Encoding,
+                export_started_at.elapsed(),
+            );
             _ = notify_prepare_error(error, effect_handler).await;
         }
     }
@@ -973,13 +969,12 @@ fn is_auth_failure(result: &Result<(), tonic::Status>, auth_bound: bool) -> bool
     auth_bound && matches!(result, Err(status) if status.code() == Code::Unauthenticated)
 }
 
-/// Maps the backend RPC result to the shared terminal export outcome.
-fn export_outcome(result: &Result<(), tonic::Status>) -> Outcome {
-    if result.is_ok() {
-        Outcome::Success
-    } else {
-        Outcome::Failure
-    }
+/// Returns the bounded diagnostic category for a failed backend RPC.
+fn export_error_type(result: &Result<(), tonic::Status>) -> Option<OtlpGrpcExporterErrorType> {
+    result
+        .as_ref()
+        .err()
+        .map(OtlpGrpcExporterErrorType::from_status)
 }
 
 /// NACKs `pdata` because no usable bearer token is available, and records the
@@ -996,19 +991,18 @@ async fn nack_without_usable_token(
     reason: &'static str,
     export_started_at: Instant,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterExportMetrics>,
+    metrics: &mut OtlpGrpcExporterMetrics,
 ) {
     let signal_type = pdata.signal_type();
     let export_duration = export_started_at.elapsed();
     _ = effect_handler
         .notify_nack(NackMsg::new(reason, pdata))
         .await;
-    pdata_metrics
-        .with(SignalOutcomeAttributes {
-            signal: signal_type,
-            outcome: Outcome::Failure,
-        })
-        .record(export_duration);
+    metrics.record_failure(
+        signal_type,
+        OtlpGrpcExporterErrorType::Authentication,
+        export_duration,
+    );
 }
 
 /// Applies the Ack/Nack side effects for a completed gRPC export and returns the
@@ -1016,7 +1010,7 @@ async fn nack_without_usable_token(
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterExportMetrics>,
+    metrics: &mut OtlpGrpcExporterMetrics,
 ) -> (SignalClient, Option<u64>) {
     let CompletedExport {
         result,
@@ -1039,13 +1033,11 @@ async fn finalize_completed_export(
 
     // The shared outcome describes the backend RPC, independently of whether
     // its Ack/Nack notification can be delivered to the upstream subscriber.
-    let outcome = export_outcome(&result);
-    pdata_metrics
-        .with(SignalOutcomeAttributes {
-            signal: signal_type,
-            outcome,
-        })
-        .record(export_duration);
+    if let Some(error_type) = export_error_type(&result) {
+        metrics.record_failure(signal_type, error_type, export_duration);
+    } else {
+        metrics.record_success(signal_type, export_duration);
+    }
 
     if let Err(e) =
         route_export_result(result, context, saved_payload, effect_handler, auth_failure).await
@@ -1665,7 +1657,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider: None,
             },
             test_node(test_runtime.config().name.clone()),
@@ -1790,7 +1782,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider: None,
             },
             test_node(test_runtime.config().name.clone()),
@@ -1919,7 +1911,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider: Some(Box::new(provider)),
             },
             test_node(test_runtime.config().name.clone()),
@@ -2069,7 +2061,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider: Some(Box::new(MockTokenProvider::never_publishes())),
             },
             test_node(test_runtime.config().name.clone()),
@@ -2187,7 +2179,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider: None,
             },
             node_id.clone(),
@@ -2479,13 +2471,13 @@ mod tests {
     }
 
     /// Scenario: A dispatched OTLP gRPC request returns either success or a backend status error.
-    /// Guarantees: The shared outcome follows the RPC result rather than Ack/Nack delivery.
+    /// Guarantees: Only the RPC error produces a diagnostic type, independently of notification delivery.
     #[test]
-    fn export_outcome_is_derived_from_the_rpc_result() {
-        assert_eq!(export_outcome(&Ok(())), Outcome::Success);
+    fn export_error_type_is_derived_from_the_rpc_result() {
+        assert_eq!(export_error_type(&Ok(())), None);
         assert_eq!(
-            export_outcome(&Err(status_with_code(Code::Unavailable))),
-            Outcome::Failure
+            export_error_type(&Err(status_with_code(Code::Unavailable))),
+            Some(OtlpGrpcExporterErrorType::Unavailable)
         );
     }
 
@@ -2772,7 +2764,7 @@ mod tests {
                     max_in_flight: 1,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: ExporterExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
                 token_provider,
             },
             node_id.clone(),

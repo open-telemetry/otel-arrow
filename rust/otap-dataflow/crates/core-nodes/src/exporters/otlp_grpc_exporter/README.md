@@ -174,6 +174,17 @@ channel and is not duplicated by the exporter.
 | `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
 | `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal gRPC export result, including encoding and in-flight queueing but excluding Ack/Nack notification. |
 
+#### `exporter.otlp_grpc.failures`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otlp_grpc.failures.messages` | `{message}` | `signal`, `error.type` | Failed OTLP gRPC exports classified by actionable error type. |
+
+`error.type` is one of `encoding`, `authentication`, `authorization`,
+`timeout`, `throttled`, `unavailable`, `rejected`, `server_error`, `transport`,
+or `other`. Successful exports and Ack/Nack notification failures do not emit
+this metric.
+
 ### Events
 
 | Event | Severity | Description |
