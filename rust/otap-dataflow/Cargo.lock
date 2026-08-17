@@ -1113,7 +1113,7 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1145,7 +1145,7 @@ dependencies = [
 [[package]]
 name = "azure_core_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -7161,7 +7161,7 @@ dependencies = [
 [[package]]
 name = "opentelemetry-resource-detectors"
 version = "0.11.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=24d1f73fe8d44aa8820471b1ddd3d57c20e4a8bd#24d1f73fe8d44aa8820471b1ddd3d57c20e4a8bd"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=7819998d4bd015b7ae7576b1e26aaa56314f03e6#7819998d4bd015b7ae7576b1e26aaa56314f03e6"
 dependencies = [
  "opentelemetry",
  "opentelemetry-semantic-conventions",
@@ -7238,6 +7238,7 @@ dependencies = [
  "otap-df-core-nodes",
  "otap-df-engine",
  "otap-df-otap",
+ "otap-df-wasm-host",
  "tikv-jemallocator",
 ]
 
@@ -7399,7 +7400,7 @@ dependencies = [
  "aws-config",
  "aws-msk-iam-sasl-signer",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "clap",
@@ -7519,7 +7520,7 @@ dependencies = [
  "arrow-schema",
  "async-stream",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "byte-unit",
  "bytes",
@@ -7678,7 +7679,7 @@ dependencies = [
  "async-trait",
  "azure_core 1.2.0-beta.1",
  "azure_identity 1.1.0-beta.1",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "cfg-if",
  "flate2",
@@ -7748,7 +7749,7 @@ dependencies = [
  "arrow",
  "arrow-ipc",
  "arrow-schema",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "ciborium",
  "criterion",
@@ -7851,7 +7852,7 @@ version = "0.51.0"
 dependencies = [
  "arrow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "data_engine_parser_abstractions",
  "otap-df-pdata",
  "otap-df-query-engine",
@@ -11334,7 +11335,7 @@ dependencies = [
 [[package]]
 name = "typespec"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -11372,7 +11373,7 @@ dependencies = [
 [[package]]
 name = "typespec_client_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -11407,7 +11408,7 @@ dependencies = [
 [[package]]
 name = "typespec_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=d780f3222f13237f7b8241dfc1688053c7ffd65e#d780f3222f13237f7b8241dfc1688053c7ffd65e"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -12011,7 +12012,7 @@ dependencies = [
 [[package]]
 name = "weaver_common"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "dirs",
  "flate2",
@@ -12036,7 +12037,7 @@ dependencies = [
 [[package]]
 name = "weaver_diff"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "serde_json",
  "similar",
@@ -12046,7 +12047,7 @@ dependencies = [
 [[package]]
 name = "weaver_forge"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "convert_case 0.11.0",
  "dirs",
@@ -12081,7 +12082,7 @@ dependencies = [
 [[package]]
 name = "weaver_resolved_schema"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "log",
  "schemars 1.2.2",
@@ -12095,7 +12096,7 @@ dependencies = [
 [[package]]
 name = "weaver_resolver"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "globset",
  "itertools 0.15.0",
@@ -12119,7 +12120,7 @@ dependencies = [
 [[package]]
 name = "weaver_semconv"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "glob",
  "globset",
@@ -12143,7 +12144,7 @@ dependencies = [
 [[package]]
 name = "weaver_version"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213#f0b3b363ca3f344cfb2efcebcba7fc7e49fd3213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
 dependencies = [
  "schemars 1.2.2",
  "semver",
