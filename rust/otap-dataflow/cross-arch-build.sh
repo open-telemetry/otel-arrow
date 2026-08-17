@@ -23,5 +23,5 @@ if echo "${FEATURES:-}" | grep -q 'kafka'; then
   apt-get update && apt-get install -y libclang-dev
 fi
 
-cargo build --release --features "$FEATURES" --target="${RUST_TARGET}"
+cargo build --locked --release --features "$FEATURES" --target="${RUST_TARGET}"
 cp "target/${RUST_TARGET}/release/df_engine" .
