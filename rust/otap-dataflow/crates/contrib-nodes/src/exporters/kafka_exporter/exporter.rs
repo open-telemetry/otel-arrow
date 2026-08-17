@@ -13,9 +13,7 @@
 //! in-flight memory stays bounded and backpressure propagates upstream.
 //!
 //! With the default `max_in_flight = 10` the exporter pipelines up to ten
-//! deliveries for throughput; per-partition ordering is still guaranteed by
-//! librdkafka for records sharing a partition key, but the relative completion
-//! order across different partitions is no longer serialized.
+//! deliveries for throughput.
 
 use super::producer::{ExporterDeliveryFuture, ExporterFutureProducer, ExporterFutureRecord};
 
@@ -4456,6 +4454,13 @@ pub mod test_support {
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
                         .with_partitioning_strategy(PartitionerStrategy::Random)
+                        // Serialize deliveries (max_in_flight = 1) so each record
+                        // is flushed as its own Produce request. Pipelining +
+                        // linger would coalesce records into fewer per-partition
+                        // batches, collapsing the number of independent random
+                        // partition draws and making the near-even distribution
+                        // check flaky over this small sample.
+                        .with_max_in_flight(1)
                         .try_into()
                         .expect("config should be valid");
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
@@ -5778,9 +5783,24 @@ pub mod test_support {
                     cluster.faults().fail_produce(
                         &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION; OUTAGE_SENDS],
                     );
+                    // Pin a strict 1-send-to-1-produce-request mapping so the
+                    // injected error sequence lines up with the sends:
+                    // - max_in_flight = 1 serializes deliveries so no two sends
+                    //   share a Produce request.
+                    // - message.send.max.retries = 0 stops librdkafka from
+                    //   re-issuing a rejected produce, so one send consumes exactly
+                    //   one injected error (otherwise a single send retries within
+                    //   its message.timeout.ms window and drains several errors).
+                    // Together the first OUTAGE_SENDS sends fail once each and the
+                    // post-recovery send finds the injected errors exhausted.
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
                         .with_timeout_ms(1500)
+                        .with_max_in_flight(1)
+                        .with_producer_config(std::collections::HashMap::from([(
+                            "message.send.max.retries".to_string(),
+                            "0".to_string(),
+                        )]))
                         .try_into()
                         .expect("config should be valid");
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);

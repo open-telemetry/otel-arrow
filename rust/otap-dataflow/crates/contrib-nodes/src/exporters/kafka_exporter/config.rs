@@ -306,9 +306,6 @@ pub struct KafkaExporterConfigBuilder {
     /// in-flight memory and propagates backpressure upstream.
     ///
     /// The default of `10` pipelines deliveries for higher throughput.
-    /// Per-partition ordering is still preserved by librdkafka for records that
-    /// share a partition key, but the relative completion order of records
-    /// targeting different partitions is no longer serialized.
     ///
     /// Must be in the range `1` to `100000`. A value of `0` is rejected because
     /// it would stall the exporter; values above `100000` are rejected because
