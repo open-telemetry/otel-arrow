@@ -1,4 +1,4 @@
-# Summary
+# Change summary
 
 > Chore PR? Open **Preview**, then [use the chore template](?template=chore.md).
 
