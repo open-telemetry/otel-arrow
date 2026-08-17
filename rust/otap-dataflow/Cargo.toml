@@ -254,8 +254,8 @@ cpu-time = "1.0.0"
 one_collect = "0.1.35021"
 
 # TODO: un-pin these dependencies as soon as Arc support is available in a released version: https://github.com/open-telemetry/otel-arrow/issues/3551
-azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "d780f3222f13237f7b8241dfc1688053c7ffd65e", default-features = false }
-azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "d780f3222f13237f7b8241dfc1688053c7ffd65e", default-features = false }
+azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "16e18e91a4480e93aa0e155bfdeb38902b04dd06", default-features = false }
+azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "16e18e91a4480e93aa0e155bfdeb38902b04dd06", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
