@@ -82,42 +82,84 @@ mod otlp_slots {
     pub const OTLP_METRICS: u16 = 62;
 }
 
-/// Convert an Arrow payload type to its stable internal WAL slot.
-///
-/// The exhaustive match intentionally has no wildcard so a new protocol payload
-/// cannot silently acquire a storage layout.
-const fn to_slot_id(_signal_type: SignalType, payload_type: ArrowPayloadType) -> SlotId {
-    let raw = match payload_type {
-        ArrowPayloadType::Unknown => 0,
-        ArrowPayloadType::ResourceAttrs => 1,
-        ArrowPayloadType::ScopeAttrs => 2,
-        ArrowPayloadType::UnivariateMetrics => 10,
-        ArrowPayloadType::NumberDataPoints => 11,
-        ArrowPayloadType::SummaryDataPoints => 12,
-        ArrowPayloadType::HistogramDataPoints => 13,
-        ArrowPayloadType::ExpHistogramDataPoints => 14,
-        ArrowPayloadType::NumberDpAttrs => 15,
-        ArrowPayloadType::SummaryDpAttrs => 16,
-        ArrowPayloadType::HistogramDpAttrs => 17,
-        ArrowPayloadType::ExpHistogramDpAttrs => 18,
-        ArrowPayloadType::NumberDpExemplars => 19,
-        ArrowPayloadType::HistogramDpExemplars => 20,
-        ArrowPayloadType::ExpHistogramDpExemplars => 21,
-        ArrowPayloadType::NumberDpExemplarAttrs => 22,
-        ArrowPayloadType::HistogramDpExemplarAttrs => 23,
-        ArrowPayloadType::ExpHistogramDpExemplarAttrs => 24,
-        ArrowPayloadType::MultivariateMetrics => 25,
-        ArrowPayloadType::MetricAttrs => 26,
-        ArrowPayloadType::Logs => 30,
-        ArrowPayloadType::LogAttrs => 31,
-        ArrowPayloadType::Spans => 40,
-        ArrowPayloadType::SpanAttrs => 41,
-        ArrowPayloadType::SpanEvents => 42,
-        ArrowPayloadType::SpanLinks => 43,
-        ArrowPayloadType::SpanEventAttrs => 44,
-        ArrowPayloadType::SpanLinkAttrs => 45,
+#[derive(Clone, Copy)]
+enum PayloadSignal {
+    Shared,
+    Signal(SignalType),
+}
+
+macro_rules! payload_signal {
+    (Shared) => {
+        PayloadSignal::Shared
     };
-    wal_slot(raw)
+    ($signal:ident) => {
+        PayloadSignal::Signal(SignalType::$signal)
+    };
+}
+
+/// Define the stable Arrow payload mapping in both WAL directions.
+///
+/// The generated forward match is exhaustive, so adding a protocol payload
+/// requires adding its slot and signal classification to this table.
+macro_rules! define_arrow_wal_slots {
+    ($( $payload:ident => ($slot:literal, $signal:ident) ),+ $(,)?) => {
+        const fn to_slot_id(
+            _signal_type: SignalType,
+            payload_type: ArrowPayloadType,
+        ) -> SlotId {
+            let raw = match payload_type {
+                ArrowPayloadType::Unknown => {
+                    panic!("ArrowPayloadType::Unknown must not be persisted to WAL")
+                }
+                $(ArrowPayloadType::$payload => $slot,)+
+            };
+            wal_slot(raw)
+        }
+
+        const fn slot_to_payload_type(slot: SlotId) -> Option<ArrowPayloadType> {
+            match slot.raw() {
+                $($slot => Some(ArrowPayloadType::$payload),)+
+                _ => None,
+            }
+        }
+
+        const fn payload_signal_type(payload_type: ArrowPayloadType) -> Option<PayloadSignal> {
+            match payload_type {
+                ArrowPayloadType::Unknown => None,
+                $(ArrowPayloadType::$payload => Some(payload_signal!($signal)),)+
+            }
+        }
+    };
+}
+
+define_arrow_wal_slots! {
+    ResourceAttrs => (1, Shared),
+    ScopeAttrs => (2, Shared),
+    UnivariateMetrics => (10, Metrics),
+    NumberDataPoints => (11, Metrics),
+    SummaryDataPoints => (12, Metrics),
+    HistogramDataPoints => (13, Metrics),
+    ExpHistogramDataPoints => (14, Metrics),
+    NumberDpAttrs => (15, Metrics),
+    SummaryDpAttrs => (16, Metrics),
+    HistogramDpAttrs => (17, Metrics),
+    ExpHistogramDpAttrs => (18, Metrics),
+    NumberDpExemplars => (19, Metrics),
+    HistogramDpExemplars => (20, Metrics),
+    ExpHistogramDpExemplars => (21, Metrics),
+    NumberDpExemplarAttrs => (22, Metrics),
+    HistogramDpExemplarAttrs => (23, Metrics),
+    ExpHistogramDpExemplarAttrs => (24, Metrics),
+    MultivariateMetrics => (25, Metrics),
+    MetricAttrs => (26, Metrics),
+    Logs => (30, Logs),
+    LogAttrs => (31, Logs),
+    Spans => (40, Traces),
+    SpanAttrs => (41, Traces),
+    SpanEvents => (42, Traces),
+    SpanLinks => (43, Traces),
+    SpanEventAttrs => (44, Traces),
+    SpanLinkAttrs => (45, Traces),
 }
 
 /// Convert signal type to OTLP slot ID (for opaque binary storage)
@@ -152,48 +194,18 @@ pub(crate) fn signal_type_from_slot_id(slot: SlotId) -> Option<SignalType> {
     from_slot_id(slot).map(|(st, _)| st)
 }
 
-/// Convert a slot ID back to payload type only (Arrow format only).
-///
-/// Returns `None` for gaps, `UNKNOWN`, and opaque OTLP slots.
-const fn slot_to_payload_type(slot: SlotId) -> Option<ArrowPayloadType> {
-    match slot.raw() {
-        1 => Some(ArrowPayloadType::ResourceAttrs),
-        2 => Some(ArrowPayloadType::ScopeAttrs),
-        10 => Some(ArrowPayloadType::UnivariateMetrics),
-        11 => Some(ArrowPayloadType::NumberDataPoints),
-        12 => Some(ArrowPayloadType::SummaryDataPoints),
-        13 => Some(ArrowPayloadType::HistogramDataPoints),
-        14 => Some(ArrowPayloadType::ExpHistogramDataPoints),
-        15 => Some(ArrowPayloadType::NumberDpAttrs),
-        16 => Some(ArrowPayloadType::SummaryDpAttrs),
-        17 => Some(ArrowPayloadType::HistogramDpAttrs),
-        18 => Some(ArrowPayloadType::ExpHistogramDpAttrs),
-        19 => Some(ArrowPayloadType::NumberDpExemplars),
-        20 => Some(ArrowPayloadType::HistogramDpExemplars),
-        21 => Some(ArrowPayloadType::ExpHistogramDpExemplars),
-        22 => Some(ArrowPayloadType::NumberDpExemplarAttrs),
-        23 => Some(ArrowPayloadType::HistogramDpExemplarAttrs),
-        24 => Some(ArrowPayloadType::ExpHistogramDpExemplarAttrs),
-        25 => Some(ArrowPayloadType::MultivariateMetrics),
-        26 => Some(ArrowPayloadType::MetricAttrs),
-        30 => Some(ArrowPayloadType::Logs),
-        31 => Some(ArrowPayloadType::LogAttrs),
-        40 => Some(ArrowPayloadType::Spans),
-        41 => Some(ArrowPayloadType::SpanAttrs),
-        42 => Some(ArrowPayloadType::SpanEvents),
-        43 => Some(ArrowPayloadType::SpanLinks),
-        44 => Some(ArrowPayloadType::SpanEventAttrs),
-        45 => Some(ArrowPayloadType::SpanLinkAttrs),
-        _ => None,
-    }
-}
-
 /// Check if a slot ID represents a shared payload type (RESOURCE_ATTRS, SCOPE_ATTRS).
 ///
 /// These slots are used by ALL signal types, so their presence alone cannot
 /// determine the signal type of a bundle.
 const fn is_shared_slot(slot: SlotId) -> bool {
-    matches!(slot.raw(), 1 | 2) // RESOURCE_ATTRS (1), SCOPE_ATTRS (2)
+    match slot_to_payload_type(slot) {
+        Some(payload_type) => matches!(
+            payload_signal_type(payload_type),
+            Some(PayloadSignal::Shared)
+        ),
+        None => false,
+    }
 }
 
 /// Convert a slot ID back to signal type and payload type (Arrow format only).
@@ -207,34 +219,9 @@ const fn is_shared_slot(slot: SlotId) -> bool {
 /// - `None` for OTLP opaque slots (60-62) or invalid slot IDs
 fn from_slot_id(slot: SlotId) -> Option<(SignalType, ArrowPayloadType)> {
     let payload_type = slot_to_payload_type(slot)?;
-    let signal_type = match payload_type {
-        ArrowPayloadType::UnivariateMetrics
-        | ArrowPayloadType::NumberDataPoints
-        | ArrowPayloadType::SummaryDataPoints
-        | ArrowPayloadType::HistogramDataPoints
-        | ArrowPayloadType::ExpHistogramDataPoints
-        | ArrowPayloadType::NumberDpAttrs
-        | ArrowPayloadType::SummaryDpAttrs
-        | ArrowPayloadType::HistogramDpAttrs
-        | ArrowPayloadType::ExpHistogramDpAttrs
-        | ArrowPayloadType::NumberDpExemplars
-        | ArrowPayloadType::HistogramDpExemplars
-        | ArrowPayloadType::ExpHistogramDpExemplars
-        | ArrowPayloadType::NumberDpExemplarAttrs
-        | ArrowPayloadType::HistogramDpExemplarAttrs
-        | ArrowPayloadType::ExpHistogramDpExemplarAttrs
-        | ArrowPayloadType::MultivariateMetrics
-        | ArrowPayloadType::MetricAttrs => SignalType::Metrics,
-        ArrowPayloadType::Logs | ArrowPayloadType::LogAttrs => SignalType::Logs,
-        ArrowPayloadType::Spans
-        | ArrowPayloadType::SpanAttrs
-        | ArrowPayloadType::SpanEvents
-        | ArrowPayloadType::SpanLinks
-        | ArrowPayloadType::SpanEventAttrs
-        | ArrowPayloadType::SpanLinkAttrs => SignalType::Traces,
-        ArrowPayloadType::Unknown
-        | ArrowPayloadType::ResourceAttrs
-        | ArrowPayloadType::ScopeAttrs => return None,
+    let signal_type = match payload_signal_type(payload_type)? {
+        PayloadSignal::Shared => return None,
+        PayloadSignal::Signal(signal_type) => signal_type,
     };
 
     Some((signal_type, payload_type))
@@ -672,7 +659,7 @@ mod tests {
     fn test_arrow_slot_mapping_is_bijective() {
         let mut mapped_count = 0;
 
-        for raw in 0..64 {
+        for raw in 0..WAL_SLOT_COUNT {
             let slot = SlotId::new(raw);
             if let Some(payload_type) = slot_to_payload_type(slot) {
                 mapped_count += 1;
@@ -685,6 +672,14 @@ mod tests {
         }
 
         assert_eq!(mapped_count, 27);
+    }
+
+    /// Scenario: An unknown Arrow payload type is presented for WAL persistence.
+    /// Guarantees: The payload is rejected before an unrecoverable slot can be written.
+    #[test]
+    #[should_panic(expected = "ArrowPayloadType::Unknown must not be persisted to WAL")]
+    fn test_unknown_arrow_payload_is_rejected() {
+        let _ = to_slot_id(SignalType::Logs, ArrowPayloadType::Unknown);
     }
 
     /// Scenario: Existing Arrow payloads are mapped after storage decoupling.
