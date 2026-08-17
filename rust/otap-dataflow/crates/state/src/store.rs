@@ -403,31 +403,58 @@ impl ObservedStateStore {
                 if let Some(summary) = err.summary() {
                     let error_kind = summary.error_kind();
                     let error = summary.message();
-                    let source = summary.source().unwrap_or("");
-                    if let Some((node, node_kind)) = summary.node() {
-                        otel_error!("state.observed_error",
-                            pipeline_group_id = %observed_event.key.pipeline_group_id,
-                            pipeline_id = %observed_event.key.pipeline_id,
-                            core_id = observed_event.key.core_id,
-                            node = node,
-                            node_kind = ?node_kind,
-                            event_type = event_type,
-                            error_kind = error_kind,
-                            error = error,
-                            source = source,
-                            message = observed_event.message.as_deref().unwrap_or(""),
-                        );
-                    } else {
-                        otel_error!("state.observed_error",
-                            pipeline_group_id = %observed_event.key.pipeline_group_id,
-                            pipeline_id = %observed_event.key.pipeline_id,
-                            core_id = observed_event.key.core_id,
-                            event_type = event_type,
-                            error_kind = error_kind,
-                            error = error,
-                            source = source,
-                            message = observed_event.message.as_deref().unwrap_or(""),
-                        );
+
+                    match (summary.node(), summary.source()) {
+                        (Some((node, node_kind)), Some(source)) => {
+                            otel_error!("state.observed_error",
+                                pipeline_group_id = %observed_event.key.pipeline_group_id,
+                                pipeline_id = %observed_event.key.pipeline_id,
+                                core_id = observed_event.key.core_id,
+                                node = node,
+                                node_kind = ?node_kind,
+                                event_type = event_type,
+                                error_kind = error_kind,
+                                error = error,
+                                source = source,
+                                message = observed_event.message.as_deref().unwrap_or(""),
+                            );
+                        }
+                        (Some((node, node_kind)), None) => {
+                            otel_error!("state.observed_error",
+                                pipeline_group_id = %observed_event.key.pipeline_group_id,
+                                pipeline_id = %observed_event.key.pipeline_id,
+                                core_id = observed_event.key.core_id,
+                                node = node,
+                                node_kind = ?node_kind,
+                                event_type = event_type,
+                                error_kind = error_kind,
+                                error = error,
+                                message = observed_event.message.as_deref().unwrap_or(""),
+                            );
+                        }
+                        (None, Some(source)) => {
+                            otel_error!("state.observed_error",
+                                pipeline_group_id = %observed_event.key.pipeline_group_id,
+                                pipeline_id = %observed_event.key.pipeline_id,
+                                core_id = observed_event.key.core_id,
+                                event_type = event_type,
+                                error_kind = error_kind,
+                                error = error,
+                                source = source,
+                                message = observed_event.message.as_deref().unwrap_or(""),
+                            );
+                        }
+                        (None, None) => {
+                            otel_error!("state.observed_error",
+                                pipeline_group_id = %observed_event.key.pipeline_group_id,
+                                pipeline_id = %observed_event.key.pipeline_id,
+                                core_id = observed_event.key.core_id,
+                                event_type = event_type,
+                                error_kind = error_kind,
+                                error = error,
+                                message = observed_event.message.as_deref().unwrap_or(""),
+                            );
+                        }
                     }
                 } else {
                     otel_error!("state.observed_error",
@@ -705,7 +732,7 @@ mod tests {
                     otap_df_telemetry::event::ErrorSummary::Pipeline {
                         error_kind: "runtime".into(),
                         message: error.into(),
-                        source: Some("processor debug -> std::io::ErrorKind::StorageFull".into()),
+                        source: None,
                     },
                 ))
                 .expect_err("runtime error from Pending should be rejected after logging");
@@ -742,7 +769,7 @@ mod tests {
             "rendered log: {rendered_pipeline}"
         );
         assert!(
-            rendered_pipeline.contains("source=processor debug"),
+            !rendered_pipeline.contains("source="),
             "rendered log: {rendered_pipeline}"
         );
         assert!(
