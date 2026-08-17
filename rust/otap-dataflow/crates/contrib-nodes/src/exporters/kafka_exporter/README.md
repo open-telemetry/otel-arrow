@@ -49,6 +49,7 @@ config:
 | `auth` | object | *none* | Authentication configuration (see [Authentication](#authentication)). |
 | `tls` | object | *none* | TLS configuration (see [TLS Configuration](#tls-configuration)). |
 | `partitioning_strategy` | string | `"consistent_random"` | Librdkafka partitioner algorithm. See [Partitioning](#partitioning). |
+| `allow_auto_create_topics` | bool | `true` | Whether the broker may auto-create topics this exporter produces to (`allow.auto.create.topics`). Defaults to `true`. Set to `false` for default-deny (recommended when routing by a client-controlled header). See [Security](#security). |
 | `producer_config` | map | `{}` | Additional librdkafka producer settings as key-value string pairs. |
 | `message_format_header` | string | `"MessageFormat"` | Kafka header key for the message format indicator. Each outgoing message includes a header with this key and value `otlp` or `otap`, allowing consumers to detect the encoding. |
 | `debug` | list | *none* | List of librdkafka debug contexts: `generic`, `broker`, `topic`, `metadata`, `feature`, `queue`, `msg`, `protocol`, `cgrp`, `security`, `fetch`, `interceptor`, `plugin`, `consumer`, `admin`, `eos`, `mock`, `assignor`, `conf`, `telemetry`, `all`. |
@@ -67,6 +68,8 @@ permanently nack it (non-retryable).
 | `encoding` | string | `"otlp_proto"` | Encoding format: `otlp_proto` or `otap_proto`. |
 | `topic_from_transport_header` | string | *none* | Transport header name for dynamic topic routing. When set and the header is present with a valid topic, its value overrides `topic`; if the header is absent the static `topic` is used, and if present but invalid the batch is permanently nacked. See [Dynamic Topic Routing](#dynamic-topic-routing). |
 | `partition_by_transport_headers` | bool | `false` | Serialize all transport headers into a Kafka record key. See [Partitioning](#partitioning). |
+| `allowed_topics` | list of strings | *empty* | Operator allowlist of exact topic names permitted for header-supplied (dynamic) routing. Empty means no exact-match constraint. See [Security](#security). |
+| `allowed_topics_regex` | list of strings | *empty* | Operator allowlist of regex patterns permitted for header-supplied (dynamic) routing. Each pattern must match the whole topic (anchored, not a substring); entries must be valid standalone regular expressions (validated at config time). Empty means no regex constraint. See [Security](#security). |
 
 ### Dynamic Topic Routing
 
@@ -96,6 +99,63 @@ If a transport header *is* present but supplies an invalid Kafka topic name,
 the batch is **permanently nacked** rather than silently routed to the static
 `topic`. This avoids misdelivering data that explicitly requested a different
 (but unusable) destination.
+
+### Security
+
+Because a client-controlled transport header can influence routing and
+partitioning, the exporter provides operator controls for the trust boundary.
+
+#### Constraining dynamic topic routing
+
+A header-supplied topic (`topic_from_transport_header`) is always validated for
+Kafka topic-name syntax. In addition, each signal may declare an operator
+allowlist so a client cannot direct data to an arbitrary topic:
+
+- `allowed_topics`: exact topic names permitted for header routing.
+- `allowed_topics_regex`: regex patterns permitted for header routing. Each
+  pattern must match the **whole** topic (it is anchored as `\A(?:<pattern>)\z`),
+  so a prefix/suffix pattern cannot be satisfied by a substring of a
+  client-supplied topic. Because this is an authorization boundary, each entry
+  must be a valid **standalone** regular expression: a pattern is compiled on its
+  own before being anchored, which rejects a pattern crafted to balance its
+  parentheses against the anchoring wrapper (and thereby drop the whole-topic
+  anchors). Patterns are validated at config time and compiled once at exporter
+  construction (and on reconfigure); an invalid pattern is a configuration error
+  caught at startup.
+
+When either list is non-empty, a header-supplied topic must exactly match the
+`allowed_topics` list or fully match an `allowed_topics_regex` pattern; otherwise
+the batch is **permanently nacked** (non-retryable) and is not routed to the
+static `topic`. When both lists are empty (the default), dynamic routing is
+unrestricted (backwards compatible). The allowlist constrains only the
+header-supplied path -- the static per-signal `topic` is operator-controlled and
+is never subject to it.
+
+#### Topic auto-creation
+
+`allow_auto_create_topics` defaults to `true` (matching the Go Collector Kafka
+exporter's `allow_auto_topic_creation`) and is always written to the librdkafka
+client config (`allow.auto.create.topics`). The key is managed: setting it
+through the `producer_config` escape hatch is overridden by the first-class
+field and reported via the `kafka.exporter.producer_config.overridden_key`
+warning.
+
+Security: combined with header-driven routing
+(`topic_from_transport_header`), leaving auto-creation enabled lets a
+client-controlled routing header cause the broker to spawn arbitrary topics.
+Operators who route by header (or otherwise want default-deny) should set
+`allow_auto_create_topics: false`.
+
+#### Partition-key fingerprinting
+
+When `partition_by_transport_headers` is enabled, the record key is a
+deterministic 16-character hash of the transport header names and values -- never
+the plaintext value -- so tenant IDs / auth tokens are not exposed in the record
+key. The accepted tradeoff is that a given tenant/token produces a *stable* key,
+which makes its traffic fingerprintable via partition-assignment analysis; this
+is intentional (co-locating a tenant's data is the feature). Leave
+`partition_by_transport_headers` disabled (the default) for null-key
+round-robin partitioning.
 
 ### Authentication
 
@@ -244,6 +304,39 @@ producer_config:
   "batch.num.messages": "10000"
 ```
 
+### Live Reconfiguration
+
+The exporter accepts live configuration changes at runtime (via a `Config`
+control message). Reconfiguration builds a new librdkafka producer from the
+incoming config, performs a bounded drain (flush, then purge) of the old
+producer, and then swaps in the new producer, config, and compiled
+dynamic-routing allowlists. If the new config fails to deserialize/validate or
+the new producer fails to build, the change is logged and ignored and the
+current producer keeps running.
+
+Live reconfiguration is currently **experimental** and does not yet provide two
+guarantees. Both are tracked in the live-reconfiguration issue
+([#ISSUE](https://github.com/open-telemetry/otel-arrow/issues/3768)):
+
+- **In-flight data can cross configurations.** Control messages (including the
+  reconfiguration message) and telemetry data travel on separate channels, and
+  control messages are processed with priority. Telemetry the exporter already
+  accepted *before* the config change can therefore still be waiting in its
+  inbox and be processed *after* the producer and config are swapped. Those
+  records are then sent using the **new** topic, credentials, or tenant rather
+  than the configuration that was in effect when they were accepted. There is no
+  ordered cutover barrier that applies the new config only after all preceding
+  data has been sent.
+- **The swap can briefly block the pipeline.** The old producer is flushed and
+  retired synchronously, so a slow or unavailable broker can stall normal
+  processing and backpressure for up to the configured flush timeout
+  (`timeout_ms`) instead of letting the pipeline keep making progress.
+
+Until these are addressed, avoid live reconfiguration changes that alter the
+destination topic, credentials, or tenant while data is in flight if
+cross-configuration delivery would be unsafe for your deployment. Prefer draining
+the exporter (or restarting the node) for such changes.
+
 ### Comparison with the Go Kafka exporter
 
 The OpenTelemetry Collector's Go Kafka exporter bundles a synchronous producer
@@ -329,16 +422,16 @@ Where librdkafka exposes an equivalent setting, it can still be set through the
 | `compression_params.level` | `producer_config` (`compression.level`) |
 | `max_broker_write_bytes` | `producer_config` |
 | `flush_max_messages` | `producer_config` (`batch.num.messages`, `queue.buffering.max.messages`) |
-| `allow_auto_topic_creation` | `producer_config` (`allow.auto.create.topics`) |
 | `protocol_version` | `producer_config` (`api.version.request`, etc.) |
 | `resolve_canonical_bootstrap_servers_only` | `producer_config` (`client.dns.lookup`) |
 | `conn_idle_timeout` | `producer_config` (`connections.max.idle.ms`) |
 | `metadata.refresh_interval` | `producer_config` (`topic.metadata.refresh.interval.ms`) |
 
 The Go `timeout`, `compression`, `producer.required_acks`,
-`producer.max_message_bytes`, `producer.linger`, and `client_id` settings have
-direct fields here (`timeout_ms`, `compression`, `required_acks`,
-`max_message_bytes`, `linger_ms`, `client_id`); see
+`producer.max_message_bytes`, `producer.linger`, `allow_auto_topic_creation`,
+and `client_id` settings have direct fields here (`timeout_ms`, `compression`,
+`required_acks`, `max_message_bytes`, `linger_ms`, `allow_auto_create_topics`,
+`client_id`); see
 [Producer Tuning](#producer-tuning), [Authentication](#authentication), and
 [TLS Configuration](#tls-configuration).
 
@@ -366,9 +459,14 @@ Not every failure is retryable. The exporter emits a **permanent** (non-retryabl
 nack -- which the retry processor forwards immediately without retrying -- for:
 
 - an **encoding failure** (the payload cannot be serialized);
-- a pdata message for an **unconfigured signal type**; and
+- a pdata message for an **unconfigured signal type**;
 - an **invalid dynamic topic** supplied via a transport header (see
-  [Dynamic Topic Routing](#dynamic-topic-routing)).
+  [Dynamic Topic Routing](#dynamic-topic-routing)); and
+- a **non-retryable send error** returned by the Kafka producer -- a record that
+  exceeds the size limit (`message.max.bytes`), a malformed/invalid record, an
+  authorization failure, or an unsupported request. All other send failures
+  (timeouts, an unavailable broker/leader, network errors, or a full producer
+  queue) remain **transient** and are retried.
 
 The retry processor's backoff fields map onto Go's `retry_on_failure`:
 
@@ -442,6 +540,9 @@ mechanisms, and routing/partitioning options -- see the tables above.
 2. `client_id` must be non-empty.
 3. At least one signal (`traces`, `metrics`, or `logs`) must be configured.
 4. Unknown configuration fields are rejected (`deny_unknown_fields`).
+5. Each signal's `topic` and every entry in `allowed_topics` must be a
+   syntactically valid Kafka topic name; every `allowed_topics_regex` entry must
+   be a valid regular expression.
 
 ## Examples
 
@@ -543,6 +644,10 @@ This node does not emit structured events.
   interval as a workaround for high idle CPU utilization in the upstream
   rdkafka implementation.
 - Resource attribute-based partitioning is not yet implemented.
+- Live reconfiguration is experimental: data accepted before a config change may
+  be delivered using the new topic/credentials/tenant, and the producer swap can
+  briefly block the pipeline. See
+  [Live Reconfiguration](#live-reconfiguration).
 - Compared to the Go Kafka exporter, this exporter delegates retry to an
   upstream `processor:retry` node (no built-in `retry_on_failure`), has no
   application-level sending queue, supports fewer encodings/auth mechanisms, and

@@ -278,18 +278,29 @@ fn file_forms_satisfy_credential_requirements() {
     assert!(cfg.client_secret_file.is_some());
 }
 
-// Scenario: A config sets `expiry_buffer` to zero.
-// Guarantees: Validation rejects it, preventing a refresh schedule with no lead time.
+// Scenario: A config sets `expiry_buffer` at or below the fixed usability margin, so the
+// background refresh would be scheduled only once the cached token is already unusable.
+// Guarantees: Validation rejects it, so the extension can never be configured into a stall on
+// every token cycle; a buffer just above the margin stays accepted.
 #[test]
-fn zero_expiry_buffer_is_rejected() {
-    let err = config_from_json(serde_json::json!({
-        "token_url": "https://idp.example.com/token",
-        "client_id": "id",
-        "client_secret": "s",
-        "expiry_buffer": "0s",
-    }))
-    .expect_err("zero expiry_buffer must be rejected");
-    assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+fn expiry_buffer_within_usability_margin_is_rejected() {
+    let base = |buffer: &str| {
+        serde_json::json!({
+            "token_url": "https://idp.example.com/token",
+            "client_id": "id",
+            "client_secret": "s",
+            "expiry_buffer": buffer,
+        })
+    };
+
+    for buffer in ["0s", "10s", "30s"] {
+        let err = config_from_json(base(buffer))
+            .expect_err("expiry_buffer within the usability margin must be rejected");
+        assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+    }
+
+    let cfg = config_from_json(base("31s")).expect("expiry_buffer above the margin is valid");
+    assert_eq!(cfg.expiry_buffer, Duration::from_secs(31));
 }
 
 // Scenario: A config sets `timeout` or `connect_timeout` to zero.

@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use otap_df_engine::capability::auth::BearerToken;
 use otap_df_engine::capability::auth::bearer_token_provider::{
-    BearerTokenProvider as BearerTokenProviderCap, TokenStream,
+    BearerTokenProvider as BearerTokenProviderCap, TOKEN_USABLE_MARGIN, TokenStream,
 };
 use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
 use otap_df_engine::control::ExtensionControlMsg;
@@ -27,13 +27,6 @@ use tokio_stream::wrappers::WatchStream;
 
 use super::metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
 
-/// Safety margin before actual expiry within which a cached token is treated as
-/// no longer usable. Deliberately much smaller than the refresh `expiry_buffer`:
-/// the background loop refreshes well ahead of expiry, but if that refresh is
-/// failing a still-valid token should keep being served (not treated as unusable
-/// early), which also avoids stampeding the token endpoint during a transient
-/// outage.
-const TOKEN_USABLE_MARGIN_SECS: u64 = 30;
 /// Floor between successful refreshes; avoids busy-looping on near-expired
 /// tokens.
 const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
@@ -155,8 +148,7 @@ impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
         let token = self.tx.borrow().clone()?;
         match token.expires_on() {
             Some(expires_on) => {
-                let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
-                if Instant::now() + margin < expires_on {
+                if Instant::now() + TOKEN_USABLE_MARGIN < expires_on {
                     Some(token)
                 } else {
                     None
