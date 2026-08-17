@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: Remove duplicate fanout message counters and align active and timeout telemetry with bounded metric conventions.
+issues: [3530]
+subtext: |
+  Migration: Use node.consumer.consumed.messages for the aggregated fanout outcome and node.producer or channel metrics per destination. Rename in_flight to active and group timed_out by signal.

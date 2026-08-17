@@ -289,19 +289,6 @@ FANOUT --> [bounded channel] --> Downstream
 
 Set `max_inflight: 0` for unlimited tracking (not recommended for production).
 
-## Metrics
-
-| Metric | Description |
-| ------ | ----------- |
-| `sent` | Requests dispatched (per incoming PData) |
-| `acked` | Requests acked upstream (after await_ack/fallback) |
-| `nacked` | Requests nacked upstream (after await_ack/fallback) |
-| `timed_out` | Destinations that timed out |
-
-> **Note**: `acked` and `nacked` reflect *request-level* outcomes after
-> applying the `await_ack` policy and fallback logic - not per-destination
-> results. For per-destination metrics, use channel-level metrics.
-
 ## Cloning and Mutability
 
 Each destination receives an independent **clone** of the incoming PData.
@@ -403,14 +390,17 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.fanout.sent` | `{item}` | Requests dispatched. Note: This is a convenience metric that overlaps with channel-level send metrics. Consider removing if metric bloat is a concern. |
-| `processor.fanout.acked` | `{item}` | Requests acked upstream (after await_ack/fallback aggregation). |
-| `processor.fanout.nacked` | `{item}` | Requests nacked upstream (after await_ack/fallback aggregation). |
-| `processor.fanout.timed_out` | `{item}` | Requests that timed out waiting for the configured destination outcome. |
-| `processor.fanout.in_flight` | `{item}` | Current number of in-flight requests tracked by the processor. |
-| `processor.fanout.max_inflight_config` | `{item}` | Configured max_inflight value (0 means unlimited). |
+| `processor.fanout.timed_out` | `{message}` | Destination message attempts that timed out, by `signal`. |
+| `processor.fanout.active` | `{message}` | Current number of active pipeline messages tracked by the processor. |
+| `processor.fanout.max_inflight_config` | `{message}` | Configured max_inflight value (0 means unlimited). |
 | `processor.fanout.throttled` | `1` | 1 when fanout is currently refusing new pdata via accept_pdata(), else 0. |
 | `processor.fanout.throttle_episodes` | `{episode}` | Increments on transition from not-throttled to throttled. |
+
+The common metric sets preserve both fanout telemetry perspectives:
+
+- `node.consumer.consumed.messages` reports the aggregated upstream outcome
+  after applying the configured ack and fallback policy.
+- `node.producer` and channel metrics report per-destination sends and outcomes.
 
 ### Events
 
