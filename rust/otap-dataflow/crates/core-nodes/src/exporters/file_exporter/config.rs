@@ -228,13 +228,19 @@ impl RenderedPaths {
     }
 }
 
+/// Normalizes lexical path components without traversing above a root or prefix.
 pub(crate) fn normalize_lexically(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                let _ = normalized.pop();
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    let _ = normalized.pop();
+                }
             }
             Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
                 normalized.push(component.as_os_str());
@@ -362,5 +368,39 @@ mod tests {
         let path = format!("{root}/{{signal}}/../same-{{core_id}}-{{generation}}.jsonl");
         let config = FileExporterConfig::parse(&json!({"path": path})).unwrap();
         assert!(config.render_paths(1, 2).is_err());
+    }
+
+    /// Scenario: Absolute paths contain parent components at and above the filesystem root.
+    /// Guarantees: Lexical normalization preserves the root or prefix and remains absolute.
+    #[test]
+    fn lexical_normalization_never_traverses_above_root() {
+        #[cfg(unix)]
+        {
+            assert_eq!(normalize_lexically(Path::new("/..")), PathBuf::from("/"));
+            assert_eq!(
+                normalize_lexically(Path::new("/../../capture")),
+                PathBuf::from("/capture")
+            );
+            assert_eq!(
+                normalize_lexically(Path::new("/one/../../capture")),
+                PathBuf::from("/capture")
+            );
+        }
+
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                normalize_lexically(Path::new(r"C:\..")),
+                PathBuf::from(r"C:\")
+            );
+            assert_eq!(
+                normalize_lexically(Path::new(r"C:\..\..\capture")),
+                PathBuf::from(r"C:\capture")
+            );
+            assert_eq!(
+                normalize_lexically(Path::new(r"C:\one\..\..\capture")),
+                PathBuf::from(r"C:\capture")
+            );
+        }
     }
 }

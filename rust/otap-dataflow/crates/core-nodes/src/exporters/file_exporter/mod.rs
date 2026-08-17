@@ -335,11 +335,12 @@ impl FileExporter {
     ) -> Result<(), Error> {
         let result = tokio::time::timeout_at(Instant::from_std(deadline), async {
             let mut failures = Vec::new();
-            for (index, writer) in self.writers.iter_mut().enumerate() {
+            for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+                let writer = &mut self.writers[signal_index(signal)];
                 if let Some(writer) = writer
                     && let Err(failure) = writer.finalize().await
                 {
-                    failures.push((index, failure));
+                    failures.push((signal, failure));
                 }
             }
             failures
@@ -348,8 +349,7 @@ impl FileExporter {
         match result {
             Ok(failures) if failures.is_empty() => Ok(()),
             Ok(failures) => {
-                for (index, failure) in failures {
-                    let signal = signal_from_index(index);
+                for (signal, failure) in failures {
                     self.record_io_failure(signal, &failure);
                     self.log_write_failure(signal, &failure);
                 }
@@ -426,14 +426,6 @@ const fn signal_index(signal: SignalType) -> usize {
         SignalType::Logs => 0,
         SignalType::Metrics => 1,
         SignalType::Traces => 2,
-    }
-}
-
-const fn signal_from_index(index: usize) -> SignalType {
-    match index {
-        0 => SignalType::Logs,
-        1 => SignalType::Metrics,
-        _ => SignalType::Traces,
     }
 }
 
