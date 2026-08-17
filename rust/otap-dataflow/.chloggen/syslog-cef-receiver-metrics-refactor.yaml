@@ -3,4 +3,4 @@ component: pipeline
 note: "Refactor syslog_cef_receiver metrics to align with otlp_receiver telemetry."
 issues: [3748]
 subtext: |
-  Migration: Replaces `logs_decision` & `truncated_payloads` with `deliveries`, `rejections`, and `truncations`. Moves connection rejections to `error.type` rejections. TLS handshake failures now tracked under `transport` error metrics.
+  Migration: Replaces `received_logs_forwarded`, `received_logs_forward_failed`, `received_logs_invalid`, `received_logs_truncated`, `received_logs_total`, `tcp_connections_active`, `tcp_connections_rejected_memory_pressure`, and `tls_handshake_failures` with `forwards`, `rejections`, `truncations`, `connections`, and `transport` metrics.
