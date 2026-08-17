@@ -108,6 +108,8 @@ macro_rules! define_arrow_wal_slots {
             payload_type: ArrowPayloadType,
         ) -> SlotId {
             let raw = match payload_type {
+                // Bundle descriptors only iterate signal-specific allowed payload types,
+                // which exclude Unknown. Reaching this arm is an internal invariant violation.
                 ArrowPayloadType::Unknown => {
                     panic!("ArrowPayloadType::Unknown must not be persisted to WAL")
                 }
