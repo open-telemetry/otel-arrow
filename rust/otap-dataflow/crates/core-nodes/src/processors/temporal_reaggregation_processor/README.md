@@ -124,13 +124,6 @@ Three separate populations are tracked.
 | `stream_cardinality_exceeded` | Stream cardinality limit triggered an early flush. |
 | `shutdown` | Processor is shutting down; remaining data was flushed. |
 
-**Migration from the previous flat counters:**
-
-| Old metric | Equivalent query |
-| --- | --- |
-| `flushes_timer` | `flushes{reason="timer"}` |
-| `flushes_overflow` | `flushes{reason=~"id_overflow\|stream_cardinality_exceeded"}` |
-| `batches_rejected` | `failures` (sum across all `error.type` values) |
 
 An input operation is counted as successful when the data is either staged in
 the aggregation buffer or passed through to the next node. Delayed downstream

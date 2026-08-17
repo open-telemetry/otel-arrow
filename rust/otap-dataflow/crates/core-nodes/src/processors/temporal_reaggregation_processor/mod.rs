@@ -644,8 +644,13 @@ impl TemporalReaggregationProcessor {
         match result {
             Ok(agg_result) => match agg_result {
                 AggregationResult::NoAggregations => {
-                    self.metrics.record_success();
-                    Ok(effect_handler.send_message_with_source_node(pdata).await?)
+                    let send_res = effect_handler.send_message_with_source_node(pdata).await;
+                    if send_res.is_ok() {
+                        self.metrics.record_success();
+                    } else {
+                        self.metrics.record_failure(ErrorType::OutputSend);
+                    }
+                    Ok(send_res?)
                 }
                 AggregationResult::SomeAggregations(records) => {
                     // The aggregated portion of this input has been folded into
@@ -654,17 +659,24 @@ impl TemporalReaggregationProcessor {
                     self.aggregated_peer.push(pdata.peer_addr());
                     // Pass data through if there are no subscribers -- but we
                     // still need a wakeup to flush the aggregated portion.
-                    self.metrics.record_success();
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.has_subscribers() {
-                        self.ensure_wakeup_scheduled(effect_handler)?;
+                        if let Err(e) = self.ensure_wakeup_scheduled(effect_handler) {
+                            self.metrics.record_failure(ErrorType::Internal);
+                            return Err(e);
+                        }
                         let pt_pdata =
                             OtapPdata::new(inbound_ctx, OtapPayload::OtapArrowRecords(records));
 
-                        effect_handler
+                        let send_res = effect_handler
                             .send_message_with_source_node(pt_pdata)
-                            .await?;
-                        return Ok(());
+                            .await;
+                        if send_res.is_ok() {
+                            self.metrics.record_success();
+                        } else {
+                            self.metrics.record_failure(ErrorType::OutputSend);
+                        }
+                        return Ok(send_res?);
                     }
 
                     // The partial-passthrough output represents exactly one
@@ -679,8 +691,15 @@ impl TemporalReaggregationProcessor {
                         flushed: false,
                     };
 
-                    let inbound_calldata: CallData =
-                        self.record_pending_and_handle_wakeup(effect_handler, tracker)?;
+                    let inbound_calldata_res =
+                        self.record_pending_and_handle_wakeup(effect_handler, tracker);
+                    let inbound_calldata: CallData = match inbound_calldata_res {
+                        Ok(call_data) => call_data,
+                        Err(e) => {
+                            self.metrics.record_failure(ErrorType::Internal);
+                            return Err(e);
+                        }
+                    };
 
                     // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
                     // We always expect one inbound and three outbound slots available
@@ -703,9 +722,15 @@ impl TemporalReaggregationProcessor {
                         &mut pt_pdata,
                     );
 
-                    Ok(effect_handler
+                    let send_res = effect_handler
                         .send_message_with_source_node(pt_pdata)
-                        .await?)
+                        .await;
+                    if send_res.is_ok() {
+                        self.metrics.record_success();
+                    } else {
+                        self.metrics.record_failure(ErrorType::OutputSend);
+                    }
+                    Ok(send_res?)
                 }
                 AggregationResult::AllAggregated => {
                     // The full input was folded into the in-progress builder;
@@ -714,10 +739,13 @@ impl TemporalReaggregationProcessor {
                     // Nothing to passthrough and no subscribers so we don't
                     // care about ack/nack -- but we still need a wakeup to
                     // flush the aggregated data.
-                    self.metrics.record_success();
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.has_subscribers() {
-                        self.ensure_wakeup_scheduled(effect_handler)?;
+                        if let Err(e) = self.ensure_wakeup_scheduled(effect_handler) {
+                            self.metrics.record_failure(ErrorType::Internal);
+                            return Err(e);
+                        }
+                        self.metrics.record_success();
                         return Ok(());
                     }
 
@@ -729,8 +757,12 @@ impl TemporalReaggregationProcessor {
                         flushed: false,
                     };
 
-                    _ = self.record_pending_and_handle_wakeup(effect_handler, tracker)?;
+                    if let Err(e) = self.record_pending_and_handle_wakeup(effect_handler, tracker) {
+                        self.metrics.record_failure(ErrorType::Internal);
+                        return Err(e);
+                    }
 
+                    self.metrics.record_success();
                     Ok(())
                 }
             },
@@ -3789,7 +3821,7 @@ mod tests {
 
             let snaps = collect_telemetry(&mut ctx).await;
 
-            assert_eq!(metric_count(&snaps, "operations", None, None, None), 1);
+            assert_eq!(metric_count(&snaps, "operations", Some("success"), None, None), 1);
             assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
         });
     }
@@ -3812,7 +3844,7 @@ mod tests {
                 let snaps = collect_telemetry(&mut ctx).await;
 
                 // 2 inputs processed
-                assert_eq!(metric_count(&snaps, "operations", None, None, None), 2);
+                assert_eq!(metric_count(&snaps, "operations", Some("success"), None, None), 2);
                 assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
 
                 // successful and failed flushes retain their exact reason
@@ -3845,7 +3877,7 @@ mod tests {
 
                 let snaps = collect_telemetry(&mut ctx).await;
 
-                assert_eq!(metric_count(&snaps, "operations", None, None, None), 2);
+                assert_eq!(metric_count(&snaps, "operations", Some("success"), None, None), 2);
                 assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
                 assert_eq!(
                     metric_count(
@@ -3909,4 +3941,7 @@ mod tests {
             );
         });
     }
+
+
 }
+

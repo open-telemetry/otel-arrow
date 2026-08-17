@@ -26,3 +26,6 @@ subtext: |
     - flushes_timer -> flushes{reason="timer"}
     - flushes_overflow -> flushes{reason=~"id_overflow|stream_cardinality_exceeded"}
     - batches_rejected -> failures
+    Note that the old counters measured timer or overflow triggers including empty flushes,
+    while the new `flushes` metric measures only non-empty send attempts. The new metric
+    is therefore not an exact query-equivalent replacement.

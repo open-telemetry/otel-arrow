@@ -4,9 +4,9 @@
 //! Telemetry definitions for the temporal reaggregation processor.
 
 use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::common_attributes::Outcome;
+use otap_df_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
@@ -33,6 +33,10 @@ pub enum ErrorType {
     IdOverflow,
     /// The batch was too large even after a flush; stream cardinality limit hit.
     StreamCardinalityExceeded,
+    /// Failed to send output downstream.
+    OutputSend,
+    /// Internal scheduling or other fatal error.
+    Internal,
 }
 
 /// What triggered a flush. Used as the `reason` attribute on the `flushes` metric.
@@ -71,7 +75,10 @@ pub struct FlushAttributes {
 ///
 /// Incremented exactly once per input, regardless of how many overflow flushes
 /// happen internally while processing it.
-#[metric_set(name = "processor.temporal_reaggregation.pdata")]
+#[metric_set(
+    name = "processor.temporal_reaggregation.pdata",
+    measurement_attributes = OutcomeAttributes
+)]
 #[derive(Debug, Default, Clone)]
 pub struct OperationMetrics {
     #[metric(unit = "{operation}")]
@@ -107,7 +114,7 @@ pub struct FlushMetrics {
 
 /// All metrics for the temporal reaggregation processor.
 pub struct TemporalReaggregationMetrics {
-    operations: MetricSet<OperationMetrics>,
+    operations: MeasurementMetricSet<OperationMetrics>,
     failures: MeasurementMetricSet<FailureMetrics>,
     flushes: MeasurementMetricSet<FlushMetrics>,
 }
@@ -115,7 +122,7 @@ pub struct TemporalReaggregationMetrics {
 impl TemporalReaggregationMetrics {
     pub fn new(pipeline_ctx: &PipelineContext) -> Self {
         Self {
-            operations: pipeline_ctx.register_metrics::<OperationMetrics>(),
+            operations: OperationMetrics::register(pipeline_ctx),
             failures: FailureMetrics::register(pipeline_ctx),
             flushes: FlushMetrics::register(pipeline_ctx),
         }
@@ -123,12 +130,18 @@ impl TemporalReaggregationMetrics {
 
     /// Record one successful input operation.
     pub fn record_success(&mut self) {
-        self.operations.operations.inc();
+        self.operations
+            .with(OutcomeAttributes { outcome: Outcome::Success })
+            .operations
+            .inc();
     }
 
     /// Record one failed input operation with the actionable cause.
     pub fn record_failure(&mut self, error_type: ErrorType) {
-        self.operations.operations.inc();
+        self.operations
+            .with(OutcomeAttributes { outcome: Outcome::Failure })
+            .operations
+            .inc();
         self.failures
             .with(FailureAttributes { error_type })
             .failures
@@ -150,7 +163,7 @@ impl TemporalReaggregationMetrics {
         &mut self,
         reporter: &mut MetricsReporter,
     ) -> Result<(), otap_df_telemetry::error::Error> {
-        reporter.report(&mut self.operations)?;
+        reporter.report_measurement(&mut self.operations)?;
         reporter.report_measurement(&mut self.failures)?;
         reporter.report_measurement(&mut self.flushes)
     }
