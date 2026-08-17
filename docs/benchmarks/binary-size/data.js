@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787003144160,
+  "lastUpdate": 1787008120649,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -16894,6 +16894,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-crate-otap_df_query_engine",
             "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 69.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.13,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "129437996+c1ly@users.noreply.github.com",
+            "name": "c1ly",
+            "username": "c1ly"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "8a35d4d066527c3f21e01430e952549d4d04df03",
+          "message": "[otap-dataflow] Kafka Exporter max_in_flight support + Kafka receiver/exporter benchmark tests (#3774)\n\n# Change Summary\n\n- Adds max_in_flight config setting to the Kafka Exporter, controls max\nconcurrent sends\n- Kafka Exporter uses producer.send_result() instead of producer.send()\nto queue the send future\n- Added benchmark test suite for the Kafka Receiver/Exporter comparing\nDFE/Rotel/Go\n- Added test suite of Kafka Exporter with max_in_flight set to 1 and\n1000 to compare performance gains\n   \n## Benchmark results:\n  \n### Receiver isolation results\n\n#### DFE receiver, OTLP encoding\n\n| rate | recv/s | drop% | cpu avg | cpu max | ram max (MiB) |\n| --- | --- | --- | --- | --- | --- |\n| 100k | 87,306 | ~0 | 4.0 | 9.0 | 89 |\n| 200k | 200,264 | 0.0 | 12.4 | 13.2 | 86 |\n| 300k | 304,555 | ~0 | 17.0 | 17.8 | 88 |\n| 400k | 400,982 | ~0 | 21.3 | 22.1 | 87 |\n| 600k | 605,198 | ~0 | 29.9 | 30.9 | 90 |\n| 800k | 791,135 | 0.0 | 40.7 | 53.4 | 89 |\n| 1000k | 1,017,447 | ~0 | 50.8 | 88.8 | 90 |\n\n#### DFE receiver, OTAP encoding\n\n| rate | recv/s | drop% | cpu avg | cpu max | ram max (MiB) |\n| --- | --- | --- | --- | --- | --- |\n| 100k | 100,154 | ~0 | 4.1 | 4.7 | 150 |\n| 200k | 198,352 | ~0 | 6.8 | 7.4 | 165 |\n| 300k | 298,172 | ~0 | 9.2 | 9.7 | 160 |\n| 400k | 404,286 | ~0 | 11.5 | 12.2 | 171 |\n| 600k | 604,937 | ~0 | 15.8 | 16.1 | 176 |\n| 800k | 790,555 | ~0 | 21.2 | 22.6 | 192 |\n| 1000k | 998,990 | ~0 | 26.9 | 28.2 | 141 |\n\n#### Go collector receiver (OTLP)\n\n| rate | recv/s | drop% | cpu avg | cpu max | ram max (MiB) |\n| --- | --- | --- | --- | --- | --- |\n| 100k | 100,152 | ~0 | 34.3 | 35.2 | 73 |\n| 200k | 202,024 | ~0 | 61.6 | 63.6 | 94 |\n| 300k | 306,364 | ~0 | 88.1 | 97.0 | 90 |\n| 400k | 335,796 | 14.5 | 96.6 | 97.5 | 91 |\n| 600k | 326,590 | 45.1 | 96.0 | 98.2 | 84 |\n| 800k | 297,447 | 61.7 | 87.7 | 96.7 | 88 |\n| 1000k | 261,476 | 73.7 | 80.0 | 93.9 | 91 |\n\n#### Rotel receiver (OTLP)\n\n| rate | recv/s | drop% | cpu avg | cpu max | ram max (MiB) |\n| --- | --- | --- | --- | --- | --- |\n| 100k | 104,118 | ~0 | 80.8 | 97.8 | 570 |\n| 200k | 106,318 | 46.4 | 86.9 | 101.5 | 617 |\n| 300k | 108,410 | 63.8 | 87.8 | 101.1 | 840 |\n| 400k | 106,179 | 73.0 | 86.6 | 101.3 | 632 |\n| 600k | 105,553 | 82.4 | 82.2 | 101.0 | 521 |\n| 800k | 109,798 | 85.9 | 89.0 | 101.3 | 641 |\n| 1000k | 110,555 | 88.9 | 91.5 | 101.5 | 578 |\n\n### Exporter isolation results (max_in_flight = 1000)\n\nAll exporter suites below were run with the normalized in-flight depth\nof 1000\n\n#### DFE exporter, OTLP encoding\n\n| rate | recv/s | drop% | cpu avg | ram avg (MiB) | ram max (MiB) |\n| --- | --- | --- | --- | --- | --- |\n| 100k | 99,996 | ~0 | 13.3 | 81 | 84 |\n| 200k | 198,986 | 0.1 | 21.5 | 87 | 97 |\n| 300k | 303,111 | ~0 | 28.9 | 90 | 106 |\n| 400k | 402,741 | ~0 | 37.6 | 99 | 153 |\n| 600k | 596,316 | 0.3 | 52.8 | 104 | 137 |\n| 800k | 803,568 | ~0 | 68.0 | 104 | 130 |\n| 1000k | 1,003,697 | ~0 | 85.5 | 138 | 253 |\n\n#### DFE exporter, OTAP encoding\n\n| rate | recv/s | drop% | cpu avg | ram avg (MiB) | ram max (MiB) |\n| --- | --- | --- | --- | --- | --- |\n| 100k | 98,958 | ~0 | 6.2 | 80 | 80 |\n| 200k | 200,810 | ~0 | 9.5 | 84 | 84 |\n| 300k | 299,746 | ~0 | 12.2 | 86 | 87 |\n| 400k | 403,902 | ~0 | 15.4 | 89 | 91 |\n| 600k | 595,591 | ~0 | 21.4 | 86 | 87 |\n| 800k | 794,935 | ~0 | 27.8 | 96 | 98 |\n| 1000k | 1,011,004 | ~0 | 34.5 | 93 | 95 |\n\n#### Go collector exporter (OTLP)\n\n| rate | recv/s | drop% | cpu avg | ram avg (MiB) | ram max (MiB) |\n| --- | --- | --- | --- | --- | --- |\n| 100k | 99,854 | ~0 | 32.7 | 266 | 303 |\n| 200k | 202,429 | ~0 | 55.9 | 134 | 145 |\n| 300k | 302,214 | ~0 | 78.5 | 199 | 457 |\n| 400k | 226,870 | 42.5 | 98.2 | 6,605 | 7,116 |\n| 600k | 106,320 | 76.2 | 100.9 | 8,466 | 8,541 |\n| 800k | 135,436 | 67.4 | 100.9 | 9,078 | 9,222 |\n| 1000k | 121,149 | 72.0 | 101.0 | 9,786 | 9,982 |\n\n#### Rotel exporter (OTLP)\n\n| rate | recv/s | drop% | cpu avg | ram avg (MiB) | ram max (MiB) |\n| --- | --- | --- | --- | --- | --- |\n| 100k | 99,870 | ~0 | 36.5 | 65 | 70 |\n| 200k | 199,546 | ~0 | 63.4 | 61 | 66 |\n| 300k | 285,793 | 3.8 | 100.7 | 320 | 552 |\n| 400k | 268,298 | ~0 | 100.7 | 770 | 799 |\n| 600k | 261,055 | ~0 | 100.8 | 1,068 | 1,102 |\n| 800k | 252,233 | ~0 | 100.8 | 1,429 | 1,877 |\n| 1000k | 245,307 | ~0 | 100.8 | 1,619 | 1,785 |\n\n### In-flight depth sweep: max_in_flight = 1 (DFE exporter) to show\nprevious performance\n\n#### DFE exporter, OTLP encoding (max_in_flight = 1)\n\n| rate | recv/s | drop% | cpu avg | ram avg (MiB) | ram max (MiB) |\n| --- | --- | --- | --- | --- | --- |\n| 100k | 100,259 | ~0 | 12.8 | 85 | 88 |\n| 200k | 143,727 | 28.3 | 18.0 | 196 | 209 |\n| 300k | 147,188 | 51.0 | 20.2 | 201 | 213 |\n| 400k | 147,733 | 63.1 | 21.6 | 201 | 214 |\n| 600k | 145,833 | 75.9 | 24.3 | 197 | 206 |\n| 800k | 147,992 | 81.4 | 27.1 | 195 | 202 |\n| 1000k | 143,486 | 85.5 | 29.8 | 185 | 188 |\n\n#### DFE exporter, OTAP encoding (max_in_flight = 1)\n\n| rate | recv/s | drop% | cpu avg | ram avg (MiB) | ram max (MiB) |\n| --- | --- | --- | --- | --- | --- |\n| 100k | 98,627 | ~0 | 6.1 | 80 | 80 |\n| 200k | 165,959 | 5.2 | 8.8 | 111 | 112 |\n| 300k | 167,201 | ~0 | 8.6 | 116 | 117 |\n| 400k | 166,718 | ~0 | 8.6 | 120 | 120 |\n| 600k | 166,962 | ~0 | 8.6 | 126 | 127 |\n| 800k | 159,973 | ~0 | 8.6 | 132 | 133 |\n| 1000k | 165,809 | ~0 | 8.2 | 136 | 137 |\n\n\n## What issue does this PR close?\n\n* Closes #3509 \n\n## How are these changes tested?\n\nunit tests and integration test. Added benchmark suites to capture\nperformance improvements\n\n## Are there any user-facing changes?\n\nno\n\n### Changelog\n\n* [ x ] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-08-17T22:00:20Z",
+          "tree_id": "74ca5e5f050c0d7f91376a27d01be87c3ae969b2",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8a35d4d066527c3f21e01430e952549d4d04df03"
+        },
+        "date": 1787008107165,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
             "unit": "MB"
           },
           {
