@@ -1602,11 +1602,11 @@ mod tests {
             .unwrap_or_else(|| panic!("missing message field {field_number}"))
     }
 
-    fn metric_data_fields(
+    fn metric_data_field_numbers(
         encoded: &OtlpProtoBytes,
-        metric_index: usize,
+        metric_name: &str,
         data_field: u64,
-    ) -> Vec<(u64, u64, &[u8])> {
+    ) -> Vec<u64> {
         let resource_metrics = message_field(encoded.as_bytes(), METRICS_DATA_RESOURCE_METRICS);
         let scope_metrics = message_field(resource_metrics, RESOURCE_METRICS_SCOPE_METRICS);
         let metric = protobuf_fields(scope_metrics)
@@ -1614,9 +1614,12 @@ mod tests {
             .filter_map(|(number, wire_type, payload)| {
                 (number == SCOPE_METRICS_METRICS && wire_type == wire_types::LEN).then_some(payload)
             })
-            .nth(metric_index)
-            .unwrap_or_else(|| panic!("missing metric at index {metric_index}"));
+            .find(|metric| message_field(metric, METRIC_NAME) == metric_name.as_bytes())
+            .unwrap_or_else(|| panic!("missing metric named {metric_name}"));
         protobuf_fields(message_field(metric, data_field))
+            .into_iter()
+            .map(|(number, _, _)| number)
+            .collect()
     }
 
     fn only_scope(request: &ExportMetricsServiceRequest) -> &ScopeMetrics {
@@ -2439,10 +2442,7 @@ mod tests {
             .expect("mixed metrics batch should produce a request");
 
         assert_eq!(
-            metric_data_fields(&encoded, 0, METRIC_SUM)
-                .iter()
-                .map(|(number, _, _)| *number)
-                .collect::<Vec<_>>(),
+            metric_data_field_numbers(&encoded, "counter.delta", METRIC_SUM),
             vec![
                 SUM_AGGREGATION_TEMPORALITY,
                 SUM_IS_MONOTONIC,
@@ -2451,10 +2451,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            metric_data_fields(&encoded, 2, METRIC_SUM)
-                .iter()
-                .map(|(number, _, _)| *number)
-                .collect::<Vec<_>>(),
+            metric_data_field_numbers(&encoded, "up_down.delta", METRIC_SUM),
             vec![
                 SUM_AGGREGATION_TEMPORALITY,
                 SUM_DATA_POINTS,
@@ -2462,10 +2459,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            metric_data_fields(&encoded, 4, METRIC_HISTOGRAM)
-                .iter()
-                .map(|(number, _, _)| *number)
-                .collect::<Vec<_>>(),
+            metric_data_field_numbers(&encoded, "histogram.mmsc", METRIC_HISTOGRAM),
             vec![
                 HISTOGRAM_AGGREGATION_TEMPORALITY,
                 HISTOGRAM_DATA_POINTS,
@@ -2518,10 +2512,11 @@ mod tests {
             .expect("exponential histogram batch should produce a request");
 
         assert_eq!(
-            metric_data_fields(&encoded, 0, METRIC_EXPONENTIAL_HISTOGRAM)
-                .iter()
-                .map(|(number, _, _)| *number)
-                .collect::<Vec<_>>(),
+            metric_data_field_numbers(
+                &encoded,
+                "histogram.distribution",
+                METRIC_EXPONENTIAL_HISTOGRAM,
+            ),
             vec![
                 EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY,
                 EXPONENTIAL_HISTOGRAM_DATA_POINTS,
