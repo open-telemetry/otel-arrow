@@ -8,10 +8,10 @@ they can be safely concatenated together.
 # Reindexing strategies
 
 There are two reindexing strategies we can take. The first is a
-naive offset where we just apply some fixed number to the ids to move the
-range out of the way of the previous. For example if we have a batches with
-ids [1, 2] and [1, 2, 3] we can "bump" the second batch out of the way by
-adding 2 to all of the ids.
+naive offset where we just apply some fixed number to the IDs to move the
+range out of the way of the previous batches. For example, if we have batches
+with IDs [1, 2] and [1, 2, 3] we can "bump" the second batch out of the way by
+adding 2 to all of the IDs.
 
 The problem with naive offset is that if the second batch has holes then we
 "use up" more ids than we need. For example if the second batch is [1, 3]
@@ -32,7 +32,7 @@ violations. Suppose we have corresponding id and parent id pairs like this:
 
 id: [1, 2]  parent_id: [1, 3]
 
-parent_id has a referential integrgity violation. We compute the mappings
+parent_id has a referential integrity violation. We compute the mappings
 and next offset based on the id column only, so 3 is dangling over into the
 range that the next otap batch will use and we can accidentally associate
 the row with `id = 3` with some record batch not in this otap batch.
@@ -73,23 +73,79 @@ The only way we can save id space is by choosing compaction and seeing if
 we end up with less ids than the upper bound. We keep choosing compaction
 until we've saved enough ids that we can use the optimal available strategy
 for the rest of the record batches.
+
+# Batch-processor fast paths
+
+The batch processor usually needs to make relationship IDs unique and then
+concatenate each OTAP payload table. Performing those operations literally
+copies a relationship column once to reindex each input and again to build the
+concatenated output. It can also spend time reconciling schemas that are
+already identical.
+
+The optimized path avoids that work in layers:
+
+1. The batching entry point returns one in-limit record unchanged.
+2. Removing transport encoding returns shared Arrow arrays unchanged when the
+   relevant ID fields are already plain.
+3. For three or more input records, `reindex_and_concatenate` first builds a
+   read-only plan of uniform ID offsets. Two inputs retain the legacy path
+   because measurements showed that planning costs more than it saves there.
+4. When schemas and dictionary widths already match, the OTAP-aware kernel
+   copies each planned ID column directly into its final output buffer and
+   applies that input's offset during the copy. Other columns use Arrow's
+   normal concatenation kernel.
+5. When the custom kernel cannot be used but uniform offsets are still safe,
+   generic concatenation runs first and the plan adjusts only the final merged
+   relationship buffers. A uniquely owned Arrow buffer can be adjusted in
+   place.
+
+The flow for three or more inputs is:
+
+```text
+decode transport encodings
+          |
+          v
+can every relationship use a uniform offset?
+          | yes                         | no
+          v                             v
+build an offset plan              legacy reindex
+          |                             |
+          v                             v
+same schemas and safe dictionaries?  generic concatenate
+          | yes             | no
+          v                 v
+copy + offset kernel    generic concatenate
+                             |
+                             v
+                      apply offsets once
+```
+
+Planning deliberately rejects relationship columns containing nulls or using
+dictionary encoding, compaction, insufficient ID headroom, and
+referential-integrity cases that require row removal. Those cases continue
+through the original reindexing implementation. The custom kernel additionally
+requires identical schemas and enough capacity in every dictionary key type.
+It completes all validation and builds every output before consuming the input
+`Option<RecordBatch>` values, so declining the optimization leaves the legacy
+fallback with intact inputs.
 */
 
 use std::ops::{Add, AddAssign, Range, Sub, SubAssign};
 use std::sync::Arc;
 
+use arrow::array::builder::BooleanBufferBuilder;
 use arrow::array::{
     Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, DictionaryArray, NullArray,
     PrimitiveArray, RecordBatch, StructArray,
 };
-use arrow::buffer::ScalarBuffer;
+use arrow::buffer::{NullBuffer, ScalarBuffer};
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, ArrowNumericType, DataType, UInt8Type, UInt16Type,
     UInt32Type,
 };
 
 use crate::error::{Error, Result};
-use crate::otap::transform::concatenate::concatenate;
+use crate::otap::transform::concatenate::{batches_share_concatenable_schema, concatenate};
 use crate::otap::transform::transport_optimize::remove_transport_optimized_encodings;
 use crate::otap::transform::util::{
     extract_id_column, payload_to_idx, remove_record_batch_ranges, replace_column,
@@ -105,9 +161,9 @@ use super::util::{IdColumnType, PrimaryIdInfo, payload_relations};
 /// for each payload type across all batches. This makes it safe to concatenate
 /// these record batches.
 ///
-/// Note: reindex also removes the transport optimized encoding.
-/// Note: There are opportunities for optimization here, some of which are captured
-/// in https://github.com/open-telemetry/otel-arrow/issues/1926
+/// This is the general standalone path and also removes transport-optimized
+/// encodings. Batch processing should use `reindex_and_concatenate` so
+/// offset-only cases can avoid intermediate relationship buffers.
 pub fn reindex<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
     if batches.is_empty() || batches.len() == 1 {
         return Ok(());
@@ -121,8 +177,15 @@ pub fn reindex<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Resu
     }
 }
 
-/// Reindex and concatenate OTAP batches, applying offset-only reindexing to the
-/// final coalesced buffers when the relation columns support it.
+/// Reindexes and concatenates OTAP batches while avoiding redundant ID-buffer
+/// copies when uniform offsets are sufficient.
+///
+/// Three or more inputs use a read-only planning pass. A supported plan is
+/// executed either by the same-schema copy-and-offset kernel or, when schemas
+/// require reconciliation, by applying offsets after generic concatenation.
+/// Compaction and other unsupported layouts retain the original
+/// reindex-then-concatenate behavior. Two inputs skip planning because its
+/// fixed cost exceeded the allocation savings in benchmarks.
 pub(crate) fn reindex_and_concatenate<const N: usize>(
     batches: &mut [[Option<RecordBatch>; N]],
 ) -> Result<[Option<RecordBatch>; N]> {
@@ -270,6 +333,9 @@ fn reindex_and_concatenate_store<S, const N: usize>(
 where
     S: OtapBatchStore,
 {
+    // Transport decoding must precede planning because encoded deltas do not
+    // expose the logical min/max values used to compute safe offsets. The
+    // decoder itself is zero-copy for already-plain root relationship IDs.
     let plan = {
         let mut store = MultiBatchStore::<S, N>::new(batches);
         for payload_type in S::allowed_payload_types() {
@@ -279,11 +345,21 @@ where
     };
 
     if let Some(plan) = plan {
+        // Prefer the narrowest path. The custom kernel removes both the
+        // per-input reindex copies and the post-concatenation ID adjustment.
+        if let Some(result) = plan.try_concatenate(batches)? {
+            return Ok(result);
+        }
+        // Schema conversion or dictionary widening still needs the generic
+        // concatenator. Applying the plan afterward retains the larger win of
+        // not rebuilding every input relationship column separately.
         let mut result = concatenate(batches)?;
         plan.apply(&mut result)?;
         return Ok(result);
     }
 
+    // A plan is absent only when correctness requires behavior that a uniform
+    // offset cannot express, such as compaction or orphan-row removal.
     let mut store = MultiBatchStore::<S, N>::new(batches);
     reindex_decoded_batch_store(&mut store)?;
     concatenate(batches)
@@ -291,21 +367,29 @@ where
 
 #[derive(Debug, Default)]
 struct FusedReindexPlan {
+    /// Relationship columns and the output row ranges that need adjustment.
     columns: Vec<PlannedColumn>,
 }
 
 #[derive(Debug)]
 struct PlannedColumn {
+    /// Payload-table slot containing the relationship column.
     payload_index: usize,
+    /// Top-level or nested path, such as `parent_id` or `resource.id`.
     column_path: &'static str,
+    /// Physical integer width that must be preserved by the fast path.
     id_type: IdColumnType,
+    /// Non-zero adjustments, ordered by their final concatenated row ranges.
     offsets: Vec<PlannedOffset>,
 }
 
 #[derive(Debug)]
 struct PlannedOffset {
+    /// Rows occupied by one input batch in the final concatenated column.
     range: Range<usize>,
+    /// Magnitude of the uniform adjustment.
     offset: u64,
+    /// Whether to add or subtract the magnitude.
     sign: Sign,
 }
 
@@ -346,6 +430,12 @@ impl FusedReindexPlan {
         });
     }
 
+    /// Applies a supported offset plan after generic schema-aware concatenation.
+    ///
+    /// This fallback is useful when relationship semantics permit uniform
+    /// offsets but schema conversion prevents the custom concatenation kernel.
+    /// `apply_planned_primitive_offsets` reuses a uniquely owned Arrow values
+    /// buffer when possible and otherwise copies only that final ID column.
     fn apply<const N: usize>(self, result: &mut [Option<RecordBatch>; N]) -> Result<()> {
         for (payload_index, result_batch) in result.iter_mut().enumerate() {
             if !self
@@ -380,14 +470,263 @@ impl FusedReindexPlan {
 
         Ok(())
     }
+
+    /// Concatenates same-schema inputs while applying relationship offsets as
+    /// their values are copied into final buffers.
+    ///
+    /// Returns `Ok(None)` when schema reconciliation or dictionary widening is
+    /// required. Every eligibility check happens before inputs are taken, and
+    /// output batches are built from shared references. Inputs are cleared only
+    /// after every planned column has been found and every output has been
+    /// constructed, keeping fallback behavior atomic.
+    fn try_concatenate<const N: usize>(
+        &self,
+        batches: &mut [[Option<RecordBatch>; N]],
+    ) -> Result<Option<[Option<RecordBatch>; N]>> {
+        if self.columns.is_empty() {
+            return Ok(None);
+        }
+        // This uses the same eligibility predicate as generic concatenation's
+        // same-schema path. In particular, equal dictionary schemas are not
+        // enough when concatenated physical values outgrow their key widths.
+        for payload_index in 0..N {
+            if !batches_share_concatenable_schema(batches, payload_index)? {
+                return Ok(None);
+            }
+        }
+
+        let mut result = [const { None }; N];
+        let mut applied_columns = 0usize;
+        for (payload_index, result_batch) in result.iter_mut().enumerate() {
+            let input_batches = batches
+                .iter()
+                .filter_map(|batch| batch[payload_index].as_ref())
+                .collect::<Vec<_>>();
+            let Some(first) = input_batches.first() else {
+                continue;
+            };
+            let schema = Arc::clone(first.schema_ref());
+            let mut columns = Vec::with_capacity(schema.fields().len());
+            for (column_index, field) in schema.fields().iter().enumerate() {
+                let arrays = input_batches
+                    .iter()
+                    .map(|batch| batch.column(column_index).as_ref())
+                    .collect::<Vec<_>>();
+                let column = if let Some(plan) = self.columns.iter().find(|plan| {
+                    plan.payload_index == payload_index && plan.column_path == field.name()
+                }) {
+                    applied_columns += 1;
+                    concatenate_planned_column(&arrays, plan)?
+                } else if let Some(plan) = self.columns.iter().find(|plan| {
+                    plan.payload_index == payload_index
+                        && struct_column_name(plan.column_path) == Some(field.name())
+                }) {
+                    applied_columns += 1;
+                    concatenate_planned_struct(&arrays, plan)?
+                } else {
+                    arrow::compute::concat(&arrays).map_err(|source| Error::Batching { source })?
+                };
+                columns.push(column);
+            }
+            *result_batch = Some(RecordBatch::try_new(schema, columns).map_err(|source| {
+                Error::UnexpectedRecordBatchState {
+                    reason: format!("Failed to build OTAP-aware concatenated batch: {source}"),
+                }
+            })?);
+        }
+        if applied_columns != self.columns.len() {
+            return Err(Error::UnexpectedRecordBatchState {
+                reason: format!(
+                    "OTAP-aware concatenation applied {applied_columns} of {} planned columns",
+                    self.columns.len()
+                ),
+            });
+        }
+
+        // Delay ownership transfer until the complete result is known valid.
+        for batch in batches {
+            for payload in batch {
+                *payload = None;
+            }
+        }
+        Ok(Some(result))
+    }
 }
 
+fn concatenate_planned_column(arrays: &[&dyn Array], plan: &PlannedColumn) -> Result<ArrayRef> {
+    match plan.id_type {
+        IdColumnType::U16 => concatenate_planned_primitive::<UInt16Type>(arrays, &plan.offsets),
+        IdColumnType::U32 => concatenate_planned_primitive::<UInt32Type>(arrays, &plan.offsets),
+    }
+}
+
+/// Concatenates an OTAP resource/scope struct without losing outer validity.
+///
+/// Only the nested `id` child is relationship-aware. Other children retain
+/// Arrow's generic concatenation semantics, and the parent struct's null bits
+/// are appended independently from its child buffers.
+fn concatenate_planned_struct(arrays: &[&dyn Array], plan: &PlannedColumn) -> Result<ArrayRef> {
+    let Some(first) = arrays.first() else {
+        return Err(Error::UnexpectedRecordBatchState {
+            reason: format!(
+                "OTAP-aware concatenation has no inputs for {}",
+                plan.column_path
+            ),
+        });
+    };
+    let DataType::Struct(fields) = first.data_type() else {
+        return Err(Error::UnexpectedRecordBatchState {
+            reason: format!(
+                "OTAP-aware concatenation expected a struct for {}, found {}",
+                plan.column_path,
+                first.data_type()
+            ),
+        });
+    };
+    let structs = arrays
+        .iter()
+        .map(|array| array.as_struct())
+        .collect::<Vec<_>>();
+    let len = structs.iter().map(|array| array.len()).sum();
+    let nulls = structs
+        .iter()
+        .any(|array| array.null_count() != 0)
+        .then(|| {
+            let mut builder = BooleanBufferBuilder::new(len);
+            for array in &structs {
+                match array.nulls() {
+                    Some(nulls) => builder.append_buffer(nulls.inner()),
+                    None => builder.append_n(array.len(), true),
+                }
+            }
+            NullBuffer::new(builder.finish())
+        });
+
+    let (id_index, _) = fields.find(ID).ok_or_else(|| Error::ColumnNotFound {
+        name: plan.column_path.to_string(),
+    })?;
+    let mut columns = Vec::with_capacity(fields.len());
+    for column_index in 0..fields.len() {
+        let child_arrays = structs
+            .iter()
+            .map(|array| array.column(column_index).as_ref())
+            .collect::<Vec<_>>();
+        let column = if column_index == id_index {
+            concatenate_planned_column(&child_arrays, plan)?
+        } else {
+            arrow::compute::concat(&child_arrays).map_err(|source| Error::Batching { source })?
+        };
+        columns.push(column);
+    }
+
+    Ok(Arc::new(
+        StructArray::try_new_with_length(fields.clone(), columns, nulls, len)
+            .map_err(|source| Error::Batching { source })?,
+    ))
+}
+
+/// Copies primitive ID arrays into one final buffer and adjusts planned input
+/// ranges during that copy.
+///
+/// A conventional reindex-then-concatenate sequence allocates an adjusted
+/// buffer per input and then copies those buffers again. This kernel allocates
+/// exactly the final values buffer. Unplanned ranges use `extend_from_slice`;
+/// planned ranges perform the signed adjustment while extending. The planner
+/// guarantees one range per complete input array, and the alignment checks
+/// below protect that contract from future planner changes.
+fn concatenate_planned_primitive<T>(
+    arrays: &[&dyn Array],
+    offsets: &[PlannedOffset],
+) -> Result<ArrayRef>
+where
+    T: ArrowPrimitiveType,
+    T::Native: AddAssign + SubAssign + Copy + ArrowNativeType,
+{
+    let total_len = arrays.iter().map(|array| array.len()).sum();
+    let mut values = Vec::with_capacity(total_len);
+    let mut output_start = 0usize;
+    let mut next_offset = offsets.iter().peekable();
+
+    for array in arrays {
+        if array.data_type() != &T::DATA_TYPE {
+            return Err(Error::ColumnDataTypeMismatch {
+                name: ID.to_string(),
+                expect: T::DATA_TYPE,
+                actual: array.data_type().clone(),
+            });
+        }
+        if array.null_count() != 0 {
+            return Err(Error::UnexpectedRecordBatchState {
+                reason: "OTAP-aware concatenation received a nullable planned ID column"
+                    .to_string(),
+            });
+        }
+        let primitive = array.as_primitive::<T>();
+        let output_end = output_start + primitive.len();
+        let output_range = output_start..output_end;
+        match next_offset.peek() {
+            Some(planned) if planned.range == output_range => {
+                let offset = T::Native::from_usize(planned.offset as usize).ok_or_else(|| {
+                    Error::UnexpectedRecordBatchState {
+                        reason: format!("Fused reindex offset {} does not fit", planned.offset),
+                    }
+                })?;
+                match planned.sign {
+                    Sign::Positive => values.extend(primitive.values().iter().map(|value| {
+                        let mut value = *value;
+                        value += offset;
+                        value
+                    })),
+                    Sign::Negative => values.extend(primitive.values().iter().map(|value| {
+                        let mut value = *value;
+                        value -= offset;
+                        value
+                    })),
+                }
+                let _ = next_offset.next();
+            }
+            Some(planned) if planned.range.start < output_end => {
+                return Err(Error::UnexpectedRecordBatchState {
+                    reason: format!(
+                        "Fused reindex range {:?} does not align with concatenated input range {:?}",
+                        planned.range, output_range
+                    ),
+                });
+            }
+            _ => values.extend_from_slice(primitive.values()),
+        }
+        output_start = output_end;
+    }
+
+    if let Some(planned) = next_offset.next() {
+        return Err(Error::UnexpectedRecordBatchState {
+            reason: format!(
+                "Fused reindex range {:?} exceeds concatenated column length {total_len}",
+                planned.range
+            ),
+        });
+    }
+
+    Ok(Arc::new(PrimitiveArray::<T>::new(
+        ScalarBuffer::from(values),
+        None,
+    )))
+}
+
+/// Builds a non-mutating uniform-offset plan for every OTAP relationship.
+///
+/// Returns `Ok(None)` as soon as any relationship needs the general reindexer;
+/// partial plans are never executed. Overflow remains an error, matching the
+/// general path rather than silently declining the optimization.
 fn try_build_fused_reindex_plan<S, const N: usize>(
     store: &MultiBatchStore<'_, S, N>,
 ) -> Result<Option<FusedReindexPlan>>
 where
     S: OtapBatchStore,
 {
+    // Translate each input table into its future output row range once. Plans
+    // store these ranges rather than batch indices so they can be applied both
+    // to a generic concatenated column and while the custom kernel is copying.
     let mut running_rows = [0usize; N];
     let row_ranges = store
         .batches
@@ -443,6 +782,12 @@ where
     Ok(Some(plan))
 }
 
+/// Adds uniform adjustments for one parent/child relationship to `plan`.
+///
+/// `Ok(false)` is an expected fast-path rejection, not malformed data. It means
+/// the relationship needs compaction, exceeds its ID width, is nullable or
+/// dictionary encoded, or otherwise cannot be represented as one adjustment
+/// per input. The caller then executes the original reindexing algorithm.
 #[allow(clippy::too_many_arguments)]
 fn try_plan_offset_reindex<T, S, const N: usize>(
     store: &MultiBatchStore<'_, S, N>,
@@ -591,6 +936,10 @@ fn apply_planned_column(
     Ok(())
 }
 
+/// Takes an array while leaving a disposable placeholder in its column slot.
+///
+/// Dropping the surrounding `ArrayRef` aliases before `into_builder` gives
+/// Arrow the opportunity to reuse a uniquely owned primitive values buffer.
 fn take_array(array: &mut ArrayRef) -> ArrayRef {
     std::mem::replace(array, Arc::new(NullArray::new(0)))
 }
@@ -602,6 +951,11 @@ fn apply_planned_offsets(array: ArrayRef, plan: &PlannedColumn) -> Result<ArrayR
     }
 }
 
+/// Applies offsets to a final concatenated primitive column.
+///
+/// This is the plan's schema-reconciliation fallback. It first attempts
+/// `into_builder` to mutate a uniquely owned Arrow buffer; shared buffers copy
+/// only once into a replacement final column.
 fn apply_planned_primitive_offsets<T>(
     array: ArrayRef,
     offsets: &[PlannedOffset],
@@ -795,6 +1149,9 @@ where
     T::Native: ArrowNativeTypeOp + Ord + Copy,
 {
     let values = materialize_id_values::<T>(col)?;
+    // Scan once instead of invoking Arrow's independent min and max kernels.
+    // The common non-null case can also iterate the contiguous values buffer
+    // without checking validity for every element.
     if values.null_count() == 0 {
         return Ok(min_max_values(values.values().iter().copied()));
     }
@@ -842,6 +1199,8 @@ where
         (min - offset, Sign::Negative)
     };
     let span = max - min + T::Native::from(1);
+    // A batch already starting at the desired offset needs no data mutation.
+    // Returning before taking the RecordBatch preserves all Arrow buffers.
     if off == T::Native::from(0) {
         return Ok(offset + span);
     }
@@ -1563,7 +1922,8 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use arrow::array::RecordBatch;
+    use arrow::array::{RecordBatch, StringArray};
+    use arrow::datatypes::{Field, Fields, Schema};
 
     use crate::error::Error;
     use crate::otap::transform::testing::{assert_no_id_overlaps, extract_relation_fingerprints};
@@ -1798,8 +2158,8 @@ mod tests {
 
     /// Scenario: overlapping plain log, resource, and scope IDs are merged from
     /// multiple batches using uniform offsets.
-    /// Guarantees: The fused path is selected and produces exactly the same
-    /// root and child IDs as the legacy reindex-then-concatenate sequence.
+    /// Guarantees: The OTAP-aware concatenation kernel is selected and produces
+    /// exactly the same root and child IDs as the legacy sequence.
     #[test]
     fn test_fused_reindex_and_concatenate_matches_legacy_logs() {
         let stores = vec![
@@ -1837,10 +2197,26 @@ mod tests {
                 (ScopeAttrs, ("parent_id", UInt16, vec![0u16, 0]))
             ),
         ];
-        let batches = stores
+        let mut batches = stores
             .into_iter()
             .map(OtapBatchStore::into_batches)
             .collect::<Vec<_>>();
+        for payload_index in 0..Logs::COUNT {
+            let Some(schema) = batches[0][payload_index]
+                .as_ref()
+                .map(|batch| Arc::clone(batch.schema_ref()))
+            else {
+                continue;
+            };
+            for batch in batches.iter_mut().skip(1) {
+                let Some(record_batch) = batch[payload_index].take() else {
+                    continue;
+                };
+                let (_, columns, _) = record_batch.into_parts();
+                batch[payload_index] =
+                    Some(RecordBatch::try_new(Arc::clone(&schema), columns).unwrap());
+            }
+        }
 
         let mut planned = batches.clone();
         let plan = {
@@ -1851,16 +2227,162 @@ mod tests {
                     .unwrap();
             }
             try_build_fused_reindex_plan(&store).unwrap()
-        };
-        assert!(plan.is_some());
+        }
+        .expect("uniform plain IDs should produce a fused plan");
 
         let mut legacy = batches.clone();
         reindex(&mut legacy).unwrap();
         let expected = concatenate(&mut legacy).unwrap();
 
+        let kernel = plan
+            .try_concatenate(&mut planned)
+            .unwrap()
+            .expect("same-schema batches should use the OTAP-aware kernel");
+        assert_eq!(kernel, expected);
+
         let mut fused = batches;
         let actual = reindex_and_concatenate(&mut fused).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    /// Scenario: nested OTAP IDs are concatenated through structs that contain
+    /// outer nulls and unrelated child columns.
+    /// Guarantees: The kernel preserves struct validity and non-ID children
+    /// while applying offsets to the nested ID buffer.
+    #[test]
+    fn test_otap_kernel_preserves_nested_struct_nulls() {
+        let fields = Fields::from(vec![
+            Arc::new(Field::new(ID, DataType::UInt16, false)),
+            Arc::new(Field::new("name", DataType::Utf8, false)),
+        ]);
+        let first = StructArray::new(
+            fields.clone(),
+            vec![
+                Arc::new(PrimitiveArray::<UInt16Type>::from(vec![0u16, 1])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+            Some(NullBuffer::from(vec![true, false])),
+        );
+        let second = StructArray::new(
+            fields,
+            vec![
+                Arc::new(PrimitiveArray::<UInt16Type>::from(vec![0u16, 1])),
+                Arc::new(StringArray::from(vec!["c", "d"])),
+            ],
+            Some(NullBuffer::from(vec![false, true])),
+        );
+        let plan = PlannedColumn {
+            payload_index: 0,
+            column_path: "resource.id",
+            id_type: IdColumnType::U16,
+            offsets: vec![PlannedOffset {
+                range: 2..4,
+                offset: 2,
+                sign: Sign::Positive,
+            }],
+        };
+
+        let arrays = [&first as &dyn Array, &second as &dyn Array];
+        let result = concatenate_planned_struct(&arrays, &plan).unwrap();
+        let result = result.as_struct();
+
+        assert_eq!(
+            result.nulls().unwrap().iter().collect::<Vec<_>>(),
+            [true, false, false, true]
+        );
+        assert_eq!(
+            result
+                .column_by_name(ID)
+                .unwrap()
+                .as_primitive::<UInt16Type>()
+                .values(),
+            &[0u16, 1, 2, 3]
+        );
+        assert_eq!(
+            result
+                .column_by_name("name")
+                .unwrap()
+                .as_string::<i32>()
+                .iter()
+                .collect::<Vec<_>>(),
+            [Some("a"), Some("b"), Some("c"), Some("d")]
+        );
+    }
+
+    /// Scenario: UInt32 relationship IDs require both positive and negative
+    /// adjustments while being copied from multiple input arrays.
+    /// Guarantees: The primitive kernel applies each signed adjustment to the
+    /// correct input range without disturbing earlier values.
+    #[test]
+    fn test_otap_kernel_concatenates_u32_with_signed_offsets() {
+        let first = PrimitiveArray::<UInt32Type>::from(vec![0u32, 1]);
+        let second = PrimitiveArray::<UInt32Type>::from(vec![0u32, 1]);
+        let third = PrimitiveArray::<UInt32Type>::from(vec![10u32, 11]);
+        let arrays = [
+            &first as &dyn Array,
+            &second as &dyn Array,
+            &third as &dyn Array,
+        ];
+        let offsets = [
+            PlannedOffset {
+                range: 2..4,
+                offset: 2,
+                sign: Sign::Positive,
+            },
+            PlannedOffset {
+                range: 4..6,
+                offset: 6,
+                sign: Sign::Negative,
+            },
+        ];
+
+        let result = concatenate_planned_primitive::<UInt32Type>(&arrays, &offsets).unwrap();
+
+        assert_eq!(
+            result.as_primitive::<UInt32Type>().values(),
+            &[0u32, 1, 2, 3, 4, 5]
+        );
+    }
+
+    /// Scenario: otherwise compatible input batches carry different schemas.
+    /// Guarantees: The OTAP-aware kernel declines atomically and leaves every
+    /// input available to the schema-conversion fallback.
+    #[test]
+    fn test_otap_kernel_schema_mismatch_leaves_inputs_untouched() {
+        let first_schema = Arc::new(Schema::new(vec![Field::new(ID, DataType::UInt16, false)]));
+        let second_schema = Arc::new(Schema::new(vec![
+            Field::new(ID, DataType::UInt16, false)
+                .with_metadata([("encoding".to_string(), "alternate".to_string())].into()),
+        ]));
+        let make_batch = |schema| {
+            RecordBatch::try_new(
+                schema,
+                vec![Arc::new(PrimitiveArray::<UInt16Type>::from(vec![0u16, 1]))],
+            )
+            .unwrap()
+        };
+        let mut batches = vec![
+            [Some(make_batch(Arc::clone(&first_schema)))],
+            [Some(make_batch(Arc::clone(&second_schema)))],
+            [Some(make_batch(first_schema))],
+        ];
+        let plan = FusedReindexPlan {
+            columns: vec![PlannedColumn {
+                payload_index: 0,
+                column_path: ID,
+                id_type: IdColumnType::U16,
+                offsets: vec![PlannedOffset {
+                    range: 2..4,
+                    offset: 2,
+                    sign: Sign::Positive,
+                }],
+            }],
+        };
+
+        let result = plan.try_concatenate(&mut batches).unwrap();
+
+        assert!(result.is_none());
+        assert!(batches.iter().all(|batch| batch[0].is_some()));
     }
 
     /// Scenario: a log child contains parent IDs outside its parent ID range.

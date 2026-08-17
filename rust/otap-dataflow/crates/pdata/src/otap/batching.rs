@@ -7,8 +7,13 @@ use super::{OtapArrowRecords, error::Result, groups::RecordsGroup};
 use otap_df_config::SignalType;
 use std::num::NonZeroU64;
 
-/// Rebatch records to the appropriate size in a single pass, measured
-/// in items.  Requires all inputs have the same signal type.
+/// Rebatch records to the appropriate size in a single pass, measured in
+/// items. Requires all inputs to have the same signal type.
+///
+/// A single non-empty input within the configured limit is returned unchanged.
+/// Besides avoiding grouping work, this preserves every Arrow buffer and schema
+/// `Arc`; that is the dominant batch-processor case when upstream batches are
+/// already sized appropriately.
 pub fn make_item_batches(
     signal: SignalType,
     max_items: Option<NonZeroU64>,

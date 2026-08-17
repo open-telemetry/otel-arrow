@@ -243,6 +243,9 @@ fn generic_concatenate<const N: usize>(
     max_items: Option<NonZeroU64>,
 ) -> Result<Vec<[Option<RecordBatch>; N]>> {
     let input_count = batches.len();
+    // With no limit, all inputs produce exactly one output. With a limit, one
+    // output per input is the conservative upper bound. Reserving both vectors
+    // avoids growth while fragments are collected and emitted.
     let mut result = Vec::with_capacity(if max_items.is_none() { 1 } else { input_count });
 
     let mut current = Vec::with_capacity(input_count);
@@ -270,6 +273,10 @@ fn concatenate_emitter<const N: usize>(
     current: &mut Vec<[Option<RecordBatch>; N]>,
     result: &mut Vec<[Option<RecordBatch>; N]>,
 ) -> Result<()> {
+    // Relationship reindexing and physical concatenation share one planner so
+    // offset-compatible inputs do not allocate intermediate ID columns. The
+    // function consumes every `Some(RecordBatch)` only after its selected path
+    // succeeds, which preserves the ownership contract checked below.
     result.push(super::transform::reindex::reindex_and_concatenate(current)?);
     assert_all_empty(current);
     current.clear();

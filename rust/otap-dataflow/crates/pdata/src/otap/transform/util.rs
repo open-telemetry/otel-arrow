@@ -309,6 +309,10 @@ fn sort_two_columns_packed<T: ArrowNativeType>(
 }
 
 /// Borrows an ID column from a record batch.
+///
+/// Reindex planning only scans these arrays, so cloning an `ArrayRef` would add
+/// unnecessary atomic reference-count traffic for every relationship in every
+/// input batch. Mutation paths explicitly clone or replace the array later.
 pub(crate) fn extract_id_column<'a>(
     rb: &'a RecordBatch,
     column_path: &str,
@@ -356,6 +360,9 @@ pub(crate) fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -
 }
 
 /// Borrows the column associated with a possibly nested path.
+///
+/// This is the read-only counterpart to `access_column`; keep both helpers so
+/// callers that only inspect schema/statistics do not clone an `ArrayRef`.
 pub(crate) fn access_column_ref<'a>(
     path: &str,
     schema: &Schema,

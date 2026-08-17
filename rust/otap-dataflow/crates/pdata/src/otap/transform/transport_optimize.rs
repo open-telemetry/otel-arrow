@@ -928,7 +928,9 @@ pub fn remove_transport_optimized_encodings(
         | ArrowPayloadType::UnivariateMetrics
         | ArrowPayloadType::MultivariateMetrics
         | ArrowPayloadType::Spans => {
-            // remove delta encoding from ID column on struct arrays ..
+            // Root batches are frequently already plain after local processing.
+            // Inspect field metadata before cloning the columns/schema vectors;
+            // `RecordBatch::clone` then retains all Arrow buffers by `Arc`.
             let schema = record_batch.schema_ref();
             if [RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, consts::ID]
                 .iter()

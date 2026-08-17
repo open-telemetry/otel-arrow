@@ -39,38 +39,48 @@ const MAX_U16_CARDINALITY: usize = 65535;
 
 /// Concatenate the provided OtapArrowRecords into a single batch.
 ///
-/// # Preconditions
+/// # Relationship preconditions
 ///
-/// Currently the caller is responsible for satisfying the following:
+/// This low-level function does not change OTAP relationship IDs. Its caller is
+/// responsible for satisfying the following:
 ///
 ///   1. Remove the transport optimized encodings from the columns, if any
 ///   2. Reindex the ID columns so that the parent child relationships are
 ///      consistent after the concatenation
 ///
-/// These will be handled internally in the future as we refine the API, see
-/// https://github.com/open-telemetry/otel-arrow/issues/1926.
+/// The batch processor satisfies these requirements through
+/// `reindex_and_concatenate`, which can fuse reindexing with this operation.
 ///
 /// # General Algorithm
 ///
-/// Concatenating multiple OtapArrowRecords involves three steps:
+/// The general schema-reconciliation path involves three steps:
 ///
-///   1. Reindexing the ID columns so that the parent child relationships are
-///      consistent after the concatenation
-///   2. Selecting a common schema and converting every record batch to that
+///   1. Selecting a common schema and converting every record batch to that
 ///      schema. This includes several steps:
 ///         * Indexing all fields for the same ArrowPayloadType across every batch
 ///         * Selecting a safe key type for each dictionary field from the
 ///           physical number of dictionary values that Arrow may concatenate.
 ///         * Determining nullability for each field in the final batch
-///   3. Casting every record batch to the final schema, including casting individual
+///   2. Casting every record batch to the final schema, including casting individual
 ///      arrays as well as reordering the columns to match the schema.
+///   3. Coalescing the converted batches into one output batch per payload type.
+///
+/// # Fast paths
+///
+/// - Zero inputs produce an empty result and one input transfers its existing
+///   batches without copying Arrow buffers.
+/// - Inputs with identical schemas and sufficient dictionary key capacity use
+///   Arrow's `concat_batches` directly, skipping field indexing, schema
+///   selection, and conversion.
+/// - The higher-level OTAP-aware path reuses the same-schema eligibility check
+///   and can apply relationship offsets while copying final ID buffers.
+///
+/// Equal dictionary data types do not by themselves make direct concatenation
+/// safe: Arrow appends each input's physical dictionary values, even when
+/// logical values overlap. The capacity preflight therefore sums physical
+/// lengths before retaining a narrow key type.
 ///
 /// # Future optimizations
-///
-/// - TODO: Re-indexing probably should not be a separate operation. We should decide
-///   within this function whether or not to do it and ensure it happens if required.
-///   This is deferred until we totally remove the old implementation in groups.rs
-///   due to interface incompatibility.
 ///
 /// - TODO: Consider using new_unchecked for record batch construction if we're
 ///   confident in it. We mostly unwrap those operations a lot, so skipping the
@@ -129,10 +139,10 @@ fn concatenate_with_def<const N: usize>(
         };
 
         let shared_schema = first.schema_ref();
-        if select_all(items, i).flatten().all(|batch| {
-            Arc::ptr_eq(batch.schema_ref(), shared_schema) || batch.schema_ref() == shared_schema
-        }) && dictionary_keys_have_capacity(items, i, first)?
-        {
+        // Most batches produced by one OTAP stream already share a schema.
+        // Avoiding the general path here removes repeated field indexing,
+        // schema construction, casts, and RecordBatch reconstruction.
+        if batches_share_concatenable_schema(items, i)? {
             let shared_schema = Arc::clone(shared_schema);
             let batches = select_all_mut(items, i)
                 .filter_map(Option::take)
@@ -184,6 +194,26 @@ fn concatenate_with_def<const N: usize>(
     }
 
     Ok(result)
+}
+
+/// Returns whether one payload slot can bypass schema reconciliation.
+///
+/// Pointer equality handles the common shared-`Arc` case cheaply; structural
+/// equality also accepts independently allocated but identical schemas. The
+/// dictionary check is separate because schema equality says nothing about the
+/// combined physical value count. This predicate is shared with the OTAP-aware
+/// copy-and-offset kernel so both fast paths have identical safety boundaries.
+pub(crate) fn batches_share_concatenable_schema<const N: usize>(
+    items: &[[Option<RecordBatch>; N]],
+    payload_index: usize,
+) -> Result<bool> {
+    let Some(first) = select_all(items, payload_index).flatten().next() else {
+        return Ok(true);
+    };
+    let shared_schema = first.schema_ref();
+    Ok(select_all(items, payload_index).flatten().all(|batch| {
+        Arc::ptr_eq(batch.schema_ref(), shared_schema) || batch.schema_ref() == shared_schema
+    }) && dictionary_keys_have_capacity(items, payload_index, first)?)
 }
 
 /// Returns whether coalescing batches that share a schema can retain every
