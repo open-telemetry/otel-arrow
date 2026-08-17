@@ -2400,12 +2400,12 @@ mod tests {
         assert!(point.bucket_counts.is_empty());
     }
 
-    /// Scenario: Direct encoding emits aggregation metadata and two ordered data points for every
-    /// sum and histogram message kind.
+    /// Scenario: Direct encoding emits aggregation metadata and two ordered data points for sum
+    /// and explicit-boundary histogram messages.
     /// Guarantees: Metadata physically precedes repeated data points, false monotonicity remains
     /// omitted, and repeated data-point order is preserved.
     #[test]
-    fn encodes_aggregation_metadata_before_ordered_data_points() {
+    fn encodes_sum_and_histogram_metadata_before_ordered_data_points() {
         let attributes = empty_attributes();
         let mut first = metric_set(
             &ALL_METRICS_DESCRIPTOR,
@@ -2475,21 +2475,23 @@ mod tests {
             panic!("expected sum metric")
         };
         assert_eq!(sum.data_points.len(), 2);
-        assert!(matches!(
-            sum.data_points[0].attributes[0]
-                .value
-                .as_ref()
-                .and_then(|value| value.value.as_ref()),
-            Some(any_value::Value::StringValue(value)) if value == "first"
-        ));
-        assert!(matches!(
-            sum.data_points[1].attributes[0]
-                .value
-                .as_ref()
-                .and_then(|value| value.value.as_ref()),
-            Some(any_value::Value::StringValue(value)) if value == "second"
-        ));
+        assert_eq!(
+            sum.data_points[0].attributes[0].value,
+            Some(AnyValue::new_string("first"))
+        );
+        assert_eq!(
+            sum.data_points[1].attributes[0].value,
+            Some(AnyValue::new_string("second"))
+        );
+    }
 
+    /// Scenario: Direct encoding emits aggregation metadata and two data points for an
+    /// exponential-histogram message.
+    /// Guarantees: Exponential-histogram temporality physically precedes every repeated data
+    /// point.
+    #[test]
+    fn encodes_exponential_histogram_metadata_before_data_points() {
+        let attributes = empty_attributes();
         let mut first = metric_set(
             &DISTRIBUTION_ONLY_DESCRIPTOR,
             attributes.clone(),
