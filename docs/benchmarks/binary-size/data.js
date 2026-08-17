@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786951783734,
+  "lastUpdate": 1786990736253,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -16060,6 +16060,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-datafusion_common",
             "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 113.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "625c0332034feaaa0578e41ce97b9d9ec2fb8c97",
+          "message": "chore(deps): update otel/opentelemetry-collector-contrib docker tag to v0.158.0 (#3785)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n|\n[otel/opentelemetry-collector-contrib](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases)\n| final | minor | `0.157.0` → `0.158.0` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>open-telemetry/opentelemetry-collector-releases\n(otel/opentelemetry-collector-contrib)</summary>\n\n###\n[`v0.158.0`](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/blob/HEAD/CHANGELOG.md#v01580)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/compare/v0.157.0...v0.158.0)\n\n##### 🛑 Breaking changes 🛑\n\n- `all`: Update Cosign usage to work with v3\n([#&#8203;1570](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1570))\nThe Cosign v3 upgrade introduced a change in signing workflow. Previous\ntwo files\nwere required to map the outputs (certificate and signature), now only\none file is required.\n  The new file is a bundle that contains both outputs in JSON format.\nThis change has been done following the guidance from\n<https://goreleaser.com/blog/cosign-v3/>.\nWith this change, anyone who wants to verify the signature of the\nartifacts produced by the\nrelease will need to use Cosign V3 and point to the new bundle file or\ndownload the bundle and\n  unpack it to get the certificate and signature files.\n\n- `all`: Use split checksum for all binaries and distros\n([#&#8203;1582](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1582))\nThe previous attempt at splitting the checksum file for AIX releases was\nnot successful.\nThe problem lies on the fac that `.runtime.GOOS` will always be the\nruntime of the compiled\ngoreleaser binary (\"linux\" in this case). The only way to split the\nchecksum file per target\nis what's implement here, but it ends up giving one checksum file per\nproduced artifact.\n\n##### 🚀 New components 🚀\n\n- `icmpcheckreceiver`: Add icmpcheckreceiver to the contrib distribution\n([#&#8203;1577](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1577))\n\n##### 💡 Enhancements 💡\n\n- `all`: Add new binaries for aix/ppc64\n([#&#8203;1424](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1424))\n\n##### 🧰 Bug fixes 🧰\n\n- `all`: Skip Docker build and publish in AIX release job.\n([#&#8203;1580](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1580))\nThe release for Contrib on AIX runs in its own job, where it doesn't\nbuild\nDocker images. The `continue --merge` phase of goreleaser runs all\npublishers\nby default, including the Docker manifests one. This will fail for AIX\nas\n  the images aren't built.\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4yOS41IiwidXBkYXRlZEluVmVyIjoiNDQuMjkuNSIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-08-17T17:00:38Z",
+          "tree_id": "2efd04b29deedf8904f91e554b46c596ba90d4fb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/625c0332034feaaa0578e41ce97b9d9ec2fb8c97"
+        },
+        "date": 1786990719652,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.9,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 69.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
             "unit": "MB"
           },
           {
