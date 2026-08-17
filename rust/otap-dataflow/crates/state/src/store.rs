@@ -691,7 +691,7 @@ mod tests {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
             self.sender
                 .try_send(LogRecord::new(event, LogContext::default()))
-                .expect("log capture channel should have capacity");
+                .expect("log capture receiver should be connected");
         }
     }
 
@@ -704,15 +704,15 @@ mod tests {
         });
     }
 
-    /// Scenario: a terminal pipeline error includes long identity and source diagnostics.
-    /// Guarantees: the observed-state log retains the compact error and pipeline identity.
+    /// Scenario: a terminal pipeline error includes long identity.
+    /// Guarantees: the log retains compact diagnostics and omits the absent source attribute.
     #[test]
     fn observed_runtime_error_retains_identity_and_diagnostics() {
         let store = ObservedStateStore::new(
             &ObservedStateSettings::default(),
             TelemetryRegistryHandle::new(),
         );
-        let (sender, receiver) = flume::bounded(1);
+        let (sender, receiver) = flume::unbounded();
         let dispatch = tracing::Dispatch::new(
             tracing_subscriber::Registry::default().with(LogCaptureLayer { sender }),
         );
