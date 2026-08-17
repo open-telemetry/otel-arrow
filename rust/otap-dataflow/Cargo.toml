@@ -293,7 +293,7 @@ urlencoding = "2"
 geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "f101f2a7bc48a1ca214c2432931e0f253a51a963", default-features = false, features = ["tls-rustls"] }
 # Pinned to a rev containing upstream resource detector work. Swap to a published version once
 # contrib cuts one.
-opentelemetry-resource-detectors = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "24d1f73fe8d44aa8820471b1ddd3d57c20e4a8bd" }
+opentelemetry-resource-detectors = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "7819998d4bd015b7ae7576b1e26aaa56314f03e6" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }
