@@ -27,6 +27,11 @@ variables:
   num_log_attributes: 12
   compression_method: none
   wait_for_result: true
+  # Normalize the OTAP drain exporter's stream concurrency to the OTLP
+  # exporter's default in-flight depth (max_in_flight=5), so the fixed
+  # reference drain is not the bottleneck and the benchmark isolates the
+  # Kafka receiver rather than the OTAP gRPC send model.
+  otap_exporter_streams_per_signal: 5
 
   # --- Canonical Kafka producer tuning (single source of truth) ---
   kafka_producer_acks: one

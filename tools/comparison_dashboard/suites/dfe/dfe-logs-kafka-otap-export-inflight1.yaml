@@ -30,6 +30,11 @@ variables:
   num_log_attributes: 12
   compression_method: none
   wait_for_result: true
+  # Normalize the OTAP loadgen feed exporter's stream concurrency to the OTLP
+  # exporter's default in-flight depth (max_in_flight=5), so the fixed
+  # reference feed is not the bottleneck and the benchmark isolates the
+  # Kafka exporter under test.
+  otap_exporter_streams_per_signal: 5
 
   # --- Canonical Kafka producer tuning (single source of truth) ---
   kafka_producer_acks: one
