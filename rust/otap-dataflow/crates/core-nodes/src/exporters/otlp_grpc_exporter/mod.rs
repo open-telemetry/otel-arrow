@@ -1019,6 +1019,14 @@ async fn finalize_completed_export(
             message = "error routing export Ack/Nack",
             error = %e
         );
+
+        pdata_metrics
+            .with(SignalOutcomeAttributes {
+                signal: signal_type,
+                outcome: Outcome::Failure,
+            })
+            .messages
+            .inc();
     } else {
         match result {
             Ok(()) => {
