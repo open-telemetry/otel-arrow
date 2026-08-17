@@ -75,6 +75,21 @@ Current experimental behavior is intentionally narrow:
   process calls, guest process errors, guest-driven drops, kernel invocation
   counters, and per-signal `records_in`/`records_out`.
 
+## Enabling in `df_engine`
+
+The shipping `df_engine` binary (`rust/otap-dataflow`) does not currently link
+this crate by default. Opt in with the top-level `wasm` cargo feature, which
+force-links `otap-df-wasm-host` (registering the `wasm_processor` factory)
+and pulls in wasmtime:
+
+```sh
+cargo build -p otap-df --features wasm
+```
+
+Without `--features wasm`, `df_engine` compiles with no wasmtime dependency
+and rejects any pipeline config referencing `processor:wasm_processor` with
+`Unknown processor plugin urn:otel:processor:wasm_processor`.
+
 ## Configuration
 
 ```yaml
