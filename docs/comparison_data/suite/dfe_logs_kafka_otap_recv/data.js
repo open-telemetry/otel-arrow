@@ -1,0 +1,16 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["dfe_logs_kafka_otap_recv"] = {
+  "name": "DFE Kafka Receiver OTAP (Logs)",
+  "slug": "dfe_logs_kafka_otap_recv",
+  "description": "Receiver-isolation benchmark with OTAP Arrow encoding. A fixed DFE Kafka exporter produces OTAP logs to the broker; the benchmarked DFE Kafka receiver consumes them and forwards to a DFE backend. Isolates DFE Kafka receiver performance for the OTAP encoding.",
+  "meta": {
+    "binary": "dfe",
+    "protocols": [],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};

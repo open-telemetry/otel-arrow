@@ -1,0 +1,16 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["otc_logs_kafka_otlp_recv"] = {
+  "name": "OTC Kafka Receiver OTLP (Logs)",
+  "slug": "otc_logs_kafka_otlp_recv",
+  "description": "Receiver-isolation benchmark. A fixed DFE Kafka exporter produces OTLP protobuf logs to the broker; the benchmarked OpenTelemetry Collector Kafka receiver consumes them and forwards to a DFE backend. Isolates the Go collector Kafka receiver performance.",
+  "meta": {
+    "binary": "otc",
+    "protocols": [],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};

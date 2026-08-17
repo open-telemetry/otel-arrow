@@ -1,0 +1,16 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["dfe_logs_kafka_otlp_recv"] = {
+  "name": "DFE Kafka Receiver OTLP (Logs)",
+  "slug": "dfe_logs_kafka_otlp_recv",
+  "description": "Receiver-isolation benchmark. A fixed DFE Kafka exporter produces OTLP protobuf logs to the broker; the benchmarked DFE Kafka receiver consumes them and forwards to a DFE backend. Isolates DFE Kafka receiver performance.",
+  "meta": {
+    "binary": "dfe",
+    "protocols": [],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};

@@ -1,0 +1,16 @@
+window.SUITE_DATA = window.SUITE_DATA || {};
+window.SUITE_DATA["dfe_logs_kafka_otlp_export"] = {
+  "name": "DFE Kafka Exporter OTLP (Logs)",
+  "slug": "dfe_logs_kafka_otlp_export",
+  "description": "Exporter-isolation benchmark. A DFE loadgen sends OTLP logs to the benchmarked DFE Kafka exporter, which produces to the broker; a fixed DFE Kafka receiver in the backend consumes them. Isolates DFE Kafka exporter performance.",
+  "meta": {
+    "binary": "dfe",
+    "protocols": [],
+    "signals": [
+      "logs"
+    ],
+    "compression": "none"
+  },
+  "env": null,
+  "tests": []
+};
