@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787000415337,
+  "lastUpdate": 1787001828295,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -16666,6 +16666,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 114.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "b5202b360d175edb576a00b59f34baab16508d3f",
+          "message": "fix: improve OTLP gRPC exporter logging for failed exports (#3792)\n\n# Change Summary\n\nWe had an issue identified that the OTLP gRPC exporter would create a\nlog event when an export service request failed, but the error was not\napparent.\n```\nWARN  otlp.exporter.http.export_error: OTLP Exporter gRPC service request did not succeed [message.uuid=64203b30-d18b-4afa-bea0-02224c7e88d5, producer.transmit.time=2026-08-17T09:50:40.712Z] (1 dropped)\n```\n\nThis is because we were invoking the `otel_warn!` macro with a field\nlike `error = %e`. When encoding fields using the `Display` trait, the\nITS's `self_tracing::encoder` library would fully drop the attribute.\nThis means any useful information about why the error occurred was\ngetting lost.\n\nThis PR makes two changes:\n\n**1) Partially encode & truncate logging fields that are passed using\ndisplay or debug formatting.**\n\nIn the `BoundedBufMut` adapter we write string, if a truncation has\nalready happedn (e.g. if it's already full), we ignore what's being\nwritten. Otherwise, since there is space, we try to write the string. If\nit doesn't fully fit, we write as much as many characters as can\npossibly fit, then add the suffix by finding the last full UTF-8\ncharacter that would fit before the truncation suffix, and adding the\nsuffix after this character.\n\nThe `BoundedBufMut` adapter also keeps track of the content start and\nwhether truncation occured. We use this in the functions that call the\nadapter (such as `encode_debug_string` and\n`DirectFieldVisitor::record_debug) to ensure generate the correct return\nresult.\n\n**2) Corrects the arguments to the logging macro in the OTLP gRPC\nexporter**\n\nInstead of simply stringifying the `exporter::Error` which was acreated\nfrom the `tonic::Status` we now call `otel_warn` macro with fields from\nthe `tonic::Status` directly. This gives us a better output. I also made\nthe message shorter, to give more space for the attributes which contain\ninfo about the root cause:\n\nTCP Connection case:\n```\n2026-08-17T18:25:03.921Z  WARN  otap-df-core-nodes::otlp.exporter.grpc.export_error: service request error [code=The service is currently unavailable, error_msg=tcp connect error, source=; source: transport error -> tcp connect error -> tcp c[...]] \n```\n\nServer returns error status/response:\n```\n2026-08-17T18:33:15.876Z  WARN  otap-df-core-nodes::otlp.exporter.grpc.export_error: service request error [code=Internal error, error_msg=mock error: Internal, source=] \n```\n\nMisconfigured https when server is http only:\n```\n2026-08-17T18:35:01.425Z  WARN  otap-df-core-nodes::otlp.exporter.grpc.export_error: service request error [code=The service is currently unavailable, error_msg=received corrupt message of type InvalidContentType, source=; source: transport error -> received [...]] \n```\n\n\n\n<!--Replace with a brief summary of the change in this PR-->\n\n## What issue does this PR close?\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #3793 \n\n## How are these changes tested?\n\nSome unit tests, some manual testing\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-08-17T20:06:03Z",
+          "tree_id": "02f6c9d488e1a839f599af5cf0f2c60e211bbe4b",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/b5202b360d175edb576a00b59f34baab16508d3f"
+        },
+        "date": 1787001813431,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 69.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.13,
             "unit": "MB"
           },
           {
