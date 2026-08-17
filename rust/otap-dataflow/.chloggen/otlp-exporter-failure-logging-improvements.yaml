@@ -1,0 +1,4 @@
+change_type: enhancement
+component: observability
+note: Avoid cause of failed OTLP gRPC requests getting truncated in error logs
+issues: [3793]
