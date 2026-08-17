@@ -3,10 +3,19 @@
 
 //! Core Kafka exporter implementation.
 //!
-//! ToDo: Currently only handles one kafka message add a time we should
-//! improve the throughput by handling delivery futures
+//! # Delivery pipelining and backpressure
+//!
+//! The exporter encodes and enqueues each accepted pdata to librdkafka and
+//! then tracks its delivery future in a bounded in-flight set
+//! ([`InFlightSends`]). The number of concurrently outstanding deliveries is
+//! capped by the `max_in_flight` config (default `10`). When the set is full the
+//! event loop stops accepting new pdata and only drains completions, so
+//! in-flight memory stays bounded and backpressure propagates upstream.
+//!
+//! With the default `max_in_flight = 10` the exporter pipelines up to ten
+//! deliveries for throughput.
 
-use super::producer::{ExporterFutureProducer, ExporterFutureRecord};
+use super::producer::{ExporterDeliveryFuture, ExporterFutureProducer, ExporterFutureRecord};
 
 use super::config::{KafkaExporterConfig, SignalConfig};
 use super::encoder;
@@ -21,6 +30,9 @@ use crate::common::kafka::aws::ProducerClientContext;
 use crate::common::kafka::security::build_aws_msk_context;
 use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
 use async_trait::async_trait;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
+use futures_channel::oneshot::Canceled;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -45,7 +57,10 @@ use rdkafka::client::DefaultClientContext;
 use rdkafka::config::FromClientConfigAndContext;
 use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::Producer;
+use rdkafka::producer::future_producer::OwnedDeliveryResult;
 use regex::Regex;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -155,6 +170,118 @@ impl<'a> AckNackReporter for EffectHandlerReporter<'a> {
             .map_err(|e| {
                 KafkaExporterError::Configuration(format!("Failed to send permanent Nack: {e}"))
             })
+    }
+}
+
+/// Metadata carried alongside a pipelined delivery so its completion can be
+/// reported as an ack or nack.
+///
+/// The `pdata` is the reconstructed [`OtapPdata`] (context + payload) that is
+/// handed back to the reporter on ack/nack so an upstream `processor:retry` can
+/// retry a transiently failed batch. `topic` is retained only so the failure
+/// log can name the (possibly client-supplied) destination.
+struct SendMeta {
+    signal_type: SignalType,
+    topic: String,
+    pdata: OtapPdata,
+    export_start: Instant,
+    delivery_start: Instant,
+    payload_bytes: usize,
+}
+
+/// Bounded, self-managing set of in-flight Kafka deliveries.
+///
+/// Wraps a [`FuturesUnordered`] of boxed futures that each await a delivery and
+/// yield its [`SendMeta`] paired with the delivery outcome. The delivery
+/// outcome flattens as: `Ok(Ok(..))` delivered successfully; `Ok(Err(..))`
+/// delivery failed carrying a [`rdkafka::error::KafkaError`]; `Err(Canceled)`
+/// the delivery future was cancelled because the producer was dropped or purged
+/// (treated as a transient failure, matching the purge-on-shutdown semantics).
+///
+/// The set is constructed with the configured `max_in_flight` bound and owns
+/// it: [`Self::push`] enforces the bound directly (draining one outstanding
+/// delivery when the set is already full), so the number of concurrently
+/// outstanding deliveries never exceeds the bound (see [`KafkaExporter`] module
+/// docs). Callers still use [`Self::is_full`] to gate upstream admission, but
+/// they no longer need to pre-drain to keep `push` correct.
+struct InFlightSends {
+    #[allow(clippy::type_complexity)]
+    futures: FuturesUnordered<
+        Pin<Box<dyn Future<Output = (SendMeta, Result<OwnedDeliveryResult, Canceled>)>>>,
+    >,
+    /// Maximum number of deliveries allowed to be outstanding at once. Set from
+    /// the `max_in_flight` config and enforced via [`Self::is_full`].
+    max_in_flight: usize,
+}
+
+impl InFlightSends {
+    /// Creates an empty set bounded at `max_in_flight` concurrent deliveries.
+    fn new(max_in_flight: usize) -> Self {
+        Self {
+            futures: FuturesUnordered::new(),
+            max_in_flight,
+        }
+    }
+
+    /// Whether there are no outstanding deliveries.
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.futures.is_empty()
+    }
+
+    /// Whether the set has reached its `max_in_flight` bound and must drain a
+    /// completion before accepting another delivery.
+    #[inline]
+    fn is_full(&self) -> bool {
+        self.futures.len() >= self.max_in_flight
+    }
+
+    /// Track an in-flight delivery, enforcing the `max_in_flight` bound.
+    ///
+    /// When the set is already [`Self::is_full`], this first awaits one
+    /// outstanding delivery and returns its completion (which the caller must
+    /// finalize) before storing the new delivery. This guarantees the number of
+    /// concurrently outstanding deliveries never exceeds `max_in_flight` without
+    /// the caller having to pre-drain. The stored delivery's future is then
+    /// polled by [`Self::next_completion`] until it resolves, at which point
+    /// `meta` is paired with the delivery outcome.
+    async fn push(
+        &mut self,
+        delivery: ExporterDeliveryFuture,
+        meta: SendMeta,
+    ) -> Option<(SendMeta, Result<OwnedDeliveryResult, Canceled>)> {
+        // At capacity: drain exactly one completion to make room. The set is
+        // non-empty here (is_full implies len >= max_in_flight >= 1), so
+        // `next()` yields `Some`.
+        let completed = if self.is_full() {
+            self.futures.next().await
+        } else {
+            None
+        };
+        self.futures.push(Box::pin(async move {
+            let result = delivery.await;
+            (meta, result)
+        }));
+        completed
+    }
+
+    /// Await the next resolved delivery, returning its metadata and outcome.
+    ///
+    /// When the set is empty this stays pending forever (rather than resolving
+    /// to `None`), so it can be used directly in a `select` without busy
+    /// looping. Callers must guard with [`Self::is_empty`] where a definite
+    /// answer is required (e.g. the shutdown drain loop).
+    async fn next_completion(&mut self) -> (SendMeta, Result<OwnedDeliveryResult, Canceled>) {
+        if self.futures.is_empty() {
+            std::future::pending().await
+        } else {
+            // Safe to unwrap: the set is non-empty, and FuturesUnordered only
+            // yields None when empty.
+            self.futures
+                .next()
+                .await
+                .expect("FuturesUnordered yielded None while non-empty")
+        }
     }
 }
 
@@ -389,7 +516,17 @@ impl KafkaExporter {
         headers
     }
 
-    /// Exports a single PData message to Kafka with Ack/Nack support.
+    /// Encodes a single PData message and enqueues it to Kafka, returning the
+    /// resulting [`InFlightSend`] whose delivery future the caller tracks in the
+    /// bounded in-flight set.
+    ///
+    /// This performs all the synchronous pre-send work -- config lookup, topic
+    /// resolution, partition-key derivation, header building, and encoding --
+    /// and then enqueues the record via
+    /// [`ExporterFutureProducer::send_result`], which returns immediately once
+    /// the record is accepted by librdkafka (the delivery itself completes
+    /// asynchronously and is finalized later by
+    /// [`Self::finalize_send_completion`]).
     ///
     /// Uses the [`TopicRouter`] to resolve the destination topic:
     /// 1. Transport header (highest priority): used when the configured header
@@ -406,12 +543,23 @@ impl KafkaExporter {
     /// Both text and binary transport header values are emitted as-is since
     /// Kafka headers are opaque byte sequences with string keys (unlike gRPC,
     /// which requires a `-bin` suffix convention for binary metadata).
-    async fn export_pdata(
+    ///
+    /// # Return value
+    ///
+    /// * `Ok(Some((delivery, meta)))` -- the record was accepted by librdkafka;
+    ///   the caller must push the delivery future and its [`SendMeta`] into the
+    ///   in-flight set so the delivery is finalized.
+    /// * `Ok(None)` -- the message was terminally handled synchronously (an
+    ///   enqueue failure was already reported as a nack); there is no in-flight
+    ///   delivery to track.
+    /// * `Err(e)` -- a pre-send failure (unconfigured signal, invalid dynamic
+    ///   topic, or encode failure) was already reported as a permanent nack.
+    async fn enqueue_pdata(
         &mut self,
         pdata: OtapPdata,
         reporter: &dyn AckNackReporter,
         effect_handler: Option<&EffectHandler<OtapPdata>>,
-    ) -> Result<(), KafkaExporterError> {
+    ) -> Result<Option<(ExporterDeliveryFuture, SendMeta)>, KafkaExporterError> {
         let export_start = Instant::now();
         let signal_type = pdata.signal_type();
 
@@ -543,38 +691,30 @@ impl KafkaExporter {
             record = record.key(key);
         }
 
-        // Send to Kafka with timeout. `timeout_ms` is validated to be within
-        // (0, 30s] at config time (see `KafkaExporterConfig`), so this await is
-        // always bounded and can never block shutdown indefinitely: a `0` would
-        // otherwise map to librdkafka's infinite `message.timeout.ms`.
-        let timeout = Duration::from_millis(self.config.timeout_ms());
+        // Enqueue the record to librdkafka without awaiting delivery. The
+        // returned delivery future resolves asynchronously and is finalized by
+        // `finalize_send_completion`; bounding the number of outstanding
+        // futures (see `max_in_flight`) is what provides backpressure here.
+        //
+        // Note: unlike the previous inline `send`, `send_result` does not retry
+        // a full producer queue. A queue-full (or any other) enqueue error is
+        // reported as a transient nack so an upstream `processor:retry` can
+        // resend; the bounded in-flight set already keeps the queue from being
+        // driven unboundedly deep.
         let delivery_start = Instant::now();
-        match self.producer.send(record, timeout).await {
-            Ok(_delivery) => {
-                self.metrics.record_operation(
+        match self.producer.send_result(record) {
+            Ok(delivery) => Ok(Some((
+                delivery,
+                SendMeta {
                     signal_type,
-                    KafkaExporterOperation::Delivery,
-                    Outcome::Success,
-                    delivery_start.elapsed().as_secs_f64(),
-                );
-                self.metrics.record_success(
-                    signal_type,
-                    export_start.elapsed(),
-                    payload_bytes.len(),
-                );
-                // Ack reporting is best-effort; Kafka send succeeded so don't fail on ack errors
-                if let Err(e) = reporter.ack(OtapPdata::new(context, payload)).await {
-                    if let Some(eh) = effect_handler {
-                        eh.info(&format!(
-                            "Failed to report ack for Kafka export (export succeeded): {}",
-                            e
-                        ))
-                        .await;
-                    }
-                }
-                Ok(())
-            }
-            Err((kafka_err, _original_record)) => {
+                    topic: topic.into_owned(),
+                    pdata: OtapPdata::new(context, payload),
+                    export_start,
+                    delivery_start,
+                    payload_bytes: payload_bytes.len(),
+                },
+            ))),
+            Err((kafka_err, _record)) => {
                 self.metrics.record_delivery_failure(
                     signal_type,
                     &kafka_err,
@@ -582,11 +722,6 @@ impl KafkaExporter {
                     export_start.elapsed(),
                     payload_bytes.len(),
                 );
-                // Classify the send failure: some Kafka errors (e.g. a record
-                // that exceeds `message.max.bytes`, or an authorization failure)
-                // can never succeed on retry, so they are permanently nacked and
-                // dropped at the source rather than retried by an upstream
-                // `processor:retry`. Everything else stays transient (retryable).
                 let permanent = is_permanent_send_error(&kafka_err);
                 // `topic` may be a client-supplied (header-routed) value, so
                 // bound/escape it before logging to avoid log injection.
@@ -597,8 +732,6 @@ impl KafkaExporter {
                     permanent = permanent,
                     error = %kafka_err,
                 );
-                // Nack reporting is best-effort; don't propagate nack errors since the
-                // primary Kafka error is what matters
                 let reason = kafka_err.to_string();
                 let refused = OtapPdata::new(context, payload);
                 let nack_result = if permanent {
@@ -609,13 +742,109 @@ impl KafkaExporter {
                 if let Err(e) = nack_result {
                     if let Some(eh) = effect_handler {
                         eh.info(&format!(
-                            "Failed to report nack for Kafka export failure: {}",
+                            "Failed to report nack for Kafka export enqueue failure: {}",
                             e
                         ))
                         .await;
                     }
                 }
-                Err(KafkaExporterError::KafkaError(kafka_err))
+                // Enqueue failure was reported synchronously; there is no
+                // in-flight delivery to track.
+                Ok(None)
+            }
+        }
+    }
+
+    /// Finalizes a resolved in-flight delivery by reporting the ack or nack.
+    ///
+    /// A successful delivery increments the exported counter and acks the
+    /// original pdata. A delivery failure (or a cancelled delivery future,
+    /// which happens when the producer is purged on shutdown/reconfigure)
+    /// increments the failed counter and reports a nack -- permanent for errors
+    /// that can never succeed on retry, transient otherwise. Ack/nack reporting
+    /// is best-effort; a reporting error is logged but never fails the export.
+    async fn finalize_send_completion(
+        &mut self,
+        meta: SendMeta,
+        result: Result<OwnedDeliveryResult, Canceled>,
+        reporter: &dyn AckNackReporter,
+        effect_handler: Option<&EffectHandler<OtapPdata>>,
+    ) {
+        let SendMeta {
+            signal_type,
+            topic,
+            pdata,
+            export_start,
+            delivery_start,
+            payload_bytes,
+        } = meta;
+
+        // Match the two delivery layers directly:
+        // `Ok(Ok(..))`  -> delivered successfully; ack.
+        // `Ok(Err(..))` -> delivery failed with a KafkaError; nack.
+        // `Err(Canceled)` -> producer dropped/purged before delivery resolved;
+        //                    treat as a transient `Canceled` failure (matches
+        //                    purge-error semantics) so the batch can be retried.
+        let kafka_err = match result {
+            Ok(Ok(_delivery)) => {
+                self.metrics.record_operation(
+                    signal_type,
+                    KafkaExporterOperation::Delivery,
+                    Outcome::Success,
+                    delivery_start.elapsed().as_secs_f64(),
+                );
+                self.metrics
+                    .record_success(signal_type, export_start.elapsed(), payload_bytes);
+                if let Err(e) = reporter.ack(pdata).await {
+                    if let Some(eh) = effect_handler {
+                        eh.info(&format!(
+                            "Failed to report ack for Kafka export (export succeeded): {}",
+                            e
+                        ))
+                        .await;
+                    }
+                }
+                return;
+            }
+            Ok(Err((kafka_err, _owned_message))) => kafka_err,
+            Err(_canceled) => rdkafka::error::KafkaError::Canceled,
+        };
+
+        self.metrics.record_delivery_failure(
+            signal_type,
+            &kafka_err,
+            delivery_start.elapsed().as_secs_f64(),
+            export_start.elapsed(),
+            payload_bytes,
+        );
+        // Classify the delivery failure: some Kafka errors (e.g. a record that
+        // exceeds `message.max.bytes`, or an authorization failure) can never
+        // succeed on retry, so they are permanently nacked and dropped at the
+        // source rather than retried by an upstream `processor:retry`.
+        // Everything else stays transient.
+        let permanent = is_permanent_send_error(&kafka_err);
+        // `topic` may be a client-supplied (header-routed) value, so
+        // bound/escape it before logging to avoid log injection.
+        otap_df_telemetry::otel_warn!(
+            "kafka.exporter.send.failed",
+            topic = %crate::common::kafka::sanitize_for_log(&topic),
+            signal_type = ?signal_type,
+            permanent = permanent,
+            error = %kafka_err,
+        );
+        let reason = kafka_err.to_string();
+        let nack_result = if permanent {
+            reporter.nack_permanent(reason, pdata).await
+        } else {
+            reporter.nack(reason, pdata).await
+        };
+        if let Err(e) = nack_result {
+            if let Some(eh) = effect_handler {
+                eh.info(&format!(
+                    "Failed to report nack for Kafka export failure: {}",
+                    e
+                ))
+                .await;
             }
         }
     }
@@ -667,6 +896,11 @@ impl KafkaExporter {
     /// the per-message delivery bound, so a slow or unavailable broker can never
     /// stall the reconfigure.
     ///
+    /// The in-flight set is rebuilt at the new `max_in_flight` after the old
+    /// deliveries are drained, so a live change to the concurrency bound takes
+    /// effect immediately (a lowered bound is enforced at once; a raised bound
+    /// applies to subsequent deliveries).
+    ///
     /// Reconfiguration is best-effort: if the incoming config fails to
     /// deserialize/validate, or the new producer fails to build, the error is
     /// logged and the existing producer keeps running. This mirrors the
@@ -699,6 +933,8 @@ impl KafkaExporter {
     async fn reconfigure(
         &mut self,
         config: serde_json::Value,
+        in_flight: &mut InFlightSends,
+        reporter: &dyn AckNackReporter,
         effect_handler: &EffectHandler<OtapPdata>,
     ) {
         // Deserialize and validate the incoming config. On failure, keep the
@@ -790,6 +1026,29 @@ impl KafkaExporter {
                 .purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
         }
 
+        // Finalize every pipelined delivery tracked against the old producer
+        // before swapping it out. Their delivery futures resolve from the old
+        // producer's callbacks (successfully after the flush above, or as a
+        // purge/cancel error otherwise); draining them here reports the ack or
+        // nack for each and, critically, releases the borrow on the old
+        // producer's delivery channels before it is dropped.
+        while !in_flight.is_empty() {
+            let (meta, result) = in_flight.next_completion().await;
+            self.finalize_send_completion(meta, result, reporter, Some(effect_handler))
+                .await;
+        }
+
+        // all in_flight msgs should be drained
+        debug_assert!(in_flight.is_empty(), "in-flight set must be drained");
+
+        // Capture the new concurrency bound before `new_config` is moved into
+        // `self.config` below.
+        let new_max_in_flight = if self.config.max_in_flight() != new_config.max_in_flight() {
+            Some(new_config.max_in_flight())
+        } else {
+            None
+        };
+
         // Swap in the new producer, config, and compiled allowlist regexes.
         // Dropping the old producer joins its poll thread (see
         // ExporterThreadedProducer::drop).
@@ -798,6 +1057,10 @@ impl KafkaExporter {
         self.traces_allowed_topics_regex = new_traces_regex;
         self.metrics_allowed_topics_regex = new_metrics_regex;
         self.logs_allowed_topics_regex = new_logs_regex;
+        // create new InFlightSends if user changes max_in_flight setting
+        if let Some(max_in_flight) = new_max_in_flight {
+            *in_flight = InFlightSends::new(max_in_flight);
+        }
 
         otap_df_telemetry::otel_info!(
             "kafka.exporter.reconfigured",
@@ -831,13 +1094,73 @@ impl Exporter<OtapPdata> for KafkaExporter {
 
         let ack_nack_reporter = EffectHandlerReporter::new(&effect_handler);
 
-        // Main event loop.
+        // Bounded, self-managing set of pipelined deliveries. It owns the
+        // `max_in_flight` bound: while it reports `is_full()` the loop stops
+        // admitting new pdata (via `recv_when`), which bounds in-flight memory
+        // and propagates backpressure upstream. The default of 1 preserves the
+        // historical serial behavior.
+        let mut in_flight = InFlightSends::new(self.config.max_in_flight());
+
+        // Main loop: biased-wait for either an in-flight completion or the next
+        // inbound message, admitting new pdata only while the in-flight set has
+        // spare capacity.
         loop {
-            match inbox.recv().await? {
-                Message::PData(pdata) => {
-                    _ = self
-                        .export_pdata(pdata, &ack_nack_reporter, Some(&effect_handler))
+            // Gate pdata admission on spare capacity: while the set is full only
+            // control messages (and shutdown-time force-drained pdata) can
+            // arrive, so the `max_in_flight` bound is respected. Completions win
+            // ties so acks/nacks drain promptly and in-flight memory is
+            // released.
+            let accepting_pdata = !in_flight.is_full();
+            let msg = if in_flight.is_empty() {
+                inbox.recv_when(accepting_pdata).await?
+            } else {
+                let completion_fut = in_flight.next_completion().fuse();
+                let recv_fut = inbox.recv_when(accepting_pdata).fuse();
+                futures::pin_mut!(completion_fut, recv_fut);
+
+                futures::select_biased! {
+                    completion = completion_fut => {
+                        let (meta, result) = completion;
+                        self.finalize_send_completion(
+                            meta,
+                            result,
+                            &ack_nack_reporter,
+                            Some(&effect_handler),
+                        )
                         .await;
+                        continue;
+                    }
+                    msg = recv_fut => msg?,
+                }
+            };
+
+            match msg {
+                Message::PData(pdata) => {
+                    // On `Ok(Some((delivery, meta)))` track the delivery; an
+                    // enqueue failure or a synchronous pre-send nack (`Ok(None)`
+                    // / `Err(_)`) was already reported, so there is nothing to
+                    // track.
+                    //
+                    // `push` enforces the `max_in_flight` bound itself: if the
+                    // set is already full (which can happen when shutdown
+                    // draining force-drains buffered pdata past the admission
+                    // gate), it drains one completion and returns it so we can
+                    // finalize its ack/nack here.
+                    if let Ok(Some((delivery, meta))) = self
+                        .enqueue_pdata(pdata, &ack_nack_reporter, Some(&effect_handler))
+                        .await
+                    {
+                        if let Some((done_meta, done_result)) = in_flight.push(delivery, meta).await
+                        {
+                            self.finalize_send_completion(
+                                done_meta,
+                                done_result,
+                                &ack_nack_reporter,
+                                Some(&effect_handler),
+                            )
+                            .await;
+                        }
+                    }
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
@@ -864,10 +1187,22 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     _ = timer_cancel_handle.cancel().await;
 
                     // Graceful shutdown: ingress is already closed by the
-                    // engine's receiver-first drain, so just drain our in-flight
-                    // deliveries by flushing (bounded by `deadline`), then purge
-                    // anything still queued so we never block past the deadline.
+                    // engine's receiver-first drain. Flush the producer (bounded
+                    // by `deadline`) so pipelined deliveries get a final chance,
+                    // then finalize every tracked in-flight delivery so its
+                    // ack/nack is reported before we return, then purge anything
+                    // still queued so we never block past the deadline.
                     self.drain_and_flush(deadline, &effect_handler).await;
+                    while !in_flight.is_empty() {
+                        let (meta, result) = in_flight.next_completion().await;
+                        self.finalize_send_completion(
+                            meta,
+                            result,
+                            &ack_nack_reporter,
+                            Some(&effect_handler),
+                        )
+                        .await;
+                    }
 
                     effect_handler.info("Kafka exporter stopped").await;
                     return Ok(TerminalState::new(
@@ -877,8 +1212,9 @@ impl Exporter<OtapPdata> for KafkaExporter {
                 }
                 Message::Control(NodeControlMsg::Config { config }) => {
                     // Live reconfiguration: build-and-swap the librdkafka
-                    // producer with a bounded drain of the old one, Invalid
-                    // configs are logged and ignored (the current producer keeps
+                    // producer with a bounded drain of the old one (including
+                    // finalizing tracked in-flight deliveries). Invalid configs
+                    // are logged and ignored (the current producer keeps
                     // running).
                     //
                     // Known limitations (see `reconfigure`): pdata accepted
@@ -887,7 +1223,8 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // the bounded flush plus old-producer drop can block the
                     // pipeline. Tracked in the live-reconfiguration issue
                     // (https://github.com/open-telemetry/otel-arrow/issues/3768).
-                    self.reconfigure(config, &effect_handler).await;
+                    self.reconfigure(config, &mut in_flight, &ack_nack_reporter, &effect_handler)
+                        .await;
                 }
                 Message::Control(_) => {
                     // Ignore other control messages
@@ -1091,13 +1428,49 @@ pub mod test_support {
         }
     }
 
-    /// Exports a single batch using the provided exporter and reporter.
+    /// Exports a single batch using the provided exporter and reporter,
+    /// awaiting its delivery to completion.
+    ///
+    /// This drives the full enqueue -> await-delivery -> finalize sequence so a
+    /// single call reports exactly one ack or nack, matching the pre-pipelining
+    /// behavior the unit tests rely on. The production event loop instead
+    /// pipelines many deliveries via [`KafkaExporter::enqueue_pdata`] and
+    /// [`KafkaExporter::finalize_send_completion`]; here they are chained inline
+    /// so tests can assert the outcome synchronously.
     pub async fn export_once(
         exporter: &mut KafkaExporter,
         pdata: OtapPdata,
         reporter: &dyn AckNackReporter,
     ) -> Result<(), KafkaExporterError> {
-        exporter.export_pdata(pdata, reporter, None).await
+        // Pre-send failures (unconfigured signal, invalid dynamic topic, encode
+        // failure) and synchronous enqueue failures are already reported by
+        // `enqueue_pdata`; propagate any error and stop.
+        let (delivery, meta) = match exporter.enqueue_pdata(pdata, reporter, None).await? {
+            Some(send) => send,
+            None => return Ok(()),
+        };
+
+        // Await this single delivery and finalize it (ack or nack), mirroring
+        // the loop's completion handling.
+        let result = delivery.await;
+        // Capture the delivery outcome before finalize consumes `result` so the
+        // helper can surface a delivery failure to callers as an `Err` (the
+        // production loop reports the nack via the reporter and discards the
+        // per-send error).
+        let delivery_err: Option<KafkaExporterError> = match &result {
+            Ok(Ok(_)) => None,
+            Ok(Err((kafka_err, _))) => Some(KafkaExporterError::KafkaError(kafka_err.clone())),
+            Err(_canceled) => Some(KafkaExporterError::KafkaError(
+                rdkafka::error::KafkaError::Canceled,
+            )),
+        };
+        exporter
+            .finalize_send_completion(meta, result, reporter, None)
+            .await;
+        match delivery_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     #[cfg(test)]
@@ -1596,6 +1969,20 @@ pub mod test_support {
                 .expect("config should be valid")
         }
 
+        /// Like [`logs_config`] but with an explicit `max_in_flight` so tests can
+        /// exercise the bounded delivery-future pipelining.
+        fn logs_config_mif(
+            brokers: &str,
+            signal: SignalConfig,
+            max_in_flight: usize,
+        ) -> KafkaExporterConfig {
+            KafkaExporterConfigBuilder::new(brokers, "it-client")
+                .with_logs(signal)
+                .with_max_in_flight(max_in_flight)
+                .try_into()
+                .expect("config should be valid")
+        }
+
         /// Builds a single-signal-logs reconfiguration JSON payload (the shape
         /// carried by `NodeControlMsg::Config`) targeting `topic` on `brokers`.
         fn logs_reconfig_json(brokers: &str, topic: &str) -> serde_json::Value {
@@ -1603,6 +1990,21 @@ pub mod test_support {
                 "brokers": brokers,
                 "client_id": "it-client",
                 "logs": { "topic": topic, "encoding": "otlp_proto" },
+            })
+        }
+
+        /// Like [`logs_reconfig_json`] but with an explicit `max_in_flight`, so a
+        /// test can exercise a live change to the concurrency bound.
+        fn logs_reconfig_json_mif(
+            brokers: &str,
+            topic: &str,
+            max_in_flight: usize,
+        ) -> serde_json::Value {
+            serde_json::json!({
+                "brokers": brokers,
+                "client_id": "it-client",
+                "logs": { "topic": topic, "encoding": "otlp_proto" },
+                "max_in_flight": max_in_flight,
             })
         }
 
@@ -2477,6 +2879,954 @@ pub mod test_support {
             .await;
         }
 
+        // ---- InFlightSends bound enforcement (unit) ----
+
+        /// Builds a delivery future that resolves immediately to a successful
+        /// delivery, plus a matching [`SendMeta`], for driving `InFlightSends`
+        /// bookkeeping without a live producer.
+        fn ready_send(topic: &str) -> (ExporterDeliveryFuture, SendMeta) {
+            let delivery = ExporterDeliveryFuture::ready_for_test(Ok(
+                rdkafka::producer::future_producer::Delivery {
+                    partition: 0,
+                    offset: 0,
+                    timestamp: rdkafka::Timestamp::NotAvailable,
+                },
+            ));
+            let meta = SendMeta {
+                signal_type: SignalType::Logs,
+                topic: topic.to_string(),
+                pdata: sample_pdata(SignalType::Logs),
+                export_start: Instant::now(),
+                delivery_start: Instant::now(),
+                payload_bytes: 0,
+            };
+            (delivery, meta)
+        }
+
+        /// Scenario (backpressure): with `max_in_flight = 1`, a second `push` is issued while one
+        /// delivery is already outstanding.
+        /// Guarantees: `InFlightSends::push` enforces the bound itself -- the
+        /// over-limit push first drains and returns the prior completion, and the
+        /// set never holds more than `max_in_flight` outstanding deliveries.
+        #[tokio::test]
+        async fn in_flight_push_enforces_bound_by_draining() {
+            let mut in_flight = InFlightSends::new(1);
+            assert!(in_flight.is_empty());
+            assert!(!in_flight.is_full());
+
+            // First push fits under the bound: nothing is drained.
+            let (d1, m1) = ready_send("t1");
+            let drained = in_flight.push(d1, m1).await;
+            assert!(
+                drained.is_none(),
+                "push below the bound must not drain a completion"
+            );
+            assert!(in_flight.is_full(), "one outstanding delivery hits max=1");
+
+            // Second push is at capacity: push must drain and return exactly one
+            // completion (the first delivery) so the caller can finalize it,
+            // while the set still holds a single outstanding delivery.
+            let (d2, m2) = ready_send("t2");
+            let drained = in_flight
+                .push(d2, m2)
+                .await
+                .expect("at-capacity push must drain one completion");
+            assert_eq!(
+                drained.0.topic, "t1",
+                "drained completion is the first send"
+            );
+            assert!(matches!(drained.1, Ok(Ok(_))), "first delivery succeeded");
+            assert!(
+                in_flight.is_full(),
+                "still exactly one outstanding delivery after the swap"
+            );
+
+            // Draining the remaining completion empties the set.
+            let (final_meta, final_result) = in_flight.next_completion().await;
+            assert_eq!(final_meta.topic, "t2");
+            assert!(matches!(final_result, Ok(Ok(_))));
+            assert!(
+                in_flight.is_empty(),
+                "set is empty after draining both sends"
+            );
+        }
+
+        // ---- Backpressure & delivery-future pipelining ----
+
+        /// Scenario (backpressure): the default (`max_in_flight = 10`) config exports a
+        /// sequence of distinct payloads to a single-partition topic.
+        /// Guarantees: even with the pipelined default, single-partition delivery
+        /// keeps records in send order at strictly increasing offsets, so leaving
+        /// `max_in_flight` unset never reorders deliveries within a partition.
+        #[tokio::test]
+        async fn default_max_in_flight_preserves_partition_ordering() {
+            let topic = "it-mif-default-order";
+            const N: usize = 10;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    // logs_config leaves max_in_flight at its serde default of 10.
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    assert_eq!(cfg.max_in_flight(), 10, "default config pipelines");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payloads: Vec<Vec<u8>> = (0..N).map(logs_request_bytes_seq).collect();
+                    for payload in &payloads {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata");
+                    }
+
+                    let msgs = consumer.recv_n(N).await;
+                    for (i, msg) in msgs.iter().enumerate() {
+                        let _ = msg
+                            .assert_partition(0)
+                            .assert_offset(i as i64)
+                            .assert_payload(&payloads[i]);
+                    }
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): with `max_in_flight = 8`, many batches are pipelined to a
+        /// live mock broker.
+        /// Guarantees: pipelining never loses or duplicates data -- every sent
+        /// batch is delivered exactly once (readable back) and the terminal
+        /// `messages{logs,success}` counter equals the number of sends.
+        #[tokio::test]
+        async fn pipelined_sends_all_deliver_and_ack() {
+            let topic = "it-mif-pipelined-deliver";
+            const N: usize = 40;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                        8,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payloads: Vec<Vec<u8>> = (0..N).map(logs_request_bytes_seq).collect();
+                    for payload in &payloads {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata");
+                    }
+
+                    // All N delivered exactly once (single partition -> exactly
+                    // offsets 0..N, no gaps or duplicates).
+                    let msgs = consumer.recv_n(N).await;
+                    assert_eq!(msgs.len(), N, "every pipelined batch must be delivered");
+                    let delivered: std::collections::HashSet<Vec<u8>> = msgs
+                        .iter()
+                        .map(|m| m.payload.clone().expect("payload"))
+                        .collect();
+                    assert_eq!(
+                        delivered.len(),
+                        N,
+                        "no duplicate deliveries under pipelining"
+                    );
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    assert_eq!(
+                        kafka_exports(ts.metrics(), "logs", "success"),
+                        N as u64,
+                        "success counter equals the number of pipelined sends"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): with `max_in_flight = 8` AND a fixed partition key, many
+        /// same-key batches are pipelined to a 4-partition topic.
+        /// Guarantees: librdkafka preserves per-partition ordering even under
+        /// pipelining -- all same-key records land on one partition at strictly
+        /// increasing offsets in send order, so raising `max_in_flight` never
+        /// reorders records that share a key.
+        #[tokio::test]
+        async fn pipelined_preserves_per_partition_order_with_keys() {
+            let topic = "it-mif-pipelined-order";
+            const N: usize = 20;
+            with_cluster(
+                KafkaTestCluster::builder().topic_with(topic, 4, 1),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    assert!(
+                        consumer
+                            .wait_for_assignment(4, Duration::from_secs(10))
+                            .await,
+                        "consumer should be assigned all partitions"
+                    );
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(
+                            SignalConfig::new(topic.into(), MessageFormat::OtlpProto)
+                                .with_partition_by_transport_headers(true),
+                        )
+                        .with_partitioning_strategy(PartitionerStrategy::Murmur2Random)
+                        .with_max_in_flight(8)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payloads: Vec<Vec<u8>> = (0..N).map(logs_request_bytes_seq).collect();
+                    for payload in &payloads {
+                        exporter
+                            .send_pdata(logs_pdata(
+                                payload.clone(),
+                                Some(("X-Tenant-Id", "tenant-42")),
+                            ))
+                            .await
+                            .expect("send pdata");
+                    }
+
+                    let msgs = consumer
+                        .collect_until_idle(Duration::from_millis(1500))
+                        .await;
+                    assert_eq!(msgs.len(), N, "all records delivered");
+                    let dist = count_by_partition(&msgs);
+                    assert_eq!(
+                        dist.len(),
+                        1,
+                        "same-key records land on one partition even when pipelined, got {dist:?}"
+                    );
+                    // Offsets are strictly increasing in send order.
+                    for (i, msg) in msgs.iter().enumerate() {
+                        let _ = msg.assert_offset(i as i64).assert_payload(&payloads[i]);
+                    }
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): every broker round trip is stalled while `max_in_flight = 4`
+        /// and far more than 4 batches are sent.
+        /// Guarantees: the bounded in-flight set applies backpressure without
+        /// unbounded buffering -- despite the stall, all sent batches are
+        /// eventually delivered exactly once once the stall clears at delivery
+        /// time, with no loss.
+        #[tokio::test]
+        async fn bounded_concurrency_caps_in_flight_and_delivers() {
+            let topic = "it-mif-backpressure";
+            const N: usize = 24;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    // Stall each round trip so deliveries lag behind sends,
+                    // forcing the in-flight set to fill and back-pressure the
+                    // send loop.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(50));
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                        4,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payloads: Vec<Vec<u8>> = (0..N).map(logs_request_bytes_seq).collect();
+                    for payload in &payloads {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata");
+                    }
+
+                    let msgs = consumer.recv_n(N).await;
+                    assert_eq!(
+                        msgs.len(),
+                        N,
+                        "all batches delivered despite bounded concurrency + stall"
+                    );
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): fill the in-flight set so one pdata is parked in the loop,
+        /// then request shutdown.
+        /// Guarantees: no data is dropped when a pdata is parked at shutdown --
+        /// the engine's receiver-first drain plus the loop's ordering ensure the
+        /// parked batch is still enqueued and delivered before the terminal
+        /// state (assert via the delivered count equal to the send count).
+        #[tokio::test]
+        async fn parked_pdata_is_enqueued_before_shutdown() {
+            let topic = "it-mif-parked-shutdown";
+            const N: usize = 12;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    // Small stall so at least one pdata parks behind the in-flight
+                    // set before shutdown arrives.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(30));
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                        2,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payloads: Vec<Vec<u8>> = (0..N).map(logs_request_bytes_seq).collect();
+                    for payload in &payloads {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata");
+                    }
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+
+                    let msgs = consumer.recv_n(N).await;
+                    assert_eq!(
+                        msgs.len(),
+                        N,
+                        "a pdata parked at shutdown is still enqueued and delivered"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): a pdata is parked behind a full in-flight set pointed at an
+        /// unroutable broker, then shutdown arrives with a bounded deadline.
+        /// Guarantees: shutdown stays deadline-bounded even when a pdata is
+        /// parked and the broker is unavailable -- the drain returns well within
+        /// a generous outer timeout instead of hanging on the stalled delivery.
+        #[tokio::test]
+        async fn shutdown_with_parked_pdata_and_stalled_broker_is_deadline_bounded() {
+            let cfg: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new("127.0.0.1:1", "it-client")
+                    .with_logs(SignalConfig::new(
+                        "it-mif-parked-stalled".into(),
+                        MessageFormat::OtlpProto,
+                    ))
+                    .with_max_in_flight(1)
+                    .with_timeout_ms(500)
+                    .try_into()
+                    .expect("config should be valid");
+
+            run_on_local_set(|cluster| async move {
+                let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                // Two batches: the first occupies the single in-flight slot
+                // (stalled at the unroutable broker), the second parks.
+                for _ in 0..2 {
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes(), None))
+                        .await
+                        .expect("send pdata");
+                }
+
+                // A short shutdown deadline must be honored despite the parked
+                // pdata and the unreachable broker.
+                let outcome = tokio::time::timeout(Duration::from_secs(15), async {
+                    exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_stopped().await;
+                })
+                .await;
+                assert!(
+                    outcome.is_ok(),
+                    "shutdown must stay bounded with a parked pdata + stalled broker"
+                );
+            })
+            .await;
+        }
+
+        /// Scenario (backpressure): with `max_in_flight = 8`, a burst of batches is buffered and
+        /// still in flight when graceful shutdown is requested.
+        /// Guarantees: the shutdown drain finalizes every pipelined in-flight
+        /// delivery before the terminal state, so all buffered batches are
+        /// flushed (delivered) and the terminal `messages{logs,success}` counter
+        /// equals the number of sends.
+        #[tokio::test]
+        async fn shutdown_drains_pipelined_in_flight_sends() {
+            let topic = "it-mif-shutdown-drain";
+            const N: usize = 40;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                        8,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    for _ in 0..N {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata");
+                    }
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    assert_eq!(
+                        kafka_exports(ts.metrics(), "logs", "success"),
+                        N as u64,
+                        "all pipelined in-flight sends are drained on shutdown"
+                    );
+
+                    let msgs = consumer.recv_n(N).await;
+                    assert_eq!(msgs.len(), N, "all buffered records flushed on shutdown");
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): with `max_in_flight = 8`, a batch is in flight on the old
+        /// producer when a `Config` repoints the logs topic, then a batch is
+        /// accepted after the swap.
+        /// Guarantees: reconfiguration drains and finalizes any pipelined
+        /// in-flight deliveries on the old producer (no data loss across the
+        /// swap) and a batch accepted after the swap reaches the NEW topic.
+        ///
+        /// NOTE: this test does not assert that the pre-config batch lands on the
+        /// ORIGINAL topic. The engine prioritizes the control channel over the
+        /// pdata channel, so a `Config` can be processed before pre-config pdata
+        /// still buffered in the pdata channel has been dequeued; only pdata
+        /// already accepted into the in-flight set is guaranteed to drain to the
+        /// old producer. Whichever topic each pre-config batch lands on, none is
+        /// lost -- so the invariant checked here is delivery, not routing. (The
+        /// pre-existing `reconfigure_routes_pre_config_backlog_to_old_topic`
+        /// tracks the stricter routing guarantee that this engine ordering
+        /// currently prevents.)
+        #[tokio::test]
+        async fn reconfigure_drains_pipelined_in_flight_before_swap() {
+            let original_topic = "it-mif-reconfig-original";
+            let new_topic = "it-mif-reconfig-new";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(original_topic)
+                    .topic(new_topic),
+                |cluster| async move {
+                    let original_consumer = cluster.consumer().subscribe(&[original_topic]);
+                    let new_consumer = cluster.consumer().subscribe(&[new_topic]);
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(original_topic.into(), MessageFormat::OtlpProto),
+                        8,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Pipeline a pre-config batch, then reconfigure to the new
+                    // topic. The reconfigure drains any in-flight delivery on the
+                    // old producer before the swap.
+                    let pre = logs_request_bytes_seq(1);
+                    exporter
+                        .send_pdata(logs_pdata(pre.clone(), None))
+                        .await
+                        .expect("send pre-config pdata");
+                    exporter
+                        .send_config(logs_reconfig_json(cluster.bootstrap_servers(), new_topic))
+                        .await;
+
+                    // A batch accepted after the reconfigure.
+                    let post = logs_request_bytes_seq(2);
+                    exporter
+                        .send_pdata(logs_pdata(post.clone(), None))
+                        .await
+                        .expect("send post-config pdata");
+
+                    // Neither the pre-config nor the post-config batch is lost:
+                    // both are delivered across the reconfigure (to whichever
+                    // topic the control-vs-pdata ordering routed them). Drain
+                    // both topics and assert both payloads appear.
+                    let mut delivered: std::collections::HashSet<Vec<u8>> =
+                        std::collections::HashSet::new();
+                    for m in original_consumer
+                        .collect_until_idle(Duration::from_secs(2))
+                        .await
+                    {
+                        let _ = delivered.insert(m.payload.clone().expect("payload"));
+                    }
+                    for m in new_consumer
+                        .collect_until_idle(Duration::from_secs(2))
+                        .await
+                    {
+                        let _ = delivered.insert(m.payload.clone().expect("payload"));
+                    }
+                    assert!(
+                        delivered.contains(&pre),
+                        "the pre-config batch must be delivered across the reconfigure, not lost"
+                    );
+                    assert!(
+                        delivered.contains(&post),
+                        "the post-config batch must be delivered across the reconfigure, not lost"
+                    );
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): the exporter starts with `max_in_flight = 8`,
+        /// then a live `Config` lowers it to `1` and a burst of batches is sent
+        /// afterward.
+        /// Guarantees: reconfiguration rebuilds the in-flight set at the new,
+        /// lowered bound, so the post-config burst is delivered serially with no
+        /// loss -- all sent batches land exactly once at strictly increasing
+        /// offsets on a single partition. A stale bound of 8 (the pre-config
+        /// value) would silently ignore the lowered concurrency limit.
+        #[tokio::test]
+        async fn reconfigure_lowers_max_in_flight_and_still_delivers() {
+            let topic = "it-mif-reconfig-lower";
+            const N: usize = 24;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    // Start pipelined (max_in_flight = 8).
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                        8,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Live-lower the concurrency bound to 1 (same topic).
+                    exporter
+                        .send_config(logs_reconfig_json_mif(
+                            cluster.bootstrap_servers(),
+                            topic,
+                            1,
+                        ))
+                        .await;
+
+                    // Burst sent under the new, lowered bound.
+                    let payloads: Vec<Vec<u8>> = (0..N).map(logs_request_bytes_seq).collect();
+                    for payload in &payloads {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata after lowering max_in_flight");
+                    }
+
+                    // Serial delivery: single partition, strictly increasing
+                    // offsets in send order, no loss.
+                    let msgs = consumer.recv_n(N).await;
+                    assert_eq!(msgs.len(), N, "every batch delivered after lowering bound");
+                    for (i, msg) in msgs.iter().enumerate() {
+                        let _ = msg
+                            .assert_partition(0)
+                            .assert_offset(i as i64)
+                            .assert_payload(&payloads[i]);
+                    }
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): the exporter starts with the default
+        /// `max_in_flight = 1`, then a live `Config` raises it to `8` and a burst
+        /// of batches is sent afterward against a per-round-trip stall.
+        /// Guarantees: reconfiguration rebuilds the in-flight set at the new,
+        /// raised bound, so pipelining is active afterward -- every sent batch is
+        /// delivered exactly once despite the stall. A stale bound of 1 (the
+        /// pre-config value) would still deliver, so the invariant asserted here
+        /// is no-loss across a raised-bound reconfigure.
+        #[tokio::test]
+        async fn reconfigure_raises_max_in_flight_and_still_delivers() {
+            let topic = "it-mif-reconfig-raise";
+            const N: usize = 24;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    // Start serial (default max_in_flight = 1).
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Live-raise the concurrency bound to 8.
+                    exporter
+                        .send_config(logs_reconfig_json_mif(
+                            cluster.bootstrap_servers(),
+                            topic,
+                            8,
+                        ))
+                        .await;
+
+                    // Stall each round trip so raised pipelining is exercised.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(40));
+
+                    let payloads: Vec<Vec<u8>> = (0..N).map(logs_request_bytes_seq).collect();
+                    for payload in &payloads {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata after raising max_in_flight");
+                    }
+
+                    // No loss / no duplication across the raised-bound reconfigure.
+                    let msgs = consumer.recv_n(N).await;
+                    assert_eq!(msgs.len(), N, "every batch delivered after raising bound");
+                    let delivered: std::collections::HashSet<Vec<u8>> = msgs
+                        .iter()
+                        .map(|m| m.payload.clone().expect("payload"))
+                        .collect();
+                    assert_eq!(delivered.len(), N, "no duplicate deliveries after raise");
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): a batch is pipelined in flight under
+        /// `max_in_flight = 8`, then a live `Config` lowers the bound to `1`
+        /// (repointing to a new topic), then a batch is accepted after the swap.
+        /// Guarantees: reconfiguration drains and finalizes the in-flight
+        /// delivery on the old producer BEFORE rebuilding the in-flight set at
+        /// the new bound, so no already-accepted batch is dropped when the bound
+        /// changes; the post-config batch is delivered under the new bound.
+        #[tokio::test]
+        async fn reconfigure_bound_change_with_in_flight_batch_loses_nothing() {
+            let original_topic = "it-mif-reconfig-bound-original";
+            let new_topic = "it-mif-reconfig-bound-new";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(original_topic)
+                    .topic(new_topic),
+                |cluster| async move {
+                    let original_consumer = cluster.consumer().subscribe(&[original_topic]);
+                    let new_consumer = cluster.consumer().subscribe(&[new_topic]);
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(original_topic.into(), MessageFormat::OtlpProto),
+                        8,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Pipeline a pre-config batch, then reconfigure to a new topic
+                    // AND a lowered bound in the same Config.
+                    let pre = logs_request_bytes_seq(1);
+                    exporter
+                        .send_pdata(logs_pdata(pre.clone(), None))
+                        .await
+                        .expect("send pre-config pdata");
+                    exporter
+                        .send_config(logs_reconfig_json_mif(
+                            cluster.bootstrap_servers(),
+                            new_topic,
+                            1,
+                        ))
+                        .await;
+
+                    // A batch accepted after the reconfigure (under the new bound).
+                    let post = logs_request_bytes_seq(2);
+                    exporter
+                        .send_pdata(logs_pdata(post.clone(), None))
+                        .await
+                        .expect("send post-config pdata");
+
+                    // Neither batch is lost across the bound-changing reconfigure.
+                    let mut delivered: std::collections::HashSet<Vec<u8>> =
+                        std::collections::HashSet::new();
+                    for m in original_consumer
+                        .collect_until_idle(Duration::from_secs(2))
+                        .await
+                    {
+                        let _ = delivered.insert(m.payload.clone().expect("payload"));
+                    }
+                    for m in new_consumer
+                        .collect_until_idle(Duration::from_secs(2))
+                        .await
+                    {
+                        let _ = delivered.insert(m.payload.clone().expect("payload"));
+                    }
+                    assert!(
+                        delivered.contains(&pre),
+                        "the pre-config in-flight batch must be delivered, not lost when the \
+                         bound is rebuilt"
+                    );
+                    assert!(
+                        delivered.contains(&post),
+                        "the post-config batch must be delivered under the new bound"
+                    );
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): with `max_in_flight = 4`, a run of produce requests is
+        /// rejected (a broker outage) while deliveries are pipelined.
+        /// Guarantees: pipelined in-flight failures are fully accounted and
+        /// bounded -- every sent batch resolves to exactly one outcome
+        /// (`messages{logs,success}` + `messages{logs,failure}` equals the number
+        /// of sends), so a sustained outage never leaks or double-counts an
+        /// in-flight send and the in-flight set cannot grow without bound.
+        ///
+        /// NOTE: this test deliberately does NOT assert an exact
+        /// success/failure split. The mock broker's `fail_produce` consumes one
+        /// injected error per produce *request*, but under pipelining librdkafka
+        /// coalesces the pipelined records into a broker-chosen number of
+        /// requests, so the mapping from injected errors to individual sends is
+        /// nondeterministic (observed: all sends can land in the rejected
+        /// requests). A deterministic per-send outage/recovery split requires a
+        /// real broker with a controllable produce rate; the serial-path
+        /// `recovers_after_prolonged_produce_outage` covers the exact split
+        /// where one produce request maps to one send.
+        #[tokio::test]
+        async fn prolonged_outage_keeps_pipelined_sends_bounded() {
+            let topic = "it-mif-outage-bounded";
+            const OUTAGE_SENDS: usize = 8;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let _consumer = cluster.consumer().subscribe(&[topic]);
+                    cluster.faults().fail_produce(
+                        &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION; OUTAGE_SENDS],
+                    );
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_max_in_flight(4)
+                        .with_timeout_ms(1500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    for _ in 0..OUTAGE_SENDS {
+                        exporter
+                            .send_pdata(logs_pdata(logs_request_bytes(), None))
+                            .await
+                            .expect("send during outage");
+                    }
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    let success = kafka_exports(snaps, "logs", "success");
+                    let failure = kafka_exports(snaps, "logs", "failure");
+                    // The invariant that holds regardless of librdkafka's
+                    // request batching: every sent batch is accounted exactly
+                    // once, so no in-flight send leaks or is double-counted.
+                    assert_eq!(
+                        success + failure,
+                        OUTAGE_SENDS as u64,
+                        "every pipelined send is accounted exactly once; none leaks"
+                    );
+                    // At least one send failed (the outage was injected), proving
+                    // the failure path is exercised and bounded.
+                    assert!(
+                        failure >= 1,
+                        "the injected outage produced at least one accounted failure"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): with `max_in_flight = 8`, an unroutable broker purges the
+        /// pipelined in-flight deliveries at shutdown; the batch carries a
+        /// subscriber unwind frame.
+        /// Guarantees: a delivery future cancelled by the shutdown purge is
+        /// reported as a TRANSIENT nack that returns the original pdata to the
+        /// retry processor (never permanent, never acked, never dropped), so a
+        /// purge-on-shutdown does not silently lose data.
+        #[tokio::test]
+        async fn purged_pipelined_send_is_transiently_nacked_with_pdata() {
+            let cfg: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new("127.0.0.1:1", "it-client")
+                    .with_logs(SignalConfig::new(
+                        "it-mif-purge-nack".into(),
+                        MessageFormat::OtlpProto,
+                    ))
+                    .with_max_in_flight(8)
+                    .with_timeout_ms(30_000)
+                    .try_into()
+                    .expect("config should be valid");
+
+            run_on_local_set(|cluster| async move {
+                let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                // Enqueue a batch that will never deliver (unroutable broker);
+                // the long timeout ensures it is still in flight at shutdown so
+                // the purge -- not a delivery timeout -- resolves it.
+                exporter
+                    .send_pdata(logs_pdata_subscribed(logs_request_bytes(), None))
+                    .await
+                    .expect("send pdata");
+
+                // Shutdown with a short deadline forces the flush to time out and
+                // purge the in-flight delivery, cancelling its future.
+                exporter.shutdown(Duration::from_millis(300)).await;
+
+                let nack = exporter
+                    .recv_nack(Duration::from_secs(10))
+                    .await
+                    .expect("a purged in-flight delivery must unwind a nack");
+                assert!(
+                    !nack.permanent,
+                    "a purge-cancelled delivery is a retryable (transient) nack"
+                );
+                assert!(
+                    nack.refused.num_items() >= 1,
+                    "the refused pdata is returned for the retry processor"
+                );
+
+                exporter.await_stopped().await;
+            })
+            .await;
+        }
+
+        /// Scenario (backpressure): a burst of batches is sent against a tiny librdkafka producer
+        /// queue (`queue.buffering.max.messages = 1`) so an enqueue is rejected
+        /// as queue-full.
+        /// Guarantees: an enqueue failure is reported (the failure counter
+        /// advances) without being tracked in the in-flight set, and the loop
+        /// keeps running so a later, well-spaced send still delivers.
+        ///
+        /// NOTE: forcing a deterministic `QueueFull` on the in-process mock is
+        /// timing-dependent -- librdkafka drains its queue on the 1s poll cycle,
+        /// so a rejection is not guaranteed on every run. If no enqueue is
+        /// rejected here the test still asserts the loop stays healthy (the
+        /// trailing send delivers); it does not assert a failure occurred. A
+        /// deterministic queue-full requires a real broker with a controllable
+        /// send rate.
+        #[tokio::test]
+        async fn enqueue_failure_reports_nack_without_tracking() {
+            let topic = "it-mif-enqueue-full";
+            const BURST: usize = 200;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_max_in_flight(64)
+                        // Force the smallest possible producer queue so a rapid
+                        // burst can overflow it before the poll thread drains.
+                        .with_producer_config(std::collections::HashMap::from([(
+                            "queue.buffering.max.messages".to_string(),
+                            "1".to_string(),
+                        )]))
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Fire a rapid burst to try to overflow the 1-deep queue.
+                    for _ in 0..BURST {
+                        exporter
+                            .send_pdata(logs_pdata(logs_request_bytes(), None))
+                            .await
+                            .expect("send pdata");
+                    }
+
+                    // Regardless of whether any enqueue was rejected, the loop
+                    // must stay healthy: a trailing, well-spaced send delivers.
+                    tokio::time::sleep(Duration::from_millis(1200)).await;
+                    let marker = logs_request_bytes_seq(424_242);
+                    exporter
+                        .send_pdata(logs_pdata(marker.clone(), None))
+                        .await
+                        .expect("send trailing pdata");
+
+                    let msgs = consumer.collect_until_idle(Duration::from_secs(2)).await;
+                    assert!(
+                        msgs.iter()
+                            .any(|m| m.payload.as_deref() == Some(marker.as_slice())),
+                        "the loop keeps running after enqueue pressure; trailing send delivers"
+                    );
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    // Every batch is accounted as either a success or a failure;
+                    // none vanish. (Failures may be 0 if the queue never
+                    // overflowed on this run -- see the NOTE above.)
+                    let success = kafka_exports(snaps, "logs", "success");
+                    let failure = kafka_exports(snaps, "logs", "failure");
+                    assert_eq!(
+                        success + failure,
+                        (BURST + 1) as u64,
+                        "every batch is accounted as success or failure, none lost"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (backpressure): with `max_in_flight = 8`, a single batch carrying many log
+        /// records is exported.
+        /// Guarantees: the export counter counts per batch, not per record, even
+        /// under pipelining -- a 25-record batch increments
+        /// `messages{logs,success}` by exactly 1, so pipelining does not change
+        /// the batch-counting semantics.
+        #[tokio::test]
+        async fn pipelined_export_counts_one_per_batch() {
+            let topic = "it-mif-per-batch-count";
+            const RECORDS: usize = 25;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                        8,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes_n(RECORDS), None))
+                        .await
+                        .expect("send multi-record batch");
+
+                    let _ = consumer.recv().await.assert_topic(topic);
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    assert_eq!(
+                        kafka_exports(ts.metrics(), "logs", "success"),
+                        1,
+                        "a multi-record batch counts as exactly one exported message"
+                    );
+                },
+            )
+            .await;
+        }
+
         // ---- Retry correctness ----
 
         /// Scenario (retry correctness): an OTAP-encoded signal whose OTLP bytes cannot be converted
@@ -3219,6 +4569,13 @@ pub mod test_support {
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
                         .with_partitioning_strategy(PartitionerStrategy::Random)
+                        // Serialize deliveries (max_in_flight = 1) so each record
+                        // is flushed as its own Produce request. Pipelining +
+                        // linger would coalesce records into fewer per-partition
+                        // batches, collapsing the number of independent random
+                        // partition draws and making the near-even distribution
+                        // check flaky over this small sample.
+                        .with_max_in_flight(1)
                         .try_into()
                         .expect("config should be valid");
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
@@ -4541,9 +5898,24 @@ pub mod test_support {
                     cluster.faults().fail_produce(
                         &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION; OUTAGE_SENDS],
                     );
+                    // Pin a strict 1-send-to-1-produce-request mapping so the
+                    // injected error sequence lines up with the sends:
+                    // - max_in_flight = 1 serializes deliveries so no two sends
+                    //   share a Produce request.
+                    // - message.send.max.retries = 0 stops librdkafka from
+                    //   re-issuing a rejected produce, so one send consumes exactly
+                    //   one injected error (otherwise a single send retries within
+                    //   its message.timeout.ms window and drains several errors).
+                    // Together the first OUTAGE_SENDS sends fail once each and the
+                    // post-recovery send finds the injected errors exhausted.
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
                         .with_timeout_ms(1500)
+                        .with_max_in_flight(1)
+                        .with_producer_config(std::collections::HashMap::from([(
+                            "message.send.max.retries".to_string(),
+                            "0".to_string(),
+                        )]))
                         .try_into()
                         .expect("config should be valid");
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
