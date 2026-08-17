@@ -46,7 +46,7 @@ config:
 | `required_acks` | string | `"one"` | Required broker acks: `none` (0), `one` (1), or `all` (-1). |
 | `max_message_bytes` | integer | `1000000` | Maximum message size in bytes (`message.max.bytes`). |
 | `linger_ms` | integer | `5` | Artificial delay in ms before sending a batch (`linger.ms`). |
-| `max_in_flight` | integer | `1` | Maximum number of Kafka deliveries kept in flight concurrently before the exporter stops accepting new pdata. `1` (the default) preserves serial send order; higher values pipeline deliveries for throughput. Must be in the range `1` to `100000` (the librdkafka default producer queue depth); larger values are rejected. See [Backpressure and concurrency](#backpressure-and-concurrency). |
+| `max_in_flight` | integer | `10` | Maximum number of Kafka deliveries kept in flight concurrently before the exporter stops accepting new pdata. `10` (the default) pipelines deliveries for throughput. Must be in the range `1` to `100000` (the librdkafka default producer queue depth); larger values are rejected. See [Backpressure and concurrency](#backpressure-and-concurrency). |
 | `auth` | object | *none* | Authentication configuration (see [Authentication](#authentication)). |
 | `tls` | object | *none* | TLS configuration (see [TLS Configuration](#tls-configuration)). |
 | `partitioning_strategy` | string | `"consistent_random"` | Librdkafka partitioner algorithm. See [Partitioning](#partitioning). |
@@ -311,12 +311,10 @@ The exporter encodes and enqueues each accepted pdata to librdkafka and then
 tracks the delivery in a bounded in-flight set. The `max_in_flight` config caps
 how many deliveries may be outstanding at once:
 
-- **`max_in_flight = 1` (default).** Exactly one delivery is awaited at a time,
-  preserving the historical serial send order across batches.
-- **`max_in_flight > 1`.** Deliveries are pipelined for higher throughput. When
-  the in-flight set is full the exporter stops accepting new pdata and only
-  drains completions, so in-flight memory stays bounded and backpressure
-  propagates upstream.
+- **`max_in_flight > 1` (default `10`).** Deliveries are pipelined for higher
+  throughput. When the in-flight set is full the exporter stops accepting new
+  pdata and only drains completions, so in-flight memory stays bounded and
+  backpressure propagates upstream.
 
 ### Live Reconfiguration
 

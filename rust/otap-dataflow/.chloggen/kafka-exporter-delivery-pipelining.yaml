@@ -20,7 +20,6 @@ issues: [3509]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  max_in_flight defaults to 1 (serial send order) and must be in the range 1 to
-  100000. Raise it to pipeline deliveries; per-partition ordering is preserved
-  for records sharing a key. Live reconfiguration applies the new value. Batches
-  are drained on shutdown and reconfig so none is dropped.
+  max_in_flight defaults to 10 (pipelined deliveries) and must be in the range 1
+  to 100000. Live reconfiguration applies the new value. Batches are drained on
+  shutdown and reconfig so none is dropped.

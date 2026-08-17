@@ -297,7 +297,7 @@ pub struct KafkaExporterConfigBuilder {
     linger_ms: u32,
 
     /// Maximum number of Kafka deliveries the exporter keeps in flight
-    /// concurrently before it stops accepting new pdata (default: 1).
+    /// concurrently before it stops accepting new pdata (default: 10).
     ///
     /// Each accepted pdata is encoded and enqueued to librdkafka, and its
     /// delivery future is added to a bounded in-flight set. When the set is
@@ -305,12 +305,10 @@ pub struct KafkaExporterConfigBuilder {
     /// deliveries complete, so this value bounds both concurrency and
     /// in-flight memory and propagates backpressure upstream.
     ///
-    /// The default of `1` preserves the historical serial send behavior:
-    /// exactly one delivery is awaited at a time, so cross-batch send order is
-    /// fully preserved. Values greater than `1` pipeline deliveries for higher
-    /// throughput; per-partition ordering is still preserved by librdkafka for
-    /// records that share a partition key, but the relative completion order of
-    /// records targeting different partitions is no longer serialized.
+    /// The default of `10` pipelines deliveries for higher throughput.
+    /// Per-partition ordering is still preserved by librdkafka for records that
+    /// share a partition key, but the relative completion order of records
+    /// targeting different partitions is no longer serialized.
     ///
     /// Must be in the range `1` to `100000`. A value of `0` is rejected because
     /// it would stall the exporter; values above `100000` are rejected because
@@ -956,11 +954,10 @@ fn default_linger_ms() -> u32 {
 
 /// Default maximum number of concurrent in-flight Kafka deliveries.
 ///
-/// Defaults to `1`, which preserves the historical serial send behavior
-/// (one delivery awaited at a time). Operators opt into pipelined delivery
-/// for higher throughput by raising this value.
+/// Defaults to `10`, which pipelines up to ten deliveries at a time for
+/// higher throughput while keeping in-flight memory bounded.
 fn default_max_in_flight() -> usize {
-    1
+    10
 }
 
 /// Default partitioner strategy.
@@ -1317,15 +1314,14 @@ mod tests {
 
     /// Scenario (backpressure and resource bounds): a config omits `max_in_flight` and takes
     /// the serde default.
-    /// Guarantees: the default is `1`, preserving the historical serial send
-    /// behavior (exactly one delivery awaited at a time) unless an operator
-    /// explicitly opts into pipelining.
+    /// Guarantees: the default is `10`, pipelining up to ten deliveries for
+    /// throughput
     #[test]
-    fn default_max_in_flight_is_one() {
+    fn default_max_in_flight_is_ten() {
         let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
             .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto));
         let config = KafkaExporterConfig::try_from(builder).expect("default is valid");
-        assert_eq!(config.max_in_flight(), 1);
+        assert_eq!(config.max_in_flight(), 10);
     }
 
     /// Scenario (backpressure and resource bounds): a config sets `max_in_flight`

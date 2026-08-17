@@ -8,12 +8,11 @@
 //! The exporter encodes and enqueues each accepted pdata to librdkafka and
 //! then tracks its delivery future in a bounded in-flight set
 //! ([`InFlightSends`]). The number of concurrently outstanding deliveries is
-//! capped by the `max_in_flight` config (default `1`). When the set is full the
+//! capped by the `max_in_flight` config (default `10`). When the set is full the
 //! event loop stops accepting new pdata and only drains completions, so
 //! in-flight memory stays bounded and backpressure propagates upstream.
 //!
-//! With the default `max_in_flight = 1` the exporter awaits one delivery at a
-//! time, preserving the historical serial send order. Higher values pipeline
+//! With the default `max_in_flight = 10` the exporter pipelines up to ten
 //! deliveries for throughput; per-partition ordering is still guaranteed by
 //! librdkafka for records sharing a partition key, but the relative completion
 //! order across different partitions is no longer serialized.
@@ -975,10 +974,7 @@ impl KafkaExporter {
         }
 
         // all in_flight msgs should be drained
-        debug_assert!(
-            in_flight.is_empty(),
-            "in-flight set must be drained"
-        );
+        debug_assert!(in_flight.is_empty(), "in-flight set must be drained");
 
         // Capture the new concurrency bound before `new_config` is moved into
         // `self.config` below.
@@ -998,7 +994,7 @@ impl KafkaExporter {
         self.logs_allowed_topics_regex = new_logs_regex;
         // create new InFlightSends if user changes max_in_flight setting
         if let Some(max_in_flight) = new_max_in_flight {
-                *in_flight = InFlightSends::new(max_in_flight);
+            *in_flight = InFlightSends::new(max_in_flight);
         }
 
         otap_df_telemetry::otel_info!(
@@ -2844,25 +2840,25 @@ pub mod test_support {
 
         // ---- Backpressure & delivery-future pipelining ----
 
-        /// Scenario (backpressure): the default (`max_in_flight = 1`) config exports a strictly
-        /// ordered sequence of distinct payloads to a single-partition topic.
-        /// Guarantees: the behavior-preserving default keeps the serial send
-        /// contract -- records arrive in send order at strictly increasing
-        /// offsets, so leaving `max_in_flight` unset never reorders deliveries.
+        /// Scenario (backpressure): the default (`max_in_flight = 10`) config exports a
+        /// sequence of distinct payloads to a single-partition topic.
+        /// Guarantees: even with the pipelined default, single-partition delivery
+        /// keeps records in send order at strictly increasing offsets, so leaving
+        /// `max_in_flight` unset never reorders deliveries within a partition.
         #[tokio::test]
-        async fn default_max_in_flight_preserves_serial_ordering() {
+        async fn default_max_in_flight_preserves_partition_ordering() {
             let topic = "it-mif-default-order";
             const N: usize = 10;
             with_cluster(
                 KafkaTestCluster::builder().topic(topic),
                 |cluster| async move {
                     let consumer = cluster.consumer().subscribe(&[topic]);
-                    // logs_config leaves max_in_flight at its serde default of 1.
+                    // logs_config leaves max_in_flight at its serde default of 10.
                     let cfg = logs_config(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
                     );
-                    assert_eq!(cfg.max_in_flight(), 1, "default config must be serial");
+                    assert_eq!(cfg.max_in_flight(), 10, "default config pipelines");
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
                     let payloads: Vec<Vec<u8>> = (0..N).map(logs_request_bytes_seq).collect();
