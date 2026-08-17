@@ -1,0 +1,26 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: enhancement
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: pipeline
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: >-
+  kafka_exporter: permanently nack non-retryable send errors instead of
+  retrying them, and apply live reconfiguration (NodeControlMsg::Config) by
+  swapping the producer in place.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [3509]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries.
+subtext: |
+  Send errors that can never succeed (message too large, malformed record,
+  authorization failure, unsupported request) are now dropped at the source
+  rather than retried; other send failures stay retryable. Reconfigure drains
+  in-flight records before swapping and ignores an invalid config.
