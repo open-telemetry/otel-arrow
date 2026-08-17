@@ -30,12 +30,15 @@ use otap_df_pdata::{
 };
 use otap_df_telemetry::{otel_error, otel_warn};
 use prost::Message;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tonic::{Request, Response, Status, Streaming};
 
 pub mod client_settings;
@@ -61,7 +64,7 @@ pub trait OtapReceiverTelemetry: ReceiverRejectionMetrics {
     fn record_batch_completed(&self, signal: SignalType);
 }
 
-/// Common settings for OTLP receivers.
+/// Common settings for OTAP receiver services.
 #[derive(Clone, Debug)]
 pub struct NewSettings {
     /// Maximum concurrent requests per receiver instance (per core).
@@ -85,6 +88,8 @@ pub struct Settings {
     pub admission_state: SharedReceiverAdmissionState,
     /// Shared lifecycle and rejection metrics for OTAP streams and batches.
     pub receiver_metrics: Option<Arc<dyn OtapReceiverTelemetry>>,
+    /// Owner for every detached OTAP stream handler started by this receiver.
+    pub stream_tasks: OtapStreamTaskManager,
 }
 
 impl Settings {
@@ -92,6 +97,70 @@ impl Settings {
         self.max_concurrent_requests_per_stream
             .min(self.max_concurrent_requests)
             .max(1)
+    }
+}
+
+/// Tracks OTAP stream handlers and provides an explicit cancellation boundary.
+///
+/// Tonic invokes the service methods independently of the receiver event loop,
+/// so their stream handlers must be tracked separately from the gRPC serving
+/// future. Waiting for this manager guarantees that every handler has dropped
+/// its batch completion guards before receiver terminal metrics are captured.
+#[derive(Clone)]
+pub struct OtapStreamTaskManager {
+    tracker: TaskTracker,
+    shutdown: CancellationToken,
+}
+
+impl OtapStreamTaskManager {
+    /// Creates an open stream-task manager.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tracker: TaskTracker::new(),
+            shutdown: CancellationToken::new(),
+        }
+    }
+
+    /// Marks the tracker closed so [`Self::wait`] completes once it is empty.
+    pub fn close(&self) {
+        _ = self.tracker.close();
+    }
+
+    /// Cancels all currently tracked stream handlers.
+    pub fn cancel(&self) {
+        self.shutdown.cancel();
+    }
+
+    /// Returns whether every tracked stream handler has finished.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tracker.is_empty()
+    }
+
+    /// Waits until the manager is closed and every tracked handler has finished.
+    pub async fn wait(&self) {
+        self.tracker.wait().await;
+    }
+
+    fn spawn<F>(&self, handler: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let shutdown = self.shutdown.clone();
+        drop(self.tracker.spawn(async move {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {}
+                _ = handler => {}
+            }
+        }));
+    }
+}
+
+impl Default for OtapStreamTaskManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -320,19 +389,17 @@ fn spawn_stream_handler<T, F>(
     T: OtapBatchStore + Send + 'static,
     F: Fn(T) -> OtapArrowRecords + Copy + Send + 'static,
 {
-    _ = tokio::spawn(async move {
-        handle_stream::<T, F>(
-            input_stream,
-            otap_batch,
-            signal,
-            effect_handler,
-            state,
-            settings,
-            tx,
-            peer_addr,
-        )
-        .await;
-    });
+    let stream_tasks = settings.stream_tasks.clone();
+    stream_tasks.spawn(handle_stream::<T, F>(
+        input_stream,
+        otap_batch,
+        signal,
+        effect_handler,
+        state,
+        settings,
+        tx,
+        peer_addr,
+    ));
 }
 
 async fn handle_stream<T, F>(
@@ -762,6 +829,42 @@ mod tests {
             .expect("OTAP batch status should be sent")
             .expect("OTAP batch status should be successful");
         assert_eq!(status.batch_id, 7);
+    }
+
+    /// Scenario: Shutdown cancels a tracked OTAP stream while an admitted batch is pending.
+    /// Guarantees: Waiting for tracked streams observes the batch completion guard first.
+    #[tokio::test]
+    async fn stream_shutdown_completes_batch_metrics_before_wait_returns() {
+        let concrete_metrics = Arc::new(CountingReceiverRejectionMetrics::default());
+        let receiver_metrics: Arc<dyn OtapReceiverTelemetry> = concrete_metrics.clone();
+        let completion_guard =
+            OtapBatchCompletionGuard::start(Some(&receiver_metrics), SignalType::Logs, 42)
+                .expect("configured receiver metrics should create a completion guard");
+        let task_started = Arc::new(tokio::sync::Notify::new());
+        let task_started_in_handler = task_started.clone();
+        let stream_tasks = OtapStreamTaskManager::new();
+
+        stream_tasks.spawn(async move {
+            let _completion_guard = completion_guard;
+            task_started_in_handler.notify_one();
+            std::future::pending::<()>().await;
+        });
+
+        task_started.notified().await;
+        assert_eq!(concrete_metrics.batches_started.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            concrete_metrics.batches_completed.load(Ordering::Relaxed),
+            0
+        );
+
+        stream_tasks.close();
+        stream_tasks.cancel();
+        stream_tasks.wait().await;
+
+        assert_eq!(
+            concrete_metrics.batches_completed.load(Ordering::Relaxed),
+            1
+        );
     }
 
     #[tokio::test]

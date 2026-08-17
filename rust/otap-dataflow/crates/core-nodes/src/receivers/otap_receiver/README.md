@@ -94,11 +94,8 @@ an ACK sent to the client, `refused` for a NACK sent to the client, and
 The OTAP receiver emits the bounded `error.type` values `memory_pressure`,
 `concurrency_limit`, and `invalid_request`.
 
-#### `receiver.otap.transport`
-
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.otap.transport.errors` | `{error}` | Number of transport-level gRPC server errors. |
+Fatal gRPC serving failures are surfaced through component failure diagnostics,
+not a terminal-only metric that cannot be handed off on an error return.
 
 ### Events
 

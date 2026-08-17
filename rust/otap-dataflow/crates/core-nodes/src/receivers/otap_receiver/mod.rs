@@ -17,7 +17,7 @@ use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use otap_df_otap::otap_grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OtapReceiverTelemetry,
-    Settings,
+    OtapStreamTaskManager, Settings,
 };
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
@@ -48,7 +48,7 @@ use otap_df_telemetry::common_attributes::{
 };
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
 use parking_lot::Mutex;
@@ -321,21 +321,11 @@ pub struct OtapRejectionMetrics {
     pub batches: Counter<u64>,
 }
 
-/// Transport-level OTAP receiver errors.
-#[metric_set(name = "receiver.otap.transport")]
-#[derive(Debug, Default, Clone)]
-pub struct OtapTransportMetrics {
-    /// Number of transport-level gRPC server errors.
-    #[metric(unit = "{error}")]
-    pub errors: Counter<u64>,
-}
-
 /// Bounded-cardinality OTAP receiver metrics tracker.
 pub struct OtapReceiverMetrics {
     batches: MeasurementMetricSet<OtapBatchMetrics>,
     acknowledgements: MeasurementMetricSet<OtapAcknowledgementMetrics>,
     rejections: MeasurementMetricSet<OtapRejectionMetrics>,
-    transport: MetricSet<OtapTransportMetrics>,
 }
 
 impl std::fmt::Debug for OtapReceiverMetrics {
@@ -352,7 +342,6 @@ impl OtapReceiverMetrics {
             batches: OtapBatchMetrics::register(pipeline_ctx),
             acknowledgements: OtapAcknowledgementMetrics::register(pipeline_ctx),
             rejections: OtapRejectionMetrics::register(pipeline_ctx),
-            transport: pipeline_ctx.register_metrics::<OtapTransportMetrics>(),
         }
     }
 
@@ -397,11 +386,6 @@ impl OtapReceiverMetrics {
             .inc();
     }
 
-    /// Records a transport-level server error.
-    pub fn record_transport_error(&mut self) {
-        self.transport.errors.inc();
-    }
-
     /// Returns an acknowledgement bucket for inspection without marking it for export.
     #[must_use]
     pub fn acknowledgements_for(
@@ -430,8 +414,7 @@ impl OtapReceiverMetrics {
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
         reporter.report_measurement(&mut self.batches)?;
         reporter.report_measurement(&mut self.acknowledgements)?;
-        reporter.report_measurement(&mut self.rejections)?;
-        reporter.report(&mut self.transport)
+        reporter.report_measurement(&mut self.rejections)
     }
 
     /// Takes every touched OTAP receiver metric bucket for terminal handoff.
@@ -439,9 +422,6 @@ impl OtapReceiverMetrics {
         let mut snapshots = self.batches.terminal_snapshots();
         snapshots.extend(self.acknowledgements.terminal_snapshots());
         snapshots.extend(self.rejections.terminal_snapshots());
-        if !self.transport.is_empty() {
-            snapshots.extend(self.transport.terminal_snapshots());
-        }
         snapshots
     }
 }
@@ -524,6 +504,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
 
+        let stream_tasks = OtapStreamTaskManager::new();
         let settings = Settings {
             response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: self.config.max_concurrent_requests,
@@ -534,6 +515,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             wait_for_result: self.config.wait_for_result,
             admission_state: self.admission_state.clone(),
             receiver_metrics: Some(self.metrics.clone()),
+            stream_tasks: stream_tasks.clone(),
         };
 
         //create services for the grpc server and clone the effect handler to pass message
@@ -625,7 +607,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let mut draining_deadline: Option<Instant> = None;
         let mut draining_reason: Option<String> = None;
         let mut drain_deadline_sleep: Option<clock::Sleep> = None;
-        let terminal_state: TerminalState;
+        let mut terminal_deadline: Option<Instant> = None;
+        let mut terminal_error: Option<Error> = None;
 
         loop {
             if let Some(deadline) = draining_deadline {
@@ -644,9 +627,13 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     drain_deadline_sleep = Some(clock::sleep_until(deadline));
                 }
 
-                if server_task_done && states.is_empty() {
-                    effect_handler.notify_receiver_drained().await?;
-                    terminal_state = self.terminal_state(deadline);
+                if server_task_done && states.is_empty() && stream_tasks.is_empty() {
+                    match effect_handler.notify_receiver_drained().await {
+                        Ok(()) => terminal_deadline = Some(deadline),
+                        Err(error) => terminal_error = Some(error),
+                    }
+                    stream_tasks.close();
+                    stream_tasks.cancel();
                     break;
                 }
             } else {
@@ -681,7 +668,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                             otap_df_telemetry::otel_info!("otap_receiver.shutdown");
                             grpc_shutdown.cancel();
                             states.force_shutdown(&reason);
-                            terminal_state = self.terminal_state(deadline);
+                            stream_tasks.close();
+                            terminal_deadline = Some(deadline);
                             break;
                         }
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
@@ -699,7 +687,10 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                             self.handle_nack_response(signal, response);
                         }
                         Err(e) => {
-                            return Err(Error::ChannelRecvError(e));
+                            terminal_error = Some(Error::ChannelRecvError(e));
+                            stream_tasks.close();
+                            stream_tasks.cancel();
+                            break;
                         }
                         _ => {}
                     }
@@ -708,21 +699,27 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 result = &mut server_task, if !server_task_done => {
                     server_task_done = true;
                     if let Err(error) = result {
-                        self.metrics.lock().record_transport_error();
                         let source_detail = format_error_sources(&error);
-                        return Err(Error::ReceiverError {
+                        terminal_error = Some(Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
                             kind: ReceiverErrorKind::Transport,
                             error: error.to_string(),
                             source_detail,
                         });
+                        stream_tasks.close();
+                        stream_tasks.cancel();
+                        break;
                     }
 
                     if draining_deadline.is_none() {
-                        terminal_state =
-                            self.terminal_state(clock::now().add(Duration::from_secs(1)));
+                        terminal_deadline =
+                            Some(clock::now().add(Duration::from_secs(1)));
+                        stream_tasks.close();
+                        stream_tasks.cancel();
                         break;
                     }
+
+                    stream_tasks.close();
                 }
 
                 _ = &mut drain_sleep => {
@@ -734,15 +731,35 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     }
                     drain_deadline_sleep = None;
                 }
+
+                _ = stream_tasks.wait(), if server_task_done && draining_deadline.is_some() => {}
             }
         }
 
         grpc_shutdown.cancel();
+        stream_tasks.close();
+        if terminal_error.is_some() {
+            stream_tasks.cancel();
+        }
+
         if !server_task_done {
-            if let Err(error) = server_task.await {
-                self.metrics.lock().record_transport_error();
+            let server_result = if terminal_error.is_some() {
+                server_task.await
+            } else {
+                let deadline =
+                    terminal_deadline.unwrap_or_else(|| clock::now().add(Duration::from_secs(1)));
+                tokio::select! {
+                    result = &mut server_task => result,
+                    _ = clock::sleep_until(deadline) => {
+                        stream_tasks.cancel();
+                        server_task.await
+                    }
+                }
+            };
+
+            if let Err(error) = server_result {
                 let source_detail = format_error_sources(&error);
-                return Err(Error::ReceiverError {
+                _ = terminal_error.get_or_insert_with(|| Error::ReceiverError {
                     receiver: effect_handler.receiver_id(),
                     kind: ReceiverErrorKind::Transport,
                     error: error.to_string(),
@@ -751,7 +768,26 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             }
         }
 
-        Ok(terminal_state)
+        if terminal_error.is_some() {
+            stream_tasks.cancel();
+            stream_tasks.wait().await;
+        } else if let Some(deadline) = terminal_deadline {
+            tokio::select! {
+                _ = stream_tasks.wait() => {}
+                _ = clock::sleep_until(deadline) => {
+                    stream_tasks.cancel();
+                    stream_tasks.wait().await;
+                }
+            }
+        }
+
+        if let Some(error) = terminal_error {
+            return Err(error);
+        }
+
+        let deadline =
+            terminal_deadline.unwrap_or_else(|| clock::now().add(Duration::from_secs(1)));
+        Ok(self.terminal_state(deadline))
     }
 }
 

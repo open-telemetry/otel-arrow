@@ -45,6 +45,7 @@ use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use parking_lot::Mutex;
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -122,18 +123,27 @@ struct OtapStreamWorkerMetrics {
     response_inflight: HistogramNormal,
 }
 
-/// Shared handle used to record and collect one stream worker's metrics.
-#[derive(Debug, Clone)]
-struct OtapStreamWorkerMetricsHandle {
-    signal: SignalType,
-    metrics: Arc<Mutex<OtapStreamWorkerMetrics>>,
+/// Request-side metrics captured by Tonic's mandatory `Send` request stream.
+#[derive(Debug, Default)]
+struct OtapRequestStreamMetrics {
+    encode_duration_seconds: HistogramNormal,
+    correlation_enqueue_duration_seconds: HistogramNormal,
+    correlation_depth: HistogramNormal,
 }
 
-impl OtapStreamWorkerMetricsHandle {
-    fn new(signal: SignalType) -> Self {
+/// Tonic requires every outbound streaming request to be `Send`, even though
+/// the owning worker runs with `spawn_local`. Keep synchronization confined to
+/// the metrics captured inside that request stream; all other worker metrics
+/// remain pipeline-local in `Rc<RefCell<_>>`.
+#[derive(Debug, Clone)]
+struct OtapRequestStreamMetricsHandle {
+    metrics: Arc<Mutex<OtapRequestStreamMetrics>>,
+}
+
+impl OtapRequestStreamMetricsHandle {
+    fn new() -> Self {
         Self {
-            signal,
-            metrics: Arc::new(Mutex::new(OtapStreamWorkerMetrics::default())),
+            metrics: Arc::new(Mutex::new(OtapRequestStreamMetrics::default())),
         }
     }
 
@@ -152,8 +162,41 @@ impl OtapStreamWorkerMetricsHandle {
         metrics.correlation_depth.record(depth as f64);
     }
 
+    fn take(&self) -> OtapRequestStreamMetrics {
+        std::mem::take(&mut *self.metrics.lock())
+    }
+}
+
+/// Pipeline-local handle used to record and collect one stream worker's metrics.
+#[derive(Debug, Clone)]
+struct OtapStreamWorkerMetricsHandle {
+    signal: SignalType,
+    metrics: Rc<RefCell<OtapStreamWorkerMetrics>>,
+    request_metrics: OtapRequestStreamMetricsHandle,
+}
+
+impl OtapStreamWorkerMetricsHandle {
+    fn new(signal: SignalType) -> Self {
+        Self {
+            signal,
+            metrics: Rc::new(RefCell::new(OtapStreamWorkerMetrics::default())),
+            request_metrics: OtapRequestStreamMetricsHandle::new(),
+        }
+    }
+
+    #[cfg(test)]
+    fn record_encode(&self, duration_seconds: f64) {
+        self.request_metrics.record_encode(duration_seconds);
+    }
+
+    #[cfg(test)]
+    fn record_correlation_enqueue(&self, duration_seconds: f64, depth: usize) {
+        self.request_metrics
+            .record_correlation_enqueue(duration_seconds, depth);
+    }
+
     fn record_response_wait(&self, duration_seconds: f64, inflight: usize) {
-        let mut metrics = self.metrics.lock();
+        let mut metrics = self.metrics.borrow_mut();
         metrics
             .response_wait_duration_seconds
             .record(duration_seconds);
@@ -161,7 +204,22 @@ impl OtapStreamWorkerMetricsHandle {
     }
 
     fn take(&self) -> OtapStreamWorkerMetrics {
-        std::mem::take(&mut *self.metrics.lock())
+        let mut metrics = self.metrics.take();
+        let request_metrics = self.request_metrics.take();
+        metrics
+            .encode_duration_seconds
+            .merge(request_metrics.encode_duration_seconds);
+        metrics
+            .correlation_enqueue_duration_seconds
+            .merge(request_metrics.correlation_enqueue_duration_seconds);
+        metrics
+            .correlation_depth
+            .merge(request_metrics.correlation_depth);
+        metrics
+    }
+
+    fn request_metrics(&self) -> OtapRequestStreamMetricsHandle {
+        self.request_metrics.clone()
     }
 }
 
@@ -920,7 +978,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                     signal_type,
                     ipc_compression,
                     pdata_metrics_tx.clone(),
-                    worker_metrics.clone(),
+                    worker_metrics.request_metrics(),
                     correlation_tx.clone(),
                 );
 
@@ -1026,7 +1084,7 @@ fn create_req_stream(
     signal_type: SignalType,
     ipc_compression: Option<arrow_ipc::CompressionType>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
-    worker_metrics: OtapStreamWorkerMetricsHandle,
+    request_metrics: OtapRequestStreamMetricsHandle,
     correlation_tx: Sender<CorrelatedPdata>,
 ) -> impl IntoStreamingRequest<Message = BatchArrowRecords> {
     stream! {
@@ -1037,7 +1095,7 @@ fn create_req_stream(
         // send the first batch
         let encode_start = Instant::now();
         let bar_result = producer.produce_bar(&mut first_batch);
-        worker_metrics.record_encode(elapsed_seconds(encode_start));
+        request_metrics.record_encode(elapsed_seconds(encode_start));
         match bar_result {
             Ok(bar) => {
                 let correlation_depth =
@@ -1045,7 +1103,7 @@ fn create_req_stream(
                 let correlation_start = Instant::now();
                 match correlation_tx.reserve().await {
                     Ok(permit) => {
-                        worker_metrics.record_correlation_enqueue(
+                        request_metrics.record_correlation_enqueue(
                             elapsed_seconds(correlation_start),
                             correlation_depth,
                         );
@@ -1077,7 +1135,7 @@ fn create_req_stream(
         while let Some((pdata, mut otap_batch)) = rx.recv().await {
             let encode_start = Instant::now();
             let bar_result = producer.produce_bar(&mut otap_batch);
-            worker_metrics.record_encode(elapsed_seconds(encode_start));
+            request_metrics.record_encode(elapsed_seconds(encode_start));
             match bar_result {
                 Ok(bar) => {
                     let correlation_depth =
@@ -1085,7 +1143,7 @@ fn create_req_stream(
                     let correlation_start = Instant::now();
                     match correlation_tx.reserve().await {
                         Ok(permit) => {
-                            worker_metrics.record_correlation_enqueue(
+                            request_metrics.record_correlation_enqueue(
                                 elapsed_seconds(correlation_start),
                                 correlation_depth,
                             );
