@@ -21,7 +21,7 @@ require (
 	go.uber.org/mock v0.6.0
 	golang.org/x/exp v0.0.0-20260727155853-b88d891fe743
 	google.golang.org/grpc v1.82.1
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
