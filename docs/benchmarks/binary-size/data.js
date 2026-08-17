@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786991998480,
+  "lastUpdate": 1786996583147,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -16323,6 +16323,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-text-size",
             "value": 69.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.41,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mmaratov@microsoft.com",
+            "name": "Maksat Maratov",
+            "username": "maksmara"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d0a6f853743dd04c844a023df74a3c8a22840c7f",
+          "message": "chore(metrics): encode OTLP metric metadata before data points (#3777)\n\n# Change Summary\n\nEncode OTLP aggregation metadata before repeated data points in the\ndirect ITS metrics encoder.\n \nFor `Sum`, aggregation temporality and monotonicity are now written\nbefore data points. For `Histogram` and `ExponentialHistogram`,\naggregation temporality is written before data points.\n \nThis changes only physical protobuf wire-field order. It preserves\ndecoded semantics, encoded size, default-field omission, allocation\nbehavior, traversal count, and data-point order. This is a follow-up to\n#3714.\n \n## What issue does this PR close?\n\n* Closes #3751\n\n## How are these changes tested?\n\n- Added separate wire-level regression coverage for `Sum`/`Histogram`\nand `ExponentialHistogram` field order.\n- Located encoded metrics by their wire-level `METRIC_NAME`, preventing\ndescriptor reordering from silently retargeting assertions.\n- Verified non-monotonic sums continue to omit the default `is_monotonic\n= false` field.\n- Verified repeated `Sum` data-point order is preserved.\n- `cargo test -p otap-df-telemetry`\n- `cargo check -p otap-df-telemetry`\n- `cargo clippy -p otap-df-telemetry --all-targets -- -D warnings`\n\n## Are there any user-facing changes?\n\nNo. Protobuf field order is semantically insignificant, and decoded OTLP\noutput remains unchanged.\n\n### Changelog\n\n* [ ] Added a `.chloggen/*.yaml` entry\n* [X] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-08-17T18:47:20Z",
+          "tree_id": "ec62452b317f07efbde5cd10841a829755b46fcb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d0a6f853743dd04c844a023df74a3c8a22840c7f"
+        },
+        "date": 1786996566614,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 69.63,
             "unit": "MB"
           },
           {
