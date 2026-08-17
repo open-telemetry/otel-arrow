@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786996583147,
+  "lastUpdate": 1787000415337,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -16527,6 +16527,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 101.41,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "c1bd22c4b2b57bcb89a10dde5f4380849ed4738d",
+          "message": "fix(quiver): Report exact loss metrics during engine startup (#3733)\n\n# Change Summary\n\nReport exact durable-buffer loss for finalized segments and WAL-only\nbundles removed by startup max-age retention.\n\nStartup cleanup currently deletes expired segment files before loading\nthem, so their loss is omitted. WAL replay counts expired bundles but\ncannot report their item or signal totals.\n\nA finalized segment is an immutable `.qseg` file containing multiple\nbundles that have been grouped and written from the in-memory open\nsegment. It stores their payload streams and a manifest describing which\nbundles and items they contain.\n\nThe WAL is an append-only recovery log for bundles accepted since the\nlast segment was finalized. Each entry contains the bundle timestamp,\npopulated slots, and encoded payload needed to rebuild it after an\nunexpected shutdown.\n\nAn initial solution considered adding fields to the segment and WAL\nformats. That would make older binaries unable to read newly written\ndata after a rollback, so this change instead recovers counts from the\nexisting formats.\n\n### How it works\n\nPreviously, startup removed expired data from both paths without fully\nreporting its logical item count and signal.\n\n#### Finalized segments\n\n- Startup validates each expired file, reads its manifest totals,\nreports the loss, and deletes the file. If validation or exact counting\nfails, startup warns, reports only the segment loss, and still deletes\nthe file.\n- **Performance implication:** Validation must inspect the full file, so\nstartup cost grows with the number and size of expired segments. Memory\nmapping avoids a payload-sized heap copy but does not avoid reading the\ndata.\n\n#### WAL-only bundles\n\n- Startup decodes each expired entry, counts its Arrow or OTLP items\nthrough the durable-buffer adapter, reports the loss, advances the\nreplay cursor, and skips the bundle.\n- **Performance implication:** Startup must decode and count every\nexpired entry, then durably persist the replay cursor. At larger scales,\nskipping normal segment reconstruction can offset part of this work.\n\nNo segment or WAL format changes are required, so existing data remains\nreadable across upgrades and rollbacks.\n\n### Performance tradeoff\n\nExact startup accounting requires reading expired finalized segments and\ndecoding expired WAL bundles. This work occurs only for data that\nexceeded `max_age` while the process was stopped.\n\nResults:\n\n| Fixture | Fresh data | Expired data | Expiry overhead | Increase |\n| --- | ---: | ---: | ---: | ---: |\n| 1 segment, 16 x 1,000-row bundles | 2.22 ms | 2.94 ms | 0.72 ms |\n32.4% |\n| 4 segments, 16 x 1,000-row bundles each | 3.28 ms | 5.08 ms | 1.81 ms\n| 55.2% |\n| 1 segment, 16 x 8,192-row bundles | 4.88 ms | 7.01 ms | 2.13 ms |\n43.7% |\n| 32 segments, 16 x 1,000-row bundles each | 13.31 ms | 20.25 ms | 6.94\nms | 52.2% |\n| 8 segments, 16 x 8,192-row bundles each | 19.53 ms | 32.47 ms | 12.94\nms | 66.3% |\n| 100 WAL entries x 100 rows | 3.53 ms | 15.74 ms | 12.21 ms | 346.0% |\n| 100 WAL entries x 1,000 rows | 10.50 ms | 22.10 ms | 11.59 ms | 110.4%\n|\n| 1,000 WAL entries x 100 rows | 18.77 ms | 21.94 ms | 3.17 ms | 16.9% |\n| 1,000 WAL entries x 1,000 rows | 96.64 ms | 106.72 ms | 10.08 ms |\n10.4% |\n| 10,000 WAL entries x 100 rows | 174.07 ms | 149.68 ms | -24.39 ms |\n-14.0% |\n\n- Empty startup establishes a 1.60 ms initialization baseline.\n- Segment expiry overhead continues to scale with file count and payload\nbytes.\n- WAL expiry adds roughly 10-12 ms at smaller scales, primarily from\npersisting its crash-safe replay cursor.\n- At 10,000 WAL entries, skipping segment reconstruction outweighs the\nfixed cursor cost.\n- WAL timings vary with filesystem sync latency, so absolute cost is\nmore informative than percentage increase over a small baseline.\n- Cold-disk startup can be slower than these warm-cache results.\n\n## What issue does this PR close?\n\n* Closes #3728\n\n## How are these changes tested?\n\nUnit tests and benchmarks\n\n## Are there any user-facing changes?\n\nYes, more accurate loss metrics from `durable_buffer_processor`\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-08-17T19:58:05Z",
+          "tree_id": "89b2c4293e251ee3a5034c064349d4b42d16838a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c1bd22c4b2b57bcb89a10dde5f4380849ed4738d"
+        },
+        "date": 1787000400096,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 69.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.48,
             "unit": "MB"
           }
         ]
