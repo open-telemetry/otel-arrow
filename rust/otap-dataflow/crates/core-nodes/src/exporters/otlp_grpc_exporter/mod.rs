@@ -640,8 +640,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
 /// `auth_failure` marks a rejection of the bearer token this request carried; it
 /// forces the NACK to be retryable even though `UNAUTHENTICATED` is otherwise a
 /// permanent status.
+///
+/// This returns Ok(()) if the result Ack/Nack was successfully routed regardless of
+/// whether the request actually succeeded. E.g. it does not return `Err` for an
+/// unsuccessful request.
 async fn route_export_result<T>(
-    result: Result<T, tonic::Status>,
+    result: &Result<T, tonic::Status>,
     context: Context,
     saved_payload: OtapPayload,
     effect_handler: &EffectHandler<OtapPdata>,
@@ -652,10 +656,9 @@ async fn route_export_result<T>(
             effect_handler
                 .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
                 .await?;
-            Ok(())
         }
         Err(e) => {
-            let retryable = is_retryable_grpc_status(&e) || auth_failure;
+            let retryable = is_retryable_grpc_status(e) || auth_failure;
             let error_msg = e.to_string();
 
             // TODO(https://github.com/open-telemetry/otel-arrow/issues/3404):
@@ -663,22 +666,17 @@ async fn route_export_result<T>(
             // server's advisory RetryInfo delay into the human-readable reason.
             // Replace this with a structured field once #3404 lands.
             let mut reason = error_msg.clone();
-            if let Some(delay) = retry_after(&e) {
+            if let Some(delay) = retry_after(e) {
                 reason.push_str(&format!(" (retry after {})", format_retry_delay(&delay)));
             }
 
             let mut nack = NackMsg::new(&reason, OtapPdata::new(context, saved_payload));
             nack.permanent = !retryable;
             effect_handler.notify_nack(nack).await?;
-            let source_detail = format_error_sources(&e);
-            Err(Error::ExporterError {
-                exporter: effect_handler.exporter_id(),
-                kind: ExporterErrorKind::Transport,
-                error: error_msg,
-                source_detail,
-            })
         }
     }
+
+    Ok(())
 }
 
 /// Prost-generated struct for `google.rpc.Status`.
@@ -1039,13 +1037,27 @@ async fn finalize_completed_export(
         metrics.record_success(signal_type, export_duration);
     }
 
-    if let Err(e) =
-        route_export_result(result, context, saved_payload, effect_handler, auth_failure).await
+    if let Err(e) = route_export_result(
+        &result,
+        context,
+        saved_payload,
+        effect_handler,
+        auth_failure,
+    )
+    .await
     {
         otel_warn!(
-            "otlp.exporter.grpc.notification_error",
-            message = "Failed to route the terminal OTLP gRPC Ack/Nack notification",
+            "otlp.exporter.grpc.export_error",
+            message = "error routing export Ack/Nack",
             error = %e
+        );
+    } else if let Err(status) = &result {
+        otel_warn!(
+            "otlp.exporter.grpc.export_error",
+            message = "service request error",
+            code = %status.code(),
+            error_msg = status.message(),
+            source = format_error_sources(status)
         );
     }
 
