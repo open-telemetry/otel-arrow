@@ -296,6 +296,24 @@ pub struct KafkaExporterConfigBuilder {
     #[serde(default = "default_linger_ms")]
     linger_ms: u32,
 
+    /// Maximum number of Kafka deliveries the exporter keeps in flight
+    /// concurrently before it stops accepting new pdata (default: 10).
+    ///
+    /// Each accepted pdata is encoded and enqueued to librdkafka, and its
+    /// delivery future is added to a bounded in-flight set. When the set is
+    /// full the exporter parks the next pdata and only resumes intake as
+    /// deliveries complete, so this value bounds both concurrency and
+    /// in-flight memory and propagates backpressure upstream.
+    ///
+    /// The default of `10` pipelines deliveries for higher throughput.
+    ///
+    /// Must be in the range `1` to `100000`. A value of `0` is rejected because
+    /// it would stall the exporter; values above `100000` are rejected because
+    /// they exceed librdkafka's default producer queue depth and only inflate
+    /// in-flight memory without increasing pipelining.
+    #[serde(default = "default_max_in_flight")]
+    max_in_flight: usize,
+
     /// Authentication configuration (same structure as the Kafka receiver).
     #[serde(default)]
     auth: Option<Auth>,
@@ -396,6 +414,7 @@ impl KafkaExporterConfigBuilder {
             required_acks: default_required_acks(),
             max_message_bytes: default_max_message_bytes(),
             linger_ms: default_linger_ms(),
+            max_in_flight: default_max_in_flight(),
             auth: None,
             tls: None,
             partitioning_strategy: default_partitioning_strategy(),
@@ -460,6 +479,16 @@ impl KafkaExporterConfigBuilder {
     #[must_use]
     pub fn with_linger_ms(mut self, ms: u32) -> Self {
         self.linger_ms = ms;
+        self
+    }
+
+    /// Set the maximum number of concurrent in-flight Kafka deliveries.
+    ///
+    /// Must be in the range `1` to `100000` (validated when the config is
+    /// built); values outside that range are rejected.
+    #[must_use]
+    pub fn with_max_in_flight(mut self, max_in_flight: usize) -> Self {
+        self.max_in_flight = max_in_flight;
         self
     }
 
@@ -683,6 +712,24 @@ impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
             ));
         }
 
+        // Reject a non-positive concurrency bound. `max_in_flight` caps the
+        // number of outstanding deliveries; a value of `0` would stall the
+        // exporter because no delivery could ever be admitted.
+        if builder.max_in_flight == 0 {
+            return Err(
+                "max_in_flight must be > 0; a value of 0 would stall the exporter \
+                 (no deliveries could ever be outstanding)"
+                    .to_string(),
+            );
+        }
+        if builder.max_in_flight > MAX_IN_FLIGHT_LIMIT {
+            return Err(format!(
+                "max_in_flight must be <= {MAX_IN_FLIGHT_LIMIT}; larger values cannot \
+                 increase pipelining beyond librdkafka's default producer queue depth \
+                 and only inflate in-flight memory"
+            ));
+        }
+
         // Validate topic names and dynamic-routing allowlists for each signal.
         if let Some(ref signal) = builder.traces {
             validate_signal_topics(signal).map_err(|e| format!("traces.{e}"))?;
@@ -788,6 +835,12 @@ impl KafkaExporterConfig {
         self.0.linger_ms
     }
 
+    /// Maximum number of concurrent in-flight Kafka deliveries.
+    #[must_use]
+    pub fn max_in_flight(&self) -> usize {
+        self.0.max_in_flight
+    }
+
     /// Get the authentication configuration, if set.
     #[must_use]
     pub fn auth(&self) -> Option<&Auth> {
@@ -867,6 +920,15 @@ impl KafkaExporterConfig {
 /// config validation time so the exporter's shutdown path always stays bounded.
 pub(crate) const MAX_TIMEOUT_MS: u64 = 30_000;
 
+/// Maximum accepted `max_in_flight` (100,000 deliveries).
+///
+/// This matches librdkafka's default `queue.buffering.max.messages`, so any
+/// valid `max_in_flight` stays within the producer's queue depth and cannot, on
+/// its own, drive the queue to `QueueFull`. Values above this ceiling cannot
+/// increase pipelining beyond what the producer queue admits and only inflate
+/// the exporter's in-flight memory, so they are rejected at config validation.
+pub(crate) const MAX_IN_FLIGHT_LIMIT: usize = 100_000;
+
 /// Default timeout in milliseconds.
 fn default_timeout_ms() -> u64 {
     5000
@@ -885,6 +947,14 @@ fn default_max_message_bytes() -> usize {
 /// Default linger in milliseconds.
 fn default_linger_ms() -> u32 {
     5
+}
+
+/// Default maximum number of concurrent in-flight Kafka deliveries.
+///
+/// Defaults to `10`, which pipelines up to ten deliveries at a time for
+/// higher throughput while keeping in-flight memory bounded.
+fn default_max_in_flight() -> usize {
+    10
 }
 
 /// Default partitioner strategy.
@@ -1211,6 +1281,71 @@ mod tests {
             .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto));
         let config = KafkaExporterConfig::try_from(builder).unwrap();
         assert_eq!(config.timeout_ms(), 5000);
+    }
+
+    /// Scenario (backpressure and resource bounds): a config sets `max_in_flight` to `0`.
+    /// Guarantees: validation rejects `0` (which would stall the exporter since
+    /// no delivery could ever be admitted), so a misconfigured concurrency
+    /// bound is caught at construction; the error names `max_in_flight`.
+    #[test]
+    fn max_in_flight_zero_is_rejected() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_max_in_flight(0);
+        let err = KafkaExporterConfig::try_from(builder).unwrap_err();
+        assert!(err.contains("max_in_flight"));
+    }
+
+    /// Scenario (backpressure and resource bounds): a config sets `max_in_flight` to a small
+    /// positive value.
+    /// Guarantees: any positive concurrency bound validates and is surfaced
+    /// verbatim by the accessor, so operators can opt into pipelined delivery.
+    #[test]
+    fn positive_max_in_flight_is_accepted() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_max_in_flight(8);
+        let config = KafkaExporterConfig::try_from(builder).expect("positive value is valid");
+        assert_eq!(config.max_in_flight(), 8);
+    }
+
+    /// Scenario (backpressure and resource bounds): a config omits `max_in_flight` and takes
+    /// the serde default.
+    /// Guarantees: the default is `10`, pipelining up to ten deliveries for
+    /// throughput
+    #[test]
+    fn default_max_in_flight_is_ten() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto));
+        let config = KafkaExporterConfig::try_from(builder).expect("default is valid");
+        assert_eq!(config.max_in_flight(), 10);
+    }
+
+    /// Scenario (backpressure and resource bounds): a config sets `max_in_flight`
+    /// to exactly `MAX_IN_FLIGHT_LIMIT`.
+    /// Guarantees: the ceiling value (librdkafka's default producer queue depth)
+    /// validates and is surfaced verbatim, so the boundary is inclusive.
+    #[test]
+    fn max_in_flight_at_limit_is_accepted() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_max_in_flight(MAX_IN_FLIGHT_LIMIT);
+        let config = KafkaExporterConfig::try_from(builder).expect("ceiling value is valid");
+        assert_eq!(config.max_in_flight(), MAX_IN_FLIGHT_LIMIT);
+    }
+
+    /// Scenario (backpressure and resource bounds): a config sets `max_in_flight`
+    /// above `MAX_IN_FLIGHT_LIMIT`.
+    /// Guarantees: validation rejects the value (it exceeds librdkafka's default
+    /// producer queue depth and cannot increase pipelining), so a memory-inflating
+    /// bound is caught at construction; the error names `max_in_flight`.
+    #[test]
+    fn max_in_flight_above_limit_is_rejected() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_max_in_flight(MAX_IN_FLIGHT_LIMIT + 1);
+        let err = KafkaExporterConfig::try_from(builder).unwrap_err();
+        assert!(err.contains("max_in_flight"));
     }
 
     #[test]

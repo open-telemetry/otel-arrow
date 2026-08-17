@@ -39,13 +39,33 @@ groups:
 {%- endif %}
 
           exporter:
-            type: "urn:otel:exporter:otap"
+            # Fixed DFE reference producer for receiver-isolation suites.
+            # Aligned Kafka producer tuning is injected from the canonical
+            # kafka_producer_* suite variables so the reference side is
+            # identical across every benchmarked receiver variant.
+            type: urn:otel:exporter:kafka
             config:
-              grpc_endpoint: "http://{{ engine_hostname | default("localhost") }}:{{ exporter_port | default(4317) }}"
-              compression_method: {{ compression_method | default("none") }}
-              streams_per_signal: {{ otap_exporter_streams_per_signal | default(1) }}
-              arrow:
-                payload_compression: {{ payload_compression | default("none") }}
+              brokers: "{{kafka_hostname}}:9092"
+              client_id: "dfe-kafka-loadgen"
+              required_acks: {{ kafka_producer_acks | default("one") }}
+{%- if kafka_producer_compression is defined and kafka_producer_compression != "none" %}
+              compression: {{ kafka_producer_compression }}
+{%- endif %}
+              linger_ms: {{ kafka_producer_linger_ms | default(5) }}
+              max_message_bytes: {{ kafka_producer_max_message_bytes | default(1000000) }}
+              partitioning_strategy: {{ kafka_producer_partitioner | default("consistent_random") }}
+              producer_config:
+                batch.num.messages: "{{ kafka_producer_batch_num_messages | default(10000) }}"
+                queue.buffering.max.messages: "{{ kafka_producer_queue_buffering_max_messages | default(100000) }}"
+              logs:
+                topic: "otel-logs"
+                encoding: otlp_proto
+              metrics:
+                topic: "otel-metrics"
+                encoding: otlp_proto
+              traces:
+                topic: "otel-spans"
+                encoding: otlp_proto
 
         connections:
           - from: receiver
