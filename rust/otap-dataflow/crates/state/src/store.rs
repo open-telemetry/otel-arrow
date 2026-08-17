@@ -399,13 +399,45 @@ impl ObservedStateStore {
                 );
             }
             EventType::Error(err) => {
-                otel_error!("state.observed_error",
-                    pipeline_group_id = %observed_event.key.pipeline_group_id,
-                    pipeline_id = %observed_event.key.pipeline_id,
-                    core_id = observed_event.key.core_id,
-                    event_type = ?err,
-                    message = observed_event.message.as_deref().unwrap_or(""),
-                );
+                let event_type = err.kind();
+                if let Some(summary) = err.summary() {
+                    let error_kind = summary.error_kind();
+                    let error = summary.message();
+                    let source = summary.source().unwrap_or("");
+                    if let Some((node, node_kind)) = summary.node() {
+                        otel_error!("state.observed_error",
+                            pipeline_group_id = %observed_event.key.pipeline_group_id,
+                            pipeline_id = %observed_event.key.pipeline_id,
+                            core_id = observed_event.key.core_id,
+                            node = node,
+                            node_kind = ?node_kind,
+                            event_type = event_type,
+                            error_kind = error_kind,
+                            error = error,
+                            source = source,
+                            message = observed_event.message.as_deref().unwrap_or(""),
+                        );
+                    } else {
+                        otel_error!("state.observed_error",
+                            pipeline_group_id = %observed_event.key.pipeline_group_id,
+                            pipeline_id = %observed_event.key.pipeline_id,
+                            core_id = observed_event.key.core_id,
+                            event_type = event_type,
+                            error_kind = error_kind,
+                            error = error,
+                            source = source,
+                            message = observed_event.message.as_deref().unwrap_or(""),
+                        );
+                    }
+                } else {
+                    otel_error!("state.observed_error",
+                        pipeline_group_id = %observed_event.key.pipeline_group_id,
+                        pipeline_id = %observed_event.key.pipeline_id,
+                        core_id = observed_event.key.core_id,
+                        event_type = event_type,
+                        message = observed_event.message.as_deref().unwrap_or(""),
+                    );
+                }
             }
             EventType::Success(_) => {}
         };
@@ -621,6 +653,21 @@ mod tests {
         }
     }
 
+    struct LogCaptureLayer {
+        sender: flume::Sender<LogRecord>,
+    }
+
+    impl<S> Layer<S> for LogCaptureLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            self.sender
+                .try_send(LogRecord::new(event, LogContext::default()))
+                .expect("log capture channel should have capacity");
+        }
+    }
+
     fn emit_log_via_async_reporter(reporter: ObservedEventReporter, message: &str) {
         let dispatch = tracing::Dispatch::new(
             tracing_subscriber::Registry::default().with(ReporterLayer { reporter }),
@@ -628,6 +675,80 @@ mod tests {
         tracing::dispatcher::with_default(&dispatch, || {
             otel_info!("state.test.log", message = message);
         });
+    }
+
+    /// Scenario: a terminal pipeline error includes long identity and source diagnostics.
+    /// Guarantees: the observed-state log retains the compact error and pipeline identity.
+    #[test]
+    fn observed_runtime_error_retains_identity_and_diagnostics() {
+        let store = ObservedStateStore::new(
+            &ObservedStateSettings::default(),
+            TelemetryRegistryHandle::new(),
+        );
+        let (sender, receiver) = flume::bounded(1);
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::Registry::default().with(LogCaptureLayer { sender }),
+        );
+        let key = otap_df_config::DeployedPipelineKey {
+            pipeline_group_id: Cow::Borrowed("runtime_error_reproduction_pipeline_group"),
+            pipeline_id: Cow::Borrowed("runtime_error_reproduction_pipeline"),
+            core_id: 0,
+            deployment_generation: 0,
+        };
+        let error = "A processor error occurred in node debug (transport): Write error: No space left on device (os error 28)";
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let result = store
+                .report_engine(EngineEvent::pipeline_runtime_error(
+                    key,
+                    "Pipeline encountered a runtime error.",
+                    otap_df_telemetry::event::ErrorSummary::Pipeline {
+                        error_kind: "runtime".into(),
+                        message: error.into(),
+                        source: Some("processor debug -> std::io::ErrorKind::StorageFull".into()),
+                    },
+                ))
+                .expect_err("runtime error from Pending should be rejected after logging");
+            assert!(matches!(result, Error::InvalidTransition { .. }));
+        });
+
+        let rendered_pipeline = receiver
+            .recv()
+            .expect("pipeline runtime error log should be captured")
+            .to_string();
+        assert!(
+            rendered_pipeline.contains(error),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("error_kind=runtime"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("event_type=runtime_error"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline
+                .contains("pipeline_group_id=runtime_error_reproduction_pipeline_group"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("pipeline_id=runtime_error_reproduction_pipeline"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("core_id=0"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("source=processor debug"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            !rendered_pipeline.contains("error=RuntimeError("),
+            "rendered log should not use verbose enum Debug output: {rendered_pipeline}"
+        );
     }
 
     /// Validates that `send_timeout(1ms)` on a full bounded channel drops

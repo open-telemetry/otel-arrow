@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: engine
+note: Preserve actionable terminal pipeline error details and pipeline identity in bounded internal logs.
+issues: [3598]
