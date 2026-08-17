@@ -98,6 +98,10 @@
 //! use `BoundedBuf::encode_len_delimited`, and the trusted pre-encoded resource
 //! field shared with internal logs is copied directly into `ResourceMetrics`.
 //!
+//! Protobuf field order is semantically insignificant. The encoder nevertheless
+//! writes scalar aggregation metadata before repeated data points to keep the
+//! wire layout stable and place context before potentially long repeated fields.
+//!
 //! Production encoding does not construct generated OTLP messages or traverse
 //! a Prost object tree. Tests decode the emitted bytes with Prost as an
 //! independent compatibility oracle.
@@ -896,6 +900,8 @@ fn encode_metric(
     encode_string(buffer, METRIC_DESCRIPTION, metric.description)?;
     encode_string(buffer, METRIC_UNIT, metric.field.unit)?;
 
+    // Sum and histogram messages intentionally place scalar aggregation metadata
+    // before repeated data points; protobuf decoding itself is order-independent.
     match metric.field.instrument {
         Instrument::Gauge => {
             buffer.encode_len_delimited(METRIC_GAUGE, |buffer| {
