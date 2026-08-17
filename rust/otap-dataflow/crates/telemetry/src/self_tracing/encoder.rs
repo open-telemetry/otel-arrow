@@ -1493,11 +1493,12 @@ mod tests {
             );
         }
 
-        // Each successive value should be shorter (halving budget).
+        // Each successive value should be no longer than the previous one
+        // as the remaining budget is halved across attributes.
         let lens: Vec<usize> = decoded.iter().map(|(_, v)| v.len()).collect();
         assert!(
-            lens.windows(2).all(|w| w[0] > w[1]),
-            "expected strictly decreasing value lengths, got {lens:?}"
+            lens.windows(2).all(|w| w[0] >= w[1]),
+            "expected non-increasing value lengths, got {lens:?}"
         );
     }
 

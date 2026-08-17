@@ -632,7 +632,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
 /// forces the NACK to be retryable even though `UNAUTHENTICATED` is otherwise a
 /// permanent status.
 ///
-/// This returns OK(()) if the result Ack/Nack was successfully routed regardless of
+/// This returns Ok(()) if the result Ack/Nack was successfully routed regardless of
 /// whether the request actually succeeded. E.g. it does not return `Err` for an
 /// unsuccessful request.
 async fn route_export_result<T>(
