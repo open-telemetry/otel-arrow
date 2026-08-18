@@ -15,8 +15,121 @@ use quote::{format_ident, quote};
 use std::collections::HashSet;
 use syn::parse_quote;
 use syn::{
-    Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr, parse_macro_input, spanned::Spanned,
+    Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr, Token, parse_macro_input,
+    spanned::Spanned,
 };
+
+struct ComponentTelemetryScopeArgs {
+    urn: syn::Expr,
+    target: LitStr,
+}
+
+impl syn::parse::Parse for ComponentTelemetryScopeArgs {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let mut urn = None;
+        let mut target = None;
+
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            let _ = input.parse::<Token![=]>()?;
+
+            if key == "urn" {
+                if urn.is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `urn` argument"));
+                }
+                urn = Some(input.parse()?);
+            } else if key == "target" {
+                if target.is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `target` argument"));
+                }
+                target = Some(input.parse()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "unsupported argument; expected `urn` or `target`",
+                ));
+            }
+
+            if input.is_empty() {
+                break;
+            }
+            let _ = input.parse::<Token![,]>()?;
+        }
+
+        Ok(Self {
+            urn: urn.ok_or_else(|| input.error("missing `urn` argument"))?,
+            target: target.ok_or_else(|| input.error("missing `target` argument"))?,
+        })
+    }
+}
+
+/// Binds the `otel_*` event macros in the current module subtree to one
+/// registered component target.
+///
+/// The target is compile-time checked against `urn`. It is the URN without the
+/// `urn:` prefix and with colon separators replaced by dots.
+#[proc_macro]
+pub fn otel_component_scope(input: TokenStream) -> TokenStream {
+    let ComponentTelemetryScopeArgs { urn, target } =
+        parse_macro_input!(input as ComponentTelemetryScopeArgs);
+    let telemetry = quote!(::otap_df_telemetry);
+
+    quote! {
+        const _: () = #telemetry::_private::validate_component_target(#urn, #target);
+
+        #[allow(unused_macros)]
+        macro_rules! otel_debug {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_debug!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_info {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_info!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_warn {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_warn!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_error {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_error!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
+        #[allow(unused_macros)]
+        macro_rules! otel_event {
+            ($($tokens:tt)*) => {
+                #telemetry::otel_event!(
+                    target: #target,
+                    $($tokens)*
+                )
+            };
+        }
+
+    }
+    .into()
+}
 
 /// Derive implementation of `otap_df_telemetry::metrics::MetricSetHandler` for a struct.
 ///
@@ -1325,6 +1438,35 @@ fn parse_attribute_field_attr(attr: &Attribute) -> syn::Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: component telemetry scope arguments are supplied in either possible order.
+    /// Guarantees: named arguments parse independently of their source order.
+    #[test]
+    fn component_telemetry_scope_arguments_accept_any_order() {
+        let permutations = [
+            r#"urn = COMPONENT_URN, target = "otel.processor.transform""#,
+            r#"target = "otel.processor.transform", urn = COMPONENT_URN"#,
+        ];
+
+        for arguments in permutations {
+            let parsed = syn::parse_str::<ComponentTelemetryScopeArgs>(arguments)
+                .expect("named component telemetry scope arguments should parse in any order");
+            assert_eq!(parsed.target.value(), "otel.processor.transform");
+        }
+    }
+
+    /// Scenario: a component telemetry scope repeats one named argument.
+    /// Guarantees: duplicate arguments are rejected instead of silently replacing a value.
+    #[test]
+    fn component_telemetry_scope_arguments_reject_duplicates() {
+        let err = syn::parse_str::<ComponentTelemetryScopeArgs>(
+            r#"urn = COMPONENT_URN, target = "otel.processor.transform", target = "otel.exporter.transform""#,
+        )
+        .err()
+        .expect("duplicate component telemetry scope arguments should fail");
+
+        assert_eq!(err.to_string(), "duplicate `target` argument");
+    }
 
     /// Scenario: A metric field declares the supported name and unit arguments.
     /// Guarantees: The parser returns both values without an error.

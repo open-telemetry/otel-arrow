@@ -17,6 +17,8 @@
 //! Periodic telemetry snapshots partition request lifecycle, rejection, acknowledgement, and
 //! transport counters by bounded signal, protocol, outcome, and error-type attributes.
 
+otap_df_telemetry::otel_component_scope!(urn = OTLP_RECEIVER_URN, target = "otel.receiver.otlp",);
+
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::otap_grpc::otlp::server_new::{
     LogsServiceServer, MetricsServiceServer, OtlpServerSettings, RouteResponse, TraceServiceServer,
@@ -458,14 +460,14 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let both_enabled = self.config.protocols.has_both();
 
         if let Some(grpc) = &self.config.protocols.grpc {
-            otap_df_telemetry::otel_info!(
+            otel_info!(
                 "otlp.receiver.grpc.start",
                 message = "Starting OTLP gRPC receiver",
                 endpoint = %grpc.listening_addr
             );
         }
         if let Some(http) = &self.config.protocols.http {
-            otap_df_telemetry::otel_info!(
+            otel_info!(
                 "otlp.receiver.http.start",
                 message = "Starting OTLP HTTP receiver",
                 endpoint = %http.listening_addr
@@ -739,7 +741,7 @@ impl OTLPReceiver {
                             match msg {
                                 NodeControlMsg::DrainIngress { deadline, reason } => {
                                     if draining_deadline.is_none() {
-                                        otap_df_telemetry::otel_info!("otlp.receiver.drain_ingress");
+                                        otel_info!("otlp.receiver.drain_ingress");
                                         // Latch the first drain request and close both
                                         // protocol listeners. We intentionally defer
                                         // ReceiverDrained until in-flight wait_for_result
@@ -752,7 +754,7 @@ impl OTLPReceiver {
                                     }
                                 }
                                 NodeControlMsg::Shutdown { deadline, reason } => {
-                                    otap_df_telemetry::otel_info!("otlp.receiver.shutdown");
+                                    otel_info!("otlp.receiver.shutdown");
                                     grpc_shutdown.cancel();
                                     http_shutdown.cancel();
                                     ack_registry.force_shutdown(&reason);

@@ -5,6 +5,11 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
+otap_df_telemetry::otel_component_scope!(
+    urn = TRAFFIC_GENERATOR_RECEIVER_URN,
+    target = "otel.receiver.traffic_generator",
+);
+
 use crate::receivers::traffic_generator::config::Config;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -30,7 +35,6 @@ use otap_df_pdata::OtapPayload;
 #[cfg(test)]
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;

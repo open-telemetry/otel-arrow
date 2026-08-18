@@ -6,6 +6,11 @@
 //! This processor will partition incoming OTAP batches by the evaluated result of some expression
 //! and set the partition value in the outgoing batches metadata.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = PARTITION_PROCESSOR_URN,
+    target = "otel.processor.partition",
+);
+
 use std::sync::Arc;
 
 use async_trait::async_trait;

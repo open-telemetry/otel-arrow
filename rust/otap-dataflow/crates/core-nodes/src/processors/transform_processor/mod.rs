@@ -12,6 +12,11 @@
 //!
 //! ToDo: Detect unsupported pipelines at config time instead of run time.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = TRANSFORM_PROCESSOR_URN,
+    target = "otel.processor.transform",
+);
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -1987,7 +1992,7 @@ mod test {
                 assert_eq!(outbound_context.source_node(), Some(0));
                 inbound_context.set_source_node(0);
                 assert_eq!(inbound_context, outbound_context);
-                assert!(outbound_context.has_subscribers());
+                assert!(outbound_context.has_ack_or_nack_subscribers());
             })
             .validate(|_ctx| async move {})
     }
@@ -2067,7 +2072,7 @@ mod test {
                 // The processor at node 5 should have tagged the outbound source.
                 assert_eq!(outbound_pdata.get_source_node(), Some(5));
                 // The original ACK subscriber should still be present.
-                assert!(outbound_pdata.has_subscribers());
+                assert!(outbound_pdata.has_ack_or_nack_interests());
 
                 // Behavior check: ACK unwinds back to the original subscriber.
                 let (node_id, ack) = next_ack(AckMsg::new(outbound_pdata))

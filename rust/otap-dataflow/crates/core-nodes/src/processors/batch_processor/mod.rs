@@ -28,6 +28,11 @@
 //! Interests::RETURN_DATA because (a) more memory required, (b) forces
 //! whole-request retry (instead of partial).
 
+otap_df_telemetry::otel_component_scope!(
+    urn = OTAP_BATCH_PROCESSOR_URN,
+    target = "otel.processor.batch",
+);
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
@@ -253,11 +258,11 @@ pub struct Config {
     #[serde(with = "humantime_serde", default = "default_max_batch_duration")]
     pub max_batch_duration: Duration,
 
-    /// Limits the number of pending requests for ack/nack tracking.
+    /// Limits the number of pending requests for completion tracking.
     #[serde(default = "default_inbound_request_limit")]
     pub inbound_request_limit: NonZeroUsize,
 
-    /// Limits the number of outbound requests for ack/nack tracking.
+    /// Limits the number of outbound requests for completion tracking.
     #[serde(default = "default_outbound_request_limit")]
     pub outbound_request_limit: NonZeroUsize,
 
@@ -957,8 +962,8 @@ where
         // when none of them subscribed to ack/nack.
         let peer_addr = ctx.peer_addr();
 
-        // If there are subscribers, calculate an inbound slot key.
-        let inkey = if ctx.has_subscribers() {
+        // Retain contexts needed for Ack/Nack routing or metrics unwinding.
+        let inkey = if ctx.needs_completion_tracking() {
             let slot = self
                 .buffer
                 .inbound
@@ -1181,8 +1186,8 @@ where
             let weight = ownership;
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
-            // If any inputs in this batch require notification, get an
-            // outbound slot and subscribe.
+            // If any inputs require completion tracking, get an outbound slot
+            // and subscribe so their contexts can unwind after this output.
             let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
             // Forward the receiver-observed peer address only when every
             // input merged into this output batch came from the same peer
@@ -2092,7 +2097,7 @@ mod tests {
                             looped += 1;
 
                             // Apply ack/nack policy
-                            if new_output.has_subscribers() {
+                            if new_output.has_ack_or_nack_interests() {
                                 let policy = nack_policy
                                     .as_ref()
                                     .map(|p| p(total_outputs - 1, &new_output))
@@ -3642,7 +3647,7 @@ mod tests {
                 let last = outputs.len() - 1;
                 for (i, out) in outputs.into_iter().enumerate() {
                     assert!(
-                        out.has_subscribers(),
+                        out.has_ack_or_nack_interests(),
                         "every fragment must be subscribed for ack/nack"
                     );
                     if i == last {
