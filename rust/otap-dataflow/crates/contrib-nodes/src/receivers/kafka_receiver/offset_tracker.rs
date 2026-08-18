@@ -1515,9 +1515,11 @@ mod tests {
     fn total_pending_cache_matches_scan_across_mutations() {
         let mut tracker = OffsetTracker::new();
 
+        // in flight: {} => total 0
         assert_in_flight_agrees(&tracker, 0);
 
         // Fresh inserts across two topics/partitions raise the aggregate.
+        // in flight: traces/0={100,101}, traces/1={200}, metrics/0={300} => total 4
         tracker.track("traces", 0, 100, 1);
         tracker.track("traces", 0, 101, 1);
         tracker.track("traces", 1, 200, 1);
@@ -1525,39 +1527,54 @@ mod tests {
         assert_in_flight_agrees(&tracker, 4);
 
         // A duplicate offset does not change the aggregate.
+        // duplicate insert, in flight unchanged => total 4
         tracker.track("traces", 0, 100, 1);
         assert_in_flight_agrees(&tracker, 4);
 
         // A stale-generation track is a no-op for the aggregate.
+        // stale-gen no-op, in flight unchanged => total 4
         tracker.track("traces", 0, 50, 0);
         assert_in_flight_agrees(&tracker, 4);
 
         // Acking a pending offset decrements by one.
+        // in flight: traces/0={101}, traces/1={200}, metrics/0={300} => total 3
         assert!(tracker.acknowledge("traces", 0, 100));
         assert_in_flight_agrees(&tracker, 3);
 
         // Acking an unknown offset/partition leaves the aggregate unchanged.
+        // unknown acks are no-ops, in flight unchanged => total 3
         assert!(!tracker.acknowledge("traces", 0, 999));
         assert!(!tracker.acknowledge("unknown", 7, 1));
         assert_in_flight_agrees(&tracker, 3);
 
         // Revoking a partition subtracts its remaining pending offsets.
         // traces/0 still has offset 101 pending (100 was acked).
+        // drop traces/0={101}; in flight: traces/1={200}, metrics/0={300} => total 2
         tracker.revoke("traces", 0);
         assert_in_flight_agrees(&tracker, 2);
 
         // A newer-generation track on an existing partition resets its pending
         // set: metrics/0 drops its single old-generation offset (300) and adds
         // one new offset (400), a net zero change for that partition.
+        // reset metrics/0 {300}->{400}; in flight: traces/1={200}, metrics/0={400} => total 2
         tracker.track("metrics", 0, 400, 2);
         assert_in_flight_agrees(&tracker, 2);
 
-        // Newer-generation reset when the partition had multiple pending offsets
-        // shrinks the aggregate: traces/1 holds only offset 200, replaced by 210.
+        // Grow traces/1 to two generation-1 pending offsets (200, 201) so the
+        // upcoming newer-generation reset must remove more than it adds,
+        // exercising the negative-delta path (delta = 1 - old_len = 1 - 2 = -1).
+        // in flight: traces/1={200,201}, metrics/0={400} => total 3
+        tracker.track("traces", 1, 201, 1);
+        assert_in_flight_agrees(&tracker, 3);
+
+        // A newer-generation track on traces/1 clears its two pending offsets
+        // (200, 201) and inserts one (210): net -1, so the aggregate shrinks.
+        // reset traces/1 {200,201}->{210}; in flight: traces/1={210}, metrics/0={400} => total 2
         tracker.track("traces", 1, 210, 2);
         assert_in_flight_agrees(&tracker, 2);
 
         // Drain everything to zero via acks; the cache must land exactly at 0.
+        // ack metrics/0 400 and traces/1 210; in flight: {} => total 0
         assert!(tracker.acknowledge("metrics", 0, 400));
         assert!(tracker.acknowledge("traces", 1, 210));
         assert_in_flight_agrees(&tracker, 0);
