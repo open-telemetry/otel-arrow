@@ -1,0 +1,186 @@
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      plain-producer:
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 5
+                max_signal_count: 20
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+          kafka:
+            type: exporter:kafka
+            config:
+              brokers: "localhost:9093"
+              client_id: "otap-plain-producer"
+              logs:
+                topic: "otlp-logs-plain"
+                encoding: otlp_proto
+              allow_auto_create_topics: false
+              auth:
+                sasl:
+                  mechanism: PLAIN
+                  username: "plain"
+                  password: "plain-secret"
+              tls:
+                ca_file: "examples/kafka-sasl-tls/certs/ca.crt"
+        connections:
+          - from: generator
+            to: kafka
+
+      plain-consumer:
+        nodes:
+          kafka:
+            type: receiver:kafka
+            config:
+              brokers: "localhost:9093"
+              group_id: "otap-plain-consumer"
+              client_id: "otap-plain-consumer"
+              auto_offset_reset: earliest
+              logs:
+                topics: ["otlp-logs-plain"]
+                encoding: otlp_proto
+              auth:
+                sasl:
+                  mechanism: PLAIN
+                  username: "plain"
+                  password: "plain-secret"
+              tls:
+                ca_file: "examples/kafka-sasl-tls/certs/ca.crt"
+          console:
+            type: exporter:console
+            config: {}
+        connections:
+          - from: kafka
+            to: console
+
+      scram-256-producer:
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 5
+                max_signal_count: 20
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+          kafka:
+            type: exporter:kafka
+            config:
+              brokers: "localhost:9093"
+              client_id: "otap-scram-256-producer"
+              logs:
+                topic: "otlp-logs-scram-256"
+                encoding: otlp_proto
+              allow_auto_create_topics: false
+              auth:
+                sasl:
+                  mechanism: SCRAM-SHA-256
+                  username: "scram256"
+                  password: "scram256-secret"
+              tls:
+                ca_file: "examples/kafka-sasl-tls/certs/ca.crt"
+        connections:
+          - from: generator
+            to: kafka
+
+      scram-256-consumer:
+        nodes:
+          kafka:
+            type: receiver:kafka
+            config:
+              brokers: "localhost:9093"
+              group_id: "otap-scram-256-consumer"
+              client_id: "otap-scram-256-consumer"
+              auto_offset_reset: earliest
+              logs:
+                topics: ["otlp-logs-scram-256"]
+                encoding: otlp_proto
+              auth:
+                sasl:
+                  mechanism: SCRAM-SHA-256
+                  username: "scram256"
+                  password: "scram256-secret"
+              tls:
+                ca_file: "examples/kafka-sasl-tls/certs/ca.crt"
+          console:
+            type: exporter:console
+            config: {}
+        connections:
+          - from: kafka
+            to: console
+
+      scram-512-producer:
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 5
+                max_signal_count: 20
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+          kafka:
+            type: exporter:kafka
+            config:
+              brokers: "localhost:9093"
+              client_id: "otap-scram-512-producer"
+              logs:
+                topic: "otlp-logs-scram-512"
+                encoding: otlp_proto
+              allow_auto_create_topics: false
+              auth:
+                sasl:
+                  mechanism: SCRAM-SHA-512
+                  username: "scram512"
+                  password: "scram512-secret"
+              tls:
+                ca_file: "examples/kafka-sasl-tls/certs/ca.crt"
+        connections:
+          - from: generator
+            to: kafka
+
+      scram-512-consumer:
+        nodes:
+          kafka:
+            type: receiver:kafka
+            config:
+              brokers: "localhost:9093"
+              group_id: "otap-scram-512-consumer"
+              client_id: "otap-scram-512-consumer"
+              auto_offset_reset: earliest
+              logs:
+                topics: ["otlp-logs-scram-512"]
+                encoding: otlp_proto
+              auth:
+                sasl:
+                  mechanism: SCRAM-SHA-512
+                  username: "scram512"
+                  password: "scram512-secret"
+              tls:
+                ca_file: "examples/kafka-sasl-tls/certs/ca.crt"
+          console:
+            type: exporter:console
+            config: {}
+        connections:
+          - from: kafka
+            to: console
