@@ -1563,7 +1563,7 @@ impl<
             .into_iter()
             .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
         {
-            _ = self.assigned_cores_for_resolved(&pipeline)?;
+            _ = self.pipeline_placement_for_resolved_with_reserved(&pipeline, &BTreeSet::new())?;
         }
 
         let state = self
