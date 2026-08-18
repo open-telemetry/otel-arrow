@@ -896,51 +896,51 @@ mod tests {
     }
 
     /// Scenario: Pretty output receives one batch containing every OTLP metric data type.
-    /// Guarantees: Metric metadata, aggregation properties, points, buckets, exemplars, flags,
-    /// and quantiles are all rendered with aggregation properties before data points.
+    /// Guarantees: The complete metrics hierarchy, field ordering, and tree prefixes remain
+    /// byte-for-byte stable.
     #[test]
     fn pretty_metrics_render_all_data_types_and_semantics() {
         let text = format_pretty_metrics(&metrics_with_all_data_types());
 
-        for expected in [
-            "RESOURCE",
-            "service.name=metrics-test",
-            "SCOPE",
-            "name=metrics-scope",
-            "METRIC name=temperature",
-            "metadata.attr=value",
-            "GAUGE",
-            "SUM temporality=cumulative monotonic=true",
-            "value_int=42",
-            "HISTOGRAM temporality=delta",
-            "count=4 sum=20 min=0.5 max=12 flags=1",
-            "EXPLICIT_BOUND index=1 value=10",
-            "BUCKET_COUNT index=2 count=1",
-            "EXPONENTIAL_HISTOGRAM temporality=cumulative",
-            "scale=-1 zero_count=1 zero_threshold=0.01",
-            "POSITIVE_BUCKET offset=2 bucket_index=3 count=1",
-            "NEGATIVE_BUCKET offset=-2 bucket_index=-1 count=1",
-            "SUMMARY",
-            "count=5 sum=25 flags=1",
-            "QUANTILE quantile=0.99 value=9",
-            "EXEMPLAR time_unix_nano=150 value_double=1.25",
-            "span_id=0102030405060708",
-            "trace_id=0102030405060708090a0b0c0d0e0f10",
-        ] {
-            assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
-        }
-
-        let sum = text.find("SUM temporality=cumulative").unwrap();
-        let sum_point = text[sum..].find("DATA_POINT").unwrap() + sum;
-        assert!(sum < sum_point);
-
-        let histogram = text.find("HISTOGRAM temporality=delta").unwrap();
-        let histogram_point = text[histogram..].find("DATA_POINT").unwrap() + histogram;
-        assert!(histogram < histogram_point);
+        let expected = concat!(
+            "RESOURCE schema_url=https://opentelemetry.io/schemas/resource  [service.name=metrics-test]\n",
+            "| +- SCOPE name=metrics-scope version=1.0.0 schema_url=https://opentelemetry.io/schemas/scope  [scope.attr=7]\n",
+            "| | +- METRIC name=temperature description=Current temperature unit=Cel  [metadata.attr=value]\n",
+            "| | | +- GAUGE\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 value_double=21.5 flags=1 [series=blue]\n",
+            "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
+            "| | +- METRIC name=requests description=Request count unit={request} \n",
+            "| | | +- SUM temporality=cumulative monotonic=true\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 value_int=42 flags=1 [series=blue]\n",
+            "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
+            "| | +- METRIC name=latency unit=ms \n",
+            "| | | +- HISTOGRAM temporality=delta\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=4 sum=20 min=0.5 max=12 flags=1 [series=blue]\n",
+            "| | | | | +- EXPLICIT_BOUND index=0 value=1\n",
+            "| | | | | +- EXPLICIT_BOUND index=1 value=10\n",
+            "| | | | | +- BUCKET_COUNT index=0 count=1\n",
+            "| | | | | +- BUCKET_COUNT index=1 count=2\n",
+            "| | | | | +- BUCKET_COUNT index=2 count=1\n",
+            "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
+            "| | +- METRIC name=size_distribution unit=By \n",
+            "| | | +- EXPONENTIAL_HISTOGRAM temporality=cumulative\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=6 scale=-1 zero_count=1 zero_threshold=0.01 sum=30 min=-4 max=16 flags=1 [series=blue]\n",
+            "| | | | | +- POSITIVE_BUCKET offset=2 bucket_index=2 count=2\n",
+            "| | | | | +- POSITIVE_BUCKET offset=2 bucket_index=3 count=1\n",
+            "| | | | | +- NEGATIVE_BUCKET offset=-2 bucket_index=-2 count=1\n",
+            "| | | | | +- NEGATIVE_BUCKET offset=-2 bucket_index=-1 count=1\n",
+            "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
+            "| | +- METRIC name=request_summary unit=ms \n",
+            "| | | +- SUMMARY\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=5 sum=25 flags=1 [series=blue]\n",
+            "| | | | | +- QUANTILE quantile=0.5 value=4\n",
+            "| | | | | +- QUANTILE quantile=0.99 value=9\n",
+        );
+        assert_eq!(text, expected);
     }
 
     /// Scenario: Equivalent metrics are formatted through OTLP bytes and OTAP Arrow records.
-    /// Guarantees: Both supported payload models render every metric type and core aggregate field.
+    /// Guarantees: Both supported payload models render the complete metrics hierarchy identically.
     #[test]
     fn pretty_metrics_support_otlp_and_otap_views() {
         let metrics_data = metrics_with_all_data_types();
@@ -955,30 +955,27 @@ mod tests {
             .expect("format OTAP metrics");
         let otap_text = String::from_utf8(output).expect("pretty output is UTF-8");
 
-        for expected in [
-            "METRIC name=temperature",
-            "GAUGE",
-            "SUM temporality=cumulative monotonic=true",
-            "HISTOGRAM temporality=delta",
-            "EXPONENTIAL_HISTOGRAM temporality=cumulative",
-            "SUMMARY",
-            "count=4 sum=20 min=0.5 max=12",
-            "scale=-1 zero_count=1 zero_threshold=0.01",
-            "QUANTILE quantile=0.99 value=9",
-        ] {
-            assert!(otlp_text.contains(expected));
-            assert!(
-                otap_text.contains(expected),
-                "OTAP output missing `{expected}` in:\n{otap_text}"
-            );
-        }
+        assert_eq!(otap_text, otlp_text);
     }
 
-    /// Scenario: The raw metrics view receives malformed non-empty protobuf bytes.
-    /// Guarantees: Console-bound OTLP metrics are validated before formatting.
+    /// Scenario: A metrics field makes one pretty output line exceed the fixed console buffer.
+    /// Guarantees: Formatting returns WriteZero and does not append a silently truncated metric line.
     #[test]
-    fn pretty_metrics_reject_malformed_otlp_bytes() {
-        assert!(RawMetricsData::try_new(&[0x80]).is_err());
+    fn pretty_metrics_reject_line_overflow() {
+        let mut metrics_data = metrics_with_all_data_types();
+        metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].name =
+            "x".repeat(LOG_BUFFER_SIZE);
+        let bytes = metrics_data.encode_to_vec();
+        let metrics_view = RawMetricsData::try_new(&bytes).expect("metrics");
+        let formatter = HierarchicalFormatter::new(false, false);
+        let mut output = Vec::new();
+
+        let err = formatter
+            .format_metrics_data_to(&metrics_view, &mut output)
+            .expect_err("oversized metric line must fail");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::WriteZero);
+        assert!(!String::from_utf8(output).expect("UTF-8").contains("METRIC"));
     }
 
     /// Scenario: console configuration selects pretty output and every record JSON override.
