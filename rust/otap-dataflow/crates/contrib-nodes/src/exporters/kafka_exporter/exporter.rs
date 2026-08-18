@@ -352,7 +352,7 @@ impl KafkaExporter {
     ) -> Result<Self, KafkaExporterError> {
         // Warn about producer_config keys that may be overwritten by first-class fields.
         for key in config.overridden_producer_config_keys() {
-            otap_df_telemetry::otel_warn!(
+            otel_warn!(
                 "kafka.exporter.producer_config.overridden_key",
                 key = %key,
                 "producer_config contains key '{key}' which is also managed by a \
@@ -572,7 +572,7 @@ impl KafkaExporter {
         let signal_config = match Self::get_signal_config(&self.config, signal_type) {
             Ok(cfg) => cfg,
             Err(e) => {
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "kafka.exporter.signal.unconfigured",
                     signal_type = ?signal_type,
                     error = %e,
@@ -658,7 +658,7 @@ impl KafkaExporter {
                 bytes
             }
             Err(e) => {
-                otap_df_telemetry::otel_error!(
+                otel_error!(
                     "kafka.exporter.encode.failed",
                     signal_type = ?signal_type,
                     error = %e,
@@ -725,7 +725,7 @@ impl KafkaExporter {
                 let permanent = is_permanent_send_error(&kafka_err);
                 // `topic` may be a client-supplied (header-routed) value, so
                 // bound/escape it before logging to avoid log injection.
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "kafka.exporter.send.failed",
                     topic = %crate::common::kafka::sanitize_for_log(&topic),
                     signal_type = ?signal_type,
@@ -869,7 +869,7 @@ impl KafkaExporter {
             .unwrap_or(Duration::ZERO);
 
         if let Err(e) = self.producer.flush(flush_timeout) {
-            otap_df_telemetry::otel_warn!(
+            otel_warn!(
                 "kafka.exporter.shutdown.flush_failed",
                 error = %e,
             );
@@ -942,7 +942,7 @@ impl KafkaExporter {
         let new_config: KafkaExporterConfig = match serde_json::from_value(config) {
             Ok(cfg) => cfg,
             Err(e) => {
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "kafka.exporter.reconfigure_error",
                     error = %e,
                     "ignoring invalid Config; keeping current configuration",
@@ -954,7 +954,7 @@ impl KafkaExporter {
         // Warn about producer_config keys overridden by first-class fields,
         // matching the startup behavior.
         for key in new_config.overridden_producer_config_keys() {
-            otap_df_telemetry::otel_warn!(
+            otel_warn!(
                 "kafka.exporter.producer_config.overridden_key",
                 key = %key,
                 "producer_config contains key '{key}' which is also managed by a \
@@ -983,7 +983,7 @@ impl KafkaExporter {
         let new_producer = match new_producer_result {
             Ok(producer) => producer,
             Err(e) => {
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "kafka.exporter.reconfigure_error",
                     error = %e,
                     "failed to build producer for new config; keeping current configuration",
@@ -999,7 +999,7 @@ impl KafkaExporter {
             match Self::compile_signal_allowed_regexes(&new_config) {
                 Ok(regexes) => regexes,
                 Err(e) => {
-                    otap_df_telemetry::otel_warn!(
+                    otel_warn!(
                         "kafka.exporter.reconfigure_error",
                         error = %e,
                         "failed to compile allowed_topics_regex for new config; \
@@ -1018,7 +1018,7 @@ impl KafkaExporter {
         // timeout so a slow/unavailable broker cannot stall the swap.
         let flush_timeout = Duration::from_millis(self.config.timeout_ms());
         if let Err(e) = self.producer.flush(flush_timeout) {
-            otap_df_telemetry::otel_warn!(
+            otel_warn!(
                 "kafka.exporter.reconfigure.flush_failed",
                 error = %e,
             );
@@ -1062,7 +1062,7 @@ impl KafkaExporter {
             *in_flight = InFlightSends::new(max_in_flight);
         }
 
-        otap_df_telemetry::otel_info!(
+        otel_info!(
             "kafka.exporter.reconfigured",
             brokers = %self.config.brokers(),
         );

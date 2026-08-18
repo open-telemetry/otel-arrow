@@ -1,0 +1,6 @@
+change_type: breaking
+component: observability
+note: Use component-specific `InstrumentationScope.name` values for internal logs, enabling more targeted log-level filters.
+issues: [3738]
+subtext: |
+  Component scopes are derived from URNs: `urn:otel:processor:transform` becomes `otel.processor.transform`. Migration: update scope-name queries and `engine.telemetry.logs.level` directives; package filters no longer select component events.

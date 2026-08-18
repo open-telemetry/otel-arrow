@@ -4,6 +4,11 @@
 //! Console exporter that prints OTLP data in human-readable or structured formats.
 
 mod metrics;
+otap_df_telemetry::otel_component_scope!(
+    urn = CONSOLE_EXPORTER_URN,
+    target = "otel.exporter.console",
+);
+
 mod record_json;
 
 use async_trait::async_trait;
@@ -32,7 +37,6 @@ use otap_df_pdata_views::views::logs::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
-use otap_df_telemetry::{otel_error, otel_warn};
 use otap_df_telemetry_macros::AttributeEnum;
 use std::io::Write;
 use std::sync::Arc;

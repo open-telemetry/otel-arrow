@@ -9,6 +9,8 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
+otap_df_telemetry::otel_component_scope!(urn = OTAP_RECEIVER_URN, target = "otel.receiver.otap",);
+
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::compression::CompressionMethod;
@@ -495,7 +497,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        otap_df_telemetry::otel_info!(
+        otel_info!(
             "otap_receiver.start",
             listening_addr = %self.config.listening_addr
         );
@@ -655,7 +657,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     match ctrl_msg {
                         Ok(NodeControlMsg::DrainIngress { deadline, reason })
                             if draining_deadline.is_none() => {
-                                otap_df_telemetry::otel_info!("otap_receiver.drain_ingress");
+                                otel_info!("otap_receiver.drain_ingress");
                                 // Latch the first drain request and close ingress.
                                 // This stops new admissions, but does not yet report
                                 // ReceiverDrained because previously admitted batches
@@ -665,7 +667,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                                 grpc_shutdown.cancel();
                             }
                         Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
-                            otap_df_telemetry::otel_info!("otap_receiver.shutdown");
+                            otel_info!("otap_receiver.shutdown");
                             grpc_shutdown.cancel();
                             states.force_shutdown(&reason);
                             stream_tasks.close();

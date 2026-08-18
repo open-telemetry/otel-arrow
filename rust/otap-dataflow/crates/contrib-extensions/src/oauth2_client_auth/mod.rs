@@ -7,6 +7,11 @@
 //! grant and exposes them to data-path nodes through the `BearerTokenProvider`
 //! capability. See `design.md` for the design.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = OAUTH2_CLIENT_AUTH_URN,
+    target = "otel.extension.oauth2_client_auth",
+);
+
 mod auth;
 pub mod config;
 pub mod error;
