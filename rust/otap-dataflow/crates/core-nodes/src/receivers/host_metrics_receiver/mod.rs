@@ -7,6 +7,11 @@
 //! Structs and filters defined here are dead on other platforms by design.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+otap_df_telemetry::otel_component_scope!(
+    urn = HOST_METRICS_RECEIVER_URN,
+    target = "otel.receiver.host_metrics",
+);
+
 #[cfg(target_os = "linux")]
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -34,8 +39,6 @@ use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
 #[cfg(target_os = "linux")]
 use otap_df_telemetry::metrics::MetricSetSnapshot;
-#[cfg(target_os = "linux")]
-use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 #[cfg(target_os = "linux")]
 use serde_json::Value;

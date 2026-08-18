@@ -9,6 +9,11 @@
 //! request finishes we forward the Ack/Nack to the pipeline runtime so the dataflow can make
 //! progress.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = OTLP_EXPORTER_URN,
+    target = "otel.exporter.otlp_grpc",
+);
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::FutureExt;
@@ -41,7 +46,6 @@ use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::future::Future;

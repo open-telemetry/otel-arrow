@@ -49,7 +49,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "aws")]
 use crate::common::kafka::aws::AwsMskAuthClientContext;
-use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use rdkafka::ClientContext;
 use rdkafka::client::OAuthToken;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance};

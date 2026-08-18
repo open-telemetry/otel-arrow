@@ -4,7 +4,6 @@
 use bytes::Bytes;
 
 use otap_df_telemetry::common_attributes::HttpResponse;
-use otap_df_telemetry::otel_debug;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use reqwest::{
     Client,

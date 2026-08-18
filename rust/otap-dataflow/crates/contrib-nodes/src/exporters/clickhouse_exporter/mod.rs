@@ -27,6 +27,11 @@
 //!       # ... additional config
 //! ```
 
+otap_df_telemetry::otel_component_scope!(
+    urn = CLICKHOUSE_EXPORTER_URN,
+    target = "otel.exporter.clickhouse",
+);
+
 use async_trait::async_trait;
 use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
@@ -177,7 +182,7 @@ impl ClickhouseExporter {
                         outcome: Outcome::Failure,
                     })
                     .record(export_started_at.elapsed());
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "clickhouse.exporter.write.error",
                     message = format!("Error writing batch to clickhouse: {error}"),
                     signal_type = format!("{signal_type:?}"),
@@ -239,7 +244,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
-        otap_df_telemetry::otel_info!(
+        otel_info!(
             "clickhouse.exporter.start",
             message = "Clickhouse exporter starting",
             endpoint = self.config.endpoint,
@@ -284,7 +289,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
             match message {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                    otap_df_telemetry::otel_info!(
+                    otel_info!(
                         "clickhouse.exporter.shutdown",
                         message = "Clickhouse exporter shutting down",
                     );
@@ -294,7 +299,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         })
                         .await;
                     if abandoned > 0 {
-                        otap_df_telemetry::otel_warn!(
+                        otel_warn!(
                             "clickhouse.exporter.shutdown.deadline_exceeded",
                             message = "ClickHouse writes abandoned at the shutdown deadline",
                             abandoned_writes = abandoned,
@@ -340,7 +345,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                             outcome: Outcome::Failure,
                                         })
                                         .record(export_started_at.elapsed());
-                                    otap_df_telemetry::otel_warn!(
+                                    otel_warn!(
                                         "clickhouse.exporter.otlp.invalid_protobuf",
                                         message = "Rejecting malformed raw OTLP logs.",
                                         error = error.to_string(),
@@ -349,7 +354,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                 }
                                 Err(error) => {
                                     self.ch_metrics.record_log_otlp_transform_fallback();
-                                    otap_df_telemetry::otel_debug!(
+                                    otel_debug!(
                                         "clickhouse.exporter.otlp.transform.fallback",
                                         message =
                                             "Using the legacy ClickHouse transform for OTLP logs.",
@@ -374,7 +379,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                             outcome: Outcome::Failure,
                                         })
                                         .record(export_started_at.elapsed());
-                                    otap_df_telemetry::otel_warn!(
+                                    otel_warn!(
                                         "clickhouse.exporter.convert.error",
                                         message = format!(
                                             "Failed to convert payload to OtapArrowRecords: {e:?}"
@@ -434,7 +439,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                         outcome: Outcome::Failure,
                                     })
                                     .record(export_started_at.elapsed());
-                                otap_df_telemetry::otel_warn!(
+                                otel_warn!(
                                     "clickhouse.exporter.transform.error",
                                     message = "Error transforming batch for export.",
                                     error = e.to_string(),
