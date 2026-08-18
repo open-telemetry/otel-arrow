@@ -7,11 +7,12 @@
 //! installation, telemetry export, and production charge sites are layered on
 //! separately.
 
-use otap_df_config::{NodeId, PipelineKey};
+use otap_df_config::{DeployedPipelineKey, NodeId, PipelineKey};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 /// Compact identity for one trusted retained-work owner.
@@ -54,9 +55,9 @@ pub struct WorkOwnerRegistry {
 impl WorkOwnerRegistry {
     /// Creates a registry that stores at most `max_registered_owners` owners.
     #[must_use]
-    pub fn new(max_registered_owners: usize) -> Self {
+    pub fn new(max_registered_owners: NonZeroUsize) -> Self {
         Self {
-            max_registered_owners: max_registered_owners.min((u32::MAX - 1) as usize),
+            max_registered_owners: max_registered_owners.get().min((u32::MAX - 1) as usize),
             owners_by_key: HashMap::new(),
             keys_by_owner: Vec::new(),
         }
@@ -108,12 +109,8 @@ impl WorkOwnerRegistry {
 /// Immutable attribution required for every retained-work charge.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RetainedWorkScopeId {
-    /// Configured pipeline, including its group identity.
-    pub pipeline: PipelineKey,
-    /// Pinned runtime core.
-    pub core_id: usize,
-    /// Live-deployment generation of the runtime.
-    pub runtime_generation: u64,
+    /// Configured pipeline runtime, including group, core, and generation.
+    pub deployed_pipeline: DeployedPipelineKey,
     /// Component retaining the work.
     pub component_id: NodeId,
     /// Trusted bounded owner of the retained work.
@@ -122,6 +119,7 @@ pub struct RetainedWorkScopeId {
 
 /// Static retention site carried by each ticket rather than its scope.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
 pub enum RetainedWorkSite {
     /// Payload waiting for retry delivery.
     RetryBuffer,
@@ -161,6 +159,10 @@ impl LocalRetainedScope {
     }
 
     /// Starts one attributed retained-work interval.
+    ///
+    /// Accounting failures are diagnostics, not data-path failures. A charge
+    /// site must continue processing the retained work without a ticket if this
+    /// returns an error; observe-only accounting must never reject or drop it.
     pub fn charge(
         &self,
         site: RetainedWorkSite,
@@ -369,6 +371,32 @@ enum LocalRetainedCharge {
 /// an active ticket still refunds its charge, but records the interval as
 /// abandoned. The ticket is deliberately neither `Send` nor `Sync` because it
 /// holds an `Rc` to runtime-local state.
+///
+/// ```compile_fail
+/// use otap_df_config::DeployedPipelineKey;
+/// use otap_df_engine::retained_work::{
+///     LocalRetainedAccount, LocalRetainedScope, RetainedWorkScopeId,
+///     RetainedWorkSite, WorkOwnerId,
+/// };
+///
+/// let scope = LocalRetainedScope::new(
+///     LocalRetainedAccount::new(),
+///     RetainedWorkScopeId {
+///         deployed_pipeline: DeployedPipelineKey {
+///             pipeline_group_id: "group".into(),
+///             pipeline_id: "pipeline".into(),
+///             core_id: 0,
+///             deployment_generation: 0,
+///         },
+///         component_id: "processor".into(),
+///         owner: WorkOwnerId::UNREGISTERED,
+///     },
+/// );
+/// let ticket = scope
+///     .charge(RetainedWorkSite::RetryBuffer, Some(1))
+///     .expect("charge should fit");
+/// std::thread::spawn(move || drop(ticket));
+/// ```
 #[derive(Debug)]
 #[must_use = "the ticket must be completed normally or dropped as abandoned"]
 pub struct LocalRetainedTicket {
@@ -426,9 +454,12 @@ mod tests {
         LocalRetainedScope::new(
             account,
             RetainedWorkScopeId {
-                pipeline: PipelineKey::new("group".into(), "pipeline".into()),
-                core_id: 3,
-                runtime_generation: 7,
+                deployed_pipeline: DeployedPipelineKey {
+                    pipeline_group_id: "group".into(),
+                    pipeline_id: "pipeline".into(),
+                    core_id: 3,
+                    deployment_generation: 7,
+                },
                 component_id: "processor".into(),
                 owner: WorkOwnerId(2),
             },
@@ -573,7 +604,7 @@ mod tests {
     /// Guarantees: repeated registration returns one stable compact owner ID.
     #[test]
     fn owner_registration_is_stable() {
-        let mut registry = WorkOwnerRegistry::new(2);
+        let mut registry = WorkOwnerRegistry::new(NonZeroUsize::new(2).expect("non-zero bound"));
         let pipeline = PipelineKey::new("group".into(), "pipeline".into());
 
         let first = registry.register_pipeline(&pipeline);
@@ -589,7 +620,7 @@ mod tests {
     /// Guarantees: the registry treats the full group and pipeline pair as identity.
     #[test]
     fn owner_registration_includes_pipeline_group() {
-        let mut registry = WorkOwnerRegistry::new(2);
+        let mut registry = WorkOwnerRegistry::new(NonZeroUsize::new(2).expect("non-zero bound"));
         let first_pipeline = PipelineKey::new("group-a".into(), "pipeline".into());
         let second_pipeline = PipelineKey::new("group-b".into(), "pipeline".into());
 
@@ -606,7 +637,7 @@ mod tests {
     /// while existing owners remain stable and the registry stays bounded.
     #[test]
     fn owner_registration_is_bounded() {
-        let mut registry = WorkOwnerRegistry::new(1);
+        let mut registry = WorkOwnerRegistry::new(NonZeroUsize::new(1).expect("non-zero bound"));
         let first_pipeline = PipelineKey::new("group".into(), "first".into());
         let second_pipeline = PipelineKey::new("group".into(), "second".into());
 
@@ -619,6 +650,18 @@ mod tests {
         assert_eq!(registry.pipeline(WorkOwnerId::MIXED), None);
         assert_eq!(registry.pipeline(WorkOwnerId::UNREGISTERED), None);
         assert_eq!(registry.len(), 1);
+    }
+
+    /// Scenario: owner sentinel values are exported or persisted as compact IDs.
+    /// Guarantees: Mixed and Unregistered stay reserved below registered owners.
+    #[test]
+    fn owner_sentinel_values_are_stable() {
+        let mut registry = WorkOwnerRegistry::new(NonZeroUsize::new(1).expect("non-zero bound"));
+        let pipeline = PipelineKey::new("group".into(), "pipeline".into());
+
+        assert_eq!(WorkOwnerId::MIXED.as_u32(), 0);
+        assert_eq!(WorkOwnerId::UNREGISTERED.as_u32(), 1);
+        assert_eq!(registry.register_pipeline(&pipeline).as_u32(), 2);
     }
 
     /// Scenario: a component charges retained work through an attributed scope.
@@ -636,12 +679,15 @@ mod tests {
         assert_eq!(ticket.scope(), scope.id());
         assert_eq!(ticket.site(), RetainedWorkSite::BatchPending);
         assert_eq!(
-            ticket.scope().pipeline.pipeline_group_id().as_ref(),
+            ticket.scope().deployed_pipeline.pipeline_group_id.as_ref(),
             "group"
         );
-        assert_eq!(ticket.scope().pipeline.pipeline_id().as_ref(), "pipeline");
-        assert_eq!(ticket.scope().core_id, 3);
-        assert_eq!(ticket.scope().runtime_generation, 7);
+        assert_eq!(
+            ticket.scope().deployed_pipeline.pipeline_id.as_ref(),
+            "pipeline"
+        );
+        assert_eq!(ticket.scope().deployed_pipeline.core_id, 3);
+        assert_eq!(ticket.scope().deployed_pipeline.deployment_generation, 7);
         assert_eq!(ticket.scope().component_id.as_ref(), "processor");
         assert_eq!(ticket.scope().owner, WorkOwnerId(2));
         ticket.complete().expect("completion should settle");
