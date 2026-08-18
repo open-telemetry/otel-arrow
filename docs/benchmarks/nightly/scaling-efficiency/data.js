@@ -1,60 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787019101922,
+  "lastUpdate": 1787090387947,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Cijo Thomas",
-            "username": "cijothomas",
-            "email": "cijo.thomas@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "40b4f4d1112b1bc55f08185aa778865b4a43bd66",
-          "message": "Set cache-bin: false on Swatinem/rust-cache to fix broken cargo on macos-latest (#2978)\n\n## Problem\n\nCI `clippy (*, macos-latest)` (and other macOS rust steps) started\nfailing today across many PRs with:\n\n```\nerror: error: unexpected argument 'clippy' found\nUsage: rustup-init[EXE] [OPTIONS]\n```\n\n## Root cause\n\nGitHub rolled out a new macos-latest runner image today\n([actions/runner-images#14037](https://github.com/actions/runner-images/pull/14037))\nthat changed how the `rustc`/`cargo` rustup proxy binaries are set up.\nCombined with\n[Swatinem/rust-cache#325](https://github.com/Swatinem/rust-cache/pull/325)\n(which made `cache-bin: true` the default in v2.8+), the cached\n`$CARGO_HOME/bin/` from previous runs gets restored over the\nfreshly-installed proxies, leaving `cargo` dispatching to `rustup-init`\nbehavior instead of the real cargo.\n\nTracked upstream:\n[Swatinem/rust-cache#341](https://github.com/Swatinem/rust-cache/issues/341).\n\n## Fix\n\nSet `cache-bin: false` on all 7 `Swatinem/rust-cache` invocations in\n`.github/workflows/rust-ci.yml`. This is the workaround confirmed by the\nupstream issue reporter. We don't `cargo install` any binaries that need\ncaching, so this loses no useful caching.",
-          "timestamp": "2026-05-14T22:42:42Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/40b4f4d1112b1bc55f08185aa778865b4a43bd66"
-        },
-        "date": 1778811721195,
-        "tool": "customBiggerIsBetter",
-        "benches": [
-          {
-            "name": "otlp_scaling_efficiency_2_cores",
-            "value": 0.9918,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_4_cores",
-            "value": 0.9281,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_8_cores",
-            "value": 0.7479,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_16_cores",
-            "value": 0.5053,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_avg",
-            "value": 0.7933,
-            "unit": "",
-            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -7142,6 +7090,82 @@ window.BENCHMARK_DATA = {
           {
             "name": "otap_scaling_efficiency_avg",
             "value": 0.887,
+            "unit": "",
+            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "46f0898750a81543bad4dd245339f02ff8713b5f",
+          "message": "chore(repo): Split build/test chains and avoid full CI repeat after merge (#3807)\n\n# Chore Summary\n\n- Split the required Linux and Windows Rust build/test chains so each\ntest matrix starts as soon as its matching build completes\n- Make Rust-CI caches restore-only to prevent ephemeral pull-request and\nmerge-queue refs from consuming the repository cache budget\n- Replace the full Rust-CI run on `main` with a `Post-Merge Actions`\nworkflow that warms the required Linux and Windows build caches\n\n## Expected impact\n\n| Area | Before | After | Potential gain |\n| --- | --- | --- | --- |\n| Required test chain | Linux tests wait for the slower Windows build |\nLinux and Windows tests start after their matching builds |\nApproximately 7-9 minutes removed from the Linux test path |\n| End-to-end required status | The delayed Linux test path can determine\nworkflow completion | Other required jobs may become the critical path |\nApproximately 2 minutes in a sampled PR run and 8-9 minutes in a sampled\nmerge-queue run |\n| Rust-CI cache writes | Large job-specific caches are saved under\nephemeral PR and merge-queue refs | Rust-CI restores caches but never\nsaves them | Reduces churn within GitHub's 10 GB repository cache limit\n|\n| Post-merge Rust-CI | Approximately 6.4 runner-hours across 57 jobs |\nApproximately 0.8 runner-hours across two cache-warming jobs |\nApproximately 85% less compute |\n| Shared cache priority | The full suite competes to publish many\njob-specific caches | `main` publishes the required Linux and Windows\nbuild caches | Prioritizes the merge-critical build configurations |\n\n## Tradeoff\n\nThe post-merge workflow intentionally does not warm Rust-CI's coverage,\nclippy, smoke-test, ARM, or macOS caches. Those configurations can still\nrestore an existing compatible cache, but only the required Linux and\nWindows build caches are guaranteed to be refreshed after each merge.\n\nThe current cache inventory supports prioritizing these builds:\n\n| Observation | Current state |\n| --- | --- |\n| Repository cache limit | 10 GB |\n| Recent Rust cache size | Commonly 1-2 GB per entry |\n| Dominant cache refs | `refs/pull/*/merge` entries from recent PR runs\n|\n| Shared `main` Rust caches | None were present in the inspected cache\ninventory |\n\nThis means a small number of ephemeral PR entries can consume the\nrepository budget and evict caches that would otherwise be reusable by\nevery PR and merge-queue run. The restore-only Rust-CI policy stops\nadding those ephemeral entries, while the post-merge workflow\nrepopulates the two critical shared caches.",
+          "timestamp": "2026-08-18T20:06:27Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/46f0898750a81543bad4dd245339f02ff8713b5f"
+        },
+        "date": 1787090386970,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.8948,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.7707,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.808,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.856,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.8324,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          },
+          {
+            "name": "otap_scaling_efficiency_2_cores",
+            "value": 0.9849,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_4_cores",
+            "value": 0.9065,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_8_cores",
+            "value": 0.6828,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_avg",
+            "value": 0.8581,
             "unit": "",
             "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
