@@ -3,4 +3,4 @@ component: pipeline
 note: "Refactor syslog_cef_receiver metrics to align with otlp_receiver telemetry."
 issues: [3748]
 subtext: |
-  Migration: Replaces received_logs_*, tcp_connections_*, and tls_handshake_failures with forwards, rejections, truncations, connections, and transport metrics.
+  Migration: Replaces received_logs_* (units {item}->{log}), tcp_connections_* ({conn}->{connection}), and tls_handshake_failures with received, forwards, rejections, truncations, connections, and transport metrics.
