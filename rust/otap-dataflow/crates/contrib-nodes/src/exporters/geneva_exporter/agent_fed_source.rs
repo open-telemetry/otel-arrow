@@ -228,6 +228,11 @@ fn resolve_routing<'a>(
         if account_group.trim().is_empty() {
             return Err("agent-fed routing moniker_map contains an empty account group");
         }
+        if account_group.trim() != account_group {
+            return Err(
+                "agent-fed routing moniker_map account groups must not have surrounding whitespace",
+            );
+        }
         let moniker = validated_moniker(
             Some(value),
             "agent-fed routing moniker_map contains an invalid or empty moniker",
@@ -594,6 +599,19 @@ mod tests {
         });
         let credential = source("tok", false, attrs).current().await.unwrap();
         assert_eq!(credential.primary_monikers.len(), 2);
+    }
+
+    /// Scenario: A host snapshot contains an account-group key with surrounding whitespace.
+    /// Guarantees: The snapshot is rejected instead of creating an exact-match routing miss.
+    #[tokio::test]
+    async fn rejects_account_group_with_surrounding_whitespace() {
+        for account_group in [" group", "group "] {
+            let attrs = json!({
+                "endpoint": "https://ep",
+                "moniker_map": { account_group: "moniker" },
+            });
+            assert!(source("tok", false, attrs).current().await.is_none());
+        }
     }
 
     struct ErrorCredential;

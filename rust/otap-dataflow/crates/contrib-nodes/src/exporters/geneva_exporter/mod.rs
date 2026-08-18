@@ -654,10 +654,21 @@ impl TryFrom<AccountRoutingConfigRaw> for AccountRoutingConfig {
         if raw.default_group.trim().is_empty() {
             return Err("account_routing.default_group must not be empty".to_owned());
         }
+        if raw.default_group.trim() != raw.default_group {
+            return Err(
+                "account_routing.default_group must not have surrounding whitespace".to_owned(),
+            );
+        }
         for (event_name, account_group) in &raw.events {
             if event_name.trim().is_empty() || account_group.trim().is_empty() {
                 return Err(
                     "account_routing event/table names and account groups must not be empty"
+                        .to_owned(),
+                );
+            }
+            if event_name.trim() != event_name || account_group.trim() != account_group {
+                return Err(
+                    "account_routing event/table names and account groups must not have surrounding whitespace"
                         .to_owned(),
                 );
             }
@@ -3973,6 +3984,35 @@ mod tests {
             config["account_routing"]["events"] = serde_json::json!({ event_name: account_group });
             let error = Config::parse(&config).expect_err("blank routing name must fail");
             assert!(error.to_string().contains("must not be empty"));
+        }
+    }
+
+    /// Scenario: Account routing identifiers contain leading or trailing whitespace.
+    /// Guarantees: Exact-match routing cannot accept identifiers that will miss valid groups.
+    #[test]
+    fn test_account_routing_rejects_surrounding_whitespace() {
+        for default_group in [" default-group", "default-group "] {
+            let mut config = test_config();
+            config["account_routing"]["default_group"] =
+                serde_json::Value::String(default_group.to_owned());
+            let error = Config::parse(&config)
+                .expect_err("default group with surrounding whitespace must fail");
+            assert!(error.to_string().contains("surrounding whitespace"));
+        }
+
+        for (event_name, account_group) in [
+            (" Event", "group"),
+            ("Event ", "group"),
+            ("Event", " group"),
+            ("Event", "group "),
+        ] {
+            let mut config = test_config();
+            config["account_routing"]["events"] = serde_json::json!({
+                event_name: account_group
+            });
+            let error = Config::parse(&config)
+                .expect_err("routing identifier with surrounding whitespace must fail");
+            assert!(error.to_string().contains("surrounding whitespace"));
         }
     }
 
