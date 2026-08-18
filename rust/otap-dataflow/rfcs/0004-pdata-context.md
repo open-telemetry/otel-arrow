@@ -450,9 +450,10 @@ impl OtlpReceiver {
 }
 ```
 
-In other cases, where there is an incoming Pdata context being
-extended or projected, the input Pdata context will be used through a
-projector binding.
+### Pata context projection
+
+In processors, where there is an incoming Pdata context being extended
+or projected, use a projector binding:
 
 ```rust
 pub trait PdataContextProjector {
@@ -473,6 +474,11 @@ impl PartitionProcessor {
     }
 }
 ```
+
+Projector bindings fall into categories such as 1:1, 1:N, N:1, N:M,
+etc. Specific binding features will dictate which context entries
+survive into the output context and which are dropped during
+processing.
 
 ### Pdata context sinks
 
