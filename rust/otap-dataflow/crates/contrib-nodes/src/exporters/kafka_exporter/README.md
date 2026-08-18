@@ -46,6 +46,7 @@ config:
 | `required_acks` | string | `"one"` | Required broker acks: `none` (0), `one` (1), or `all` (-1). |
 | `max_message_bytes` | integer | `1000000` | Maximum message size in bytes (`message.max.bytes`). |
 | `linger_ms` | integer | `5` | Artificial delay in ms before sending a batch (`linger.ms`). |
+| `max_in_flight` | integer | `10` | Maximum number of Kafka deliveries kept in flight concurrently before the exporter stops accepting new pdata. `10` (the default) pipelines deliveries for throughput. Must be in the range `1` to `100000` (the librdkafka default producer queue depth); larger values are rejected. See [Backpressure and concurrency](#backpressure-and-concurrency). |
 | `auth` | object | *none* | Authentication configuration (see [Authentication](#authentication)). |
 | `tls` | object | *none* | TLS configuration (see [TLS Configuration](#tls-configuration)). |
 | `partitioning_strategy` | string | `"consistent_random"` | Librdkafka partitioner algorithm. See [Partitioning](#partitioning). |
@@ -304,6 +305,17 @@ producer_config:
   "batch.num.messages": "10000"
 ```
 
+### Backpressure and concurrency
+
+The exporter encodes and enqueues each accepted pdata to librdkafka and then
+tracks the delivery in a bounded in-flight set. The `max_in_flight` config caps
+how many deliveries may be outstanding at once:
+
+- **`max_in_flight > 1` (default `10`).** Deliveries are pipelined for higher
+  throughput. When the in-flight set is full the exporter stops accepting new
+  pdata and only drains completions, so in-flight memory stays bounded and
+  backpressure propagates upstream.
+
 ### Live Reconfiguration
 
 The exporter accepts live configuration changes at runtime (via a `Config`
@@ -525,7 +537,7 @@ the equivalent here, assuming this exporter runs with an upstream
 | Go exporter option | Equivalent here | Notes |
 | --- | --- | --- |
 | `retry_on_failure.randomization_factor` | *(no equivalent)* | The retry processor backoff has no jitter. |
-| `sending_queue` (`queue_size`, `num_consumers`) | *(no equivalent)* | No application-level sending queue or backpressure; relies on the pipeline and the librdkafka producer queue. |
+| `sending_queue` (`queue_size`, `num_consumers`) | `max_in_flight` (bounded delivery pipelining) | `max_in_flight` bounds concurrent in-flight deliveries and propagates backpressure upstream; there is still no separate application-level queue with persistent storage. See [Backpressure and concurrency](#backpressure-and-concurrency). |
 | `sending_queue` persistent storage | Add a `processor:durable_buffer` node | Retry/queue state is in-memory; add a durable buffer node for cross-restart durability. |
 | *(in-line per-export retry ordering)* | *(no equivalent)* | The retry processor retries out-of-band, so a later batch may be sent and acked before an earlier batch still being retried. |
 | *(drop after retries exhausted)* | Final nack forwarded upstream | After `max_elapsed_time` the retry processor forwards a final nack; data is dropped at the source. No dead-letter queue. |
@@ -615,24 +627,92 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `exporter.kafka`
+Recording several measurements for one export attempt is intentional. Each
+recording updates a bounded in-process aggregate; it does not synchronously send
+a separate request to the telemetry backend. Together, the measurements answer
+different operational questions:
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `exporter.kafka.acks_received` | `{batch}` | Number of acks received from downstream. |
-| `exporter.kafka.nacks_received` | `{batch}` | Number of nacks received from downstream. |
-| `exporter.kafka.topic_from_header` | `{batch}` | Batches where topic was resolved from a transport header. |
-| `exporter.kafka.topic_from_static_config` | `{batch}` | Batches where topic was resolved from static per-signal config. |
+- `exporter.exports.messages`: Is the exporter succeeding?
+- `exporter.kafka.failures.messages`: Why is an export failing?
+- `exporter.kafka.operations.duration`: Is encoding or Kafka delivery slow?
+- `exporter.exports.duration`: What end-to-end latency does the pipeline
+  experience?
+- `exporter.kafka.exports.bytes`: Are encoded messages approaching Kafka size
+  limits, or do wire bytes correlate with failures?
+- `exporter.kafka.routing.messages`: Is dynamic topic routing being used as
+  expected?
+
+#### `exporter.exports`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Pdata messages whose Kafka export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal Kafka delivery result, including routing and encoding but excluding Ack/Nack notification. |
+
+`signal` is one of `traces`, `metrics`, or `logs`. The Kafka exporter emits the
+terminal `outcome` values `success` and `failure`. Duration uses a bounded
+exponential histogram.
 
 #### `exporter.kafka.exports`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `exporter.kafka.exports.messages` | `{message}` | Number of exported messages partitioned by `signal` and `outcome` (`success` or `failure`). |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.kafka.exports.bytes` | `By` | `signal`, `outcome` | Encoded Kafka payload bytes for attempts that reached the producer. |
+
+Wire bytes use a bounded exponential histogram and are absent for attempts that
+fail before encoding completes.
+
+#### `exporter.kafka.operations`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.kafka.operations.duration` | `s` | `signal`, `operation`, `outcome` | Time spent encoding or awaiting Kafka delivery. |
+
+`operation` is `encoding` or `delivery`; `outcome` is `success` or `failure`.
+This separates local serialization cost from producer queueing and broker
+acknowledgement latency.
+
+#### `exporter.kafka.failures`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.kafka.failures.messages` | `{message}` | `signal`, `error.type` | Failed export attempts classified by actionable reason. |
+
+`error.type` is one of `unconfigured_signal`, `invalid_topic`, `encoding`,
+`queue_full`, `timeout`, `message_too_large`, `authentication`, `authorization`,
+`unknown_topic_or_partition`, `insufficient_replicas`, `transport`, or `other`.
+
+#### `exporter.kafka.routing`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.kafka.routing.messages` | `{message}` | `signal`, `topic.source` | Messages routed by a transport header or static configuration. |
+
+`topic.source` is `header` or `static_config`. Destination topic names are not
+metric attributes, which keeps cardinality bounded for dynamic tenant routing.
+
+### Legacy Metric Migration
+
+| Legacy metric | Replacement |
+| --- | --- |
+| `exporter.pdata.exports.messages` | `exporter.exports.messages`, preserving the `signal` and `outcome` attributes. |
+| `exporter.kafka.exports.messages` | `exporter.exports.messages`, preserving the `signal` and `outcome` attributes. |
+| `exporter.kafka.topic_from_header` | `exporter.kafka.routing.messages{topic.source="header"}`, now also partitioned by `signal`. |
+| `exporter.kafka.topic_from_static_config` | `exporter.kafka.routing.messages{topic.source="static_config"}`, now also partitioned by `signal`. |
+| `exporter.kafka.acks_received` | Removed. An exporter is a terminal node, so downstream acknowledgement controls are not an export outcome. |
+| `exporter.kafka.nacks_received` | Removed. Use `exporter.exports.messages{outcome="failure"}` for terminal export failures. |
 
 ### Events
 
-This node does not emit structured events.
+| Event | Severity | Description |
+| --- | --- | --- |
+| `kafka.exporter.producer_config.overridden_key` | `warn` | A `producer_config` key is also managed by a first-class setting and may be overwritten. |
+| `kafka.exporter.signal.unconfigured` | `warn` | Pdata arrived for a signal without exporter configuration and was permanently nacked. |
+| `kafka.exporter.topic.invalid_header` | `warn` | A transport header supplied an invalid destination topic and the message was permanently nacked. |
+| `kafka.exporter.encode.failed` | `error` | Pdata encoding failed and the message was permanently nacked. |
+| `kafka.exporter.send.failed` | `warn` | Kafka delivery failed and the message was nacked for upstream retry handling. |
+| `kafka.exporter.shutdown.flush_failed` | `warn` | Shutdown flushing failed or timed out; queued and in-flight messages were purged. |
+| `kafka.exporter.producer.poll_thread_join_failed` | `warn` | The producer polling thread could not be joined during teardown. |
 
 ## Limits
 

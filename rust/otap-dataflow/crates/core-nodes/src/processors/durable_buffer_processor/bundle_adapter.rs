@@ -514,6 +514,37 @@ fn extract_otlp_bytes(
     Ok(OtlpProtoBytes::new_from_bytes(signal_type, bytes))
 }
 
+/// Recovers the logical item count from a decoded Quiver bundle.
+///
+/// This is used only for WAL entries that expire during startup, where the
+/// existing WAL format does not persist `RecordBundle::item_count()`.
+pub fn recover_item_count(bundle: &dyn RecordBundle) -> Option<u64> {
+    let payloads = bundle
+        .descriptor()
+        .slots
+        .iter()
+        .filter_map(|slot| {
+            bundle
+                .payload(slot.id)
+                .map(|payload| (slot.id, payload.batch.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+
+    if let Some((signal_type, batch)) = find_otlp_slot(&payloads) {
+        return extract_otlp_bytes(signal_type, batch)
+            .ok()
+            .map(|bytes| bytes.num_items() as u64);
+    }
+
+    let signal_type = determine_signal_type(&payloads).ok()?;
+    let records = match signal_type {
+        SignalType::Logs => create_records::<Logs>(&payloads).ok()?,
+        SignalType::Traces => create_records::<Traces>(&payloads).ok()?,
+        SignalType::Metrics => create_records::<Metrics>(&payloads).ok()?,
+    };
+    Some(records.num_items() as u64)
+}
+
 /// Convert a ReconstructedBundle back to OtapPdata.
 ///
 /// This reconstructs the original OTAP telemetry data from Quiver's storage format.
@@ -703,6 +734,30 @@ mod tests {
         let spans_slot = to_slot_id(SignalType::Traces, ArrowPayloadType::Spans);
         let payload = adapter.payload(spans_slot);
         assert!(payload.is_none());
+    }
+
+    /// Scenario: A decoded Arrow logs bundle is inspected during WAL expiry.
+    /// Guarantees: The counter reconstructs the original logical record count.
+    #[test]
+    fn recover_item_count_from_arrow_bundle() {
+        let records = OtapArrowRecords::Logs(logs!((Logs, ("id", UInt16, vec![1u16, 2, 3]))));
+        let adapter = OtapRecordBundleAdapter::new(records);
+
+        assert_eq!(recover_item_count(&adapter), Some(3));
+    }
+
+    /// Scenario: A decoded OTLP pass-through bundle is inspected during WAL expiry.
+    /// Guarantees: The counter uses the same protobuf item scan as live ingestion.
+    #[test]
+    fn recover_item_count_from_otlp_bundle() {
+        let otlp =
+            OtlpProtoBytes::new_from_bytes(SignalType::Logs, b"test OTLP protobuf data".to_vec());
+        let adapter = OtlpBytesAdapter::new(otlp).map_err(|(e, _)| e).unwrap();
+
+        assert_eq!(
+            recover_item_count(&adapter),
+            Some(adapter.cached_item_count())
+        );
     }
 
     #[test]

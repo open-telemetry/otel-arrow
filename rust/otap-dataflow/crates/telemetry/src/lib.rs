@@ -61,6 +61,7 @@ pub mod semconv;
 pub mod tracing_init;
 
 // Re-export tracing setup types for per-thread subscriber configuration.
+pub use otap_df_telemetry_macros::otel_component_scope;
 pub use tracing_init::TracingSetup;
 
 #[cfg(test)]
