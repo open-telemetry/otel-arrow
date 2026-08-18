@@ -184,7 +184,7 @@ impl LogsIngestionClient {
     ///
     /// # Returns
     /// * `Ok(Duration)` - Total time spent (including retries) if successful
-    /// * `Err(String)` - Error message if all retries exhausted or non-retryable error
+    /// * `Err(Error)` - Error if all retries are exhausted or a non-retryable error is returned
     pub async fn export(
         &mut self,
         body: Bytes,
