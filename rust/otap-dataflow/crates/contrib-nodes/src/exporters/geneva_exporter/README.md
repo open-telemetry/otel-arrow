@@ -25,6 +25,8 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "my-account-group"
   region: westus2
   config_major_version: 1
   tenant: "my-tenant"
@@ -49,6 +51,8 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "my-account-group"
   config_major_version: 1
   tenant: "my-tenant"
   role_name: "df-engine"
@@ -64,8 +68,8 @@ The `attributes` object in each credential snapshot must use this shape:
 {
   "endpoint": "https://ingest.example.com",
   "moniker_map": {
-    "my-account": "my-moniker",
-    "default": "fallback-moniker"
+    "my-account-group": "my-primary-moniker",
+    "another-account-group": "another-primary-moniker"
   }
 }
 ```
@@ -76,16 +80,15 @@ That attribute must be a non-empty absolute HTTPS URL with a host and cannot
 contain embedded credentials, a query string, or a fragment. The exporter
 canonicalizes it before use. The uploader uses that canonical value as both the
 upload base URL and the `endpoint=` query fallback when a token has no usable
-Endpoint claim. The exporter
-selects a non-empty string from `moniker_map` by the configured `account`,
-falling back only to an explicit `default`. A map containing neither key is
-rejected, even if it has a single entry. Empty or malformed routing is also
-rejected. If the configured account or `default` key exists with an invalid
-value, the snapshot is rejected instead of falling back to another entry. The
-selected moniker must be safe to use as one URL query value without additional
-encoding. Surrounding whitespace is trimmed; the remaining value may contain
-only ASCII letters, digits, hyphen, dot, underscore, and tilde. Embedded
-whitespace, non-ASCII text, and reserved delimiters are rejected.
+Endpoint claim. `moniker_map` maps each logical account group to its current
+primary physical moniker. The exporter validates and preserves the complete
+map; the uploader selects the entry named by `account_routing` for each batch.
+An empty map, blank group, or invalid moniker rejects the complete snapshot
+instead of allowing partial routing. Each moniker must be safe to use as one
+URL query value without additional encoding. Surrounding whitespace is
+trimmed; the remaining value may contain only ASCII letters, digits, hyphen,
+dot, underscore, and tilde. Embedded whitespace, non-ASCII text, and reserved
+delimiters are rejected.
 
 The provider must load the token and routing attributes from one atomically
 published host snapshot. Each upload consumes one immutable snapshot, so a host
@@ -152,6 +155,8 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "diagnostics"
   region: westus2
   config_major_version: 1
   tenant: "my-tenant"
@@ -193,6 +198,11 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "diagnostics"
+    events:
+      AuditLogs: "audit"
+      raw: "raw"
   region: westus2
   config_major_version: 1
   tenant: "my-tenant"
@@ -223,15 +233,22 @@ config:
 
 How a record flows through the exporter and uploader:
 
-| Incoming event name | Destination table (after mapping) | OBO applied (query params) |
-| --- | --- | --- |
-| `audit` | `AuditLogs` | `onbehalfid=Microsoft.AuditService`, `onbehalfannotations=<Config .../>` |
-| `raw` | `raw` | `onbehalfid=Microsoft.RawService` (no annotations) |
-| `foo` (unmapped) | `Log` (default) | none -- `Log` is not in `obo.events` |
+| Incoming event | Destination table | Account group | OBO query parameters |
+| --- | --- | --- | --- |
+| `audit` | `AuditLogs` | `audit` | `onbehalfid=Microsoft.AuditService`, `onbehalfannotations=<Config .../>` |
+| `raw` | `raw` | `raw` | `onbehalfid=Microsoft.RawService` |
+| `foo` | `Log` | `diagnostics` | none |
 
 The uploader resolves the destination table first, then looks up OBO by that
 resolved name. A single flat `obo.events` map is shared across `logs` and
 `spans`, keyed by event/table name.
+
+`account_routing` uses the same destination event/table names. Its required
+`default_group` handles events without an exact override, while `events` maps
+selected destinations to logical GCS account groups. The uploader resolves the
+chosen logical group to the primary physical moniker from the current GCS or
+agent-fed credential snapshot; YAML config contains group names, not physical
+monikers.
 
 Gotcha: because OBO keys on the destination, keying an entry on the source value
 silently disables OBO. If you wrote `obo.events.audit` instead of
