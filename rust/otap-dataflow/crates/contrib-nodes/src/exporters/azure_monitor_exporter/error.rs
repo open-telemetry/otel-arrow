@@ -29,6 +29,13 @@ pub enum Error {
         body: Option<String>,
     },
 
+    /// A batch was ready to export but no usable bearer token was cached.
+    #[error("No usable bearer token: {reason}")]
+    NoBearerToken {
+        /// Why the bearer-auth adapter reports no usable token.
+        reason: &'static str,
+    },
+
     // ==================== HTTP/Network Errors ====================
     /// Failed to create HTTP client.
     #[error("Failed to create HTTP client")]

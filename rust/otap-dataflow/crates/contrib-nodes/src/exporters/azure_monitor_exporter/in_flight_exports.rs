@@ -27,8 +27,8 @@ pub struct InFlightExports {
     ///
     /// Maintained by [`InFlightExports::push_export`] (which increments by the
     /// enqueued `row_count`) and the completion paths ([`next_completion`],
-    /// [`push`], and [`drain`], which decrement by the completed export's
-    /// `row_count`).
+    /// [`reap_if_at_capacity`], and [`drain`], which decrement by the completed
+    /// export's `row_count`).
     queued_rows: u64,
 }
 
@@ -66,26 +66,26 @@ impl InFlightExports {
         }
     }
 
-    /// Push a future. If at capacity, waits for one completion and returns it.
-    #[inline]
-    async fn push(
-        &mut self,
-        fut: LocalBoxFuture<'static, CompletedExport>,
-    ) -> Option<CompletedExport> {
-        let completed = if self.futures.len() >= self.limit {
-            self.futures.next().await
-        } else {
-            None
-        };
+    /// Free a slot when the set is full, returning the export that completed.
+    ///
+    /// Callers must reap before [`push_export`](Self::push_export) and settle the
+    /// completion first: it may reject the token the next export would otherwise
+    /// already have been stamped with.
+    pub async fn reap_if_at_capacity(&mut self) -> Option<CompletedExport> {
+        if self.futures.len() < self.limit {
+            return None;
+        }
+        let completed = self.futures.next().await;
         if let Some(ref c) = completed {
             self.queued_rows = self.queued_rows.saturating_sub(c.row_count);
         }
-        self.futures.push(fut);
         completed
     }
 
-    /// Create and push an export. Returns any completed export due to backpressure.
-    pub async fn push_export(
+    /// Stamp a batch with `auth_header` and add it to the in-flight set.
+    ///
+    /// Does not enforce the limit; call [`reap_if_at_capacity`](Self::reap_if_at_capacity) first.
+    pub fn push_export(
         &mut self,
         client: LogsIngestionClient,
         batch_id: u64,
@@ -93,7 +93,7 @@ impl InFlightExports {
         body: Bytes,
         auth_header: HeaderValue,
         token_generation: u64,
-    ) -> Option<CompletedExport> {
+    ) {
         let fut = Self::make_export_future(
             client,
             batch_id,
@@ -103,7 +103,12 @@ impl InFlightExports {
             token_generation,
         );
         self.queued_rows = self.queued_rows.saturating_add(row_count);
-        self.push(fut).await
+        self.push(fut);
+    }
+
+    #[inline]
+    fn push(&mut self, fut: LocalBoxFuture<'static, CompletedExport>) {
+        self.futures.push(fut);
     }
 
     /// Create a boxed export future.
@@ -245,7 +250,7 @@ mod tests {
         let pending_future: LocalBoxFuture<'static, CompletedExport> =
             Box::pin(std::future::pending());
 
-        let _ = exports.push(pending_future).await;
+        exports.push(pending_future);
 
         assert_eq!(exports.len(), 1);
     }
@@ -257,7 +262,7 @@ mod tests {
         for _ in 0..5 {
             let pending_future: LocalBoxFuture<'static, CompletedExport> =
                 Box::pin(std::future::pending());
-            let _ = exports.push(pending_future).await;
+            exports.push(pending_future);
         }
 
         assert_eq!(exports.len(), 5);
@@ -266,28 +271,55 @@ mod tests {
     // ==================== push Tests ====================
 
     #[tokio::test]
-    async fn test_push_under_limit_returns_none() {
-        let mut exports = InFlightExports::new(5);
-
-        let pending_future: LocalBoxFuture<'static, CompletedExport> =
-            Box::pin(std::future::pending());
-
-        let result = exports.push(pending_future).await;
-
-        assert!(result.is_none());
-        assert_eq!(exports.len(), 1);
-    }
-
-    #[tokio::test]
     async fn test_push_increments_len() {
         let mut exports = InFlightExports::new(10);
 
         for i in 0..5 {
             let pending_future: LocalBoxFuture<'static, CompletedExport> =
                 Box::pin(std::future::pending());
-            let _ = exports.push(pending_future).await;
+            exports.push(pending_future);
             assert_eq!(exports.len(), i + 1);
         }
+    }
+
+    // ==================== reap_if_at_capacity Tests ====================
+
+    /// Scenario: a caller asks to free a slot while the in-flight set is below
+    /// its limit.
+    /// Guarantees: reaping returns nothing without awaiting, so queueing a batch
+    /// never stalls while slots remain.
+    #[tokio::test]
+    async fn reap_under_the_limit_returns_none_without_waiting() {
+        let mut exports = InFlightExports::new(5);
+        exports.push(Box::pin(std::future::pending()));
+
+        let reaped =
+            tokio::time::timeout(StdDuration::from_millis(50), exports.reap_if_at_capacity())
+                .await
+                .expect("reaping below the limit must not wait");
+
+        assert!(reaped.is_none());
+        assert_eq!(exports.len(), 1);
+    }
+
+    /// Scenario: a caller asks to free a slot while the in-flight set is full.
+    /// Guarantees: exactly one export is awaited and handed back, freeing a slot
+    /// and decrementing the in-flight record tally, so the caller can settle that
+    /// completion before stamping the next export.
+    #[tokio::test]
+    async fn reap_at_capacity_returns_the_completed_export_and_frees_a_slot() {
+        let mut exports = InFlightExports::new(1);
+        exports.queued_rows = 10;
+        exports.push(mock_completed_export_future(100, 10, true));
+
+        let reaped = exports
+            .reap_if_at_capacity()
+            .await
+            .expect("at capacity, one export must be reaped");
+
+        assert_eq!(reaped.batch_id, 100);
+        assert_eq!(exports.len(), 0);
+        assert_eq!(exports.queued_rows(), 0);
     }
 
     // ==================== push_export Tests ====================
@@ -297,56 +329,16 @@ mod tests {
         let mut exports = InFlightExports::new(5);
         let client = create_test_client();
 
-        // This should not block because we are under the limit
         let (auth_header, token_generation) = test_auth();
-        let result = exports
-            .push_export(
-                client,
-                1,
-                10,
-                Bytes::from("data"),
-                auth_header,
-                token_generation,
-            )
-            .await;
+        exports.push_export(
+            client,
+            1,
+            10,
+            Bytes::from("data"),
+            auth_header,
+            token_generation,
+        );
 
-        assert!(result.is_none());
-        assert_eq!(exports.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_push_export_respects_limit() {
-        let mut exports = InFlightExports::new(1);
-
-        // 1. Fill the capacity with a dummy future that completes immediately
-        // We use a dummy future because if we used push_export, it would create a real
-        // export future that might retry and take a long time to fail/complete.
-        let _ = exports
-            .push(mock_completed_export_future(100, 1, true))
-            .await;
-        assert_eq!(exports.len(), 1);
-
-        // 2. Now call push_export. Since we are at limit (1), it must wait for a completion.
-        // It should receive the completion from our dummy future immediately.
-        let client = create_test_client();
-        let (auth_header, token_generation) = test_auth();
-        let result = exports
-            .push_export(
-                client,
-                2,
-                20,
-                Bytes::from("data"),
-                auth_header,
-                token_generation,
-            )
-            .await;
-
-        // Should get the completed dummy export
-        assert!(result.is_some());
-        let completed = result.unwrap();
-        assert_eq!(completed.batch_id, 100);
-
-        // The new export should be in the queue
         assert_eq!(exports.len(), 1);
     }
 
@@ -354,61 +346,54 @@ mod tests {
     async fn test_push_export_increments_queued_rows() {
         let mut exports = InFlightExports::new(5);
 
-        // Under the limit, push_export does not block and increments the
-        // in-flight record tally by the enqueued row count. The real export
-        // future stays pending.
+        // push_export increments the in-flight record tally by the enqueued row
+        // count. The real export future stays pending.
         let (auth_header, token_generation) = test_auth();
-        let _ = exports
-            .push_export(
-                create_test_client(),
-                1,
-                100,
-                Bytes::from("data"),
-                auth_header,
-                token_generation,
-            )
-            .await;
+        exports.push_export(
+            create_test_client(),
+            1,
+            100,
+            Bytes::from("data"),
+            auth_header,
+            token_generation,
+        );
         assert_eq!(exports.queued_rows(), 100);
 
         let (auth_header, token_generation) = test_auth();
-        let _ = exports
-            .push_export(
-                create_test_client(),
-                2,
-                50,
-                Bytes::from("data"),
-                auth_header,
-                token_generation,
-            )
-            .await;
+        exports.push_export(
+            create_test_client(),
+            2,
+            50,
+            Bytes::from("data"),
+            auth_header,
+            token_generation,
+        );
         assert_eq!(exports.queued_rows(), 150);
     }
 
     #[tokio::test]
-    async fn test_push_export_backpressure_decrements_queued_rows() {
+    async fn test_backpressure_decrements_queued_rows() {
         let mut exports = InFlightExports::new(1);
         exports.queued_rows = 10;
         // Fill capacity with a completing future worth 10 records.
-        let _ = exports
-            .push(mock_completed_export_future(1, 10, true))
-            .await;
+        exports.push(mock_completed_export_future(1, 10, true));
         assert_eq!(exports.len(), 1);
 
-        // At capacity, push_export(+25) pops the completed future (-10) before
-        // adding the new one: 10 + 25 - 10 = 25.
-        let (auth_header, token_generation) = test_auth();
-        let completed = exports
-            .push_export(
-                create_test_client(),
-                2,
-                25,
-                Bytes::from("data"),
-                auth_header,
-                token_generation,
-            )
-            .await;
+        // Reaping pops the completed future (-10), then push_export adds the new
+        // one (+25): 10 - 10 + 25 = 25.
+        let completed = exports.reap_if_at_capacity().await;
         assert!(completed.is_some());
         assert_eq!(completed.unwrap().row_count, 10);
+
+        let (auth_header, token_generation) = test_auth();
+        exports.push_export(
+            create_test_client(),
+            2,
+            25,
+            Bytes::from("data"),
+            auth_header,
+            token_generation,
+        );
         assert_eq!(exports.queued_rows(), 25);
     }
 
@@ -435,17 +420,14 @@ mod tests {
         );
 
         let mut exports = InFlightExports::new(5);
-        let backpressured = exports
-            .push_export(
-                client,
-                7,
-                3,
-                Bytes::from_static(b"payload"),
-                HeaderValue::from_static("Bearer gen-7"),
-                42,
-            )
-            .await;
-        assert!(backpressured.is_none());
+        exports.push_export(
+            client,
+            7,
+            3,
+            Bytes::from_static(b"payload"),
+            HeaderValue::from_static("Bearer gen-7"),
+            42,
+        );
         assert_eq!(exports.queued_rows(), 3);
 
         let completed = exports.next_completion().await.expect("export completes");
@@ -479,9 +461,9 @@ mod tests {
         let mut exports = InFlightExports::new(5);
 
         // Push 3 dummy completed futures
-        let _ = exports.push(mock_completed_export_future(1, 1, true)).await;
-        let _ = exports.push(mock_completed_export_future(2, 1, true)).await;
-        let _ = exports.push(mock_completed_export_future(3, 1, true)).await;
+        exports.push(mock_completed_export_future(1, 1, true));
+        exports.push(mock_completed_export_future(2, 1, true));
+        exports.push(mock_completed_export_future(3, 1, true));
 
         assert_eq!(exports.len(), 3);
 
@@ -500,12 +482,8 @@ mod tests {
     async fn test_drain_resets_queued_rows_to_zero() {
         let mut exports = InFlightExports::new(5);
         exports.queued_rows = 60;
-        let _ = exports
-            .push(mock_completed_export_future(1, 20, true))
-            .await;
-        let _ = exports
-            .push(mock_completed_export_future(2, 40, false))
-            .await;
+        exports.push(mock_completed_export_future(1, 20, true));
+        exports.push(mock_completed_export_future(2, 40, false));
 
         let drained = exports.drain().await;
         assert_eq!(drained.len(), 2);
@@ -531,9 +509,7 @@ mod tests {
     async fn test_next_completion_returns_completed() {
         let mut exports = InFlightExports::new(5);
 
-        let _ = exports
-            .push(mock_completed_export_future(42, 1, true))
-            .await;
+        exports.push(mock_completed_export_future(42, 1, true));
 
         let result = exports.next_completion().await;
 
@@ -547,9 +523,7 @@ mod tests {
         let mut exports = InFlightExports::new(5);
         // Simulate in-flight exports totaling 100 records.
         exports.queued_rows = 100;
-        let _ = exports
-            .push(mock_completed_export_future(1, 30, true))
-            .await;
+        exports.push(mock_completed_export_future(1, 30, true));
 
         let completed = exports.next_completion().await.unwrap();
         assert_eq!(completed.row_count, 30);
@@ -560,9 +534,7 @@ mod tests {
     async fn test_next_completion_failure_decrements_queued_rows() {
         let mut exports = InFlightExports::new(5);
         exports.queued_rows = 40;
-        let _ = exports
-            .push(mock_completed_export_future(1, 40, false))
-            .await;
+        exports.push(mock_completed_export_future(1, 40, false));
 
         let completed = exports.next_completion().await.unwrap();
         assert!(completed.result.is_err());
@@ -574,7 +546,7 @@ mod tests {
         let mut exports = InFlightExports::new(5);
         // queued_rows is 0 but a completion reports 5 records; saturating_sub
         // must keep it at 0 rather than wrapping around.
-        let _ = exports.push(mock_completed_export_future(1, 5, true)).await;
+        exports.push(mock_completed_export_future(1, 5, true));
         let _ = exports.next_completion().await.unwrap();
         assert_eq!(exports.queued_rows(), 0);
     }
@@ -589,8 +561,8 @@ mod tests {
         let pending1: LocalBoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
         let pending2: LocalBoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
 
-        let _ = exports.push(pending1).await;
-        let _ = exports.push(pending2).await;
+        exports.push(pending1);
+        exports.push(pending2);
 
         assert_eq!(exports.len(), 2);
 
@@ -609,8 +581,7 @@ mod tests {
         for _ in 0..limit {
             let pending: LocalBoxFuture<'static, CompletedExport> =
                 Box::pin(std::future::pending());
-            let result = exports.push(pending).await;
-            assert!(result.is_none(), "Should not return completion under limit");
+            exports.push(pending);
         }
 
         assert_eq!(exports.len(), limit);

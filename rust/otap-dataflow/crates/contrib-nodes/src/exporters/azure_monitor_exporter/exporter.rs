@@ -262,25 +262,38 @@ impl AzureMonitorExporter {
             .borrow_mut()
             .add_batch_size(pending_batch.compressed_data.len() as f64);
 
-        let client = self.client_pool.take();
-        let (auth_header, token_generation) = auth
-            .header()
-            .expect("queueing is gated on a usable bearer token");
-        if let Some(completed_export) = self
-            .in_flight_exports
-            .push_export(
-                client,
-                pending_batch.batch_id,
-                pending_batch.row_count,
-                pending_batch.compressed_data,
-                auth_header,
-                token_generation,
-            )
-            .await
-        {
+        // Settle the completion that frees the slot before reading the token: a
+        // 401 completion invalidates the cached header, and stamping this batch
+        // first would send it with a credential already known to be rejected.
+        if let Some(completed_export) = self.in_flight_exports.reap_if_at_capacity().await {
             self.finalize_export(effect_handler, auth, completed_export)
                 .await?;
         }
+
+        let Some((auth_header, token_generation)) = auth.header() else {
+            let error = Error::NoBearerToken {
+                reason: auth.not_ready_reason(),
+            };
+            return self
+                .handle_export_failure(
+                    effect_handler,
+                    pending_batch.batch_id,
+                    pending_batch.row_count,
+                    pending_batch.compressed_data.len() as u64,
+                    error,
+                )
+                .await;
+        };
+
+        let client = self.client_pool.take();
+        self.in_flight_exports.push_export(
+            client,
+            pending_batch.batch_id,
+            pending_batch.row_count,
+            pending_batch.compressed_data,
+            auth_header,
+            token_generation,
+        );
 
         self.last_batch_queued_at = tokio::time::Instant::now();
 
@@ -933,6 +946,75 @@ mod tests {
             .unwrap();
 
         assert!(!auth.is_ready());
+    }
+
+    /// Queue a one-entry batch so the next `queue_pending_batch` has work to do.
+    fn prime_pending_batch(exporter: &mut AzureMonitorExporter) {
+        let _ = exporter
+            .gzip_batcher
+            .push(Bytes::from_static(br#"{"Message":"x"}"#))
+            .unwrap();
+        let _ = exporter.gzip_batcher.finalize().unwrap();
+    }
+
+    /// Scenario: the in-flight set is full and the export that frees the slot
+    /// comes back 401, while the message being processed still has batches to
+    /// queue.
+    /// Guarantees: the rejected token is settled before the next batch is
+    /// stamped, and that batch is failed rather than dispatched with the dead
+    /// credential or aborting the node.
+    #[tokio::test]
+    async fn a_401_freeing_a_slot_fails_the_next_batch_instead_of_stamping_it() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("token expired"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut exporter = exporter_targeting(mock_server.uri()).await;
+        exporter.in_flight_exports = InFlightExports::new(1);
+        let mut auth = auth_with_cached_token().await;
+        let effect_handler = test_effect_handler();
+
+        // Fill the single slot. The token is still good, so this batch is stamped
+        // and dispatched.
+        prime_pending_batch(&mut exporter);
+        exporter
+            .queue_pending_batch(&effect_handler, &mut auth)
+            .await
+            .unwrap();
+        assert!(auth.is_ready());
+        assert_eq!(exporter.in_flight_exports.len(), 1);
+
+        // At capacity: the reaped 401 invalidates the cached token, so the batch
+        // that was waiting on the slot must not be dispatched.
+        prime_pending_batch(&mut exporter);
+        exporter.state.add_batch_msg_relationship(2, 100);
+        exporter
+            .queue_pending_batch(&effect_handler, &mut auth)
+            .await
+            .unwrap();
+
+        assert!(!auth.is_ready(), "the 401 must invalidate the used token");
+        assert_eq!(
+            exporter.in_flight_exports.len(),
+            0,
+            "no export may be stamped with the rejected token"
+        );
+        assert!(
+            exporter.state.batch_to_msg.is_empty(),
+            "the undispatchable batch must be failed, not stranded"
+        );
+        assert_eq!(
+            exporter
+                .metrics
+                .borrow()
+                .export_for(Outcome::Failure)
+                .batches
+                .get(),
+            2
+        );
     }
 
     /// Scenario: pdata arrives before the bearer token provider has published a
