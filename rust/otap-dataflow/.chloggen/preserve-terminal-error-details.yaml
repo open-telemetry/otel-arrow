@@ -1,4 +1,4 @@
 change_type: bug_fix
 component: engine
-note: Preserve pipeline identity, error classification, and a bounded error prefix in terminal pipeline logs.
+note: Keep pipeline identity and part of the failure reason visible when terminal pipeline error logs are too large.
 issues: [3598]

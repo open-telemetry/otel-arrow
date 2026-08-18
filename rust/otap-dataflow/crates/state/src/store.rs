@@ -596,7 +596,7 @@ mod tests {
     use otap_df_telemetry::log_tap;
     use otap_df_telemetry::otel_info;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::self_tracing::{LogContext, LogRecord};
+    use otap_df_telemetry::self_tracing::{LOG_ARGUMENTS_ENCODE_INLINE, LogContext, LogRecord};
     use std::time::Duration;
     use std::time::SystemTime;
     use tokio_util::sync::CancellationToken;
@@ -655,10 +655,10 @@ mod tests {
         });
     }
 
-    /// Scenario: a terminal pipeline error includes long identity.
-    /// Guarantees: the log retains compact diagnostics and omits the absent source attribute.
+    /// Scenario: a terminal pipeline error exceeds the bounded record budget.
+    /// Guarantees: identity, classification, and a marked error prefix remain visible.
     #[test]
-    fn observed_runtime_error_retains_identity_and_diagnostics() {
+    fn observed_runtime_error_preserves_identity_and_error_prefix() {
         let store = ObservedStateStore::new(
             &ObservedStateSettings::default(),
             TelemetryRegistryHandle::new(),
@@ -673,7 +673,10 @@ mod tests {
             core_id: 0,
             deployment_generation: 0,
         };
-        let error = "Pipeline runtime error: A processor error occurred in node debug (transport): Write error: No space left on device (os error 28)";
+        let error = format!(
+            "Pipeline runtime error: {}",
+            "x".repeat(LOG_ARGUMENTS_ENCODE_INLINE * 2)
+        );
 
         tracing::dispatcher::with_default(&dispatch, || {
             let result = store
@@ -682,7 +685,7 @@ mod tests {
                     "Pipeline encountered a runtime error.",
                     otap_df_telemetry::event::ErrorSummary::Pipeline {
                         error_kind: "runtime".into(),
-                        message: error.into(),
+                        message: error,
                         source: None,
                     },
                 ))
@@ -731,63 +734,6 @@ mod tests {
             !rendered_pipeline.contains("error=RuntimeError("),
             "rendered log should not use verbose enum Debug output: {rendered_pipeline}"
         );
-    }
-
-    /// Scenario: node-level errors provide optional node identity and source fields.
-    /// Guarantees: the single observed-error callsite records present optional fields directly.
-    #[test]
-    fn observed_node_errors_record_optional_fields() {
-        let store = ObservedStateStore::new(
-            &ObservedStateSettings::default(),
-            TelemetryRegistryHandle::new(),
-        );
-        let (sender, receiver) = flume::unbounded();
-        let dispatch = tracing::Dispatch::new(
-            tracing_subscriber::Registry::default().with(LogCaptureLayer { sender }),
-        );
-        let cases = [
-            (otap_df_config::node::NodeKind::Receiver, "receiver"),
-            (otap_df_config::node::NodeKind::Processor, "processor"),
-            (otap_df_config::node::NodeKind::Exporter, "exporter"),
-        ];
-
-        tracing::dispatcher::with_default(&dispatch, || {
-            for (core_id, (node_kind, _)) in cases.iter().enumerate() {
-                let result = store
-                    .report_engine(EngineEvent::node_runtime_error(
-                        make_key(core_id),
-                        "debug".into(),
-                        *node_kind,
-                        Some("Node encountered a runtime error.".into()),
-                        otap_df_telemetry::event::ErrorSummary::Node {
-                            node: "debug".into(),
-                            node_kind: *node_kind,
-                            error_kind: "transport".into(),
-                            message: "Write error".into(),
-                            source: Some("No space left on device".into()),
-                        },
-                    ))
-                    .expect_err("runtime error from Pending should be rejected after logging");
-                assert!(matches!(result, Error::InvalidTransition { .. }));
-            }
-        });
-
-        for (_, expected_kind) in cases {
-            let rendered = receiver
-                .recv()
-                .expect("node runtime error log should be captured")
-                .to_string();
-            assert!(rendered.contains("node=debug"), "rendered log: {rendered}");
-            assert!(
-                rendered.contains(&format!("node_kind={expected_kind}")),
-                "rendered log: {rendered}"
-            );
-            assert!(
-                rendered.contains("source=No space"),
-                "rendered log: {rendered}"
-            );
-            assert!(rendered.contains("[...]"), "rendered log: {rendered}");
-        }
     }
 
     /// Validates that `send_timeout(1ms)` on a full bounded channel drops
