@@ -12,6 +12,11 @@
 //!
 //! ToDo: Detect unsupported pipelines at config time instead of run time.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = TRANSFORM_PROCESSOR_URN,
+    target = "otel.processor.transform",
+);
+
 use std::sync::Arc;
 
 use async_trait::async_trait;

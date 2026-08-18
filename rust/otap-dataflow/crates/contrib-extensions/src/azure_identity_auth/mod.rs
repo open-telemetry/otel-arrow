@@ -7,6 +7,11 @@
 //! nodes through the `BearerTokenProvider` capability. See
 //! `design.md` for the design.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = AZURE_IDENTITY_AUTH_URN,
+    target = "microsoft.extension.azure_identity_auth",
+);
+
 mod auth;
 pub mod config;
 pub mod error;

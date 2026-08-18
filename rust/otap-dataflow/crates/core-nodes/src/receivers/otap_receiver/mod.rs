@@ -9,6 +9,8 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
+otap_df_telemetry::otel_component_scope!(urn = OTAP_RECEIVER_URN, target = "otel.receiver.otap",);
+
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::compression::CompressionMethod;
@@ -16,7 +18,8 @@ use otap_df_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejection
 use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
 use otap_df_otap::otap_grpc::{
-    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, Settings,
+    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OtapReceiverTelemetry,
+    OtapStreamTaskManager, Settings,
 };
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
@@ -41,9 +44,16 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_metrics_service_server::ArrowMetricsServiceServer,
     arrow_traces_service_server::ArrowTracesServiceServer,
 };
+use otap_df_telemetry::common_attributes::{
+    Outcome, ReceiverRejectionAttributes, ReceiverRejectionErrorType, SignalAttributes,
+    SignalOutcomeAttributes,
+};
+use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
+use parking_lot::Mutex;
 use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -51,7 +61,6 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::ops::Add;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -143,8 +152,7 @@ const fn default_wait_for_result() -> bool {
 /// A Receiver that listens for OTAP messages
 pub struct OTAPReceiver {
     config: Config,
-    metrics: MetricSet<OtapReceiverMetrics>,
-    memory_pressure_metrics: Arc<SharedOtapMemoryPressureMetrics>,
+    metrics: Arc<SharedOtapReceiverMetrics>,
     admission_state: SharedReceiverAdmissionState,
 }
 
@@ -186,37 +194,46 @@ impl OTAPReceiver {
         })?;
 
         // Register OTAP receiver metrics for this node.
-        let metrics = pipeline_ctx.register_metrics::<OtapReceiverMetrics>();
+        let metrics = Arc::new(SharedOtapReceiverMetrics::new(
+            OtapReceiverMetrics::register(&pipeline_ctx),
+        ));
 
         Ok(OTAPReceiver {
             config,
             metrics,
-            memory_pressure_metrics: Arc::new(SharedOtapMemoryPressureMetrics::default()),
             admission_state: SharedReceiverAdmissionState::from_process_state(
                 &pipeline_ctx.memory_pressure_state(),
             ),
         })
     }
 
-    fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
+    fn route_ack_response(
+        &self,
+        states: &SharedStates,
+        ack: AckMsg<OtapPdata>,
+    ) -> (SignalType, RouteResponse) {
         let calldata = ack.unwind.route.calldata;
         let resp = Ok(());
-        let state = match ack.accepted.signal_type() {
+        let signal = ack.accepted.signal_type();
+        let state = match signal {
             SignalType::Logs => states.logs.as_ref(),
             SignalType::Metrics => states.metrics.as_ref(),
             SignalType::Traces => states.traces.as_ref(),
         };
 
-        state
-            .map(|s| s.route_response(calldata, resp))
-            .unwrap_or(RouteResponse::None)
+        (
+            signal,
+            state
+                .map(|s| s.route_response(calldata, resp))
+                .unwrap_or(RouteResponse::None),
+        )
     }
 
     fn route_nack_response(
         &self,
         states: &SharedStates,
         mut nack: NackMsg<OtapPdata>,
-    ) -> RouteResponse {
+    ) -> (SignalType, RouteResponse) {
         let calldata = std::mem::take(&mut nack.unwind.route.calldata);
         let signal_type = nack.refused.signal_type();
         let resp = Err(nack);
@@ -226,87 +243,220 @@ impl OTAPReceiver {
             SignalType::Traces => states.traces.as_ref(),
         };
 
-        state
-            .map(|s| s.route_response(calldata, resp))
-            .unwrap_or(RouteResponse::None)
+        (
+            signal_type,
+            state
+                .map(|s| s.route_response(calldata, resp))
+                .unwrap_or(RouteResponse::None),
+        )
     }
 
-    fn handle_ack_response(&mut self, resp: RouteResponse) {
+    fn handle_ack_response(&mut self, signal: SignalType, resp: RouteResponse) {
+        let mut metrics = self.metrics.lock();
         match resp {
-            RouteResponse::Sent => self.metrics.acks_sent.inc(),
-            RouteResponse::Expired => self.metrics.acks_nacks_invalid_or_expired.inc(),
-            RouteResponse::Invalid => self.metrics.acks_nacks_invalid_or_expired.inc(),
+            RouteResponse::Sent => metrics.record_acknowledgement(signal, Outcome::Success),
+            RouteResponse::Expired | RouteResponse::Invalid => {
+                metrics.record_acknowledgement(signal, Outcome::Failure);
+            }
             RouteResponse::None => {}
         }
     }
 
-    fn handle_nack_response(&mut self, resp: RouteResponse) {
+    fn handle_nack_response(&mut self, signal: SignalType, resp: RouteResponse) {
+        let mut metrics = self.metrics.lock();
         match resp {
-            RouteResponse::Sent => self.metrics.nacks_sent.inc(),
-            RouteResponse::Expired => self.metrics.acks_nacks_invalid_or_expired.inc(),
-            RouteResponse::Invalid => self.metrics.acks_nacks_invalid_or_expired.inc(),
+            RouteResponse::Sent => metrics.record_acknowledgement(signal, Outcome::Refused),
+            RouteResponse::Expired | RouteResponse::Invalid => {
+                metrics.record_acknowledgement(signal, Outcome::Failure);
+            }
             RouteResponse::None => {}
         }
     }
 
-    fn flush_memory_pressure_metrics(&mut self) {
-        self.memory_pressure_metrics.flush_into(&mut self.metrics);
+    fn terminal_state(&mut self, deadline: Instant) -> TerminalState {
+        TerminalState::new(deadline, self.metrics.lock().terminal_snapshots())
     }
 }
 
-/// OTAP receiver metrics.
-#[metric_set(name = "receiver.otap")]
+/// Lifecycle and payload metrics for admitted OTAP batches.
+#[metric_set(
+    name = "receiver.otap.batches",
+    measurement_attributes = SignalAttributes
+)]
 #[derive(Debug, Default, Clone)]
+pub struct OtapBatchMetrics {
+    /// Number of batches admitted to the pipeline send path.
+    #[metric(unit = "{batch}")]
+    pub started: Counter<u64>,
+    /// Number of admitted batches whose receiver work terminated.
+    #[metric(unit = "{batch}")]
+    pub completed: Counter<u64>,
+    /// Protobuf-encoded batch bytes after gRPC transport decompression.
+    #[metric(unit = "By")]
+    pub payload_size: Counter<u64>,
+}
+
+/// OTAP acknowledgement routing results.
+#[metric_set(
+    name = "receiver.otap.acknowledgements",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct OtapAcknowledgementMetrics {
+    /// Number of routed or invalid acknowledgement responses.
+    #[metric(unit = "{response}")]
+    pub responses: Counter<u64>,
+}
+
+/// OTAP streams and batches rejected before pipeline admission.
+#[metric_set(
+    name = "receiver.otap.rejections",
+    measurement_attributes = ReceiverRejectionAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct OtapRejectionMetrics {
+    /// Number of rejected OTAP streaming RPCs.
+    #[metric(unit = "{stream}")]
+    pub streams: Counter<u64>,
+    /// Number of rejected OTAP batches within admitted streams.
+    #[metric(unit = "{batch}")]
+    pub batches: Counter<u64>,
+}
+
+/// Bounded-cardinality OTAP receiver metrics tracker.
 pub struct OtapReceiverMetrics {
-    /// Number of acks sent.
-    #[metric(unit = "{acks}")]
-    pub acks_sent: Counter<u64>,
-
-    /// Number of nacks sent.
-    #[metric(unit = "{nacks}")]
-    pub nacks_sent: Counter<u64>,
-
-    /// Number of invalid/expired acks/nacks.
-    #[metric(unit = "{ack_or_nack}")]
-    pub acks_nacks_invalid_or_expired: Counter<u64>,
-
-    /// Number of OTAP RPCs rejected before entering the pipeline.
-    #[metric(unit = "{requests}")]
-    pub rejected_requests: Counter<u64>,
-
-    /// Number of OTAP RPCs rejected specifically because memory pressure was active.
-    #[metric(unit = "{requests}")]
-    pub refused_memory_pressure: Counter<u64>,
+    batches: MeasurementMetricSet<OtapBatchMetrics>,
+    acknowledgements: MeasurementMetricSet<OtapAcknowledgementMetrics>,
+    rejections: MeasurementMetricSet<OtapRejectionMetrics>,
 }
 
-#[derive(Default)]
-struct SharedOtapMemoryPressureMetrics {
-    rejected_requests: AtomicU64,
-    refused_memory_pressure: AtomicU64,
-}
-
-impl SharedOtapMemoryPressureMetrics {
-    fn flush_into(&self, metrics: &mut MetricSet<OtapReceiverMetrics>) {
-        let rejected_requests = self.rejected_requests.swap(0, Ordering::Relaxed);
-        if rejected_requests > 0 {
-            metrics.rejected_requests.add(rejected_requests);
-        }
-
-        let refused_memory_pressure = self.refused_memory_pressure.swap(0, Ordering::Relaxed);
-        if refused_memory_pressure > 0 {
-            metrics.refused_memory_pressure.add(refused_memory_pressure);
-        }
+impl std::fmt::Debug for OtapReceiverMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtapReceiverMetrics").finish()
     }
 }
 
-impl ReceiverRejectionMetrics for SharedOtapMemoryPressureMetrics {
-    fn record_rejection(&self) {
-        let _ = self.rejected_requests.fetch_add(1, Ordering::Relaxed);
+impl OtapReceiverMetrics {
+    /// Registers all OTAP receiver metric sets for a pipeline node.
+    #[must_use]
+    pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            batches: OtapBatchMetrics::register(pipeline_ctx),
+            acknowledgements: OtapAcknowledgementMetrics::register(pipeline_ctx),
+            rejections: OtapRejectionMetrics::register(pipeline_ctx),
+        }
     }
 
-    fn record_memory_pressure_rejection(&self) {
-        self.record_rejection();
-        let _ = self.refused_memory_pressure.fetch_add(1, Ordering::Relaxed);
+    /// Records an OTAP batch and its protobuf-encoded size after pipeline admission.
+    pub fn record_batch_admitted(&mut self, signal: SignalType, payload_bytes: u64) {
+        let batches = self.batches.with(SignalAttributes { signal });
+        batches.started.inc();
+        if payload_bytes > 0 {
+            batches.payload_size.add(payload_bytes);
+        }
+    }
+
+    /// Records termination of receiver work for an admitted OTAP batch.
+    pub fn record_batch_completed(&mut self, signal: SignalType) {
+        self.batches
+            .with(SignalAttributes { signal })
+            .completed
+            .inc();
+    }
+
+    /// Records the outcome of routing an acknowledgement response.
+    pub fn record_acknowledgement(&mut self, signal: SignalType, outcome: Outcome) {
+        self.acknowledgements
+            .with(SignalOutcomeAttributes { signal, outcome })
+            .responses
+            .inc();
+    }
+
+    /// Records an OTAP streaming RPC rejected before admission.
+    pub fn record_stream_rejection(&mut self, error_type: ReceiverRejectionErrorType) {
+        self.rejections
+            .with(ReceiverRejectionAttributes { error_type })
+            .streams
+            .inc();
+    }
+
+    /// Records an OTAP batch rejected before admission.
+    pub fn record_batch_rejection(&mut self, error_type: ReceiverRejectionErrorType) {
+        self.rejections
+            .with(ReceiverRejectionAttributes { error_type })
+            .batches
+            .inc();
+    }
+
+    /// Returns an acknowledgement bucket for inspection without marking it for export.
+    #[must_use]
+    pub fn acknowledgements_for(
+        &self,
+        signal: SignalType,
+        outcome: Outcome,
+    ) -> &OtapAcknowledgementMetrics {
+        self.acknowledgements
+            .get(SignalOutcomeAttributes { signal, outcome })
+    }
+
+    /// Returns a batch lifecycle bucket for inspection without marking it for export.
+    #[must_use]
+    pub fn batches_for(&self, signal: SignalType) -> &OtapBatchMetrics {
+        self.batches.get(SignalAttributes { signal })
+    }
+
+    /// Returns a rejection bucket for inspection without marking it for export.
+    #[must_use]
+    pub fn rejections_for(&self, error_type: ReceiverRejectionErrorType) -> &OtapRejectionMetrics {
+        self.rejections
+            .get(ReceiverRejectionAttributes { error_type })
+    }
+
+    /// Reports every touched OTAP receiver metric bucket.
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        reporter.report_measurement(&mut self.batches)?;
+        reporter.report_measurement(&mut self.acknowledgements)?;
+        reporter.report_measurement(&mut self.rejections)
+    }
+
+    /// Takes every touched OTAP receiver metric bucket for terminal handoff.
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let mut snapshots = self.batches.terminal_snapshots();
+        snapshots.extend(self.acknowledgements.terminal_snapshots());
+        snapshots.extend(self.rejections.terminal_snapshots());
+        snapshots
+    }
+}
+
+struct SharedOtapReceiverMetrics(Mutex<OtapReceiverMetrics>);
+
+impl SharedOtapReceiverMetrics {
+    fn new(metrics: OtapReceiverMetrics) -> Self {
+        Self(Mutex::new(metrics))
+    }
+
+    fn lock(&self) -> parking_lot::MutexGuard<'_, OtapReceiverMetrics> {
+        self.0.lock()
+    }
+}
+
+impl ReceiverRejectionMetrics for SharedOtapReceiverMetrics {
+    fn record_rejection(&self, error_type: ReceiverRejectionErrorType) {
+        self.lock().record_stream_rejection(error_type);
+    }
+
+    fn record_item_rejection(&self, error_type: ReceiverRejectionErrorType) {
+        self.lock().record_batch_rejection(error_type);
+    }
+}
+
+impl OtapReceiverTelemetry for SharedOtapReceiverMetrics {
+    fn record_batch_admitted(&self, signal: SignalType, payload_bytes: u64) {
+        self.lock().record_batch_admitted(signal, payload_bytes);
+    }
+
+    fn record_batch_completed(&self, signal: SignalType) {
+        self.lock().record_batch_completed(signal);
     }
 }
 
@@ -347,7 +497,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        otap_df_telemetry::otel_info!(
+        otel_info!(
             "otap_receiver.start",
             listening_addr = %self.config.listening_addr
         );
@@ -356,6 +506,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
 
+        let stream_tasks = OtapStreamTaskManager::new();
         let settings = Settings {
             response_stream_channel_size: self.config.response_stream_channel_size,
             max_concurrent_requests: self.config.max_concurrent_requests,
@@ -365,7 +516,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 .get(),
             wait_for_result: self.config.wait_for_result,
             admission_state: self.admission_state.clone(),
-            receiver_rejection_metrics: Some(self.memory_pressure_metrics.clone()),
+            receiver_metrics: Some(self.metrics.clone()),
+            stream_tasks: stream_tasks.clone(),
         };
 
         //create services for the grpc server and clone the effect handler to pass message
@@ -420,7 +572,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let server = server_builder
             .layer(MemoryPressureLayer::with_metrics(
                 self.admission_state.clone(),
-                self.memory_pressure_metrics.clone(),
+                self.metrics.clone(),
             ))
             .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))
             .add_service(logs_server)
@@ -457,7 +609,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let mut draining_deadline: Option<Instant> = None;
         let mut draining_reason: Option<String> = None;
         let mut drain_deadline_sleep: Option<clock::Sleep> = None;
-        let terminal_state: TerminalState;
+        let mut terminal_deadline: Option<Instant> = None;
+        let mut terminal_error: Option<Error> = None;
 
         loop {
             if let Some(deadline) = draining_deadline {
@@ -476,10 +629,13 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     drain_deadline_sleep = Some(clock::sleep_until(deadline));
                 }
 
-                if server_task_done && states.is_empty() {
-                    effect_handler.notify_receiver_drained().await?;
-                    self.flush_memory_pressure_metrics();
-                    terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
+                if server_task_done && states.is_empty() && stream_tasks.is_empty() {
+                    match effect_handler.notify_receiver_drained().await {
+                        Ok(()) => terminal_deadline = Some(deadline),
+                        Err(error) => terminal_error = Some(error),
+                    }
+                    stream_tasks.close();
+                    stream_tasks.cancel();
                     break;
                 }
             } else {
@@ -501,7 +657,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     match ctrl_msg {
                         Ok(NodeControlMsg::DrainIngress { deadline, reason })
                             if draining_deadline.is_none() => {
-                                otap_df_telemetry::otel_info!("otap_receiver.drain_ingress");
+                                otel_info!("otap_receiver.drain_ingress");
                                 // Latch the first drain request and close ingress.
                                 // This stops new admissions, but does not yet report
                                 // ReceiverDrained because previously admitted batches
@@ -511,28 +667,32 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                                 grpc_shutdown.cancel();
                             }
                         Ok(NodeControlMsg::Shutdown { deadline, reason }) => {
-                            otap_df_telemetry::otel_info!("otap_receiver.shutdown");
+                            otel_info!("otap_receiver.shutdown");
                             grpc_shutdown.cancel();
                             states.force_shutdown(&reason);
-                            self.flush_memory_pressure_metrics();
-                            terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
+                            stream_tasks.close();
+                            terminal_deadline = Some(deadline);
                             break;
                         }
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            self.flush_memory_pressure_metrics();
-                            _ = metrics_reporter.report(&mut self.metrics);
+                            _ = self.metrics.lock().report(&mut metrics_reporter);
                         }
                         Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
                             self.admission_state.apply(update);
                         }
                         Ok(NodeControlMsg::Ack(ack)) => {
-                            self.handle_ack_response(self.route_ack_response(&states, ack));
+                            let (signal, response) = self.route_ack_response(&states, ack);
+                            self.handle_ack_response(signal, response);
                         }
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            self.handle_nack_response(self.route_nack_response(&states, nack));
+                            let (signal, response) = self.route_nack_response(&states, nack);
+                            self.handle_nack_response(signal, response);
                         }
                         Err(e) => {
-                            return Err(Error::ChannelRecvError(e));
+                            terminal_error = Some(Error::ChannelRecvError(e));
+                            stream_tasks.close();
+                            stream_tasks.cancel();
+                            break;
                         }
                         _ => {}
                     }
@@ -542,22 +702,26 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     server_task_done = true;
                     if let Err(error) = result {
                         let source_detail = format_error_sources(&error);
-                        return Err(Error::ReceiverError {
+                        terminal_error = Some(Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
                             kind: ReceiverErrorKind::Transport,
                             error: error.to_string(),
                             source_detail,
                         });
+                        stream_tasks.close();
+                        stream_tasks.cancel();
+                        break;
                     }
 
                     if draining_deadline.is_none() {
-                        self.flush_memory_pressure_metrics();
-                        terminal_state = TerminalState::new(
-                            clock::now().add(Duration::from_secs(1)),
-                            [self.metrics.snapshot()],
-                        );
+                        terminal_deadline =
+                            Some(clock::now().add(Duration::from_secs(1)));
+                        stream_tasks.close();
+                        stream_tasks.cancel();
                         break;
                     }
+
+                    stream_tasks.close();
                 }
 
                 _ = &mut drain_sleep => {
@@ -569,14 +733,35 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     }
                     drain_deadline_sleep = None;
                 }
+
+                _ = stream_tasks.wait(), if server_task_done && draining_deadline.is_some() => {}
             }
         }
 
         grpc_shutdown.cancel();
+        stream_tasks.close();
+        if terminal_error.is_some() {
+            stream_tasks.cancel();
+        }
+
         if !server_task_done {
-            if let Err(error) = server_task.await {
+            let server_result = if terminal_error.is_some() {
+                server_task.await
+            } else {
+                let deadline =
+                    terminal_deadline.unwrap_or_else(|| clock::now().add(Duration::from_secs(1)));
+                tokio::select! {
+                    result = &mut server_task => result,
+                    _ = clock::sleep_until(deadline) => {
+                        stream_tasks.cancel();
+                        server_task.await
+                    }
+                }
+            };
+
+            if let Err(error) = server_result {
                 let source_detail = format_error_sources(&error);
-                return Err(Error::ReceiverError {
+                _ = terminal_error.get_or_insert_with(|| Error::ReceiverError {
                     receiver: effect_handler.receiver_id(),
                     kind: ReceiverErrorKind::Transport,
                     error: error.to_string(),
@@ -585,14 +770,34 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
             }
         }
 
-        Ok(terminal_state)
+        if terminal_error.is_some() {
+            stream_tasks.cancel();
+            stream_tasks.wait().await;
+        } else if let Some(deadline) = terminal_deadline {
+            tokio::select! {
+                _ = stream_tasks.wait() => {}
+                _ = clock::sleep_until(deadline) => {
+                    stream_tasks.cancel();
+                    stream_tasks.wait().await;
+                }
+            }
+        }
+
+        if let Some(error) = terminal_error {
+            return Err(error);
+        }
+
+        let deadline =
+            terminal_deadline.unwrap_or_else(|| clock::now().add(Duration::from_secs(1)));
+        Ok(self.terminal_state(deadline))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::receivers::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
+    use crate::receivers::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver, OtapReceiverMetrics};
     use async_stream::stream;
+    use otap_df_config::SignalType;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -612,18 +817,21 @@ mod tests {
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
+    use otap_df_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
+    use otap_df_telemetry::metrics::MetricSetSnapshot;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashSet;
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
-    use std::sync::atomic::Ordering;
     use std::time::Instant;
     use tokio::time::{Duration, timeout};
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
         grpc_endpoint: String,
+        telemetry: (flume::Receiver<MetricSetSnapshot>, MetricsReporter),
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
@@ -711,6 +919,8 @@ mod tests {
                     "traces",
                 )
                 .await;
+
+                assert_receiver_telemetry(&ctx, telemetry, None).await;
 
                 // Finally, send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Instant::now(), "Test")
@@ -813,6 +1023,7 @@ mod tests {
     /// Test scenario for NACK functionality - expects error responses for all signals
     fn nack_scenario(
         grpc_endpoint: String,
+        telemetry: (flume::Receiver<MetricSetSnapshot>, MetricsReporter),
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
@@ -913,6 +1124,8 @@ mod tests {
                     "traces",
                 )
                 .await;
+
+                assert_receiver_telemetry(&ctx, telemetry, Some("refused")).await;
 
                 // Shutdown
                 ctx.send_shutdown(Instant::now(), "Test complete")
@@ -1035,6 +1248,170 @@ mod tests {
         );
     }
 
+    async fn assert_receiver_telemetry(
+        ctx: &TestContext<OtapPdata>,
+        (metrics_rx, metrics_reporter): (flume::Receiver<MetricSetSnapshot>, MetricsReporter),
+        acknowledgement_outcome: Option<&str>,
+    ) {
+        ctx.send_control_msg(NodeControlMsg::CollectTelemetry { metrics_reporter })
+            .await
+            .expect("receiver should accept telemetry collection");
+
+        let expected_snapshots = if acknowledgement_outcome.is_some() {
+            6
+        } else {
+            3
+        };
+        let mut batch_signals = HashSet::new();
+        let mut acknowledgement_signals = HashSet::new();
+        for _ in 0..expected_snapshots {
+            let snapshot = timeout(Duration::from_secs(3), metrics_rx.recv_async())
+                .await
+                .expect("timed out collecting OTAP receiver telemetry")
+                .expect("OTAP receiver telemetry channel closed");
+            match snapshot.descriptor().name {
+                "receiver.otap.batches" => {
+                    let signal = snapshot
+                        .measurement_attribute_value("signal")
+                        .expect("batch metrics should carry signal");
+                    assert!(
+                        batch_signals.insert(signal),
+                        "batch metrics should emit once per signal"
+                    );
+                    assert_eq!(snapshot.get_metrics()[0].to_u64_lossy(), 3);
+                    assert_eq!(snapshot.get_metrics()[1].to_u64_lossy(), 3);
+                    assert!(
+                        snapshot.get_metrics()[2].to_u64_lossy() > 0,
+                        "admitted OTAP payload bytes should be positive"
+                    );
+                }
+                "receiver.otap.acknowledgements" => {
+                    let signal = snapshot
+                        .measurement_attribute_value("signal")
+                        .expect("acknowledgement metrics should carry signal");
+                    assert!(
+                        acknowledgement_signals.insert(signal),
+                        "acknowledgement metrics should emit once per signal"
+                    );
+                    assert_eq!(
+                        snapshot.measurement_attribute_value("outcome"),
+                        acknowledgement_outcome
+                    );
+                    assert_eq!(snapshot.get_metrics()[0].to_u64_lossy(), 3);
+                }
+                name => panic!("unexpected OTAP receiver metric set: {name}"),
+            }
+        }
+
+        assert_eq!(batch_signals, HashSet::from(["logs", "metrics", "traces"]));
+        if acknowledgement_outcome.is_some() {
+            assert_eq!(
+                acknowledgement_signals,
+                HashSet::from(["logs", "metrics", "traces"])
+            );
+        } else {
+            assert!(acknowledgement_signals.is_empty());
+        }
+    }
+
+    async fn assert_rejection_telemetry(
+        ctx: &TestContext<OtapPdata>,
+        (metrics_rx, metrics_reporter): (flume::Receiver<MetricSetSnapshot>, MetricsReporter),
+        error_type: &str,
+        expected_streams: u64,
+        expected_batches: u64,
+    ) {
+        ctx.send_control_msg(NodeControlMsg::CollectTelemetry { metrics_reporter })
+            .await
+            .expect("receiver should accept rejection telemetry collection");
+        let snapshot = timeout(Duration::from_secs(3), metrics_rx.recv_async())
+            .await
+            .expect("timed out collecting OTAP rejection telemetry")
+            .expect("OTAP rejection telemetry channel closed");
+        assert_eq!(snapshot.descriptor().name, "receiver.otap.rejections");
+        assert_eq!(
+            snapshot.measurement_attribute_value("error.type"),
+            Some(error_type)
+        );
+        assert_eq!(snapshot.get_metrics()[0].to_u64_lossy(), expected_streams);
+        assert_eq!(snapshot.get_metrics()[1].to_u64_lossy(), expected_batches);
+        assert!(
+            metrics_rx.try_recv().is_err(),
+            "a pre-admission rejection must not emit a batch lifecycle snapshot"
+        );
+    }
+
+    async fn assert_single_batch_lifecycle_telemetry(
+        ctx: &TestContext<OtapPdata>,
+        (metrics_rx, metrics_reporter): (flume::Receiver<MetricSetSnapshot>, MetricsReporter),
+    ) {
+        ctx.send_control_msg(NodeControlMsg::CollectTelemetry { metrics_reporter })
+            .await
+            .expect("receiver should accept lifecycle telemetry collection");
+        let snapshot = timeout(Duration::from_secs(3), metrics_rx.recv_async())
+            .await
+            .expect("timed out collecting OTAP lifecycle telemetry")
+            .expect("OTAP lifecycle telemetry channel closed");
+        assert_eq!(snapshot.descriptor().name, "receiver.otap.batches");
+        assert_eq!(snapshot.measurement_attribute_value("signal"), Some("logs"));
+        assert_eq!(snapshot.get_metrics()[0].to_u64_lossy(), 1);
+        assert_eq!(snapshot.get_metrics()[1].to_u64_lossy(), 1);
+        assert!(snapshot.get_metrics()[2].to_u64_lossy() > 0);
+        assert!(
+            metrics_rx.try_recv().is_err(),
+            "pipeline send failure is lifecycle termination, not a rejection"
+        );
+    }
+
+    async fn assert_concurrency_rejection_telemetry(
+        ctx: &TestContext<OtapPdata>,
+        (metrics_rx, metrics_reporter): (flume::Receiver<MetricSetSnapshot>, MetricsReporter),
+    ) {
+        ctx.send_control_msg(NodeControlMsg::CollectTelemetry { metrics_reporter })
+            .await
+            .expect("receiver should accept concurrency telemetry collection");
+        let mut saw_batch = false;
+        let mut saw_ack = false;
+        let mut saw_rejection = false;
+        for _ in 0..3 {
+            let snapshot = timeout(Duration::from_secs(3), metrics_rx.recv_async())
+                .await
+                .expect("timed out collecting OTAP concurrency telemetry")
+                .expect("OTAP concurrency telemetry channel closed");
+            match snapshot.descriptor().name {
+                "receiver.otap.batches" => {
+                    saw_batch = true;
+                    assert_eq!(snapshot.measurement_attribute_value("signal"), Some("logs"));
+                    assert_eq!(snapshot.get_metrics()[0].to_u64_lossy(), 1);
+                    assert_eq!(snapshot.get_metrics()[1].to_u64_lossy(), 1);
+                    assert!(snapshot.get_metrics()[2].to_u64_lossy() > 0);
+                }
+                "receiver.otap.acknowledgements" => {
+                    saw_ack = true;
+                    assert_eq!(snapshot.measurement_attribute_value("signal"), Some("logs"));
+                    assert_eq!(
+                        snapshot.measurement_attribute_value("outcome"),
+                        Some("success")
+                    );
+                    assert_eq!(snapshot.get_metrics()[0].to_u64_lossy(), 1);
+                }
+                "receiver.otap.rejections" => {
+                    saw_rejection = true;
+                    assert_eq!(
+                        snapshot.measurement_attribute_value("error.type"),
+                        Some("concurrency_limit")
+                    );
+                    assert_eq!(snapshot.get_metrics()[0].to_u64_lossy(), 0);
+                    assert_eq!(snapshot.get_metrics()[1].to_u64_lossy(), 1);
+                }
+                name => panic!("unexpected concurrency metric set: {name}"),
+            }
+        }
+        assert!(saw_batch && saw_ack && saw_rejection);
+    }
+
+    /// Scenario: Three valid batches per signal use fire-and-forget OTAP delivery.
+    /// Guarantees: Lifecycle snapshots complete with positive bytes and no acknowledgement bucket.
     #[test]
     fn test_otap_receiver() {
         let test_runtime = TestRuntime::new();
@@ -1073,10 +1450,337 @@ mod tests {
         );
 
         // run the test
+        let telemetry = MetricsReporter::create_new_and_receiver(16);
         test_runtime
             .set_receiver(receiver)
-            .run_test(scenario(grpc_endpoint))
+            .run_test(scenario(grpc_endpoint, telemetry))
             .run_validation(validation_procedure());
+    }
+
+    /// Scenario: A malformed OTAP logs batch reaches the real receiver stream decoder.
+    /// Guarantees: Invalid-request rejection increments once without starting a batch lifecycle.
+    #[test]
+    fn invalid_batch_emits_rejection_without_lifecycle_metrics() {
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
+        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let config = serde_json::json!({
+            "listening_addr": addr.to_string(),
+            "response_stream_channel_size": 4
+        });
+        let receiver = ReceiverWrapper::shared(
+            OTAPReceiver::from_config(pipeline_ctx, &config).unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+        let telemetry = MetricsReporter::create_new_and_receiver(4);
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut client = ArrowLogsServiceClient::connect(grpc_endpoint)
+                    .await
+                    .expect("connect to OTAP receiver");
+                let invalid_stream = stream! {
+                    yield otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords {
+                        batch_id: 17,
+                        arrow_payloads: vec![
+                            otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayload {
+                                schema_id: "invalid".to_owned(),
+                                r#type: ArrowPayloadType::Logs as i32,
+                                record: vec![1, 2, 3],
+                            },
+                        ],
+                        headers: Vec::new(),
+                    };
+                };
+                let mut response = client
+                    .arrow_logs(invalid_stream)
+                    .await
+                    .expect("open invalid OTAP stream")
+                    .into_inner();
+                assert!(
+                    timeout(Duration::from_secs(3), response.message())
+                        .await
+                        .expect("invalid OTAP stream should terminate")
+                        .expect("invalid OTAP stream should close cleanly")
+                        .is_none()
+                );
+                assert_rejection_telemetry(&ctx, telemetry, "invalid_request", 0, 1).await;
+                ctx.send_shutdown(Instant::now(), "invalid batch test complete")
+                    .await
+                    .expect("shutdown OTAP receiver");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(|_ctx| async {});
+    }
+
+    /// Scenario: Hard memory pressure rejects a valid OTAP logs stream at ingress.
+    /// Guarantees: Memory-pressure stream rejection increments without any batch lifecycle.
+    #[test]
+    fn memory_pressure_stream_rejection_has_no_batch_lifecycle_metrics() {
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
+        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pressure_state = controller_ctx.memory_pressure_state();
+        pressure_state.configure(
+            otap_df_engine::memory_limiter::MemoryPressureBehaviorConfig {
+                retry_after_secs: 1,
+                fail_readiness_on_hard: true,
+                mode: otap_df_config::policy::MemoryLimiterMode::Enforce,
+            },
+        );
+        pressure_state
+            .set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Hard);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let config = serde_json::json!({
+            "listening_addr": addr.to_string(),
+            "response_stream_channel_size": 4
+        });
+        let receiver = ReceiverWrapper::shared(
+            OTAPReceiver::from_config(pipeline_ctx, &config).unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+        let telemetry = MetricsReporter::create_new_and_receiver(4);
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut client = ArrowLogsServiceClient::connect(grpc_endpoint)
+                    .await
+                    .expect("connect to OTAP receiver");
+                let valid_stream = stream! {
+                    let mut producer = Producer::new();
+                    let mut records = create_otap_batch(1, ArrowPayloadType::Logs);
+                    yield producer.produce_bar(&mut records).expect("encode valid OTAP batch");
+                };
+                let status = match client.arrow_logs(valid_stream).await {
+                    Err(status) => status,
+                    Ok(response) => {
+                        timeout(Duration::from_secs(3), response.into_inner().message())
+                            .await
+                            .expect("memory-pressure stream should respond")
+                            .expect_err("memory-pressure stream should return a gRPC error")
+                    }
+                };
+                assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+                assert_rejection_telemetry(&ctx, telemetry, "memory_pressure", 1, 0).await;
+                ctx.send_shutdown(Instant::now(), "memory pressure test complete")
+                    .await
+                    .expect("shutdown OTAP receiver");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(|_ctx| async {});
+    }
+
+    /// Scenario: A valid OTAP logs batch reaches a closed pipeline output channel.
+    /// Guarantees: Its lifecycle starts and completes once without a rejection metric.
+    #[test]
+    fn pipeline_send_failure_completes_lifecycle_without_rejection() {
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
+        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let config = serde_json::json!({
+            "listening_addr": addr.to_string(),
+            "response_stream_channel_size": 4
+        });
+        let receiver = ReceiverWrapper::shared(
+            OTAPReceiver::from_config(pipeline_ctx, &config).unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+        let telemetry = MetricsReporter::create_new_and_receiver(4);
+        let output_closed = Arc::new(tokio::sync::Notify::new());
+        let scenario_output_closed = output_closed.clone();
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                scenario_output_closed.notified().await;
+                let mut client = ArrowLogsServiceClient::connect(grpc_endpoint)
+                    .await
+                    .expect("connect to OTAP receiver");
+                let valid_stream = stream! {
+                    let mut producer = Producer::new();
+                    let mut records = create_otap_batch(1, ArrowPayloadType::Logs);
+                    yield producer.produce_bar(&mut records).expect("encode valid OTAP batch");
+                };
+                let mut response = client
+                    .arrow_logs(valid_stream)
+                    .await
+                    .expect("open OTAP stream")
+                    .into_inner();
+                assert!(
+                    timeout(Duration::from_secs(3), response.message())
+                        .await
+                        .expect("failed pipeline stream should terminate")
+                        .expect("failed pipeline stream should close cleanly")
+                        .is_none()
+                );
+                assert_single_batch_lifecycle_telemetry(&ctx, telemetry).await;
+                ctx.send_shutdown(Instant::now(), "pipeline send failure test complete")
+                    .await
+                    .expect("shutdown OTAP receiver");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+        let validation = move |ctx: NotSendValidateContext<OtapPdata>| async move {
+            drop(ctx);
+            output_closed.notify_one();
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    /// Scenario: A second logs stream arrives while one wait-for-result batch owns the only slot.
+    /// Guarantees: The second batch is rejected for concurrency without entering its lifecycle.
+    #[test]
+    fn concurrency_rejection_excludes_rejected_batch_from_lifecycle() {
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
+        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let config = serde_json::json!({
+            "listening_addr": addr.to_string(),
+            "response_stream_channel_size": 4,
+            "max_concurrent_requests": 1,
+            "max_concurrent_requests_per_stream": 1,
+            "wait_for_result": true
+        });
+        let receiver = ReceiverWrapper::shared(
+            OTAPReceiver::from_config(pipeline_ctx, &config).unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+        let telemetry = MetricsReporter::create_new_and_receiver(8);
+        let first_admitted = Arc::new(tokio::sync::Notify::new());
+        let release_first = Arc::new(tokio::sync::Notify::new());
+        let scenario_first_admitted = first_admitted.clone();
+        let scenario_release_first = release_first.clone();
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let first_endpoint = grpc_endpoint.clone();
+                let first_request = tokio::spawn(async move {
+                    let mut client = ArrowLogsServiceClient::connect(first_endpoint)
+                        .await
+                        .expect("connect first OTAP client");
+                    let first_stream = stream! {
+                        let mut producer = Producer::new();
+                        let mut records = create_otap_batch(1, ArrowPayloadType::Logs);
+                        yield producer.produce_bar(&mut records).expect("encode first OTAP batch");
+                    };
+                    let mut response = client
+                        .arrow_logs(first_stream)
+                        .await
+                        .expect("open first OTAP stream")
+                        .into_inner();
+                    response
+                        .message()
+                        .await
+                        .expect("first OTAP response should decode")
+                        .expect("first OTAP response should be present")
+                });
+
+                timeout(Duration::from_secs(3), scenario_first_admitted.notified())
+                    .await
+                    .expect("first batch should reach the pipeline");
+                let mut second_client = ArrowLogsServiceClient::connect(grpc_endpoint)
+                    .await
+                    .expect("connect second OTAP client");
+                let second_stream = stream! {
+                    let mut producer = Producer::new();
+                    let mut records = create_otap_batch(2, ArrowPayloadType::Logs);
+                    yield producer.produce_bar(&mut records).expect("encode second OTAP batch");
+                };
+                let second_status = timeout(
+                    Duration::from_secs(3),
+                    second_client
+                        .arrow_logs(second_stream)
+                        .await
+                        .expect("open second OTAP stream")
+                        .into_inner()
+                        .message(),
+                )
+                .await
+                .expect("second stream should receive concurrency response")
+                .expect("second concurrency response should decode")
+                .expect("second concurrency response should be present");
+                assert_eq!(second_status.status_code, 14);
+                assert!(
+                    second_status
+                        .status_message
+                        .contains("Too many concurrent requests")
+                );
+
+                scenario_release_first.notify_one();
+                let first_status = timeout(Duration::from_secs(3), first_request)
+                    .await
+                    .expect("first request should complete after ACK")
+                    .expect("first request task should not panic");
+                assert_eq!(first_status.status_code, 0);
+
+                assert_concurrency_rejection_telemetry(&ctx, telemetry).await;
+                ctx.send_shutdown(Instant::now(), "concurrency test complete")
+                    .await
+                    .expect("shutdown OTAP receiver");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+        let validation = move |mut ctx: NotSendValidateContext<OtapPdata>| async move {
+            let pdata = timeout(Duration::from_secs(3), ctx.recv())
+                .await
+                .expect("first batch should reach validation")
+                .expect("first batch should be present");
+            first_admitted.notify_one();
+            release_first.notified().await;
+            let (_, ack) = next_ack(AckMsg::new(pdata)).expect("first batch should await ACK");
+            ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                .await
+                .expect("send first batch ACK");
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
     }
 
     #[test]
@@ -1191,8 +1895,10 @@ mod tests {
         );
     }
 
+    /// Scenario: OTAP batch lifecycles, acknowledgements, and rejections span bounded dimensions.
+    /// Guarantees: Counts remain isolated by signal, outcome, rejection scope, and error type.
     #[test]
-    fn shared_rejection_metrics_flush_into_reported_metric_set() {
+    fn receiver_metrics_are_partitioned_by_context() {
         use serde_json::json;
 
         let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
@@ -1205,33 +1911,105 @@ mod tests {
             "listening_addr": "127.0.0.1:4317",
             "response_stream_channel_size": 100
         });
-        let mut receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
+        let receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
 
-        receiver.memory_pressure_metrics.record_rejection();
         receiver
-            .memory_pressure_metrics
-            .record_memory_pressure_rejection();
+            .metrics
+            .record_rejection(ReceiverRejectionErrorType::MemoryPressure);
+        receiver
+            .metrics
+            .record_item_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
+        receiver
+            .metrics
+            .lock()
+            .record_acknowledgement(SignalType::Logs, Outcome::Success);
+        receiver
+            .metrics
+            .lock()
+            .record_batch_admitted(SignalType::Logs, 42);
+        receiver
+            .metrics
+            .lock()
+            .record_batch_completed(SignalType::Logs);
 
-        receiver.flush_memory_pressure_metrics();
-
-        assert_eq!(receiver.metrics.rejected_requests.get(), 2);
-        assert_eq!(receiver.metrics.refused_memory_pressure.get(), 1);
+        let metrics = receiver.metrics.lock();
+        assert_eq!(metrics.batches_for(SignalType::Logs).started.get(), 1);
+        assert_eq!(metrics.batches_for(SignalType::Logs).completed.get(), 1);
+        assert_eq!(metrics.batches_for(SignalType::Logs).payload_size.get(), 42);
+        assert_eq!(metrics.batches_for(SignalType::Metrics).started.get(), 0);
         assert_eq!(
-            receiver
-                .memory_pressure_metrics
-                .rejected_requests
-                .load(Ordering::Relaxed),
+            metrics
+                .rejections_for(ReceiverRejectionErrorType::MemoryPressure)
+                .streams
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .rejections_for(ReceiverRejectionErrorType::MemoryPressure)
+                .batches
+                .get(),
             0
         );
         assert_eq!(
-            receiver
-                .memory_pressure_metrics
-                .refused_memory_pressure
-                .load(Ordering::Relaxed),
+            metrics
+                .rejections_for(ReceiverRejectionErrorType::ConcurrencyLimit)
+                .batches
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .acknowledgements_for(SignalType::Logs, Outcome::Success)
+                .responses
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .acknowledgements_for(SignalType::Metrics, Outcome::Success)
+                .responses
+                .get(),
             0
         );
     }
 
+    /// Scenario: OTAP receiver metric sets are transferred into terminal snapshots twice.
+    /// Guarantees: Touched lifecycle, acknowledgement, and rejection buckets emit once.
+    #[test]
+    fn terminal_snapshots_preserve_enum_attribute_values_once() {
+        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = OtapReceiverMetrics::register(&pipeline_ctx);
+
+        metrics.record_batch_admitted(SignalType::Traces, 64);
+        metrics.record_batch_completed(SignalType::Traces);
+        metrics.record_acknowledgement(SignalType::Traces, Outcome::Refused);
+        metrics.record_batch_rejection(ReceiverRejectionErrorType::InvalidRequest);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 3);
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.otap.batches"
+                && snapshot.measurement_attribute_value("signal") == Some("traces")
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.otap.acknowledgements"
+                && snapshot.measurement_attribute_value("signal") == Some("traces")
+                && snapshot.measurement_attribute_value("outcome") == Some("refused")
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.otap.rejections"
+                && snapshot.measurement_attribute_value("error.type") == Some("invalid_request")
+        }));
+        assert!(metrics.terminal_snapshots().is_empty());
+    }
+
+    /// Scenario: Three valid batches per signal are ACKed through real OTAP gRPC streams.
+    /// Guarantees: Lifecycle and successful acknowledgement snapshots match every admitted batch.
     #[test]
     fn test_otap_receiver_ack() {
         let test_runtime = TestRuntime::new();
@@ -1265,12 +2043,15 @@ mod tests {
             test_runtime.config(),
         );
 
+        let telemetry = MetricsReporter::create_new_and_receiver(16);
         test_runtime
             .set_receiver(receiver)
-            .run_test(scenario(grpc_endpoint))
+            .run_test(scenario(grpc_endpoint, telemetry))
             .run_validation_concurrent(validation_procedure());
     }
 
+    /// Scenario: Three valid batches per signal are NACKed through real OTAP gRPC streams.
+    /// Guarantees: Lifecycle and refused acknowledgement snapshots match every admitted batch.
     #[test]
     fn test_otap_receiver_nack() {
         let test_runtime = TestRuntime::new();
@@ -1304,9 +2085,10 @@ mod tests {
             test_runtime.config(),
         );
 
+        let telemetry = MetricsReporter::create_new_and_receiver(16);
         test_runtime
             .set_receiver(receiver)
-            .run_test(nack_scenario(grpc_endpoint)) // Use NACK-specific scenario
+            .run_test(nack_scenario(grpc_endpoint, telemetry)) // Use NACK-specific scenario
             .run_validation_concurrent(nack_validation_procedure()); // Use NACK-specific validation
     }
 

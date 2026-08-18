@@ -42,6 +42,7 @@ otap-df-controller.workspace = true
 otap-df-core-nodes.workspace = true
 otap-df-engine.workspace = true
 otap-df-otap.workspace = true
+otap-df-wasm-host = { workspace = true, optional = true }
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
@@ -337,6 +338,7 @@ crypto-openssl = ["otap-df-otap/crypto-openssl", "otap-df-contrib-extensions/cry
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 geneva-certificate-auth = ["geneva-exporter", "otap-df-contrib-nodes/geneva-certificate-auth"]
+kafka-exporter = ["otap-df-contrib-nodes/kafka-exporter"]
 # The Azure Monitor exporter requires the Azure Identity auth extension to
 # authenticate outbound requests, so enabling it pulls in that extension.
 azure-monitor-exporter = [
@@ -361,6 +363,12 @@ recordset-kql-processor = ["otap-df-contrib-nodes/recordset-kql-processor"]
 resource-validator-processor = ["otap-df-contrib-nodes/resource-validator-processor"]
 # Contrib receivers (opt-in) - Windows-only
 etw-receiver = ["otap-df-contrib-nodes/etw-receiver"]
+
+# Experimental WASM host-kernel processor plugin runtime (opt-in). Off by
+# default; enabling this pulls in wasmtime and registers the
+# `wasm_processor` factory (URN `urn:otel:processor:wasm_processor`). The WIT
+# contract and host surface are unstable, see crates/wasm-host/README.md.
+wasm = ["dep:otap-df-wasm-host", "otap-df-wasm-host/wasm"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
