@@ -1,0 +1,6 @@
+change_type: new_component
+component: pipeline
+note: Add an experimental multi-signal file exporter for newline-delimited OTLP JSON capture and replay.
+issues: [3773]
+subtext: |
+  Configure exporter:file with an absolute path containing {signal}, {core_id}, and {generation}. The initial release supports logs, metrics, and traces.

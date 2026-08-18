@@ -70,7 +70,6 @@ use one_collect::etw::{
 };
 use one_collect::{Guid, guid_from_provider_name};
 use otap_df_engine::error::Error;
-use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, ProviderKind, TraceLevel};

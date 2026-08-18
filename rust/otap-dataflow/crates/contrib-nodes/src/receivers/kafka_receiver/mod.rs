@@ -1,6 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+otap_df_telemetry::otel_component_scope!(
+    urn = receiver::KAFKA_RECEIVER_URN,
+    target = "otel.receiver.kafka",
+);
+
 /// Implementation of the config settings for the kafka receiver
 pub mod config;
 /// Error types for the Kafka Receiver.
