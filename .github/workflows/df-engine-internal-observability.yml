@@ -49,13 +49,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      # Restore shared caches on every event, but avoid saving large caches
-      # under ephemeral PR and merge-group refs.
+      # Keep specialized validation caches restore-only so they do not compete
+      # with the required build caches published by Post-Merge Actions.
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
       - name: Setup Weaver
         uses: open-telemetry/weaver/.github/actions/setup-weaver@26c685ff52b925056ff1d53476c6022638c01220 # v0.25.1
         with:

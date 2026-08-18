@@ -34,6 +34,7 @@ jobs:
           shared-key: build_required
           workspaces: ./rust/otap-dataflow
           cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Free disk space
         run: |
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
@@ -64,6 +65,7 @@ jobs:
           shared-key: build_required
           workspaces: ./rust/otap-dataflow
           cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Free disk space
         shell: pwsh
         run: |
