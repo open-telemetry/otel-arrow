@@ -1,5 +1,0 @@
-change_type: enhancement
-component: observability
-note: Apply reconciled internal log-level changes without restarting the engine.
-issues: [3387]
-subtext: Supports temporary severity and target-directive changes through admin or OpAMP. The first successful reconciliation replaces a valid startup RUST_LOG filter, even when logs.level is unchanged.

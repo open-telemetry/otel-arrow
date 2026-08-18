@@ -99,7 +99,8 @@ use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::TryIntoWithOptions;
 
 use bundle_adapter::{
-    OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, signal_type_from_slot_id,
+    OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, recover_item_count,
+    signal_type_from_slot_id,
 };
 pub use config::{DurableBufferConfig, OtlpHandling, SizeCapPolicy};
 use deferred_retry_state::DeferredRetryState;
@@ -889,6 +890,7 @@ impl DurableBuffer {
         // Build the Quiver engine
         let engine = QuiverEngine::builder(quiver_config)
             .with_budget(budget)
+            .with_wal_item_counter(Arc::new(recover_item_count))
             .build()
             .await
             .map_err(|e| Error::InternalError {

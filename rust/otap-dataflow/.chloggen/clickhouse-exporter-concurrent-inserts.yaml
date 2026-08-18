@@ -1,9 +1,0 @@
-# Copyright The OpenTelemetry Authors
-# SPDX-License-Identifier: Apache-2.0
-
-change_type: enhancement
-component: pipeline
-note: "Run up to 10 ClickHouse inserts concurrently by default and allow max_in_flight to tune the limit."
-issues: [3512]
-subtext: |
-  Set max_in_flight to 1 to retain serialized inserts. Values greater than 1 overlap synchronous HTTP inserts and may complete out of order. Shutdown drains accepted inserts only until the engine deadline.
