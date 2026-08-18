@@ -2045,8 +2045,7 @@ impl<
     /// system shutdown on Windows) and initiates a graceful pipeline shutdown
     /// via the control plane.
     ///
-    /// Follows the same double-signal convention used by the OpenTelemetry
-    /// Collector (Go):
+    /// Uses a double-signal convention:
     /// - **First signal** -> initiates graceful shutdown (drain pipelines).
     /// - **Second signal** -> forces immediate process exit (`std::process::exit(1)`).
     ///
@@ -2094,8 +2093,12 @@ impl<
                             message = "OS termination signal received, initiating graceful shutdown. Send the signal again to force immediate exit."
                         );
 
-                        // Give pipelines a generous deadline to drain (60 s by default --
-                        // matches the default Kubernetes terminationGracePeriodSeconds).
+                        // Give pipelines a generous deadline to drain (60 s by default).
+                        // Note: this exceeds the default Kubernetes
+                        // terminationGracePeriodSeconds (30 s), so under stock pod
+                        // settings the kubelet's SIGKILL -- not this deadline -- is the
+                        // binding constraint. This value only bounds the drain when the
+                        // supervisor grants at least that much time.
                         // TODO: make this configurable via engine config.
                         const SHUTDOWN_TIMEOUT_SECS: u64 = 60;
 
