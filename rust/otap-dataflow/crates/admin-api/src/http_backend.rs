@@ -7,7 +7,7 @@ use crate::client::{AdminBackend, HttpAdminClientSettings};
 use crate::endpoint::{AdminAuth, AdminEndpoint, AdminScheme};
 use crate::{Error, config, engine, groups, operations, pipelines, telemetry};
 use async_trait::async_trait;
-use reqwest::{Certificate, ClientBuilder, Identity, Method, Url};
+use reqwest::{Certificate, ClientBuilder, Identity, Method, Url, header::HeaderValue};
 use serde::de::DeserializeOwned;
 use std::fs;
 use std::io;
@@ -622,6 +622,16 @@ fn build_http_client(settings: &HttpAdminClientSettings) -> Result<reqwest::Clie
         .tcp_nodelay(settings.tcp_nodelay);
 
     if let Some(user_agent) = &settings.user_agent {
+        if user_agent.trim().is_empty() {
+            return Err(Error::ClientConfig {
+                details: "user_agent must be non-empty when set".to_string(),
+            });
+        }
+        if HeaderValue::from_bytes(user_agent.as_bytes()).is_err() {
+            return Err(Error::ClientConfig {
+                details: "user_agent contains characters that cannot be represented as an HTTP header value (must be visible ASCII)".to_string(),
+            });
+        }
         client_builder = client_builder.user_agent(user_agent);
     }
 
@@ -978,6 +988,33 @@ mod tests {
             .status()
             .await
             .expect("status should decode");
+    }
+
+    /// Scenario: an admin SDK caller configures an invalid HTTP User-Agent.
+    /// Guarantees: client construction reports a targeted configuration error.
+    #[test]
+    fn invalid_user_agent_is_rejected() {
+        let endpoint = AdminEndpoint::http("127.0.0.1", 8080);
+        let cases = [
+            ("   ", "user_agent must be non-empty when set"),
+            (
+                "bad\nvalue",
+                "user_agent contains characters that cannot be represented as an HTTP header value (must be visible ASCII)",
+            ),
+        ];
+
+        for (user_agent, expected_details) in cases {
+            let settings =
+                HttpAdminClientSettings::new(endpoint.clone()).with_user_agent(user_agent);
+            let error = match AdminClient::builder().http(settings).build() {
+                Ok(_) => panic!("invalid User-Agent should fail client construction"),
+                Err(error) => error,
+            };
+
+            assert!(
+                matches!(error, Error::ClientConfig { details } if details == expected_details)
+            );
+        }
     }
 
     #[tokio::test]
