@@ -308,7 +308,7 @@ impl HierarchicalFormatter {
         output: &mut Vec<u8>,
     ) -> io::Result<()> {
         self.format_attribute_line(5, "EXEMPLAR", exemplar.filtered_attributes(), output, |w| {
-            write!(w, "time_unix_nano={}", exemplar.time_unix_nano())?;
+            write!(w, " time_unix_nano={}", exemplar.time_unix_nano())?;
             write_value(w, exemplar.value())?;
             if let Some(span_id) = exemplar.span_id() {
                 write!(w, " span_id={}", hex::encode(span_id))?;
@@ -355,7 +355,6 @@ impl HierarchicalFormatter {
                 label_result = w.write_all(label.as_bytes());
             });
             label_result?;
-            w.write_all(b" ")?;
             fields(w)?;
             w.write_attrs(attrs);
             w.finish_line();
@@ -411,13 +410,15 @@ fn write_optional_bytes(
 }
 
 fn write_bytes_field(w: &mut StyledBufWriter<'_>, name: &str, value: &[u8]) -> io::Result<()> {
-    write!(w, "{name}=")?;
-    w.write_all(value)?;
-    w.write_all(b" ")
+    write!(w, " {name}=")?;
+    w.write_all(value)
 }
 
 fn write_times(w: &mut StyledBufWriter<'_>, start_time: u64, time: u64) -> io::Result<()> {
-    write!(w, "start_time_unix_nano={start_time} time_unix_nano={time}")
+    write!(
+        w,
+        " start_time_unix_nano={start_time} time_unix_nano={time}"
+    )
 }
 
 fn write_value(w: &mut StyledBufWriter<'_>, value: Option<Value>) -> io::Result<()> {

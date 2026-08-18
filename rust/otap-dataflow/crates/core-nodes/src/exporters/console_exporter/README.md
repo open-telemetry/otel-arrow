@@ -105,7 +105,7 @@ config:
 Representative output:
 
 ```text
-RESOURCE  [service.name=checkout]
+RESOURCE [service.name=checkout]
 | +- SCOPE name=checkout.metrics version=1.0.0
 | | +- METRIC name=requests unit={request}
 | | | +- SUM temporality=cumulative monotonic=true
