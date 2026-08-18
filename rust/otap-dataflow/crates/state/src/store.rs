@@ -400,71 +400,26 @@ impl ObservedStateStore {
             }
             EventType::Error(err) => {
                 let event_type = err.kind();
-                if let Some(summary) = err.summary() {
-                    let error_kind = summary.error_kind();
-                    let error = summary.message();
+                let summary = err.summary();
+                let node = summary.and_then(|summary| summary.node());
+                let node_kind = node.map(|(_, node_kind)| match node_kind {
+                    otap_df_config::node::NodeKind::Receiver => "receiver",
+                    otap_df_config::node::NodeKind::Processor => "processor",
+                    otap_df_config::node::NodeKind::Exporter => "exporter",
+                });
 
-                    match (summary.node(), summary.source()) {
-                        (Some((node, node_kind)), Some(source)) => {
-                            otel_error!("state.observed_error",
-                                pipeline_group_id = %observed_event.key.pipeline_group_id,
-                                pipeline_id = %observed_event.key.pipeline_id,
-                                core_id = observed_event.key.core_id,
-                                node = node,
-                                node_kind = ?node_kind,
-                                event_type = event_type,
-                                error_kind = error_kind,
-                                error = error,
-                                source = source,
-                                message = observed_event.message.as_deref().unwrap_or(""),
-                            );
-                        }
-                        (Some((node, node_kind)), None) => {
-                            otel_error!("state.observed_error",
-                                pipeline_group_id = %observed_event.key.pipeline_group_id,
-                                pipeline_id = %observed_event.key.pipeline_id,
-                                core_id = observed_event.key.core_id,
-                                node = node,
-                                node_kind = ?node_kind,
-                                event_type = event_type,
-                                error_kind = error_kind,
-                                error = error,
-                                message = observed_event.message.as_deref().unwrap_or(""),
-                            );
-                        }
-                        (None, Some(source)) => {
-                            otel_error!("state.observed_error",
-                                pipeline_group_id = %observed_event.key.pipeline_group_id,
-                                pipeline_id = %observed_event.key.pipeline_id,
-                                core_id = observed_event.key.core_id,
-                                event_type = event_type,
-                                error_kind = error_kind,
-                                error = error,
-                                source = source,
-                                message = observed_event.message.as_deref().unwrap_or(""),
-                            );
-                        }
-                        (None, None) => {
-                            otel_error!("state.observed_error",
-                                pipeline_group_id = %observed_event.key.pipeline_group_id,
-                                pipeline_id = %observed_event.key.pipeline_id,
-                                core_id = observed_event.key.core_id,
-                                event_type = event_type,
-                                error_kind = error_kind,
-                                error = error,
-                                message = observed_event.message.as_deref().unwrap_or(""),
-                            );
-                        }
-                    }
-                } else {
-                    otel_error!("state.observed_error",
-                        pipeline_group_id = %observed_event.key.pipeline_group_id,
-                        pipeline_id = %observed_event.key.pipeline_id,
-                        core_id = observed_event.key.core_id,
-                        event_type = event_type,
-                        message = observed_event.message.as_deref().unwrap_or(""),
-                    );
-                }
+                otel_error!("state.observed_error",
+                    pipeline_group_id = %observed_event.key.pipeline_group_id,
+                    pipeline_id = %observed_event.key.pipeline_id,
+                    core_id = observed_event.key.core_id,
+                    node = node.map(|(node, _)| node),
+                    node_kind = node_kind,
+                    event_type = event_type,
+                    error_kind = summary.map(|summary| summary.error_kind()),
+                    error = summary.map(|summary| summary.message()),
+                    source = summary.and_then(|summary| summary.source()),
+                    message = observed_event.message.as_deref().unwrap_or(""),
+                );
             }
             EventType::Success(_) => {}
         };
@@ -722,7 +677,7 @@ mod tests {
             core_id: 0,
             deployment_generation: 0,
         };
-        let error = "A processor error occurred in node debug (transport): Write error: No space left on device (os error 28)";
+        let error = "Pipeline runtime error: A processor error occurred in node debug (transport): Write error: No space left on device (os error 28)";
 
         tracing::dispatcher::with_default(&dispatch, || {
             let result = store
@@ -744,7 +699,11 @@ mod tests {
             .expect("pipeline runtime error log should be captured")
             .to_string();
         assert!(
-            rendered_pipeline.contains(error),
+            rendered_pipeline.contains("error=Pipeline"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("[...]"),
             "rendered log: {rendered_pipeline}"
         );
         assert!(
@@ -776,6 +735,63 @@ mod tests {
             !rendered_pipeline.contains("error=RuntimeError("),
             "rendered log should not use verbose enum Debug output: {rendered_pipeline}"
         );
+    }
+
+    /// Scenario: node-level errors provide optional node identity and source fields.
+    /// Guarantees: the single observed-error callsite records present optional fields directly.
+    #[test]
+    fn observed_node_errors_record_optional_fields() {
+        let store = ObservedStateStore::new(
+            &ObservedStateSettings::default(),
+            TelemetryRegistryHandle::new(),
+        );
+        let (sender, receiver) = flume::unbounded();
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::Registry::default().with(LogCaptureLayer { sender }),
+        );
+        let cases = [
+            (otap_df_config::node::NodeKind::Receiver, "receiver"),
+            (otap_df_config::node::NodeKind::Processor, "processor"),
+            (otap_df_config::node::NodeKind::Exporter, "exporter"),
+        ];
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            for (core_id, (node_kind, _)) in cases.iter().enumerate() {
+                let result = store
+                    .report_engine(EngineEvent::node_runtime_error(
+                        make_key(core_id),
+                        "debug".into(),
+                        *node_kind,
+                        Some("Node encountered a runtime error.".into()),
+                        otap_df_telemetry::event::ErrorSummary::Node {
+                            node: "debug".into(),
+                            node_kind: *node_kind,
+                            error_kind: "transport".into(),
+                            message: "Write error".into(),
+                            source: Some("No space left on device".into()),
+                        },
+                    ))
+                    .expect_err("runtime error from Pending should be rejected after logging");
+                assert!(matches!(result, Error::InvalidTransition { .. }));
+            }
+        });
+
+        for (_, expected_kind) in cases {
+            let rendered = receiver
+                .recv()
+                .expect("node runtime error log should be captured")
+                .to_string();
+            assert!(rendered.contains("node=debug"), "rendered log: {rendered}");
+            assert!(
+                rendered.contains(&format!("node_kind={expected_kind}")),
+                "rendered log: {rendered}"
+            );
+            assert!(
+                rendered.contains("source=No space"),
+                "rendered log: {rendered}"
+            );
+            assert!(rendered.contains("[...]"), "rendered log: {rendered}");
+        }
     }
 
     /// Validates that `send_timeout(1ms)` on a full bounded channel drops
