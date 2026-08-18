@@ -130,6 +130,7 @@ contrib-exporters = [
     "kafka-exporter",
     "clickhouse-exporter",
 ]
+geneva-metrics-exporter = []
 clickhouse-exporter = [
     "dep:clickhouse",
     "dep:clickhouse-ext-arrow",
