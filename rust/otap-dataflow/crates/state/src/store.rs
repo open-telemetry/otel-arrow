@@ -17,6 +17,7 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, LogContext, StyledBufWriter};
 use otap_df_telemetry::{otel_error, otel_info};
 use serde::Serialize;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -402,18 +403,14 @@ impl ObservedStateStore {
                 let event_type = err.kind();
                 let summary = err.summary();
                 let node = summary.and_then(|summary| summary.node());
-                let node_kind = node.map(|(_, node_kind)| match node_kind {
-                    otap_df_config::node::NodeKind::Receiver => "receiver",
-                    otap_df_config::node::NodeKind::Processor => "processor",
-                    otap_df_config::node::NodeKind::Exporter => "exporter",
-                });
+                let node_kind = node.map(|(_, node_kind)| Cow::from(*node_kind));
 
                 otel_error!("state.observed_error",
                     pipeline_group_id = %observed_event.key.pipeline_group_id,
                     pipeline_id = %observed_event.key.pipeline_id,
                     core_id = observed_event.key.core_id,
                     node = node.map(|(node, _)| node),
-                    node_kind = node_kind,
+                    node_kind = node_kind.as_deref(),
                     event_type = event_type,
                     error_kind = summary.map(|summary| summary.error_kind()),
                     error = summary.map(|summary| summary.message()),
@@ -600,7 +597,6 @@ mod tests {
     use otap_df_telemetry::otel_info;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::self_tracing::{LogContext, LogRecord};
-    use std::borrow::Cow;
     use std::time::Duration;
     use std::time::SystemTime;
     use tokio_util::sync::CancellationToken;
