@@ -71,6 +71,11 @@
 //!   stuck data when space is needed for new data
 //! - `max_in_flight` limit prevents thundering herd after recovery
 
+otap_df_telemetry::otel_component_scope!(
+    urn = DURABLE_BUFFER_URN,
+    target = "otel.processor.durable_buffer",
+);
+
 mod bundle_adapter;
 mod config;
 mod deferred_retry_state;
@@ -92,14 +97,13 @@ use quiver::subscriber::{
 use quiver::{QuiverConfig, QuiverEngine, RetentionLossCounts, RetentionLossSnapshot};
 use smallvec::smallvec;
 
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
-
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::TryIntoWithOptions;
 
 use bundle_adapter::{
-    OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, signal_type_from_slot_id,
+    OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, recover_item_count,
+    signal_type_from_slot_id,
 };
 pub use config::{DurableBufferConfig, OtlpHandling, SizeCapPolicy};
 use deferred_retry_state::DeferredRetryState;
@@ -889,6 +893,7 @@ impl DurableBuffer {
         // Build the Quiver engine
         let engine = QuiverEngine::builder(quiver_config)
             .with_budget(budget)
+            .with_wal_item_counter(Arc::new(recover_item_count))
             .build()
             .await
             .map_err(|e| Error::InternalError {

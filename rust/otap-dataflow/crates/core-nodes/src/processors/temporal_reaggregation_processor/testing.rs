@@ -478,7 +478,7 @@ pub(super) fn make_n_gauge_metrics(n: usize) -> MetricsData {
 /// Build an OTLP [`MetricsData`] with `n` unique gauge metrics starting from
 /// `offset`. Metric names are `metric_{offset}`, `metric_{offset+1}`, etc.
 pub(super) fn make_n_gauge_metrics_with_offset(n: usize, offset: usize) -> MetricsData {
-    let metrics: Vec<_> = (offset..offset + n)
+    let metrics: Vec<_> = (offset..offset.checked_add(n).unwrap())
         .map(|i| {
             Metric::build()
                 .name(format!("metric_{i}"))
@@ -611,4 +611,57 @@ pub(super) fn nack_with_calldata(calldata: CallData, reason: &str) -> NackMsg<Ot
         permanent: false,
         cause: otap_df_engine::control::NackCause::Unspecified,
     }
+}
+pub(super) fn make_n_histogram_metrics_with_offset(n: usize, offset: usize) -> MetricsData {
+    let metrics: Vec<_> = (offset..offset.checked_add(n).unwrap())
+        .map(|i| make_histogram(&format!("metric_{}", i), true, vec![]))
+        .collect();
+    MetricsData::new(vec![ResourceMetrics::new(
+        Resource::build().finish(),
+        vec![ScopeMetrics::new(
+            InstrumentationScope::build().finish(),
+            metrics,
+        )],
+    )])
+}
+
+pub(super) fn make_n_exp_histogram_metrics_with_offset(n: usize, offset: usize) -> MetricsData {
+    let metrics: Vec<_> = (offset..offset.checked_add(n).unwrap())
+        .map(|i| make_exp_histogram(&format!("metric_{}", i), true, vec![]))
+        .collect();
+    MetricsData::new(vec![ResourceMetrics::new(
+        Resource::build().finish(),
+        vec![ScopeMetrics::new(
+            InstrumentationScope::build().finish(),
+            metrics,
+        )],
+    )])
+}
+
+pub(super) fn make_n_summary_metrics_with_offset(n: usize, offset: usize) -> MetricsData {
+    let metrics: Vec<_> = (offset..offset.checked_add(n).unwrap())
+        .map(|i| {
+            Metric::build()
+                .name(format!("metric_{i}"))
+                .data_summary(Summary {
+                    data_points: vec![SummaryDataPoint {
+                        attributes: vec![],
+                        start_time_unix_nano: 0,
+                        time_unix_nano: 1000u64,
+                        count: 1,
+                        sum: 1.0,
+                        quantile_values: vec![],
+                        flags: 0,
+                    }],
+                })
+                .finish()
+        })
+        .collect();
+    MetricsData::new(vec![ResourceMetrics::new(
+        Resource::build().finish(),
+        vec![ScopeMetrics::new(
+            InstrumentationScope::build().finish(),
+            metrics,
+        )],
+    )])
 }

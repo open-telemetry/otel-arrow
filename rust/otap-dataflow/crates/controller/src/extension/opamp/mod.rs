@@ -40,11 +40,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use otap_df_config::PipelineKey;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_state::pipeline_status::PipelineStatus;
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
-
 use crate::extension::opamp::config::Config;
 use crate::extension::opamp::consts::health_status;
 use crate::extension::opamp::error::Error;
@@ -61,6 +56,9 @@ use crate::{
     CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionContext, ControllerExtensionError,
     ControllerExtensionFactory, ControllerExtensionTaskFactory,
 };
+use otap_df_config::PipelineKey;
+use otap_df_config::error::Error as ConfigError;
+use otap_df_state::pipeline_status::PipelineStatus;
 
 pub mod config;
 pub mod consts;
@@ -69,6 +67,11 @@ pub mod proto;
 mod util;
 
 const CONTROL_EXTENSION_URN: &str = "urn:otel:extension:opamp";
+
+otap_df_telemetry::otel_component_scope!(
+    urn = CONTROL_EXTENSION_URN,
+    target = "otel.extension.opamp",
+);
 
 /// Custom capability type - represents the custom message which can be sent by this OpAMP agent
 /// implementation containing the full pipeline status.

@@ -18,6 +18,11 @@
 //!
 //! See `processors/fanout_processor/README.md` for detailed diagrams and examples.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = FANOUT_PROCESSOR_URN,
+    target = "otel.processor.fanout",
+);
+
 mod metrics;
 
 use async_trait::async_trait;

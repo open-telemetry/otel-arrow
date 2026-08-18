@@ -84,7 +84,7 @@ where
             thread::Builder::new()
                 .name("producer polling thread".to_string())
                 .spawn(move || {
-                    otap_df_telemetry::otel_debug!("kafka.exporter.producer.poll_thread_started");
+                    otel_debug!("kafka.exporter.producer.poll_thread_started");
                     loop {
                         // Running this in a tight loop results in non-negligible cpu utilization
                         // for each thread (1-2% of a core while idle). We increase the duration to 1 second, and sacrifice
@@ -96,9 +96,7 @@ where
                             break;
                         }
                     }
-                    otap_df_telemetry::otel_debug!(
-                        "kafka.exporter.producer.poll_thread_terminated"
-                    );
+                    otel_debug!("kafka.exporter.producer.poll_thread_terminated");
                 })
                 .expect("Failed to start polling thread")
         };
@@ -206,20 +204,20 @@ where
     C: ProducerContext<Part> + 'static,
 {
     fn drop(&mut self) {
-        otap_df_telemetry::otel_debug!("kafka.exporter.producer.destroying");
+        otel_debug!("kafka.exporter.producer.destroying");
         if let Some(handle) = self.handle.take().and_then(Arc::into_inner) {
-            otap_df_telemetry::otel_debug!("kafka.exporter.producer.stopping_poll");
+            otel_debug!("kafka.exporter.producer.stopping_poll");
             self.should_stop.store(true, Ordering::Relaxed);
-            otap_df_telemetry::otel_debug!("kafka.exporter.producer.awaiting_poll_thread");
+            otel_debug!("kafka.exporter.producer.awaiting_poll_thread");
             match handle.join() {
-                Ok(()) => otap_df_telemetry::otel_debug!("kafka.exporter.producer.poll_stopped"),
-                Err(e) => otap_df_telemetry::otel_warn!(
+                Ok(()) => otel_debug!("kafka.exporter.producer.poll_stopped"),
+                Err(e) => otel_warn!(
                     "kafka.exporter.producer.poll_thread_join_failed",
                     error = ?e,
                 ),
             };
         }
-        otap_df_telemetry::otel_debug!("kafka.exporter.producer.destroyed");
+        otel_debug!("kafka.exporter.producer.destroyed");
     }
 }
 
@@ -392,6 +390,7 @@ where
     ///
     /// See also the [`FutureProducer::send_result`] method, which will not
     /// retry the queue operation if the queue is full.
+    #[allow(dead_code)]
     pub async fn send<K, P, T>(
         &self,
         record: ExporterFutureRecord<'_, K, P>,
@@ -449,7 +448,6 @@ where
     /// Like [`FutureProducer::send`], but if enqueuing fails, an error will be
     /// returned immediately, alongside the [`ExporterFutureRecord`] provided.
     #[allow(clippy::result_large_err)]
-    #[allow(dead_code)]
     pub fn send_result<'a, K, P>(
         &self,
         record: ExporterFutureRecord<'a, K, P>,
@@ -603,6 +601,23 @@ impl Future for ExporterDeliveryFuture {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.rx.poll_unpin(cx)
+    }
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl ExporterDeliveryFuture {
+    /// Builds a delivery future that resolves immediately with `result`.
+    ///
+    /// Test-only helper: production code only constructs delivery futures via
+    /// [`ExporterFutureProducer::send_result`]. This lets tests drive the
+    /// in-flight bookkeeping (e.g. the `max_in_flight` bound) deterministically
+    /// without a live producer or broker.
+    #[must_use]
+    pub fn ready_for_test(result: OwnedDeliveryResult) -> Self {
+        let (tx, rx) = oneshot::channel();
+        // The receiver is not yet polled, so this send always succeeds.
+        let _ = tx.send(result);
+        ExporterDeliveryFuture { rx }
     }
 }
 
