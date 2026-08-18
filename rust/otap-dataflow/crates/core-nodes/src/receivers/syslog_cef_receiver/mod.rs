@@ -32,8 +32,6 @@ use otap_df_telemetry::common_attributes::{
     Outcome, ReceiverRejectionErrorType, SignalOutcomeAttributes,
 };
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::Deserialize;
 use serde_json::Value;
