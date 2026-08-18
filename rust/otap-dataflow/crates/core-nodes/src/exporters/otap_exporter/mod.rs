@@ -24,7 +24,6 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer;
 use otap_df_pdata::TryIntoWithOptions;
@@ -36,9 +35,8 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::instrument::{Gauge, Mmsc};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
@@ -56,17 +54,23 @@ use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 pub const OTAP_EXPORTER_URN: &str = "urn:otel:exporter:otap";
 
 pub mod config;
+mod metrics;
 use config::Config;
+use metrics::{OtapExporterErrorType, OtapExporterMetrics};
 
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    metrics: OtapExporterMetrics,
     async_metrics: MetricSet<OtapGrpcAsyncMetrics>,
     export_latency_window: ExportLatencyWindow,
 }
 
-type StreamBatch = (OtapPdata, OtapArrowRecords);
+struct StreamBatch {
+    pdata: OtapPdata,
+    records: OtapArrowRecords,
+    export_started_at: Instant,
+}
 
 /// Async wait attribution for the OTAP gRPC export stream.
 #[metric_set(name = "otap.exporter.grpc.async")]
@@ -209,11 +213,11 @@ impl OTAPExporter {
     /// Creates a new OTAPExporter
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let metrics = OtapExporterMetrics::register(&pipeline_ctx);
         let async_metrics = pipeline_ctx.register_metrics::<OtapGrpcAsyncMetrics>();
         OTAPExporter {
             config,
-            pdata_metrics,
+            metrics,
             async_metrics,
             export_latency_window: ExportLatencyWindow::default(),
         }
@@ -252,36 +256,36 @@ impl OTAPExporter {
         effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match update {
-            PDataMetricsUpdate::IncFailed(signal_type, pdata, response_duration_ns) => {
+            PDataMetricsUpdate::IncFailed(
+                signal_type,
+                pdata,
+                export_duration,
+                response_duration_ns,
+                error_type,
+            ) => {
                 if let Some(duration_ns) = response_duration_ns {
                     self.async_metrics
                         .export_rpc_duration_ns
                         .record(duration_ns);
                     self.export_latency_window.record(duration_ns);
                 }
-                self.pdata_metrics
-                    .with(SignalOutcomeAttributes {
-                        signal: signal_type,
-                        outcome: Outcome::Failure,
-                    })
-                    .messages
-                    .inc();
+                self.metrics
+                    .record_failure(signal_type, error_type, export_duration);
                 effect_handler
                     .notify_nack(NackMsg::new("export failed", pdata))
                     .await?;
             }
-            PDataMetricsUpdate::IncExported(signal_type, pdata, response_duration_ns) => {
+            PDataMetricsUpdate::IncExported(
+                signal_type,
+                pdata,
+                export_duration,
+                response_duration_ns,
+            ) => {
                 self.async_metrics
                     .export_rpc_duration_ns
                     .record(response_duration_ns);
                 self.export_latency_window.record(response_duration_ns);
-                self.pdata_metrics
-                    .with(SignalOutcomeAttributes {
-                        signal: signal_type,
-                        outcome: Outcome::Success,
-                    })
-                    .messages
-                    .inc();
+                self.metrics.record_success(signal_type, export_duration);
                 effect_handler.notify_ack(AckMsg::new(pdata)).await?;
             }
             PDataMetricsUpdate::RecordStreamEncodeDuration(duration_ns) => {
@@ -317,6 +321,7 @@ impl OTAPExporter {
         sender: &Sender<StreamBatch>,
         pdata: OtapPdata,
         message: OtapArrowRecords,
+        export_started_at: Instant,
     ) -> Result<EnqueueResult, Error> {
         let queue_depth = sender.max_capacity() - sender.capacity();
         self.async_metrics
@@ -324,7 +329,11 @@ impl OTAPExporter {
             .record(queue_depth as f64);
         let enqueue_start = Instant::now();
 
-        match sender.try_send((pdata, message)) {
+        match sender.try_send(StreamBatch {
+            pdata,
+            records: message,
+            export_started_at,
+        }) {
             Ok(()) => {
                 self.async_metrics
                     .stream_enqueue_duration_ns
@@ -563,7 +572,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }) => {
                         self.export_latency_window
                             .report_into(&mut self.async_metrics);
-                        _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
+                        _ = self.metrics.report(&mut metrics_reporter);
                         _ = metrics_reporter.report(&mut self.async_metrics);
                     }
                     // shutdown the exporter
@@ -595,7 +604,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         return Ok(TerminalState::new(
                             deadline,
                             {
-                                let mut snapshots = self.pdata_metrics.terminal_snapshots();
+                                let mut snapshots = self.metrics.terminal_snapshots();
                                 snapshots.push(self.async_metrics.snapshot());
                                 snapshots
                             },
@@ -603,6 +612,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }
                     //send data
                     Message::PData(mut pdata) => {
+                        let export_started_at = Instant::now();
                         let signal_type = pdata.signal_type();
 
                         let payload = pdata.take_payload();
@@ -610,13 +620,11 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         let message: OtapArrowRecords = match payload.try_into_with_default() {
                             Ok(m) => m,
                             Err(e) => {
-                                self.pdata_metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Failure,
-                                    })
-                                    .messages
-                                    .inc();
+                                self.metrics.record_failure(
+                                    signal_type,
+                                    OtapExporterErrorType::PayloadConversion,
+                                    export_started_at.elapsed(),
+                                );
                                 effect_handler.notify_nack(NackMsg::new("payload conversion failed", pdata)).await?;
                                 return Err(e.into());
                             }
@@ -636,7 +644,12 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         // as pending. In the next iteration, we will wait for capacity
                         // while continuing to poll the control channel.
                         if let EnqueueResult::QueueFull(item, enqueue_start) = self
-                            .enqueue_stream_batch(sender, pdata, message)
+                            .enqueue_stream_batch(
+                                sender,
+                                pdata,
+                                message,
+                                export_started_at,
+                            )
                             .await?
                         {
                             pending = Some((sender.clone(), item, enqueue_start));
@@ -754,16 +767,29 @@ impl StreamingArrowService for ArrowTracesServiceClient<Channel> {
 }
 
 enum PDataMetricsUpdate {
-    IncExported(SignalType, OtapPdata, f64),
-    IncFailed(SignalType, OtapPdata, Option<f64>),
+    IncExported(SignalType, OtapPdata, Duration, f64),
+    IncFailed(
+        SignalType,
+        OtapPdata,
+        Duration,
+        Option<f64>,
+        OtapExporterErrorType,
+    ),
     RecordStreamEncodeDuration(f64),
-    RecordCorrelationEnqueue { duration_ns: f64, depth: usize },
-    RecordResponseWait { duration_ns: f64, inflight: usize },
+    RecordCorrelationEnqueue {
+        duration_ns: f64,
+        depth: usize,
+    },
+    RecordResponseWait {
+        duration_ns: f64,
+        inflight: usize,
+    },
 }
 
 struct CorrelatedPdata {
     batch_id: i64,
     pdata: OtapPdata,
+    export_started_at: Instant,
     sent_at: Instant,
 }
 
@@ -771,7 +797,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
     mut client: T,
     signal_type: SignalType,
     ipc_compression: Option<arrow_ipc::CompressionType>,
-    otap_batches_rx: Receiver<(OtapPdata, OtapArrowRecords)>,
+    otap_batches_rx: Receiver<StreamBatch>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     static_metadata: Option<Rc<MetadataMap>>,
@@ -792,7 +818,11 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
             // wait to receive the first batch to create the streaming request
             first_batch = rx.recv() => {
                 drop(rx);
-                let (first_pdata, first_batch) = match first_batch {
+                let StreamBatch {
+                    pdata: first_pdata,
+                    records: first_batch,
+                    export_started_at: first_export_started_at,
+                } = match first_batch {
                     Some(f) => f,
 
                     None => {
@@ -813,6 +843,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                 let req_stream = create_req_stream(
                     first_pdata,
                     first_batch,
+                    first_export_started_at,
                     otap_batches_rx.clone(),
                     signal_type,
                     ipc_compression,
@@ -862,30 +893,19 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         ).await;
                     }
                     Err(e) => {
+                        let error_type = OtapExporterErrorType::from_grpc_status(&e);
                         // there was an error initiating the streaming request
                         // drain any pdata that was already correlated
                         drop(correlation_tx);
-                        let mut drained = false;
-                        while let Ok(correlated) = correlation_rx.try_recv() {
-                            drained = true;
-                            _ = pdata_metrics_tx
-                                .send(PDataMetricsUpdate::IncFailed(
-                                    signal_type,
-                                    correlated.pdata,
-                                    Some(elapsed_nanos(correlated.sent_at)),
-                                ))
-                                .await;
-                        }
-                        // if first_pdata wasn't sent to correlation channel, fail the fallback
-                        if !drained {
-                            _ = pdata_metrics_tx
-                                .send(PDataMetricsUpdate::IncFailed(
-                                    signal_type,
-                                    first_pdata_fallback,
-                                    None,
-                                ))
-                                .await;
-                        }
+                        fail_stream_open_pdata(
+                            &pdata_metrics_tx,
+                            signal_type,
+                            &mut correlation_rx,
+                            first_pdata_fallback,
+                            first_export_started_at,
+                            error_type,
+                        )
+                        .await;
                         otel_error!(
                             "otap_exporter.request_failed",
                             message = "Failed to connect, retrying after backoff",
@@ -913,11 +933,46 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
     }
 }
 
+async fn fail_stream_open_pdata(
+    pdata_metrics_tx: &Sender<PDataMetricsUpdate>,
+    signal_type: SignalType,
+    correlation_rx: &mut Receiver<CorrelatedPdata>,
+    first_pdata_fallback: OtapPdata,
+    first_export_started_at: Instant,
+    error_type: OtapExporterErrorType,
+) {
+    let mut drained = false;
+    while let Ok(correlated) = correlation_rx.try_recv() {
+        drained = true;
+        _ = pdata_metrics_tx
+            .send(PDataMetricsUpdate::IncFailed(
+                signal_type,
+                correlated.pdata,
+                correlated.export_started_at.elapsed(),
+                Some(elapsed_nanos(correlated.sent_at)),
+                error_type,
+            ))
+            .await;
+    }
+    if !drained {
+        _ = pdata_metrics_tx
+            .send(PDataMetricsUpdate::IncFailed(
+                signal_type,
+                first_pdata_fallback,
+                first_export_started_at.elapsed(),
+                None,
+                error_type,
+            ))
+            .await;
+    }
+}
+
 #[allow(tail_expr_drop_order)]
 fn create_req_stream(
     first_pdata: OtapPdata,
     mut first_batch: OtapArrowRecords,
-    remaining_batches_rx: Arc<tokio::sync::Mutex<Receiver<(OtapPdata, OtapArrowRecords)>>>,
+    first_export_started_at: Instant,
+    remaining_batches_rx: Arc<tokio::sync::Mutex<Receiver<StreamBatch>>>,
     signal_type: SignalType,
     ipc_compression: Option<arrow_ipc::CompressionType>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
@@ -949,6 +1004,7 @@ fn create_req_stream(
                         permit.send(CorrelatedPdata {
                             batch_id: bar.batch_id,
                             pdata: first_pdata,
+                            export_started_at: first_export_started_at,
                             sent_at: Instant::now(),
                         });
                         yield bar;
@@ -958,20 +1014,32 @@ fn create_req_stream(
                             .send(PDataMetricsUpdate::IncFailed(
                                 signal_type,
                                 first_pdata,
+                                first_export_started_at.elapsed(),
                                 None,
+                                OtapExporterErrorType::Internal,
                             ))
                             .await;
                     }
                 }
             }
             Err(_) => {
-                _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, first_pdata, None)).await;
+                _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(
+                    signal_type,
+                    first_pdata,
+                    first_export_started_at.elapsed(),
+                    None,
+                    OtapExporterErrorType::Encoding,
+                )).await;
             }
         };
 
         let mut rx = remaining_batches_rx.lock().await;
         // send the remaining batches
-        while let Some((pdata, mut otap_batch)) = rx.recv().await {
+        while let Some(StreamBatch {
+            pdata,
+            records: mut otap_batch,
+            export_started_at,
+        }) = rx.recv().await {
             let encode_start = Instant::now();
             let bar_result = producer.produce_bar(&mut otap_batch);
             _ = pdata_metrics_tx.try_send(PDataMetricsUpdate::RecordStreamEncodeDuration(
@@ -993,19 +1061,32 @@ fn create_req_stream(
                             permit.send(CorrelatedPdata {
                                 batch_id: bar.batch_id,
                                 pdata,
+                                export_started_at,
                                 sent_at: Instant::now(),
                             });
                             yield bar;
                         }
                         Err(_) => {
                             _ = pdata_metrics_tx
-                                .send(PDataMetricsUpdate::IncFailed(signal_type, pdata, None))
+                                .send(PDataMetricsUpdate::IncFailed(
+                                    signal_type,
+                                    pdata,
+                                    export_started_at.elapsed(),
+                                    None,
+                                    OtapExporterErrorType::Internal,
+                                ))
                                 .await;
                         }
                     }
                 }
                 Err(_) => {
-                    _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type, pdata, None)).await;
+                    _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(
+                        signal_type,
+                        pdata,
+                        export_started_at.elapsed(),
+                        None,
+                        OtapExporterErrorType::Encoding,
+                    )).await;
                 }
             }
         }
@@ -1044,6 +1125,7 @@ async fn handle_res_stream(
                                     .send(PDataMetricsUpdate::IncExported(
                                         signal_type,
                                         correlated.pdata,
+                                        correlated.export_started_at.elapsed(),
                                         elapsed_nanos(correlated.sent_at),
                                     ))
                                     .await;
@@ -1059,7 +1141,11 @@ async fn handle_res_stream(
                                     .send(PDataMetricsUpdate::IncFailed(
                                         signal_type,
                                         correlated.pdata,
+                                        correlated.export_started_at.elapsed(),
                                         Some(elapsed_nanos(correlated.sent_at)),
+                                        OtapExporterErrorType::from_batch_status(
+                                            status.status_code,
+                                        ),
                                     ))
                                     .await;
                             }
@@ -1080,6 +1166,7 @@ async fn handle_res_stream(
                             signal_type,
                             &mut correlation_rx,
                             &mut correlated_by_batch_id,
+                            OtapExporterErrorType::Transport,
                         )
                         .await;
                         break
@@ -1095,6 +1182,7 @@ async fn handle_res_stream(
                             signal_type,
                             &mut correlation_rx,
                             &mut correlated_by_batch_id,
+                            OtapExporterErrorType::from_grpc_status(&grpc_status),
                         )
                         .await;
                         break
@@ -1109,6 +1197,7 @@ async fn handle_res_stream(
                         signal_type,
                         &mut correlation_rx,
                         &mut correlated_by_batch_id,
+                        OtapExporterErrorType::Shutdown,
                     )
                     .await;
                 }
@@ -1137,6 +1226,7 @@ async fn fail_correlated_pdata(
     signal_type: SignalType,
     correlation_rx: &mut Receiver<CorrelatedPdata>,
     correlated_by_batch_id: &mut HashMap<i64, CorrelatedPdata>,
+    error_type: OtapExporterErrorType,
 ) {
     correlation_rx.close();
     while let Some(correlated) = correlation_rx.recv().await {
@@ -1148,7 +1238,9 @@ async fn fail_correlated_pdata(
             .send(PDataMetricsUpdate::IncFailed(
                 signal_type,
                 correlated.pdata,
+                correlated.export_started_at.elapsed(),
                 Some(elapsed_nanos(correlated.sent_at)),
+                error_type,
             ))
             .await;
     }
@@ -1841,7 +1933,7 @@ mod tests {
             let mut logs_failed_count = 0;
             for _ in 0..3 {
                 let metrics = metrics_receiver.recv_async().await.unwrap();
-                if metrics.descriptor().name == "exporter.pdata.exports"
+                if metrics.descriptor().name == "exporter.exports"
                     && metrics.measurement_attribute_value("signal") == Some("logs")
                 {
                     match metrics.measurement_attribute_value("outcome") {
@@ -1959,12 +2051,11 @@ mod tests {
         }
     }
 
-    /// Tests that when handle_req_stream fails AFTER the request stream was
-    /// partially consumed, the already-correlated pdata is drained from the
-    /// correlation channel and reported as Failed.
+    /// Scenario: Stream creation fails after the request stream correlates its first PData batch.
+    /// Guarantees: The correlated batch is drained and reported as a terminal export failure.
     #[tokio::test]
     async fn test_stream_arrow_batches_drain_correlation_on_error() {
-        use super::{PDataMetricsUpdate, stream_arrow_batches};
+        use super::{OtapExporterErrorType, PDataMetricsUpdate, StreamBatch, stream_arrow_batches};
 
         let (batches_tx, batches_rx) = tokio::sync::mpsc::channel(4);
         let (metrics_tx, mut metrics_rx) = tokio::sync::mpsc::channel(4);
@@ -1974,7 +2065,11 @@ mod tests {
         let pdata = OtapPdata::new_default(log_message.into());
         let payload = pdata.clone();
         batches_tx
-            .send((pdata, payload.payload().try_into_with_default().unwrap()))
+            .send(StreamBatch {
+                pdata,
+                records: payload.payload().try_into_with_default().unwrap(),
+                export_started_at: Instant::now(),
+            })
             .await
             .unwrap();
         // Drop sender so the function exits after processing
@@ -1995,10 +2090,10 @@ mod tests {
         // can be emitted before the failure update.
         timeout(Duration::from_secs(1), async {
             loop {
-                if matches!(
-                    metrics_rx.recv().await.expect("channel closed"),
-                    PDataMetricsUpdate::IncFailed(SignalType::Logs, ..)
-                ) {
+                if let PDataMetricsUpdate::IncFailed(SignalType::Logs, _, _, _, error_type) =
+                    metrics_rx.recv().await.expect("channel closed")
+                {
+                    assert_eq!(error_type, OtapExporterErrorType::Unavailable);
                     break;
                 }
             }
@@ -2022,9 +2117,11 @@ mod tests {
         }
     }
 
+    /// Scenario: Stream creation repeatedly fails while the worker is in reconnect backoff.
+    /// Guarantees: Shutdown interrupts the backoff and reports every accepted batch as failed.
     #[tokio::test]
     async fn test_stream_arrow_batches_shutdown_interrupts_retry_backoff() {
-        use super::{PDataMetricsUpdate, stream_arrow_batches};
+        use super::{OtapExporterErrorType, PDataMetricsUpdate, StreamBatch, stream_arrow_batches};
 
         let (batches_tx, batches_rx) = tokio::sync::mpsc::channel(8);
         let (metrics_tx, mut metrics_rx) = tokio::sync::mpsc::channel(8);
@@ -2035,7 +2132,11 @@ mod tests {
             let pdata = OtapPdata::new_default(log_message.into());
             let payload = pdata.clone();
             batches_tx
-                .send((pdata, payload.payload().try_into_with_default().unwrap()))
+                .send(StreamBatch {
+                    pdata,
+                    records: payload.payload().try_into_with_default().unwrap(),
+                    export_started_at: Instant::now(),
+                })
                 .await
                 .unwrap();
         }
@@ -2059,10 +2160,14 @@ mod tests {
 
                 for attempt in 0..4 {
                     let update = metrics_rx.recv().await.expect("metrics channel closed");
-                    assert!(
-                        matches!(update, PDataMetricsUpdate::IncFailed(SignalType::Logs, ..)),
-                        "expected IncFailed update for failed stream attempt #{attempt}"
-                    );
+                    match update {
+                        PDataMetricsUpdate::IncFailed(SignalType::Logs, _, _, _, error_type) => {
+                            assert_eq!(error_type, OtapExporterErrorType::Unavailable);
+                        }
+                        _ => {
+                            panic!("expected IncFailed update for failed stream attempt #{attempt}")
+                        }
+                    }
                 }
 
                 _ = shutdown_tx.send_replace(true);
@@ -2964,15 +3069,11 @@ mod tests {
             .expect("server task should shut down cleanly");
     }
 
-    /// Reliability: the configured static headers must be applied to the request
-    /// metadata on EVERY stream (re)open, not just the first. Drives
-    /// `stream_arrow_batches` directly with a mock that records the metadata of
-    /// each open and fails (forcing a reconnect), so two batches yield two opens,
-    /// both of which must carry the header. This unit-level test is fully
-    /// deterministic (no gRPC server / network timing).
+    /// Scenario: An OTAP stream reopens after a failure while static headers are configured.
+    /// Guarantees: Every stream open carries the configured metadata, including reconnects.
     #[tokio::test]
     async fn test_stream_arrow_batches_applies_headers_on_every_open() {
-        use super::stream_arrow_batches;
+        use super::{StreamBatch, stream_arrow_batches};
 
         let (batches_tx, batches_rx) = tokio::sync::mpsc::channel(4);
         let (metrics_tx, _metrics_rx) = tokio::sync::mpsc::channel(16);
@@ -2985,7 +3086,11 @@ mod tests {
             let pdata = OtapPdata::new_default(msg.into());
             let payload = pdata.clone();
             batches_tx
-                .send((pdata, payload.payload().try_into_with_default().unwrap()))
+                .send(StreamBatch {
+                    pdata,
+                    records: payload.payload().try_into_with_default().unwrap(),
+                    export_started_at: Instant::now(),
+                })
                 .await
                 .unwrap();
         }
