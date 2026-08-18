@@ -18,6 +18,11 @@
 //!   in the headers of pdata messages.
 //! - Support live reconfiguration via control message.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = OTAP_PERF_EXPORTER_URN,
+    target = "otel.exporter.perf",
+);
+
 pub mod config;
 
 use crate::exporters::perf_exporter::config::Config;
@@ -36,11 +41,10 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::otel_info;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
@@ -51,7 +55,7 @@ pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:exporter:perf";
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -83,7 +87,7 @@ impl PerfExporter {
     /// creates a perf exporter with the provided config
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         PerfExporter {
             config,
@@ -145,7 +149,19 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     return Ok(self.terminal_state(deadline));
                 }
                 Message::PData(pdata) => {
+                    let export_start = Instant::now();
                     let signal_type = pdata.signal_type();
+                    let export_duration = export_start.elapsed();
+
+                    // The local no-op export is complete at dequeue. Record it
+                    // independently of whether the upstream Ack can be routed.
+                    self.pdata_metrics
+                        .with(SignalOutcomeAttributes {
+                            signal: signal_type,
+                            outcome: Outcome::Success,
+                        })
+                        .record(export_duration);
+
                     let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
                     // ToDo (LQ) We need to introduce pdata headers without hpack encoding for data coming from other nodes
@@ -184,15 +200,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     //         self.config.smoothing_factor() as f64,
                     //     );
                     // }
-
-                    // Successful perf reporting: mark as exported for this signal
-                    self.pdata_metrics
-                        .with(SignalOutcomeAttributes {
-                            signal: signal_type,
-                            outcome: Outcome::Success,
-                        })
-                        .messages
-                        .inc();
 
                     // ToDo Report disk, io, cpu, mem usage once gauge metrics are implemented
                 }

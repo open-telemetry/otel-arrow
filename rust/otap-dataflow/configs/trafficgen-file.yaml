@@ -1,0 +1,39 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              traffic_config:
+                max_signal_count: 30
+                max_batch_size: 5
+                signals_per_second: 10
+                log_weight: 1
+                metric_weight: 1
+                trace_weight: 1
+          file:
+            type: exporter:file
+            config:
+              # Use all tokens once to give each runtime and signal its own file.
+              path: "/tmp/otel-capture-{signal}-{core_id}-{generation}.jsonl"
+              # Create missing parent directories (default: false).
+              # create_directories: false
+              # Encode each batch as OTLP JSON (the only supported format).
+              # format: otlp_json
+              # Preserve existing frames; alternatives: truncate or create_new.
+              open_mode: append
+              # ACK after writing; use sync_data to synchronize file data first.
+              durability: write
+              # Limit each JSONL frame, including its newline (default: 64 MiB).
+              # max_frame_bytes: 67108864
+              # Repair an incomplete append-mode tail; alternative: fail.
+              # tail_recovery: truncate_partial
+
+        connections:
+          - from: generator
+            to: file

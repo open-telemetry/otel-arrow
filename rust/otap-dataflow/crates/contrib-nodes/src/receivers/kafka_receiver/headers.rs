@@ -23,7 +23,6 @@ use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsSe
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
 use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-use otap_df_telemetry::otel_error;
 use prost::Message;
 use rdkafka::Message as _;
 use rdkafka::message::{BorrowedMessage, Headers};

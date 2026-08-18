@@ -26,6 +26,11 @@
 //!       # ... additional config
 //! ```
 
+otap_df_telemetry::otel_component_scope!(
+    urn = GENEVA_EXPORTER_URN,
+    target = "microsoft.exporter.geneva",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -50,8 +55,6 @@ use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
-use otap_df_telemetry::otel_info;
-use otap_df_telemetry::otel_warn;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Deserializer};
 use std::path::PathBuf;
@@ -72,7 +75,7 @@ use prost::Message as ProstMessage;
 
 // Use crate-relative paths since we're now a module within otap
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 
@@ -1092,7 +1095,7 @@ struct ExporterMetrics {
 /// Geneva exporter that sends OTAP data to Geneva backend
 pub struct GenevaExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
     metrics: MetricSet<ExporterMetrics>,
     geneva_client: GenevaClient,
 }
@@ -1215,7 +1218,7 @@ impl GenevaExporter {
         capabilities: &Capabilities,
     ) -> Result<Self, ConfigError> {
         let geneva_client = create_geneva_client(&config, node_config, capabilities)?;
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
         let metrics = pipeline_ctx.register_metrics::<ExporterMetrics>();
 
         Ok(Self {
@@ -1657,6 +1660,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::PData(pdata) => {
+                    let export_start = Instant::now();
                     let (context, payload) = pdata.into_parts();
                     let signal_type = payload.signal_type();
 
@@ -1673,8 +1677,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Success,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_start.elapsed());
                             effect_handler
                                 .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
                                 .await?;
@@ -1685,8 +1688,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Failure,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_start.elapsed());
                             otel_info!(
                                 "geneva_exporter.error",
                                 error = e,

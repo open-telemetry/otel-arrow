@@ -28,6 +28,11 @@
 //!           description: Uptime of the pipeline process.
 //! ```
 
+otap_df_telemetry::otel_component_scope!(
+    urn = INTERNAL_TELEMETRY_RECEIVER_URN,
+    target = "otel.receiver.internal_telemetry",
+);
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;

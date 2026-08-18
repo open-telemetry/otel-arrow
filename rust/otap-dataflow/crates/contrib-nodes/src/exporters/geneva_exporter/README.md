@@ -233,11 +233,15 @@ config:
 
 How a record flows through the exporter and uploader:
 
+<!-- markdownlint-disable MD013 -->
+
 | Incoming event | Destination table | Account group | OBO query parameters |
 | --- | --- | --- | --- |
 | `audit` | `AuditLogs` | `audit` | `onbehalfid=Microsoft.AuditService`, `onbehalfannotations=<Config .../>` |
 | `raw` | `raw` | `raw` | `onbehalfid=Microsoft.RawService` |
 | `foo` | `Log` | `diagnostics` | none |
+
+<!-- markdownlint-enable MD013 -->
 
 The uploader resolves the destination table first, then looks up OBO by that
 resolved name. A single flat `obo.events` map is shared across `logs` and
@@ -254,6 +258,20 @@ Gotcha: because OBO keys on the destination, keying an entry on the source value
 silently disables OBO. If you wrote `obo.events.audit` instead of
 `obo.events.AuditLogs`, the post-routing lookup (`AuditLogs`) would miss and the
 `audit` records would upload without OBO -- no error, just silently omitted.
+
+## Telemetry
+
+Input PData message volume is reported by the engine through
+`channel.receiver.messages` and is not duplicated by the exporter.
+
+<!-- markdownlint-disable MD013 -->
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose Geneva export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal Geneva upload result, including conversion and upload preparation but excluding Ack/Nack notification. |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Test Configuration
 
