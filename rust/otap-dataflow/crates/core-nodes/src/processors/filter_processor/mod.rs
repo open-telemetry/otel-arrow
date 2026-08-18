@@ -8,6 +8,11 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Collect telemetry like number of filtered data is removed datapoints
 
+otap_df_telemetry::otel_component_scope!(
+    urn = FILTER_PROCESSOR_URN,
+    target = "otel.processor.filter",
+);
+
 use self::config::Config;
 use self::metrics::FilterPdataMetrics;
 use async_trait::async_trait;

@@ -64,6 +64,11 @@
 //! The processor still returns `Ok(())` after those route-local rejections so a
 //! blocked route cannot fail the router task itself.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = CONTENT_ROUTER_URN,
+    target = "otel.processor.content_router",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::PortName;
