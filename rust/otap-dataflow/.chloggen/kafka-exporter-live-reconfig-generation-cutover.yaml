@@ -8,7 +8,7 @@ change_type: bug_fix
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Kafka exporter live reconfiguration no longer reroutes in-flight data or blocks the pipeline on a slow broker.
+note: Kafka exporter live reconfiguration no longer reroutes in-flight data or blocks the pipeline on a slow broker, and reports a config generation metric.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3768]
@@ -20,5 +20,5 @@ issues: [3768]
 # characters and subtext to 300 characters.
 subtext: |
   A config change is now a generation cutover: a batch already in flight stays on the old
-  topic, credentials, and tenant, and the retiring producer is flushed off the event loop so a
-  slow or unavailable broker cannot stall processing or backpressure.
+  topic, and the retiring producer is flushed off the event loop so a slow broker cannot stall
+  the pipeline. The exporter.kafka.config_generation metric reports the current generation.

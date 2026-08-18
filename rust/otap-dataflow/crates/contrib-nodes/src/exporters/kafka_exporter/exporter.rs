@@ -1040,6 +1040,7 @@ impl KafkaExporter {
         // pre-swap barrier: normal processing and backpressure keep flowing on
         // the new generation while the old generation's tail delivers.
         *generation = generation.wrapping_add(1);
+        self.metrics.inc_config_generation();
         let old_producer = std::mem::replace(&mut self.producer, new_producer);
         self.config = new_config;
         self.traces_allowed_topics_regex = new_traces_regex;
@@ -2842,6 +2843,239 @@ pub mod test_support {
                         "reconfiguration must not block the event loop on a slow \
                          broker: the interactive phase (including shutdown) exceeded \
                          5s (flush timeout is {FLUSH_TIMEOUT_MS}ms)"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): with a large flush
+        /// `timeout_ms` and every broker down, put a batch in flight and
+        /// reconfigure (spawning a retirement whose flush is blocked for the whole
+        /// timeout), then -- while that first retirement is still blocked --
+        /// reconfigure a second time and send more pdata.
+        /// Guarantees: a prior retiring producer, even blocked on a down broker
+        /// for the full flush timeout, never stalls a subsequent live
+        /// reconfiguration. The second reconfigure and the following send return
+        /// far below `timeout_ms` (retirements chain off the event loop behind a
+        /// single handle rather than blocking the loop), and after the broker
+        /// recovers the exporter shuts down cleanly.
+        #[tokio::test]
+        async fn reconfigure_prior_retirement_does_not_stall_cutover() {
+            let t0 = "it-reconfig-prior-stall-0";
+            let t1 = "it-reconfig-prior-stall-1";
+            let t2 = "it-reconfig-prior-stall-2";
+            with_cluster(
+                KafkaTestCluster::builder().topic(t0).topic(t1).topic(t2),
+                |cluster| async move {
+                    // Every broker down: a producer flush cannot complete and
+                    // blocks for the full timeout. A large timeout makes a stall,
+                    // if present, unmistakable.
+                    cluster.faults().all_brokers_down();
+                    const FLUSH_TIMEOUT_MS: u64 = 30_000;
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(t0.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(FLUSH_TIMEOUT_MS)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Put a batch in flight on generation 0 so its retirement flush
+                    // genuinely blocks against the down broker.
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes_seq(1), None))
+                        .await
+                        .expect("send pdata before first reconfigure");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    // First reconfigure: spawns a retirement of generation 0 whose
+                    // flush is now blocked for up to FLUSH_TIMEOUT_MS.
+                    exporter
+                        .send_config(logs_reconfig_json(cluster.bootstrap_servers(), t1))
+                        .await;
+                    // Put a batch in flight on generation 1 as well.
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes_seq(2), None))
+                        .await
+                        .expect("send pdata before second reconfigure");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    // While the first retirement is still blocked, a second
+                    // reconfigure plus a post-config send must not stall: they must
+                    // return far below FLUSH_TIMEOUT_MS.
+                    let start = std::time::Instant::now();
+                    let phase = tokio::time::timeout(Duration::from_secs(3), async {
+                        exporter
+                            .send_config(logs_reconfig_json(cluster.bootstrap_servers(), t2))
+                            .await;
+                        exporter
+                            .send_pdata(logs_pdata(logs_request_bytes_seq(3), None))
+                            .await
+                            .expect("send pdata after second reconfigure");
+                    })
+                    .await;
+                    assert!(
+                        phase.is_ok() && start.elapsed() < Duration::from_secs(3),
+                        "a prior blocked retirement must not stall a later reconfigure: \
+                         second cutover took {:?} (flush timeout is {FLUSH_TIMEOUT_MS}ms)",
+                        start.elapsed()
+                    );
+
+                    // Recover the broker so the pending retirements can drain, then
+                    // shut down cleanly within a generous deadline.
+                    cluster.faults().all_brokers_up();
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): stall the broker so a
+        /// batch stays in flight on the old generation, reconfigure to a new
+        /// topic (retiring the old generation's producer), then let the stall
+        /// release so the retiring producer finally delivers the old batch.
+        /// Guarantees: a batch already in flight on the retiring generation when a
+        /// `Config` arrives is still delivered to the OLD topic by the off-loop
+        /// retirement, and its completion is finalized as an ACK in the engine --
+        /// the terminal `messages{logs,success}` counter includes the old-
+        /// generation batch, so a live reconfigure does not drop or misroute it.
+        #[tokio::test]
+        async fn reconfigure_old_generation_batch_is_acked_after_delivery() {
+            let old_topic = "it-reconfig-oldgen-ack-old";
+            let new_topic = "it-reconfig-oldgen-ack-new";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(old_topic)
+                    .topic(new_topic),
+                |cluster| async move {
+                    let old_consumer = cluster.consumer().subscribe(&[old_topic]);
+
+                    // Stall every round trip so the batch stays in flight when the
+                    // Config arrives, but still releases (delivers) afterward.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(800));
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(
+                            old_topic.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        // Generous bound so the stalled delivery releases rather
+                        // than timing out.
+                        .with_timeout_ms(10_000)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // P0 is dequeued and enqueued to the old (generation 0)
+                    // producer, then stalls in delivery -- so it is in flight on the
+                    // retiring generation when the Config arrives.
+                    let p0 = logs_request_bytes_seq(1);
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(p0.clone(), None))
+                        .await
+                        .expect("send pdata before reconfigure");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    // Reconfigure to the new topic. The old producer is retired off
+                    // the event loop; its flush delivers P0 to the OLD topic once
+                    // the stall releases.
+                    exporter
+                        .send_config(logs_reconfig_json(cluster.bootstrap_servers(), new_topic))
+                        .await;
+
+                    // P0 is delivered to the OLD topic by the retiring producer.
+                    let _ = old_consumer
+                        .recv()
+                        .await
+                        .assert_topic(old_topic)
+                        .assert_payload(&p0);
+
+                    // Shut down and confirm the old-generation batch was finalized
+                    // as an ACK (counted as a successful export).
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert!(
+                        kafka_exports(snaps, "logs", "success") >= 1,
+                        "the in-flight old-generation batch must be acked (exported) \
+                         after the retiring producer delivers it"
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): put a batch in flight on
+        /// the old generation, take every broker down, then reconfigure to a new
+        /// topic under a SHORT flush `timeout_ms` so the retiring producer's flush
+        /// times out and purges the still-queued batch.
+        /// Guarantees: when a retiring generation's producer cannot deliver its
+        /// in-flight batch (broker unavailable), the purge cancels the delivery
+        /// and the batch is finalized as a transient NACK in the engine (observed
+        /// on the completion channel and counted as a failed export), so an
+        /// undeliverable old-generation batch is surfaced for retry rather than
+        /// silently lost -- and the reconfigure stays bounded (no stall).
+        #[tokio::test]
+        async fn reconfigure_old_generation_batch_is_nacked_on_purge() {
+            let old_topic = "it-reconfig-oldgen-nack-old";
+            let new_topic = "it-reconfig-oldgen-nack-new";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(old_topic)
+                    .topic(new_topic),
+                |cluster| async move {
+                    cluster.faults().all_brokers_down();
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(
+                            old_topic.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        // Short bound so the retiring flush fails fast and purges.
+                        .with_timeout_ms(800)
+                        .try_into()
+                        .expect("config should be valid");
+                    let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // P0 is in flight on generation 0 (subscribed so its nack is
+                    // observable end-to-end via the completion channel).
+                    let p0 = logs_request_bytes_seq(1);
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(p0.clone(), None))
+                        .await
+                        .expect("send pdata before reconfigure");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    // Reconfigure: the retiring generation-0 producer's flush times
+                    // out against the down broker and purges P0, cancelling its
+                    // delivery -> transient nack finalized on the event loop.
+                    let start = std::time::Instant::now();
+                    exporter
+                        .send_config(logs_reconfig_json(cluster.bootstrap_servers(), new_topic))
+                        .await;
+
+                    // The old-generation batch is nacked (transient) in the engine.
+                    let nack = exporter
+                        .recv_nack(Duration::from_secs(10))
+                        .await
+                        .expect("the undeliverable old-generation batch must be nacked");
+                    assert!(
+                        !nack.permanent,
+                        "a purge/cancel of an in-flight batch is a transient nack"
+                    );
+                    assert!(
+                        start.elapsed() < Duration::from_secs(9),
+                        "reconfigure + purge must stay bounded, took {:?}",
+                        start.elapsed()
+                    );
+
+                    exporter.shutdown(Duration::from_secs(2)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert!(
+                        kafka_exports(snaps, "logs", "failure") >= 1,
+                        "the purged old-generation batch must count as a failed export"
                     );
                 },
             )
