@@ -451,7 +451,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                             match accept_result {
                                 Ok((socket, peer_addr)) => {
                                     if self.admission_state.should_shed_ingress() {
-                                        self.metrics.borrow_mut().record_rejection(SyslogCefProtocol::Tcp, ReceiverRejectionErrorType::MemoryPressure, 1);
+                                        self.metrics.borrow_mut().record_connection_rejection();
                                         continue;
                                     }
 
@@ -481,7 +481,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Now we're committed to handling this connection
                                         task_active_count.set(task_active_count.get() + 1);
                                         metrics.borrow_mut().record_connection_active(true);
-                                        metrics.borrow_mut().record_connection_active(true);
 
                                         // Perform TLS handshake if configured, creating a unified reader type
                                         let mut reader: Box<dyn AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
@@ -507,7 +506,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                     metrics.borrow_mut().record_transport_error(SyslogCefProtocol::Tcp);
                                                     task_active_count.set(task_active_count.get() - 1);
                                                 metrics.borrow_mut().record_connection_active(false);
-                                                    metrics.borrow_mut().record_connection_active(false);
                                                     return;
                                                 }
                                             }
@@ -548,7 +546,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 }
                                                 task_active_count.set(task_active_count.get() - 1);
                                                 metrics.borrow_mut().record_connection_active(false);
-                                                    metrics.borrow_mut().record_connection_active(false);
                                                 break;
                                             }
 
@@ -562,7 +559,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 metrics.borrow_mut().record_connection_rejection();
                                                 task_active_count.set(task_active_count.get() - 1);
                                                 metrics.borrow_mut().record_connection_active(false);
-                                                    metrics.borrow_mut().record_connection_active(false);
                                                 break;
                                             }
 
@@ -598,7 +594,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     metrics.borrow_mut().record_connection_rejection();
                                                                     task_active_count.set(task_active_count.get() - 1);
                                                 metrics.borrow_mut().record_connection_active(false);
-                                                    metrics.borrow_mut().record_connection_active(false);
                                                                     break;
                                                                 } else {
                                                                     if !admit_syslog_message(&rate_limiter) {
@@ -640,7 +635,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     }
                                                                     Err(e) => {
                                                                         otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
-                                                                        metrics.borrow_mut().record_forwards(Outcome::Refused, items);
+                                                                        metrics.borrow_mut().record_forwards(Outcome::Failure, items);
                                                                     }
                                                                 }
                                                             }
@@ -648,7 +643,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Decrement active connections on EOF
                                                             task_active_count.set(task_active_count.get() - 1);
                                                 metrics.borrow_mut().record_connection_active(false);
-                                                    metrics.borrow_mut().record_connection_active(false);
                                                             break;
                                                         }
                                                         Ok(bounded_result) => {
@@ -694,7 +688,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 metrics.borrow_mut().record_connection_rejection();
                                                                 task_active_count.set(task_active_count.get() - 1);
                                                 metrics.borrow_mut().record_connection_active(false);
-                                                    metrics.borrow_mut().record_connection_active(false);
                                                                 break;
                                                             }
 
@@ -751,7 +744,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     }
                                                                     Err(e) => {
                                                                         otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
-                                                                        metrics.borrow_mut().record_forwards(Outcome::Refused, items);
+                                                                        metrics.borrow_mut().record_forwards(Outcome::Failure, items);
                                                                         arrow_records_builder = ArrowRecordsBuilder::new();
                                                                         interval.reset();
                                                                     }
@@ -773,7 +766,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     }
                                                                     Err(e) => {
                                                                         otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
-                                                                        metrics.borrow_mut().record_forwards(Outcome::Refused, items);
+                                                                        metrics.borrow_mut().record_forwards(Outcome::Failure, items);
                                                                     }
                                                                 }
                                                             }
@@ -781,7 +774,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Decrement active connections on read error
                                                             task_active_count.set(task_active_count.get() - 1);
                                                 metrics.borrow_mut().record_connection_active(false);
-                                                    metrics.borrow_mut().record_connection_active(false);
                                                             break; // ToDo: Handle read error properly
                                                         }
                                                     }
@@ -805,7 +797,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             }
                                                             Err(e) => {
                                                                 otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
-                                                                metrics.borrow_mut().record_forwards(Outcome::Refused, items);
+                                                                metrics.borrow_mut().record_forwards(Outcome::Failure, items);
                                                                 arrow_records_builder = ArrowRecordsBuilder::new();
                                                             }
                                                         }
@@ -873,7 +865,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             }
                                             Err(e) => {
                                                 otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
-                                                self.metrics.borrow_mut().record_forwards(Outcome::Refused, items);
+                                                self.metrics.borrow_mut().record_forwards(Outcome::Failure, items);
                                             }
                                         }
                                     }
@@ -917,8 +909,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                     // Count total received at socket level before parsing
                                     self.metrics.borrow_mut().record_received(SyslogCefProtocol::Udp);
-                                                                self.metrics.borrow_mut().record_received(SyslogCefProtocol::Udp);
-
                                     if self.admission_state.should_shed_ingress() {
                                         self.metrics.borrow_mut().record_rejection(SyslogCefProtocol::Udp, ReceiverRejectionErrorType::MemoryPressure, 1);
                                         continue;
@@ -968,7 +958,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             }
                                             Err(e) => {
                                                 otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
-                                                self.metrics.borrow_mut().record_forwards(Outcome::Refused, items);
+                                                self.metrics.borrow_mut().record_forwards(Outcome::Failure, items);
                                                 arrow_records_builder = ArrowRecordsBuilder::new();
                                                 interval.reset();
                                             }
@@ -1010,7 +1000,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     }
                                     Err(e) => {
                                         otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
-                                        self.metrics.borrow_mut().record_forwards(Outcome::Refused, items);
+                                        self.metrics.borrow_mut().record_forwards(Outcome::Failure, items);
                                         arrow_records_builder = ArrowRecordsBuilder::new();
                                     }
                                 }
@@ -2398,7 +2388,7 @@ mod telemetry_tests {
     ) -> u64 {
         let mut total = 0;
         for s in snaps {
-            if s.descriptor().name != "receiver.syslog_cef.deliveries" {
+            if s.descriptor().name != "receiver.syslog_cef.forwards" {
                 continue;
             }
             if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "logs") {
@@ -2442,12 +2432,7 @@ mod telemetry_tests {
             if s.descriptor().name != "receiver.syslog_cef.truncations" {
                 continue;
             }
-            if let Some(idx) = s
-                .descriptor()
-                .metrics
-                .iter()
-                .position(|f| f.name == "truncated.payloads")
-            {
+            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "logs") {
                 total += s.get_metrics()[idx].to_u64_lossy();
             }
         }
@@ -3454,21 +3439,21 @@ mod telemetry_tests {
         metrics.connections.active.add(1);
 
         let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 5);
+        assert_eq!(snapshots.len(), 6);
 
         assert!(snapshots.iter().any(|snapshot| {
-            snapshot.descriptor().name == "receiver.syslog_cef.deliveries"
+            snapshot.descriptor().name == "receiver.syslog_cef.forwards"
                 && snapshot.measurement_attribute_value("signal") == Some("logs")
                 && snapshot.measurement_attribute_value("outcome") == Some("success")
         }));
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.syslog_cef.rejections"
-                && snapshot.measurement_attribute_value("protocol") == Some("tcp")
+                && snapshot.measurement_attribute_value("protocol") == Some("udp")
                 && snapshot.measurement_attribute_value("error.type") == Some("memory_pressure")
         }));
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.syslog_cef.transport"
-                && snapshot.measurement_attribute_value("protocol") == Some("tcp")
+                && snapshot.measurement_attribute_value("protocol") == Some("udp")
         }));
         assert!(
             snapshots.iter().any(|snapshot| {
