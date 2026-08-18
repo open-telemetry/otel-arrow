@@ -7,6 +7,7 @@
 use std::{cell::Cell, num::NonZeroUsize};
 
 use crate::{
+    error::Error,
     proto::{
         consts::{
             field_num::traces::{
@@ -32,7 +33,7 @@ use crate::{
         otlp::bytes::decode::{
             FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
             from_option_nonzero_range_to_primitive, read_dropped_count, read_len_delim,
-            read_varint, to_nonzero_range,
+            read_varint, to_nonzero_range, validate_message_wire_format,
         },
         otlp::bytes::resource::RawResource,
     },
@@ -51,6 +52,12 @@ impl<'a> RawTraceData<'a> {
     #[must_use]
     pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
+    }
+
+    /// Constructs a traces view after validating top-level protobuf wire framing.
+    pub fn try_new(buf: &'a [u8]) -> Result<Self, Error> {
+        validate_message_wire_format(buf)?;
+        Ok(Self { buf })
     }
 }
 

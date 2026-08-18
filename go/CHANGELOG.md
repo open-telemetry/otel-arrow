@@ -11,6 +11,22 @@ changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.51.0
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Go dependencies. ([#3545](https://github.com/open-telemetry/otel-arrow/issues/3545), [#3599](https://github.com/open-telemetry/otel-arrow/issues/3599), [#3643](https://github.com/open-telemetry/otel-arrow/issues/3643))
+
+### :toolbox: Bug fixes :toolbox:
+
+- `pkg/otel/arrow`: Return an error instead of panicking when a batch contains more than 65535 records. ([#1883](https://github.com/open-telemetry/otel-arrow/issues/1883))
+  The uint16 record-ID counters used by the metrics, logs, and traces producers
+  previously wrapped past their maximum value, causing the delta ID builder to
+  panic. These builders now return ErrTooManyRecords ("OTel Arrow components do
+  not currently support batch sizes larger than 65535").
+
+<!-- previous-version -->
+
 ## v0.50.0
 
 ### :bulb: Enhancements :bulb:

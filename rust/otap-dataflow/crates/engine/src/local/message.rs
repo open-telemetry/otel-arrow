@@ -4,13 +4,14 @@
 //! Abstraction to represent generic local senders and receivers.
 
 use crate::channel_metrics::{
-    ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
-    ChannelReceiverMetricsState, ChannelSenderMetrics, ChannelSenderMetricsState,
-    LocalChannelReceiverMetricsHandle, LocalChannelSenderMetricsHandle,
+    ChannelMetricsHandle, ChannelMetricsRegistry, ChannelQueueDepth, ChannelReceiverMetricSets,
+    ChannelReceiverMetricsState, ChannelSendErrorType, ChannelSenderMetricSets,
+    ChannelSenderMetricsState, LocalChannelQueueDepth, LocalChannelReceiverMetricsHandle,
+    LocalChannelSenderMetricsHandle,
 };
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::{mpmc, mpsc};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_config::SignalType;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -24,6 +25,8 @@ enum LocalSenderInner<T> {
 pub struct LocalSender<T> {
     inner: LocalSenderInner<T>,
     metrics: Option<LocalChannelSenderMetricsHandle>,
+    queue_depth: Option<LocalChannelQueueDepth>,
+    signal: Option<fn(&T) -> Option<SignalType>>,
 }
 
 impl<T> Clone for LocalSender<T> {
@@ -35,6 +38,8 @@ impl<T> Clone for LocalSender<T> {
         Self {
             inner,
             metrics: self.metrics.clone(),
+            queue_depth: self.queue_depth.clone(),
+            signal: self.signal,
         }
     }
 }
@@ -45,6 +50,8 @@ impl<T> LocalSender<T> {
         Self {
             inner: LocalSenderInner::Mpsc(sender),
             metrics: None,
+            queue_depth: None,
+            signal: None,
         }
     }
 
@@ -52,12 +59,16 @@ impl<T> LocalSender<T> {
     pub(crate) fn mpsc_with_metrics(
         sender: mpsc::Sender<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelSenderMetrics>,
+        metrics: ChannelSenderMetricSets,
+        queue_depth: LocalChannelQueueDepth,
+        signal: Option<fn(&T) -> Option<SignalType>>,
     ) -> Self {
         let handle = Rc::new(RefCell::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::LocalSender(handle.clone()));
         let mut sender = Self::mpsc(sender);
         sender.metrics = Some(handle);
+        sender.queue_depth = Some(queue_depth);
+        sender.signal = signal;
         sender
     }
 
@@ -66,6 +77,8 @@ impl<T> LocalSender<T> {
         Self {
             inner: LocalSenderInner::Mpmc(sender),
             metrics: None,
+            queue_depth: None,
+            signal: None,
         }
     }
 
@@ -73,39 +86,60 @@ impl<T> LocalSender<T> {
     pub(crate) fn mpmc_with_metrics(
         sender: mpmc::Sender<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelSenderMetrics>,
+        metrics: ChannelSenderMetricSets,
+        queue_depth: LocalChannelQueueDepth,
+        signal: Option<fn(&T) -> Option<SignalType>>,
     ) -> Self {
         let handle = Rc::new(RefCell::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::LocalSender(handle.clone()));
         let mut sender = Self::mpmc(sender);
         sender.metrics = Some(handle);
+        sender.queue_depth = Some(queue_depth);
+        sender.signal = signal;
         sender
     }
 
     pub(crate) fn into_mpsc(self) -> Result<mpsc::Sender<T>, Self> {
-        let LocalSender { inner, metrics } = self;
+        let LocalSender {
+            inner,
+            metrics,
+            queue_depth,
+            signal,
+        } = self;
         match inner {
             LocalSenderInner::Mpsc(sender) => Ok(sender),
             LocalSenderInner::Mpmc(sender) => Err(Self {
                 inner: LocalSenderInner::Mpmc(sender),
                 metrics,
+                queue_depth,
+                signal,
             }),
         }
     }
 
     /// Sends a message to the channel.
     pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
+        let signal = self.signal.and_then(|extract| extract(&msg));
         let result = match &self.inner {
             LocalSenderInner::Mpsc(sender) => sender.send_async(msg).await,
             LocalSenderInner::Mpmc(sender) => sender.send_async(msg).await,
         };
 
+        if result.is_ok()
+            && let Some(queue_depth) = &self.queue_depth
+        {
+            queue_depth.record_send();
+        }
         if let Some(metrics) = &self.metrics {
             if let Ok(mut metrics) = metrics.try_borrow_mut() {
                 match &result {
-                    Ok(()) => metrics.record_send_ok(),
-                    Err(SendError::Full(_)) => metrics.record_send_error_full(),
-                    Err(SendError::Closed(_)) => metrics.record_send_error_closed(),
+                    Ok(()) => metrics.record_send_ok(signal),
+                    Err(SendError::Full(_)) => {
+                        metrics.record_send_error(signal, ChannelSendErrorType::Full);
+                    }
+                    Err(SendError::Closed(_)) => {
+                        metrics.record_send_error(signal, ChannelSendErrorType::Closed);
+                    }
                 }
             }
         }
@@ -115,17 +149,27 @@ impl<T> LocalSender<T> {
 
     /// Attempts to send a message without awaiting.
     pub fn try_send(&self, msg: T) -> Result<(), SendError<T>> {
+        let signal = self.signal.and_then(|extract| extract(&msg));
         let result = match &self.inner {
             LocalSenderInner::Mpsc(sender) => sender.send(msg),
             LocalSenderInner::Mpmc(sender) => sender.send(msg),
         };
 
+        if result.is_ok()
+            && let Some(queue_depth) = &self.queue_depth
+        {
+            queue_depth.record_send();
+        }
         if let Some(metrics) = &self.metrics {
             if let Ok(mut metrics) = metrics.try_borrow_mut() {
                 match &result {
-                    Ok(()) => metrics.record_send_ok(),
-                    Err(SendError::Full(_)) => metrics.record_send_error_full(),
-                    Err(SendError::Closed(_)) => metrics.record_send_error_closed(),
+                    Ok(()) => metrics.record_send_ok(signal),
+                    Err(SendError::Full(_)) => {
+                        metrics.record_send_error(signal, ChannelSendErrorType::Full);
+                    }
+                    Err(SendError::Closed(_)) => {
+                        metrics.record_send_error(signal, ChannelSendErrorType::Closed);
+                    }
                 }
             }
         }
@@ -143,6 +187,8 @@ enum LocalReceiverInner<T> {
 pub struct LocalReceiver<T> {
     inner: LocalReceiverInner<T>,
     metrics: Option<LocalChannelReceiverMetricsHandle>,
+    queue_depth: Option<LocalChannelQueueDepth>,
+    signal: Option<fn(&T) -> Option<SignalType>>,
 }
 
 impl<T> LocalReceiver<T> {
@@ -152,6 +198,8 @@ impl<T> LocalReceiver<T> {
         Self {
             inner: LocalReceiverInner::Mpsc(receiver),
             metrics: None,
+            queue_depth: None,
+            signal: None,
         }
     }
 
@@ -159,15 +207,21 @@ impl<T> LocalReceiver<T> {
     pub(crate) fn mpsc_with_metrics(
         receiver: mpsc::Receiver<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelReceiverMetrics>,
+        metrics: ChannelReceiverMetricSets,
         capacity: u64,
+        queue_depth: LocalChannelQueueDepth,
+        signal: Option<fn(&T) -> Option<SignalType>>,
     ) -> Self {
         let handle = Rc::new(RefCell::new(ChannelReceiverMetricsState::new(
-            metrics, capacity,
+            metrics,
+            capacity,
+            queue_depth.clone(),
         )));
         channel_metrics.register(ChannelMetricsHandle::LocalReceiver(handle.clone()));
         let mut receiver = Self::mpsc(receiver);
         receiver.metrics = Some(handle);
+        receiver.queue_depth = Some(queue_depth);
+        receiver.signal = signal;
         receiver
     }
 
@@ -177,6 +231,8 @@ impl<T> LocalReceiver<T> {
         Self {
             inner: LocalReceiverInner::Mpmc(receiver),
             metrics: None,
+            queue_depth: None,
+            signal: None,
         }
     }
 
@@ -184,25 +240,38 @@ impl<T> LocalReceiver<T> {
     pub(crate) fn mpmc_with_metrics(
         receiver: mpmc::Receiver<T>,
         channel_metrics: &mut ChannelMetricsRegistry,
-        metrics: MetricSet<ChannelReceiverMetrics>,
+        metrics: ChannelReceiverMetricSets,
         capacity: u64,
+        queue_depth: LocalChannelQueueDepth,
+        signal: Option<fn(&T) -> Option<SignalType>>,
     ) -> Self {
         let handle = Rc::new(RefCell::new(ChannelReceiverMetricsState::new(
-            metrics, capacity,
+            metrics,
+            capacity,
+            queue_depth.clone(),
         )));
         channel_metrics.register(ChannelMetricsHandle::LocalReceiver(handle.clone()));
         let mut receiver = Self::mpmc(receiver);
         receiver.metrics = Some(handle);
+        receiver.queue_depth = Some(queue_depth);
+        receiver.signal = signal;
         receiver
     }
 
     pub(crate) fn into_mpsc(self) -> Result<mpsc::Receiver<T>, Self> {
-        let LocalReceiver { inner, metrics } = self;
+        let LocalReceiver {
+            inner,
+            metrics,
+            queue_depth,
+            signal,
+        } = self;
         match inner {
             LocalReceiverInner::Mpsc(receiver) => Ok(receiver),
             LocalReceiverInner::Mpmc(receiver) => Err(Self {
                 inner: LocalReceiverInner::Mpmc(receiver),
                 metrics,
+                queue_depth,
+                signal,
             }),
         }
     }
@@ -214,12 +283,15 @@ impl<T> LocalReceiver<T> {
             LocalReceiverInner::Mpmc(receiver) => receiver.recv().await,
         };
 
+        if result.is_ok() {
+            if let Some(queue_depth) = &self.queue_depth {
+                queue_depth.record_receive();
+            }
+        }
         if let Some(metrics) = &self.metrics {
             if let Ok(mut metrics) = metrics.try_borrow_mut() {
-                match &result {
-                    Ok(_) => metrics.record_recv_ok(),
-                    Err(RecvError::Empty) => metrics.record_recv_error_empty(),
-                    Err(RecvError::Closed) => metrics.record_recv_error_closed(),
+                if let Ok(message) = &result {
+                    metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
                 }
             }
         }
@@ -234,12 +306,15 @@ impl<T> LocalReceiver<T> {
             LocalReceiverInner::Mpmc(receiver) => receiver.try_recv(),
         };
 
+        if result.is_ok() {
+            if let Some(queue_depth) = &self.queue_depth {
+                queue_depth.record_receive();
+            }
+        }
         if let Some(metrics) = &self.metrics {
             if let Ok(mut metrics) = metrics.try_borrow_mut() {
-                match &result {
-                    Ok(_) => metrics.record_recv_ok(),
-                    Err(RecvError::Empty) => metrics.record_recv_error_empty(),
-                    Err(RecvError::Closed) => metrics.record_recv_error_closed(),
+                if let Ok(message) = &result {
+                    metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
                 }
             }
         }

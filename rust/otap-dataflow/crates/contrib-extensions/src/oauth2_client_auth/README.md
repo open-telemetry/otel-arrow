@@ -28,9 +28,11 @@ inline or via files that are re-read on each acquisition, so secrets can rotate
 without a restart.
 
 This README is the configuration reference for the extension. Nodes that consume
-the capability (for example the
-[OTLP HTTP exporter](../../../core-nodes/src/exporters/otlp_http_exporter/README.md))
-document only how they *use* a bearer token, not how to configure a provider.
+the capability -- for example the
+[OTLP HTTP exporter](../../../core-nodes/src/exporters/otlp_http_exporter/README.md)
+and the
+[OTLP gRPC exporter](../../../core-nodes/src/exporters/otlp_grpc_exporter/README.md)
+-- document only how they *use* a bearer token, not how to configure a provider.
 
 For the design -- lifecycle, refresh and retry behavior, and the rationale behind
 the defaults -- see [`design.md`](./design.md).
@@ -106,7 +108,7 @@ pipeline starts, so a mistake fails at startup rather than on the first export.
 | `client_id_file` | path | *none* | File holding the client identifier. Re-read on each acquisition; takes precedence over `client_id`. |
 | `scopes` | list of string | `[]` | Scopes requested from the token endpoint, sent as the `scope` parameter. |
 | `endpoint_params` | map of string to string | `{}` | Extra parameters sent to the token endpoint (for example `audience`). |
-| `expiry_buffer` | duration | `5m` | Refresh this far ahead of the token's expiry. Must be non-zero. |
+| `expiry_buffer` | duration | `5m` | Refresh this far ahead of the token's expiry. Must be greater than `30s`, the window before expiry in which a token is no longer used; a smaller buffer would schedule the refresh after consumers have already stopped sending. |
 | `default_token_lifetime` | duration | `24h` | Lifetime assumed when the token response omits `expires_in`. Must be non-zero and greater than `expiry_buffer`. |
 | `timeout` | duration | `30s` | Per-request timeout on the token client, covering the whole request. Must be non-zero. |
 | `connect_timeout` | duration | `10s` | Connection-establishment timeout on the token client. Must be non-zero. |

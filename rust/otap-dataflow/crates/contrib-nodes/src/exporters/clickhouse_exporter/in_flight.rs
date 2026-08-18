@@ -5,6 +5,7 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
+use std::time::Instant;
 
 use futures::StreamExt;
 use futures::future::LocalBoxFuture;
@@ -19,6 +20,7 @@ pub(super) type WrittenRows = Vec<(ArrowPayloadType, u64)>;
 /// Result of one fully transformed pdata message sent to ClickHouse.
 pub(super) struct CompletedWrite {
     pub signal_type: SignalType,
+    pub export_started_at: Instant,
     pub result: Result<WrittenRows, ClickhouseExporterError>,
 }
 
@@ -120,6 +122,7 @@ mod tests {
     fn completed_write(rows: u64) -> CompletedWrite {
         CompletedWrite {
             signal_type: SignalType::Logs,
+            export_started_at: Instant::now(),
             result: Ok(vec![(ArrowPayloadType::Logs, rows)]),
         }
     }

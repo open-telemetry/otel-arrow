@@ -138,8 +138,9 @@ impl OtapStreamTaskManager {
         self.tracker.is_empty()
     }
 
-    /// Waits until the manager is closed and every tracked handler has finished.
+    /// Closes the manager, then waits until every tracked handler has finished.
     pub async fn wait(&self) {
+        self.close();
         self.tracker.wait().await;
     }
 
@@ -547,7 +548,6 @@ where
     F: Fn(T) -> OtapArrowRecords,
 {
     let batch_id = batch.batch_id;
-    let payload_bytes = u64::try_from(batch.encoded_len()).unwrap_or(u64::MAX);
     if admission_state.should_shed_ingress() {
         if let Some(metrics) = receiver_metrics {
             metrics.record_item_rejection(ReceiverRejectionErrorType::MemoryPressure);
@@ -570,6 +570,12 @@ where
 
         return Ok(None);
     }
+
+    // Decoding consumes the encoded Arrow payloads, so capture their wire size
+    // beforehand, but only when telemetry is enabled and after the stream-level
+    // memory-pressure admission check has passed.
+    let payload_bytes =
+        receiver_metrics.map(|_| u64::try_from(batch.encoded_len()).unwrap_or(u64::MAX));
 
     let batch = consumer.consume_bar(&mut batch).map_err(|e| {
         if let Some(metrics) = receiver_metrics {
@@ -644,7 +650,13 @@ where
         None
     };
 
-    let completion_guard = OtapBatchCompletionGuard::start(receiver_metrics, signal, payload_bytes);
+    let completion_guard = receiver_metrics.and_then(|metrics| {
+        OtapBatchCompletionGuard::start(
+            Some(metrics),
+            signal,
+            payload_bytes.expect("payload size is captured when receiver metrics are enabled"),
+        )
+    });
 
     // Send to the pipeline. The Ack/Nack wait is returned to the stream driver
     // so the driver can continue reading up to the per-stream in-flight limit.
@@ -831,8 +843,8 @@ mod tests {
         assert_eq!(status.batch_id, 7);
     }
 
-    /// Scenario: Shutdown cancels a tracked OTAP stream while an admitted batch is pending.
-    /// Guarantees: Waiting for tracked streams observes the batch completion guard first.
+    /// Scenario: A caller cancels a tracked OTAP stream, then waits without explicitly closing it.
+    /// Guarantees: The wait closes the tracker and observes the batch completion guard before returning.
     #[tokio::test]
     async fn stream_shutdown_completes_batch_metrics_before_wait_returns() {
         let concrete_metrics = Arc::new(CountingReceiverRejectionMetrics::default());
@@ -857,7 +869,6 @@ mod tests {
             0
         );
 
-        stream_tasks.close();
         stream_tasks.cancel();
         stream_tasks.wait().await;
 

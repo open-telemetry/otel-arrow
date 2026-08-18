@@ -87,25 +87,26 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ### Metric Sets
 
 Input PData message volume is reported by the engine through
-`channel.receiver.recv.count` on the PData input channel and is not duplicated
-by the exporter.
+`channel.receiver.messages` with its `signal` attribute on the PData input
+channel and is not duplicated by the exporter.
 
-#### `exporter.pdata.exports`
-
-| Metric | Unit | Attributes | Description |
-| --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
-
-#### `exporter.otap.exports`
+#### `exporter.exports`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.otap.exports.duration` | `s` | `signal`, `outcome` | Distribution of end-to-end durations from yielding a batch to its terminal OTAP stream response. |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal OTAP export result, including stream queueing and encoding but excluding Ack/Nack notification. |
 
-`signal` is one of `traces`, `metrics`, or `logs`. The exporter emits the
-terminal `outcome` values `success` and `failure`. Export duration uses a
-bounded exponential histogram and is reported in seconds; query its
-distribution for latency quantiles.
+#### `exporter.otap.failures`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otap.failures.messages` | `{message}` | `signal`, `error.type` | Failed OTAP exports classified by actionable error type. |
+
+`error.type` is one of `payload_conversion`, `encoding`, `authentication`,
+`authorization`, `timeout`, `throttled`, `unavailable`, `rejected`,
+`server_error`, `transport`, `internal`, `shutdown`, or `other`. Successful
+exports do not emit this metric.
 
 #### `exporter.otap.streams`
 
@@ -117,9 +118,9 @@ distribution for latency quantiles.
 | `exporter.otap.streams.correlation.enqueue.duration` | `s` | `signal` | Time spent enqueueing a yielded batch into the response correlation queue. |
 | `exporter.otap.streams.correlation.depth` | `{batch}` | `signal` | Occupancy of the response correlation queue before enqueueing a yielded batch. |
 | `exporter.otap.streams.response.wait.duration` | `s` | `signal` | Time spent waiting for the next server response on an OTAP stream. |
-| `exporter.otap.streams.response.inflight` | `{batch}` | `signal` | Number of yielded batches awaiting a matching server response. |
+| `exporter.otap.streams.response.active` | `{batch}` | `signal` | Number of yielded batches actively awaiting a matching server response. |
 
-All stream duration, depth, and in-flight measurements use bounded exponential
+All stream duration, depth, and active-batch measurements use bounded exponential
 histograms so their distributions and quantiles remain available without
 unbounded telemetry state. Duration measurements are reported in seconds.
 

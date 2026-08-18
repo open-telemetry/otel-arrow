@@ -103,6 +103,7 @@ kafka-exporter = [
     "dep:futures-util",
     "dep:xxhash-rust",
     "dep:hex",
+    "dep:regex",
 ]
 aws = [
     "dep:aws-config",
@@ -144,10 +145,15 @@ clickhouse-exporter = [
     "dep:itoa",
     "dep:ryu",
 ]
+clickhouse-exporter-bench = ["clickhouse-exporter"]
 geneva-exporter = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
     "dep:url",
+]
+geneva-certificate-auth = [
+    "geneva-exporter",
+    "geneva-uploader/certificate-auth",
 ]
 azure-monitor-exporter = [
     "dep:opentelemetry-proto",
@@ -215,6 +221,12 @@ name = "azure_monitor_transformer"
 path = "benches/exporters/azure_monitor_exporter/transformer.rs"
 harness = false
 required-features = ["azure-monitor-exporter"]
+
+[[bench]]
+name = "clickhouse_logs_transformer"
+path = "benches/exporters/clickhouse_exporter/logs_transformer.rs"
+harness = false
+required-features = ["clickhouse-exporter-bench"]
 
 [[bench]]
 name = "azure_monitor_gzip_batcher"

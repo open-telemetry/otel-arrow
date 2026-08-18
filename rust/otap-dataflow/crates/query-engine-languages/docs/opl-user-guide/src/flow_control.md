@@ -156,6 +156,26 @@ if (is Metric) {
 }
 ```
 
+This syntax can also be used to process only certain types of metrics:
+
+- `is Gauge` -- matches only rows from metrics batch gauge metrics
+- `is Sum` -- matches only rows from metrics batch sum metrics
+- `is Histogram` -- matches only rows from metrics batch histogram
+  metrics
+- `is ExponentialHistogram` -- matches only rows from metrics batch
+  exponential metrics
+- `is Sum` -- matches only rows from metrics batch sum metrics
+
+```text
+// keep only sum and guage metrics
+signals | where is Sum or is Gauge
+
+// apply processing to only histogram metrics
+metrics | is (is Histogram) {
+    // ...
+}
+```
+
 ## Route Output (`route_to`)
 
 The `route_to` operator sends the current batch to a named output port instead
