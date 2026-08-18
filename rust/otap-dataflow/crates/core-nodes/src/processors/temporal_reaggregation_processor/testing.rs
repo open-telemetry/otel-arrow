@@ -169,9 +169,9 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                             match pdata_action {
                                 PdataAction::AssertSubscribers(expected) => {
                                     assert_eq!(
-                                        output.has_subscribers(),
+                                        output.has_ack_or_nack_interests(),
                                         expected,
-                                        "has_subscribers mismatch"
+                                        "has_ack_or_nack_interests mismatch"
                                     );
                                 }
                                 PdataAction::Nack(reason) => {
