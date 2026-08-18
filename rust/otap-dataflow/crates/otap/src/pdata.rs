@@ -170,6 +170,19 @@ impl Context {
             .any(|f| f.interests.intersects(Interests::ACKS_OR_NACKS))
     }
 
+    /// Returns true when this context must be retained until processing completes.
+    ///
+    /// Ack/Nack subscribers require completion routing, while pipeline metric
+    /// frames require completion unwinding so their measurements are recorded.
+    #[must_use]
+    pub fn needs_completion_tracking(&self) -> bool {
+        self.stack.iter().any(|frame| {
+            frame
+                .interests
+                .intersects(Interests::ACKS_OR_NACKS | Interests::PIPELINE_METRICS)
+        })
+    }
+
     /// Returns true if the context stack has any frames at all.
     /// Used to decide whether an ack/nack should be sent to the controller.
     ///
@@ -2233,6 +2246,25 @@ mod test {
             frames[0].route.entry_time_ns, 0,
             "CONSUMER_METRICS alone should not stamp time"
         );
+    }
+
+    /// Scenario: Contexts contain no frames, source-tagging only, pipeline metrics, or Ack interests.
+    /// Guarantees: Completion tracking is required only for pipeline metrics and Ack/Nack routing.
+    #[test]
+    fn needs_completion_tracking_matches_completion_interests() {
+        let mut empty = Context::default();
+        assert!(!empty.needs_completion_tracking());
+
+        empty.set_source_node(1);
+        assert!(!empty.needs_completion_tracking());
+
+        let mut metrics = Context::default();
+        metrics.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        assert!(metrics.needs_completion_tracking());
+
+        let mut subscriber = Context::default();
+        subscriber.subscribe_to(Interests::ACKS, CallData::new(), 1);
+        assert!(subscriber.needs_completion_tracking());
     }
 
     #[test]

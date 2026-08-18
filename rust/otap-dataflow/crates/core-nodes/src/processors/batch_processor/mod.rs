@@ -258,11 +258,11 @@ pub struct Config {
     #[serde(with = "humantime_serde", default = "default_max_batch_duration")]
     pub max_batch_duration: Duration,
 
-    /// Limits the number of pending requests for ack/nack tracking.
+    /// Limits the number of pending requests for completion tracking.
     #[serde(default = "default_inbound_request_limit")]
     pub inbound_request_limit: NonZeroUsize,
 
-    /// Limits the number of outbound requests for ack/nack tracking.
+    /// Limits the number of outbound requests for completion tracking.
     #[serde(default = "default_outbound_request_limit")]
     pub outbound_request_limit: NonZeroUsize,
 
@@ -962,8 +962,8 @@ where
         // when none of them subscribed to ack/nack.
         let peer_addr = ctx.peer_addr();
 
-        // If there are subscribers, calculate an inbound slot key.
-        let inkey = if ctx.has_subscribers() {
+        // Retain contexts needed for Ack/Nack routing or metrics unwinding.
+        let inkey = if ctx.needs_completion_tracking() {
             let slot = self
                 .buffer
                 .inbound
@@ -1186,8 +1186,8 @@ where
             let weight = ownership;
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
-            // If any inputs in this batch require notification, get an
-            // outbound slot and subscribe.
+            // If any inputs require completion tracking, get an outbound slot
+            // and subscribe so their contexts can unwind after this output.
             let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
             // Forward the receiver-observed peer address only when every
             // input merged into this output batch came from the same peer
