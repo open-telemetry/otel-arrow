@@ -6,6 +6,8 @@
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
+otap_df_telemetry::otel_component_scope!(urn = OTAP_EXPORTER_URN, target = "otel.exporter.otap",);
+
 use async_stream::stream;
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -35,11 +37,15 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
-use otap_df_telemetry::instrument::{Gauge, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
+use otap_df_telemetry::common_attributes::SignalAttributes;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::instrument::HistogramNormal;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
+use parking_lot::Mutex;
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -56,14 +62,13 @@ pub const OTAP_EXPORTER_URN: &str = "urn:otel:exporter:otap";
 pub mod config;
 mod metrics;
 use config::Config;
-use metrics::{OtapExporterErrorType, OtapExporterMetrics};
+use metrics::{OtapExporterErrorType, OtapExporterMetrics as OtapExporterTerminalMetrics};
 
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
     config: Config,
-    metrics: OtapExporterMetrics,
-    async_metrics: MetricSet<OtapGrpcAsyncMetrics>,
-    export_latency_window: ExportLatencyWindow,
+    metrics: OtapExporterTerminalMetrics,
+    stream_metrics: OtapExporterStreamMetricSets,
 }
 
 struct StreamBatch {
@@ -72,89 +77,205 @@ struct StreamBatch {
     export_started_at: Instant,
 }
 
-/// Async wait attribution for the OTAP gRPC export stream.
-#[metric_set(name = "otap.exporter.grpc.async")]
+/// OTAP stream work partitioned by signal.
+#[metric_set(
+    name = "exporter.otap.streams",
+    measurement_attributes = SignalAttributes
+)]
 #[derive(Debug, Default, Clone)]
-pub struct OtapGrpcAsyncMetrics {
-    /// End-to-end duration from yielding a batch to receiving the matching OTAP stream response.
-    #[metric(name = "export.rpc.duration", unit = "ns")]
-    pub export_rpc_duration_ns: Mmsc,
+pub struct OtapExporterStreamMetrics {
     /// Time spent waiting to enqueue a batch into the per-signal stream task.
-    #[metric(name = "stream.enqueue.duration", unit = "ns")]
-    pub stream_enqueue_duration_ns: Mmsc,
+    #[metric(name = "enqueue.duration", unit = "s")]
+    pub enqueue_duration_seconds: HistogramNormal,
     /// Occupancy of the per-signal stream task queue before enqueueing a batch.
-    #[metric(name = "stream.enqueue.depth", unit = "{batch}")]
-    pub stream_enqueue_depth: Mmsc,
+    #[metric(name = "enqueue.depth", unit = "{batch}")]
+    pub enqueue_depth: HistogramNormal,
     /// Time spent encoding an OTAP batch into outbound Arrow batch records.
-    #[metric(name = "stream.encode.duration", unit = "ns")]
-    pub stream_encode_duration_ns: Mmsc,
+    #[metric(name = "encode.duration", unit = "s")]
+    pub encode_duration_seconds: HistogramNormal,
     /// Time spent enqueueing a yielded batch into the response correlation queue.
-    #[metric(name = "stream.correlation.enqueue.duration", unit = "ns")]
-    pub stream_correlation_enqueue_duration_ns: Mmsc,
+    #[metric(name = "correlation.enqueue.duration", unit = "s")]
+    pub correlation_enqueue_duration_seconds: HistogramNormal,
     /// Occupancy of the response correlation queue before enqueueing a yielded batch.
-    #[metric(name = "stream.correlation.depth", unit = "{batch}")]
-    pub stream_correlation_depth: Mmsc,
+    #[metric(name = "correlation.depth", unit = "{batch}")]
+    pub correlation_depth: HistogramNormal,
     /// Time spent waiting for the next server response on an OTAP stream.
-    #[metric(name = "stream.response.wait.duration", unit = "ns")]
-    pub stream_response_wait_duration_ns: Mmsc,
-    /// Number of yielded batches awaiting a matching server response.
-    #[metric(name = "stream.response.inflight", unit = "{batch}")]
-    pub stream_response_inflight: Mmsc,
-    /// Median outbound gRPC export response duration for the latest telemetry interval.
-    #[metric(name = "export.rpc.duration.p50", unit = "ns")]
-    pub export_rpc_duration_p50_ns: Gauge<f64>,
-    /// 90th percentile outbound gRPC export response duration for the latest telemetry interval.
-    #[metric(name = "export.rpc.duration.p90", unit = "ns")]
-    pub export_rpc_duration_p90_ns: Gauge<f64>,
-    /// 99th percentile outbound gRPC export response duration for the latest telemetry interval.
-    #[metric(name = "export.rpc.duration.p99", unit = "ns")]
-    pub export_rpc_duration_p99_ns: Gauge<f64>,
+    #[metric(name = "response.wait.duration", unit = "s")]
+    pub response_wait_duration_seconds: HistogramNormal,
+    /// Number of yielded batches actively awaiting a matching server response.
+    #[metric(name = "response.active", unit = "{batch}")]
+    pub response_active: HistogramNormal,
+}
+
+/// Fixed-memory timing aggregation owned by one OTAP stream worker.
+#[derive(Debug, Default)]
+struct OtapStreamWorkerMetrics {
+    encode_duration_seconds: HistogramNormal,
+    correlation_enqueue_duration_seconds: HistogramNormal,
+    correlation_depth: HistogramNormal,
+    response_wait_duration_seconds: HistogramNormal,
+    response_active: HistogramNormal,
+}
+
+/// Request-side metrics captured by Tonic's mandatory `Send` request stream.
+#[derive(Debug, Default)]
+struct OtapRequestStreamMetrics {
+    encode_duration_seconds: HistogramNormal,
+    correlation_enqueue_duration_seconds: HistogramNormal,
+    correlation_depth: HistogramNormal,
+}
+
+/// Tonic requires every outbound streaming request to be `Send`, even though
+/// the owning worker runs with `spawn_local`. Keep synchronization confined to
+/// the metrics captured inside that request stream; all other worker metrics
+/// remain pipeline-local in `Rc<RefCell<_>>`.
+#[derive(Debug, Clone)]
+struct OtapRequestStreamMetricsHandle {
+    metrics: Arc<Mutex<OtapRequestStreamMetrics>>,
+}
+
+impl OtapRequestStreamMetricsHandle {
+    fn new() -> Self {
+        Self {
+            metrics: Arc::new(Mutex::new(OtapRequestStreamMetrics::default())),
+        }
+    }
+
+    fn record_encode(&self, duration_seconds: f64) {
+        self.metrics
+            .lock()
+            .encode_duration_seconds
+            .record(duration_seconds);
+    }
+
+    fn record_correlation_enqueue(&self, duration_seconds: f64, depth: usize) {
+        let mut metrics = self.metrics.lock();
+        metrics
+            .correlation_enqueue_duration_seconds
+            .record(duration_seconds);
+        metrics.correlation_depth.record(depth as f64);
+    }
+
+    fn take(&self) -> OtapRequestStreamMetrics {
+        std::mem::take(&mut *self.metrics.lock())
+    }
+}
+
+/// Pipeline-local handle used to record and collect one stream worker's metrics.
+#[derive(Debug, Clone)]
+struct OtapStreamWorkerMetricsHandle {
+    signal: SignalType,
+    metrics: Rc<RefCell<OtapStreamWorkerMetrics>>,
+    request_metrics: OtapRequestStreamMetricsHandle,
+}
+
+impl OtapStreamWorkerMetricsHandle {
+    fn new(signal: SignalType) -> Self {
+        Self {
+            signal,
+            metrics: Rc::new(RefCell::new(OtapStreamWorkerMetrics::default())),
+            request_metrics: OtapRequestStreamMetricsHandle::new(),
+        }
+    }
+
+    #[cfg(test)]
+    fn record_encode(&self, duration_seconds: f64) {
+        self.request_metrics.record_encode(duration_seconds);
+    }
+
+    #[cfg(test)]
+    fn record_correlation_enqueue(&self, duration_seconds: f64, depth: usize) {
+        self.request_metrics
+            .record_correlation_enqueue(duration_seconds, depth);
+    }
+
+    fn record_response_wait(&self, duration_seconds: f64, active: usize) {
+        let mut metrics = self.metrics.borrow_mut();
+        metrics
+            .response_wait_duration_seconds
+            .record(duration_seconds);
+        metrics.response_active.record(active as f64);
+    }
+
+    fn take(&self) -> OtapStreamWorkerMetrics {
+        let mut metrics = self.metrics.take();
+        let request_metrics = self.request_metrics.take();
+        metrics
+            .encode_duration_seconds
+            .merge(request_metrics.encode_duration_seconds);
+        metrics
+            .correlation_enqueue_duration_seconds
+            .merge(request_metrics.correlation_enqueue_duration_seconds);
+        metrics
+            .correlation_depth
+            .merge(request_metrics.correlation_depth);
+        metrics
+    }
+
+    fn request_metrics(&self) -> OtapRequestStreamMetricsHandle {
+        self.request_metrics.clone()
+    }
 }
 
 #[inline]
-fn elapsed_nanos(start: Instant) -> f64 {
-    start.elapsed().as_secs_f64() * 1e9
+fn elapsed_seconds(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64()
 }
 
-#[derive(Debug, Default)]
-struct ExportLatencyWindow {
-    samples_ns: Vec<f64>,
+/// Bounded-cardinality OTAP exporter metrics tracker.
+#[derive(Debug)]
+struct OtapExporterStreamMetricSets {
+    streams: MeasurementMetricSet<OtapExporterStreamMetrics>,
 }
 
-impl ExportLatencyWindow {
-    #[inline]
-    fn record(&mut self, duration_ns: f64) {
-        self.samples_ns.push(duration_ns);
-    }
-
-    fn report_into(&mut self, metrics: &mut MetricSet<OtapGrpcAsyncMetrics>) {
-        if self.samples_ns.is_empty() {
-            metrics.export_rpc_duration_p50_ns.set(0.0);
-            metrics.export_rpc_duration_p90_ns.set(0.0);
-            metrics.export_rpc_duration_p99_ns.set(0.0);
-            return;
+impl OtapExporterStreamMetricSets {
+    fn register(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            streams: OtapExporterStreamMetrics::register(pipeline_ctx),
         }
-
-        self.samples_ns.sort_by(f64::total_cmp);
-        metrics
-            .export_rpc_duration_p50_ns
-            .set(Self::quantile_sorted(&self.samples_ns, 0.50));
-        metrics
-            .export_rpc_duration_p90_ns
-            .set(Self::quantile_sorted(&self.samples_ns, 0.90));
-        metrics
-            .export_rpc_duration_p99_ns
-            .set(Self::quantile_sorted(&self.samples_ns, 0.99));
-        self.samples_ns.clear();
     }
 
-    fn quantile_sorted(samples_ns: &[f64], q: f64) -> f64 {
-        debug_assert!(!samples_ns.is_empty());
-        let len = samples_ns.len();
-        let index = ((len as f64 * q).ceil() as usize)
-            .saturating_sub(1)
-            .min(len - 1);
-        samples_ns[index]
+    fn record_stream_enqueue(&mut self, signal: SignalType, duration_seconds: f64, depth: usize) {
+        let metrics = self.streams.with(SignalAttributes { signal });
+        metrics.enqueue_duration_seconds.record(duration_seconds);
+        metrics.enqueue_depth.record(depth as f64);
+    }
+
+    fn merge_stream_worker_metrics(&mut self, workers: &[OtapStreamWorkerMetricsHandle]) {
+        for worker in workers {
+            let worker_metrics = worker.take();
+            let metrics = self.streams.with(SignalAttributes {
+                signal: worker.signal,
+            });
+            metrics
+                .encode_duration_seconds
+                .merge(worker_metrics.encode_duration_seconds);
+            metrics
+                .correlation_enqueue_duration_seconds
+                .merge(worker_metrics.correlation_enqueue_duration_seconds);
+            metrics
+                .correlation_depth
+                .merge(worker_metrics.correlation_depth);
+            metrics
+                .response_wait_duration_seconds
+                .merge(worker_metrics.response_wait_duration_seconds);
+            metrics
+                .response_active
+                .merge(worker_metrics.response_active);
+        }
+    }
+
+    fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        reporter.report_measurement(&mut self.streams)
+    }
+
+    fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        self.streams.terminal_snapshots()
+    }
+
+    #[cfg(test)]
+    fn streams_for(&self, signal: SignalType) -> &OtapExporterStreamMetrics {
+        self.streams.get(SignalAttributes { signal })
     }
 }
 
@@ -206,20 +327,19 @@ enum EnqueueResult {
     Done,
     /// The stream queue was full. The caller should wait for capacity while
     /// continuing to poll the control channel, then retry.
-    QueueFull(StreamBatch, Instant),
+    QueueFull(StreamBatch, Instant, usize),
 }
 
 impl OTAPExporter {
     /// Creates a new OTAPExporter
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let metrics = OtapExporterMetrics::register(&pipeline_ctx);
-        let async_metrics = pipeline_ctx.register_metrics::<OtapGrpcAsyncMetrics>();
+        let metrics = OtapExporterTerminalMetrics::register(&pipeline_ctx);
+        let stream_metrics = OtapExporterStreamMetricSets::register(&pipeline_ctx);
         OTAPExporter {
             config,
             metrics,
-            async_metrics,
-            export_latency_window: ExportLatencyWindow::default(),
+            stream_metrics,
         }
     }
 
@@ -256,61 +376,16 @@ impl OTAPExporter {
         effect_handler: &local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match update {
-            PDataMetricsUpdate::IncFailed(
-                signal_type,
-                pdata,
-                export_duration,
-                response_duration_ns,
-                error_type,
-            ) => {
-                if let Some(duration_ns) = response_duration_ns {
-                    self.async_metrics
-                        .export_rpc_duration_ns
-                        .record(duration_ns);
-                    self.export_latency_window.record(duration_ns);
-                }
+            PDataMetricsUpdate::IncFailed(signal_type, pdata, export_duration, error_type) => {
                 self.metrics
                     .record_failure(signal_type, error_type, export_duration);
                 effect_handler
                     .notify_nack(NackMsg::new("export failed", pdata))
                     .await?;
             }
-            PDataMetricsUpdate::IncExported(
-                signal_type,
-                pdata,
-                export_duration,
-                response_duration_ns,
-            ) => {
-                self.async_metrics
-                    .export_rpc_duration_ns
-                    .record(response_duration_ns);
-                self.export_latency_window.record(response_duration_ns);
+            PDataMetricsUpdate::IncExported(signal_type, pdata, export_duration) => {
                 self.metrics.record_success(signal_type, export_duration);
                 effect_handler.notify_ack(AckMsg::new(pdata)).await?;
-            }
-            PDataMetricsUpdate::RecordStreamEncodeDuration(duration_ns) => {
-                self.async_metrics
-                    .stream_encode_duration_ns
-                    .record(duration_ns);
-            }
-            PDataMetricsUpdate::RecordCorrelationEnqueue { duration_ns, depth } => {
-                self.async_metrics
-                    .stream_correlation_enqueue_duration_ns
-                    .record(duration_ns);
-                self.async_metrics
-                    .stream_correlation_depth
-                    .record(depth as f64);
-            }
-            PDataMetricsUpdate::RecordResponseWait {
-                duration_ns,
-                inflight,
-            } => {
-                self.async_metrics
-                    .stream_response_wait_duration_ns
-                    .record(duration_ns);
-                self.async_metrics
-                    .stream_response_inflight
-                    .record(inflight as f64);
             }
         }
         Ok(())
@@ -319,14 +394,12 @@ impl OTAPExporter {
     async fn enqueue_stream_batch(
         &mut self,
         sender: &Sender<StreamBatch>,
+        signal: SignalType,
         pdata: OtapPdata,
         message: OtapArrowRecords,
         export_started_at: Instant,
     ) -> Result<EnqueueResult, Error> {
         let queue_depth = sender.max_capacity() - sender.capacity();
-        self.async_metrics
-            .stream_enqueue_depth
-            .record(queue_depth as f64);
         let enqueue_start = Instant::now();
 
         match sender.try_send(StreamBatch {
@@ -335,20 +408,24 @@ impl OTAPExporter {
             export_started_at,
         }) {
             Ok(()) => {
-                self.async_metrics
-                    .stream_enqueue_duration_ns
-                    .record(elapsed_nanos(enqueue_start));
+                self.stream_metrics.record_stream_enqueue(
+                    signal,
+                    elapsed_seconds(enqueue_start),
+                    queue_depth,
+                );
                 Ok(EnqueueResult::Done)
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(item)) => {
                 // Queue is full -- return to caller so it can wait for capacity
                 // while still polling the control channel in the main select.
-                Ok(EnqueueResult::QueueFull(item, enqueue_start))
+                Ok(EnqueueResult::QueueFull(item, enqueue_start, queue_depth))
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                self.async_metrics
-                    .stream_enqueue_duration_ns
-                    .record(elapsed_nanos(enqueue_start));
+                self.stream_metrics.record_stream_enqueue(
+                    signal,
+                    elapsed_seconds(enqueue_start),
+                    queue_depth,
+                );
                 Ok(EnqueueResult::Done)
             }
         }
@@ -462,6 +539,10 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         // instead of hiding pressure behind a deeper single queue.
         let stream_queue_capacity = self.config.stream_queue_capacity;
         let streams_per_signal = self.config.streams_per_signal;
+        // This channel carries only terminal pdata outcomes and uses awaited
+        // sends so ACK/NACK delivery cannot be dropped. High-frequency stream
+        // timings stay in fixed-memory per-worker aggregators and are merged
+        // during collection instead of competing for this bounded channel.
         let (pdata_metrics_tx, mut pdata_metrics_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let ipc_compression = matches!(
@@ -505,7 +586,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         // Tonic clients are cheap to clone because they share the underlying
         // Channel. Each clone below is used by exactly one worker, which lets
         // the workers drive separate streaming RPCs concurrently.
-        let (logs_senders, logs_handles) = spawn_stream_workers(
+        let (logs_senders, logs_handles, logs_worker_metrics) = spawn_stream_workers(
             arrow_logs_client,
             SignalType::Logs,
             ipc_compression,
@@ -515,7 +596,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             shutdown_rx.clone(),
             static_metadata.clone(),
         );
-        let (metrics_senders, metrics_handles) = spawn_stream_workers(
+        let (metrics_senders, metrics_handles, metrics_worker_metrics) = spawn_stream_workers(
             arrow_metrics_client,
             SignalType::Metrics,
             ipc_compression,
@@ -525,7 +606,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             shutdown_rx.clone(),
             static_metadata.clone(),
         );
-        let (traces_senders, traces_handles) = spawn_stream_workers(
+        let (traces_senders, traces_handles, traces_worker_metrics) = spawn_stream_workers(
             arrow_traces_client,
             SignalType::Traces,
             ipc_compression,
@@ -535,11 +616,17 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
             shutdown_rx.clone(),
             static_metadata.clone(),
         );
+        let stream_worker_metrics = logs_worker_metrics
+            .into_iter()
+            .chain(metrics_worker_metrics)
+            .chain(traces_worker_metrics)
+            .collect::<Vec<_>>();
 
         // Loop until a Shutdown event is received.
-        let mut pending: Option<(Sender<StreamBatch>, StreamBatch, Instant)> = None;
+        let mut pending: Option<(Sender<StreamBatch>, StreamBatch, Instant, SignalType, usize)> =
+            None;
         loop {
-            let pending_sender_inner = pending.as_ref().map(|(sender, _, _)| sender.clone());
+            let pending_sender_inner = pending.as_ref().map(|(sender, _, _, _, _)| sender.clone());
             let pending_send_promise = match pending_sender_inner.as_ref() {
                 Some(sender) => futures::future::Either::Left(sender.reserve()),
                 None => futures::future::Either::Right(std::future::pending()),
@@ -549,17 +636,23 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 permit = pending_send_promise => {
                     match permit {
                         Ok(permit) => {
-                            let (_, item, enqueue_start) = pending.take().expect("pending batch retained");
-                            self.async_metrics
-                                .stream_enqueue_duration_ns
-                                .record(elapsed_nanos(enqueue_start));
+                            let (_, item, enqueue_start, signal, queue_depth) =
+                                pending.take().expect("pending batch retained");
+                            self.stream_metrics.record_stream_enqueue(
+                                signal,
+                                elapsed_seconds(enqueue_start),
+                                queue_depth,
+                            );
                             permit.send(item);
                         }
                         Err(_) => {
-                            let (_, _, enqueue_start) = pending.take().expect("pending batch retained");
-                            self.async_metrics
-                                .stream_enqueue_duration_ns
-                                .record(elapsed_nanos(enqueue_start));
+                            let (_, _, enqueue_start, signal, queue_depth) =
+                                pending.take().expect("pending batch retained");
+                            self.stream_metrics.record_stream_enqueue(
+                                signal,
+                                elapsed_seconds(enqueue_start),
+                                queue_depth,
+                            );
                         }
                     }
                 }
@@ -570,10 +663,10 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     Message::Control(NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
                     }) => {
-                        self.export_latency_window
-                            .report_into(&mut self.async_metrics);
+                        self.stream_metrics
+                            .merge_stream_worker_metrics(&stream_worker_metrics);
                         _ = self.metrics.report(&mut metrics_reporter);
-                        _ = metrics_reporter.report(&mut self.async_metrics);
+                        _ = self.stream_metrics.report(&mut metrics_reporter);
                     }
                     // shutdown the exporter
                     Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
@@ -599,13 +692,13 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             &effect_handler,
                         )
                         .await?;
-                        self.export_latency_window
-                            .report_into(&mut self.async_metrics);
+                        self.stream_metrics
+                            .merge_stream_worker_metrics(&stream_worker_metrics);
                         return Ok(TerminalState::new(
                             deadline,
                             {
                                 let mut snapshots = self.metrics.terminal_snapshots();
-                                snapshots.push(self.async_metrics.snapshot());
+                                snapshots.extend(self.stream_metrics.terminal_snapshots());
                                 snapshots
                             },
                         ))
@@ -643,16 +736,23 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         // Try to enqueue. If the stream queue is full, store the item
                         // as pending. In the next iteration, we will wait for capacity
                         // while continuing to poll the control channel.
-                        if let EnqueueResult::QueueFull(item, enqueue_start) = self
+                        if let EnqueueResult::QueueFull(item, enqueue_start, queue_depth) = self
                             .enqueue_stream_batch(
                                 sender,
+                                signal_type,
                                 pdata,
                                 message,
                                 export_started_at,
                             )
                             .await?
                         {
-                            pending = Some((sender.clone(), item, enqueue_start));
+                            pending = Some((
+                                sender.clone(),
+                                item,
+                                enqueue_start,
+                                signal_type,
+                                queue_depth,
+                            ));
                         }
                     }
                     _ => {
@@ -689,31 +789,39 @@ fn spawn_stream_workers<T>(
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     static_metadata: Option<Rc<MetadataMap>>,
-) -> (Vec<Sender<StreamBatch>>, Vec<JoinHandle<()>>)
+) -> (
+    Vec<Sender<StreamBatch>>,
+    Vec<JoinHandle<()>>,
+    Vec<OtapStreamWorkerMetricsHandle>,
+)
 where
     T: StreamingArrowService + Clone + 'static,
 {
     let mut senders = Vec::with_capacity(streams_per_signal);
     let mut handles = Vec::with_capacity(streams_per_signal);
+    let mut worker_metrics = Vec::with_capacity(streams_per_signal);
 
     for _ in 0..streams_per_signal {
         // The queue is per stream, not shared across the pool. This keeps
         // backpressure local to the stream that is lagging and gives the
         // exporter a useful depth signal for least-loaded routing.
         let (sender, receiver) = tokio::sync::mpsc::channel::<StreamBatch>(stream_queue_capacity);
+        let metrics = OtapStreamWorkerMetricsHandle::new(signal_type);
         senders.push(sender);
+        worker_metrics.push(metrics.clone());
         handles.push(tokio::task::spawn_local(stream_arrow_batches(
             client.clone(),
             signal_type,
             ipc_compression,
             receiver,
             pdata_metrics_tx.clone(),
+            metrics,
             shutdown_rx.clone(),
             static_metadata.clone(),
         )));
     }
 
-    (senders, handles)
+    (senders, handles, worker_metrics)
 }
 
 /// Selects the stream queue with the smallest current backlog.
@@ -767,30 +875,14 @@ impl StreamingArrowService for ArrowTracesServiceClient<Channel> {
 }
 
 enum PDataMetricsUpdate {
-    IncExported(SignalType, OtapPdata, Duration, f64),
-    IncFailed(
-        SignalType,
-        OtapPdata,
-        Duration,
-        Option<f64>,
-        OtapExporterErrorType,
-    ),
-    RecordStreamEncodeDuration(f64),
-    RecordCorrelationEnqueue {
-        duration_ns: f64,
-        depth: usize,
-    },
-    RecordResponseWait {
-        duration_ns: f64,
-        inflight: usize,
-    },
+    IncExported(SignalType, OtapPdata, Duration),
+    IncFailed(SignalType, OtapPdata, Duration, OtapExporterErrorType),
 }
 
 struct CorrelatedPdata {
     batch_id: i64,
     pdata: OtapPdata,
     export_started_at: Instant,
-    sent_at: Instant,
 }
 
 async fn stream_arrow_batches<T: StreamingArrowService>(
@@ -799,6 +891,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
     ipc_compression: Option<arrow_ipc::CompressionType>,
     otap_batches_rx: Receiver<StreamBatch>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
+    worker_metrics: OtapStreamWorkerMetricsHandle,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     static_metadata: Option<Rc<MetadataMap>>,
 ) {
@@ -848,6 +941,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                     signal_type,
                     ipc_compression,
                     pdata_metrics_tx.clone(),
+                    worker_metrics.request_metrics(),
                     correlation_tx.clone(),
                 );
 
@@ -887,6 +981,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         shutdown = handle_res_stream(
                             res.into_inner(),
                             pdata_metrics_tx.clone(),
+                            worker_metrics.clone(),
                             signal_type,
                             shutdown_rx.clone(),
                             correlation_rx,
@@ -949,7 +1044,6 @@ async fn fail_stream_open_pdata(
                 signal_type,
                 correlated.pdata,
                 correlated.export_started_at.elapsed(),
-                Some(elapsed_nanos(correlated.sent_at)),
                 error_type,
             ))
             .await;
@@ -960,7 +1054,6 @@ async fn fail_stream_open_pdata(
                 signal_type,
                 first_pdata_fallback,
                 first_export_started_at.elapsed(),
-                None,
                 error_type,
             ))
             .await;
@@ -976,6 +1069,7 @@ fn create_req_stream(
     signal_type: SignalType,
     ipc_compression: Option<arrow_ipc::CompressionType>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
+    request_metrics: OtapRequestStreamMetricsHandle,
     correlation_tx: Sender<CorrelatedPdata>,
 ) -> impl IntoStreamingRequest<Message = BatchArrowRecords> {
     stream! {
@@ -986,9 +1080,7 @@ fn create_req_stream(
         // send the first batch
         let encode_start = Instant::now();
         let bar_result = producer.produce_bar(&mut first_batch);
-        _ = pdata_metrics_tx.try_send(PDataMetricsUpdate::RecordStreamEncodeDuration(
-            elapsed_nanos(encode_start),
-        ));
+        request_metrics.record_encode(elapsed_seconds(encode_start));
         match bar_result {
             Ok(bar) => {
                 let correlation_depth =
@@ -996,16 +1088,14 @@ fn create_req_stream(
                 let correlation_start = Instant::now();
                 match correlation_tx.reserve().await {
                     Ok(permit) => {
-                        _ =
-                            pdata_metrics_tx.try_send(PDataMetricsUpdate::RecordCorrelationEnqueue {
-                                duration_ns: elapsed_nanos(correlation_start),
-                                depth: correlation_depth,
-                            });
+                        request_metrics.record_correlation_enqueue(
+                            elapsed_seconds(correlation_start),
+                            correlation_depth,
+                        );
                         permit.send(CorrelatedPdata {
                             batch_id: bar.batch_id,
                             pdata: first_pdata,
                             export_started_at: first_export_started_at,
-                            sent_at: Instant::now(),
                         });
                         yield bar;
                     }
@@ -1015,7 +1105,6 @@ fn create_req_stream(
                                 signal_type,
                                 first_pdata,
                                 first_export_started_at.elapsed(),
-                                None,
                                 OtapExporterErrorType::Internal,
                             ))
                             .await;
@@ -1027,7 +1116,6 @@ fn create_req_stream(
                     signal_type,
                     first_pdata,
                     first_export_started_at.elapsed(),
-                    None,
                     OtapExporterErrorType::Encoding,
                 )).await;
             }
@@ -1042,9 +1130,7 @@ fn create_req_stream(
         }) = rx.recv().await {
             let encode_start = Instant::now();
             let bar_result = producer.produce_bar(&mut otap_batch);
-            _ = pdata_metrics_tx.try_send(PDataMetricsUpdate::RecordStreamEncodeDuration(
-                elapsed_nanos(encode_start),
-            ));
+            request_metrics.record_encode(elapsed_seconds(encode_start));
             match bar_result {
                 Ok(bar) => {
                     let correlation_depth =
@@ -1052,17 +1138,14 @@ fn create_req_stream(
                     let correlation_start = Instant::now();
                     match correlation_tx.reserve().await {
                         Ok(permit) => {
-                            _ = pdata_metrics_tx.try_send(
-                                PDataMetricsUpdate::RecordCorrelationEnqueue {
-                                    duration_ns: elapsed_nanos(correlation_start),
-                                    depth: correlation_depth,
-                                },
+                            request_metrics.record_correlation_enqueue(
+                                elapsed_seconds(correlation_start),
+                                correlation_depth,
                             );
                             permit.send(CorrelatedPdata {
                                 batch_id: bar.batch_id,
                                 pdata,
                                 export_started_at,
-                                sent_at: Instant::now(),
                             });
                             yield bar;
                         }
@@ -1072,7 +1155,6 @@ fn create_req_stream(
                                     signal_type,
                                     pdata,
                                     export_started_at.elapsed(),
-                                    None,
                                     OtapExporterErrorType::Internal,
                                 ))
                                 .await;
@@ -1084,7 +1166,6 @@ fn create_req_stream(
                         signal_type,
                         pdata,
                         export_started_at.elapsed(),
-                        None,
                         OtapExporterErrorType::Encoding,
                     )).await;
                 }
@@ -1096,6 +1177,7 @@ fn create_req_stream(
 async fn handle_res_stream(
     mut res_stream: Streaming<BatchStatus>,
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
+    worker_metrics: OtapStreamWorkerMetricsHandle,
     signal_type: SignalType,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     mut correlation_rx: Receiver<CorrelatedPdata>,
@@ -1109,13 +1191,13 @@ async fn handle_res_stream(
             res = async {
                 let response_wait_start = Instant::now();
                 let res = res_stream.message().await;
-                (res, elapsed_nanos(response_wait_start))
+                (res, elapsed_seconds(response_wait_start))
             } => {
-                let (res, duration_ns) = res;
-                _ = pdata_metrics_tx.try_send(PDataMetricsUpdate::RecordResponseWait {
-                    duration_ns,
-                    inflight: correlated_by_batch_id.len() + correlation_rx.len(),
-                });
+                let (res, duration_seconds) = res;
+                worker_metrics.record_response_wait(
+                    duration_seconds,
+                    correlated_by_batch_id.len() + correlation_rx.len(),
+                );
                 match res {
                     Ok(Some(status)) => {
                         drain_correlation_rx(&mut correlation_rx, &mut correlated_by_batch_id);
@@ -1126,7 +1208,6 @@ async fn handle_res_stream(
                                         signal_type,
                                         correlated.pdata,
                                         correlated.export_started_at.elapsed(),
-                                        elapsed_nanos(correlated.sent_at),
                                     ))
                                     .await;
                             } else {
@@ -1142,7 +1223,6 @@ async fn handle_res_stream(
                                         signal_type,
                                         correlated.pdata,
                                         correlated.export_started_at.elapsed(),
-                                        Some(elapsed_nanos(correlated.sent_at)),
                                         OtapExporterErrorType::from_batch_status(
                                             status.status_code,
                                         ),
@@ -1239,7 +1319,6 @@ async fn fail_correlated_pdata(
                 signal_type,
                 correlated.pdata,
                 correlated.export_started_at.elapsed(),
-                Some(elapsed_nanos(correlated.sent_at)),
                 error_type,
             ))
             .await;
@@ -1248,9 +1327,10 @@ async fn fail_correlated_pdata(
 
 #[cfg(test)]
 mod tests {
-    use crate::exporters::otap_exporter::ExportLatencyWindow;
     use crate::exporters::otap_exporter::OTAP_EXPORTER_URN;
     use crate::exporters::otap_exporter::OTAPExporter;
+    use crate::exporters::otap_exporter::OtapExporterStreamMetricSets;
+    use crate::exporters::otap_exporter::OtapStreamWorkerMetricsHandle;
     use crate::exporters::otap_exporter::config::ArrowPayloadCompression;
     use otap_df_otap::otap_mock::{
         ArrowLogsServiceMock, ArrowMetricsServiceMock, ArrowTracesServiceMock, create_otap_batch,
@@ -1291,10 +1371,12 @@ mod tests {
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
-    use otap_df_telemetry::metrics::MetricSetSnapshot;
+    use otap_df_telemetry::descriptor::Instrument;
+    use otap_df_telemetry::metrics::{MetricSetSnapshot, MetricValue};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::net::SocketAddr;
     use std::ops::Add;
     use std::rc::Rc;
@@ -1323,13 +1405,123 @@ mod tests {
             .into()
     }
 
+    /// Scenario: OTAP stream timings are recorded for one signal while another remains untouched.
+    /// Guarantees: Every timing remains isolated in its bounded signal-attribute bucket.
     #[test]
-    fn export_latency_quantile_uses_nearest_rank() {
-        let samples = [1.0, 2.0, 3.0, 4.0, 5.0, 100.0];
+    fn otap_stream_metrics_are_partitioned_by_signal() {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = OtapExporterStreamMetricSets::register(&pipeline_ctx);
+        let worker = OtapStreamWorkerMetricsHandle::new(SignalType::Metrics);
+        worker.record_encode(0.030);
+        metrics.merge_stream_worker_metrics(&[worker]);
 
-        assert_eq!(ExportLatencyWindow::quantile_sorted(&samples, 0.50), 3.0);
-        assert_eq!(ExportLatencyWindow::quantile_sorted(&samples, 0.90), 100.0);
-        assert_eq!(ExportLatencyWindow::quantile_sorted(&samples, 0.99), 100.0);
+        assert_eq!(
+            metrics
+                .streams_for(SignalType::Metrics)
+                .encode_duration_seconds
+                .get()
+                .summary()
+                .1,
+            0.030
+        );
+        assert_eq!(
+            metrics
+                .streams_for(SignalType::Logs)
+                .encode_duration_seconds
+                .get()
+                .count(),
+            0
+        );
+    }
+
+    /// Scenario: OTAP stream metrics are transferred into terminal snapshots twice.
+    /// Guarantees: Touched buckets include bounded signal attributes and documented units once, then clear.
+    #[test]
+    fn otap_exporter_terminal_snapshots_preserve_attributes_once() {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = OtapExporterStreamMetricSets::register(&pipeline_ctx);
+        let worker = OtapStreamWorkerMetricsHandle::new(SignalType::Traces);
+        worker.record_response_wait(7.0, 2);
+        metrics.merge_stream_worker_metrics(&[worker]);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.otap.streams"
+                && snapshot.measurement_attribute_value("signal") == Some("traces")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .all(|metric| metric.instrument == Instrument::ExponentialHistogram)
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .all(|metric| match metric.name {
+                        "enqueue.duration"
+                        | "encode.duration"
+                        | "correlation.enqueue.duration"
+                        | "response.wait.duration" => metric.unit == "s",
+                        "enqueue.depth" | "correlation.depth" | "response.active" => {
+                            metric.unit == "{batch}"
+                        }
+                        _ => false,
+                    })
+        }));
+        assert!(metrics.terminal_snapshots().is_empty());
+    }
+
+    /// Scenario: One stream worker records more observations than the former update channel held.
+    /// Guarantees: Collection retains every timing sample and clears the worker interval exactly once.
+    #[test]
+    fn stream_worker_metrics_are_lossless_and_interval_scoped() {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = OtapExporterStreamMetricSets::register(&pipeline_ctx);
+        let worker = OtapStreamWorkerMetricsHandle::new(SignalType::Logs);
+
+        for value in 1..=128 {
+            worker.record_encode(value as f64);
+            worker.record_correlation_enqueue(value as f64, value);
+            worker.record_response_wait(value as f64, value);
+        }
+
+        metrics.merge_stream_worker_metrics(std::slice::from_ref(&worker));
+        let stream_metrics = metrics.streams_for(SignalType::Logs);
+        assert_eq!(stream_metrics.encode_duration_seconds.get().count(), 128);
+        assert_eq!(
+            stream_metrics
+                .correlation_enqueue_duration_seconds
+                .get()
+                .count(),
+            128
+        );
+        assert_eq!(stream_metrics.correlation_depth.get().count(), 128);
+        assert_eq!(
+            stream_metrics.response_wait_duration_seconds.get().count(),
+            128
+        );
+        assert_eq!(stream_metrics.response_active.get().count(), 128);
+
+        metrics.merge_stream_worker_metrics(&[worker]);
+        assert_eq!(
+            metrics
+                .streams_for(SignalType::Logs)
+                .encode_duration_seconds
+                .get()
+                .count(),
+            128,
+            "collecting an empty worker interval must not duplicate observations"
+        );
     }
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
@@ -2081,6 +2273,7 @@ mod tests {
             None,
             batches_rx,
             metrics_tx,
+            OtapStreamWorkerMetricsHandle::new(SignalType::Logs),
             shutdown_rx,
             None,
         )
@@ -2090,7 +2283,7 @@ mod tests {
         // can be emitted before the failure update.
         timeout(Duration::from_secs(1), async {
             loop {
-                if let PDataMetricsUpdate::IncFailed(SignalType::Logs, _, _, _, error_type) =
+                if let PDataMetricsUpdate::IncFailed(SignalType::Logs, _, _, error_type) =
                     metrics_rx.recv().await.expect("channel closed")
                 {
                     assert_eq!(error_type, OtapExporterErrorType::Unavailable);
@@ -2154,6 +2347,7 @@ mod tests {
                     None,
                     batches_rx,
                     metrics_tx,
+                    OtapStreamWorkerMetricsHandle::new(SignalType::Logs),
                     shutdown_rx,
                     None,
                 ));
@@ -2161,7 +2355,7 @@ mod tests {
                 for attempt in 0..4 {
                     let update = metrics_rx.recv().await.expect("metrics channel closed");
                     match update {
-                        PDataMetricsUpdate::IncFailed(SignalType::Logs, _, _, _, error_type) => {
+                        PDataMetricsUpdate::IncFailed(SignalType::Logs, _, _, error_type) => {
                             assert_eq!(error_type, OtapExporterErrorType::Unavailable);
                         }
                         _ => {
@@ -2231,9 +2425,8 @@ mod tests {
         }
     }
 
-    /// When one OTAP stream has multiple in-flight requests, wait-for-result
-    /// responses can arrive out of order. The exporter must use batch_id for
-    /// correlation, and a non-OK BatchStatus must NACK the matched pdata.
+    /// Scenario: One stream receives success and failure statuses out of request order.
+    /// Guarantees: Batch IDs route ACK/NACK correctly and both outcomes emit pdata and duration metrics.
     #[test]
     fn test_out_of_order_batch_status_uses_batch_id_correlation() {
         use otap_df_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsServiceServer;
@@ -2297,7 +2490,7 @@ mod tests {
                 .expect("server failed");
         });
 
-        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(16);
 
         let _ = tokio_rt.block_on(async move {
             let local_set = tokio::task::LocalSet::new();
@@ -2360,6 +2553,39 @@ mod tests {
 
                 assert_eq!(ack_id, Some(first_id));
                 assert_eq!(nack_id, Some(second_id));
+
+                control_sender
+                    .send(NodeControlMsg::CollectTelemetry {
+                        metrics_reporter: metrics_reporter.clone(),
+                    })
+                    .await
+                    .expect("collect exporter telemetry");
+                let mut export_outcomes = HashMap::new();
+                let mut duration_outcomes = HashMap::new();
+                for _ in 0..4 {
+                    let snapshot = timeout(Duration::from_secs(3), metrics_rx.recv_async())
+                        .await
+                        .expect("timed out collecting exporter telemetry")
+                        .expect("exporter telemetry channel closed");
+                    if snapshot.measurement_attribute_value("signal") != Some("logs") {
+                        continue;
+                    }
+                    let Some(outcome) = snapshot.measurement_attribute_value("outcome") else {
+                        continue;
+                    };
+                    if snapshot.descriptor().name == "exporter.exports" {
+                        let _ = export_outcomes
+                            .insert(outcome, snapshot.get_metrics()[0].to_u64_lossy());
+                        let MetricValue::Distribution(duration) = &snapshot.get_metrics()[1] else {
+                            panic!("export duration should be a histogram")
+                        };
+                        let _ = duration_outcomes.insert(outcome, duration.count());
+                    }
+                }
+                assert_eq!(export_outcomes.get("success"), Some(&1));
+                assert_eq!(export_outcomes.get("failure"), Some(&1));
+                assert_eq!(duration_outcomes.get("success"), Some(&1));
+                assert_eq!(duration_outcomes.get("failure"), Some(&1));
 
                 control_sender
                     .send(NodeControlMsg::Shutdown {
@@ -3096,7 +3322,7 @@ mod tests {
         }
         drop(batches_tx);
 
-        let mut headers = std::collections::HashMap::new();
+        let mut headers = HashMap::new();
         let _ = headers.insert(HDR_AUTH.to_string(), HDR_AUTH_VAL.into());
         let settings = otap_df_otap::otap_grpc::client_settings::GrpcClientSettings {
             headers,
@@ -3118,6 +3344,7 @@ mod tests {
             None,
             batches_rx,
             metrics_tx,
+            OtapStreamWorkerMetricsHandle::new(SignalType::Logs),
             shutdown_rx,
             static_metadata,
         )

@@ -46,7 +46,6 @@ use otap_df_state::store::ObservedStateHandle;
 use otap_df_telemetry::instrument::Gauge;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::{attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -56,6 +55,11 @@ use tokio_util::sync::CancellationToken;
 
 /// Built-in controller monitor extension type URN.
 pub const CONTROLLER_MONITOR_EXTENSION_URN: &str = "urn:otel:extension:controller_monitor";
+
+otap_df_telemetry::otel_component_scope!(
+    urn = CONTROLLER_MONITOR_EXTENSION_URN,
+    target = "otel.extension.controller_monitor",
+);
 
 /// Statically linked controller monitor extension factory.
 #[allow(unsafe_code)]

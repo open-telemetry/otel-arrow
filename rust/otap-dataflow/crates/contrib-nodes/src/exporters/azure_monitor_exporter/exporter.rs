@@ -33,7 +33,6 @@ use otap_df_otap::pdata::{Context, OtapPdata};
 use reqwest::header::HeaderValue;
 
 use otap_df_telemetry::common_attributes::{HttpResponse, Outcome};
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
 use bytes::Bytes;
 use std::cell::RefCell;
