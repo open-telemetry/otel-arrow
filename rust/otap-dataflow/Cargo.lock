@@ -7414,6 +7414,7 @@ dependencies = [
  "clickhouse",
  "clickhouse-ext-arrow",
  "core_affinity",
+ "crc32fast",
  "criterion",
  "data_engine_expressions",
  "data_engine_kql_parser",
