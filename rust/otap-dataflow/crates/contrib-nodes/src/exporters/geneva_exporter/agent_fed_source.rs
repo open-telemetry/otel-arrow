@@ -210,8 +210,8 @@ fn validated_endpoint(value: Option<&Value>) -> Result<Url, &'static str> {
     Ok(parsed)
 }
 
-fn resolve_routing<'a>(
-    attributes: &'a Map<String, Value>,
+fn resolve_routing(
+    attributes: &Map<String, Value>,
 ) -> Result<(Url, HashMap<String, String>), &'static str> {
     let endpoint = validated_endpoint(attributes.get(ENDPOINT_KEY))?;
     let moniker_map = attributes
