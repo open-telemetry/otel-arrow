@@ -10,7 +10,14 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry_macros::{attribute_set, metric_set};
+
+/// Fixed destination context for fan-out timeout metrics.
+#[attribute_set(item, registration)]
+#[derive(Debug, Clone)]
+struct DestinationAttributes {
+    destination: String,
+}
 
 #[metric_set(name = "processor.fanout")]
 #[derive(Debug, Default, Clone)]
@@ -31,6 +38,7 @@ struct FanoutOperationalMetrics {
 
 #[metric_set(
     name = "processor.fanout",
+    registration_attributes = DestinationAttributes,
     measurement_attributes = SignalAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -43,17 +51,27 @@ struct FanoutTimeoutMetrics {
 /// Metric sets emitted directly by a fan-out processor.
 pub(super) struct FanoutMetrics {
     operational: MetricSet<FanoutOperationalMetrics>,
-    timeouts: MeasurementMetricSet<FanoutTimeoutMetrics>,
+    timeouts: Vec<MeasurementMetricSet<FanoutTimeoutMetrics>>,
 }
 
 impl FanoutMetrics {
     /// Registers fan-out metrics.
-    pub(super) fn register(pipeline_ctx: &PipelineContext, max_inflight: usize) -> Self {
+    pub(super) fn register(
+        pipeline_ctx: &PipelineContext,
+        max_inflight: usize,
+        destinations: impl IntoIterator<Item = String>,
+    ) -> Self {
         let mut operational = pipeline_ctx.register_metrics::<FanoutOperationalMetrics>();
         operational.max_inflight_config.set(max_inflight as u64);
+        let timeouts = destinations
+            .into_iter()
+            .map(|destination| {
+                FanoutTimeoutMetrics::register(pipeline_ctx, &DestinationAttributes { destination })
+            })
+            .collect();
         Self {
             operational,
-            timeouts: FanoutTimeoutMetrics::register(pipeline_ctx),
+            timeouts,
         }
     }
 
@@ -73,8 +91,8 @@ impl FanoutMetrics {
     }
 
     /// Records a destination timeout for a signal.
-    pub(super) fn record_timeout(&mut self, signal: SignalType) {
-        self.timeouts
+    pub(super) fn record_timeout(&mut self, destination_index: usize, signal: SignalType) {
+        self.timeouts[destination_index]
             .with(SignalAttributes { signal })
             .timed_out
             .inc();
@@ -82,8 +100,10 @@ impl FanoutMetrics {
 
     /// Reports all fan-out metric sets.
     pub(super) fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
-        reporter
-            .report(&mut self.operational)
-            .and_then(|()| reporter.report_measurement(&mut self.timeouts))
+        reporter.report(&mut self.operational)?;
+        for timeouts in &mut self.timeouts {
+            reporter.report_measurement(timeouts)?;
+        }
+        Ok(())
     }
 }

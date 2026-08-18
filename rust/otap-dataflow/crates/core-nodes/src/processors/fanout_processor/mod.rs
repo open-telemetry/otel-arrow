@@ -410,7 +410,14 @@ fn now() -> Instant {
 
 impl FanoutProcessor {
     fn new(pipeline_ctx: PipelineContext, config: ValidatedConfig) -> Self {
-        let metrics = FanoutMetrics::register(&pipeline_ctx, config.max_inflight);
+        let metrics = FanoutMetrics::register(
+            &pipeline_ctx,
+            config.max_inflight,
+            config
+                .destinations
+                .iter()
+                .map(|destination| destination.port.to_string()),
+        );
         Self {
             config,
             metrics,
@@ -686,7 +693,7 @@ impl FanoutProcessor {
                 continue;
             }
 
-            self.metrics.record_timeout(signal);
+            self.metrics.record_timeout(idx, signal);
             match self.handle_failure(
                 req,
                 idx,

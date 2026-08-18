@@ -388,19 +388,32 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `processor.fanout`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `processor.fanout.timed_out` | `{message}` | Destination message attempts that timed out, by `signal`. |
-| `processor.fanout.active` | `{message}` | Current number of active pipeline messages tracked by the processor. |
-| `processor.fanout.max_inflight_config` | `{message}` | Configured max_inflight value (0 means unlimited). |
-| `processor.fanout.throttled` | `1` | 1 when fanout is currently refusing new pdata via accept_pdata(), else 0. |
-| `processor.fanout.throttle_episodes` | `{episode}` | Increments on transition from not-throttled to throttled. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.fanout.timed_out` | `{message}` | `destination`, `signal` | Destination message attempts that timed out. |
+| `processor.fanout.active` | `{message}` | None | Current number of active pipeline messages tracked by the processor. |
+| `processor.fanout.max_inflight_config` | `{message}` | None | Configured max_inflight value (0 means unlimited). |
+| `processor.fanout.throttled` | `1` | None | 1 when fanout is currently refusing new pdata via accept_pdata(), else 0. |
+| `processor.fanout.throttle_episodes` | `{episode}` | None | Increments on transition from not-throttled to throttled. |
+
+The `destination` attribute is the configured output port name. It is fixed
+when the processor registers its metrics and is bounded to at most 64 values
+per fanout processor instance.
 
 The common metric sets preserve both fanout telemetry perspectives:
 
 - `node.consumer.consumed.messages` reports the aggregated upstream outcome
   after applying the configured ack and fallback policy.
 - `node.producer` and channel metrics report per-destination sends and outcomes.
+
+The common replacement metrics require `runtime_metrics: normal` or higher.
+The default `basic` level does not emit them:
+
+```yaml
+policies:
+  telemetry:
+    runtime_metrics: normal
+```
 
 ### Events
 
