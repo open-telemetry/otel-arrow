@@ -3606,6 +3606,7 @@ mod tests {
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
         // Own partition 0 and track three in-flight offsets under its generation.
+        // in flight: traces/0={0,1,2} => gauge 3
         let mut tpl = TopicPartitionList::new();
         let _ = tpl.add_partition("traces", 0);
         receiver.rebalance_state.set_assignment_for_test(&tpl);
@@ -3623,6 +3624,7 @@ mod tests {
         );
 
         // Acknowledge the two lowest offsets; only offset 2 remains pending.
+        // in flight: traces/0={2} => gauge 1
         let _ = receiver.offset_tracker.acknowledge("traces", 0, 0);
         let _ = receiver.offset_tracker.acknowledge("traces", 0, 1);
         receiver.reconcile_rebalance_state();
@@ -3633,6 +3635,7 @@ mod tests {
         );
 
         // Revoke and purge the partition; nothing remains in flight.
+        // in flight: {} => gauge 0
         receiver
             .rebalance_state
             .push_revoked_for_test("traces", 0, generation);
