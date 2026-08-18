@@ -3440,6 +3440,7 @@ mod telemetry_tests {
         metrics.record_transport_error(SyslogCefProtocol::Udp);
         metrics.truncations.logs.add(1);
         metrics.connections.active.add(1);
+        metrics.record_received(SyslogCefProtocol::Udp);
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 6);
