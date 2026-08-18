@@ -3,13 +3,178 @@
 
 //! Runtime-local retained-work accounting primitives.
 //!
-//! This module owns accounting state only. Runtime installation, attribution,
-//! telemetry export, and production charge sites are layered on separately.
+//! This module owns accounting state and immutable bounded attribution. Runtime
+//! installation, telemetry export, and production charge sites are layered on
+//! separately.
 
+use otap_df_config::{NodeId, PipelineKey};
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
+
+/// Compact identity for one trusted retained-work owner.
+///
+/// Owners are allocated by [`WorkOwnerRegistry`]. The two reserved values keep
+/// mixed and over-capacity ownership explicit without introducing unbounded
+/// request-derived labels.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(transparent)]
+pub struct WorkOwnerId(u32);
+
+impl WorkOwnerId {
+    /// Work combined from more than one registered owner.
+    pub const MIXED: Self = Self(0);
+
+    /// Work whose trusted owner could not be registered within the bound.
+    pub const UNREGISTERED: Self = Self(1);
+
+    const FIRST_REGISTERED: u32 = 2;
+
+    /// Returns the compact numeric representation.
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+/// Bounded registry of trusted pipeline owners.
+///
+/// Only configuration-derived pipeline identities belong here. Raw request or
+/// tenant identity must never be registered because it would turn request
+/// cardinality into retained-work cardinality.
+#[derive(Debug)]
+pub struct WorkOwnerRegistry {
+    max_registered_owners: usize,
+    owners_by_key: HashMap<PipelineKey, WorkOwnerId>,
+    keys_by_owner: Vec<PipelineKey>,
+}
+
+impl WorkOwnerRegistry {
+    /// Creates a registry that stores at most `max_registered_owners` owners.
+    #[must_use]
+    pub fn new(max_registered_owners: usize) -> Self {
+        Self {
+            max_registered_owners: max_registered_owners.min((u32::MAX - 1) as usize),
+            owners_by_key: HashMap::new(),
+            keys_by_owner: Vec::new(),
+        }
+    }
+
+    /// Returns the stable owner for one trusted configured pipeline.
+    ///
+    /// Once the bound is reached, new identities deterministically map to
+    /// [`WorkOwnerId::UNREGISTERED`]. Previously registered identities retain
+    /// their original IDs.
+    pub fn register_pipeline(&mut self, pipeline: &PipelineKey) -> WorkOwnerId {
+        if let Some(owner) = self.owners_by_key.get(pipeline) {
+            return *owner;
+        }
+
+        if self.keys_by_owner.len() >= self.max_registered_owners {
+            return WorkOwnerId::UNREGISTERED;
+        }
+
+        let index =
+            u32::try_from(self.keys_by_owner.len()).expect("owner registry bound must fit in u32");
+        let owner = WorkOwnerId(index + WorkOwnerId::FIRST_REGISTERED);
+        self.keys_by_owner.push(pipeline.clone());
+        let previous = self.owners_by_key.insert(pipeline.clone(), owner);
+        debug_assert!(previous.is_none());
+        owner
+    }
+
+    /// Resolves a registered owner to its configured pipeline identity.
+    #[must_use]
+    pub fn pipeline(&self, owner: WorkOwnerId) -> Option<&PipelineKey> {
+        let index = owner.0.checked_sub(WorkOwnerId::FIRST_REGISTERED)? as usize;
+        self.keys_by_owner.get(index)
+    }
+
+    /// Returns the number of registered owners, excluding sentinels.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.keys_by_owner.len()
+    }
+
+    /// Returns whether the registry contains no configured owners.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.keys_by_owner.is_empty()
+    }
+}
+
+/// Immutable attribution required for every retained-work charge.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct RetainedWorkScopeId {
+    /// Configured pipeline, including its group identity.
+    pub pipeline: PipelineKey,
+    /// Pinned runtime core.
+    pub core_id: usize,
+    /// Live-deployment generation of the runtime.
+    pub runtime_generation: u64,
+    /// Component retaining the work.
+    pub component_id: NodeId,
+    /// Trusted bounded owner of the retained work.
+    pub owner: WorkOwnerId,
+}
+
+/// Static retention site carried by each ticket rather than its scope.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RetainedWorkSite {
+    /// Payload waiting for retry delivery.
+    RetryBuffer,
+    /// Payload held in a batch processor's pending batch.
+    BatchPending,
+}
+
+#[derive(Debug)]
+struct LocalRetainedScopeInner {
+    account: Rc<LocalRetainedAccount>,
+    id: RetainedWorkScopeId,
+}
+
+/// Runtime-local attributed entrypoint for retained-work charges.
+///
+/// The scope caches its runtime account and immutable attribution once. Charge
+/// sites clone only this local `Rc`; they do not look up runtime state or copy
+/// string fields per item.
+#[derive(Clone, Debug)]
+pub struct LocalRetainedScope {
+    inner: Rc<LocalRetainedScopeInner>,
+}
+
+impl LocalRetainedScope {
+    /// Binds immutable attribution to one runtime-local account.
+    #[must_use]
+    pub fn new(account: Rc<LocalRetainedAccount>, id: RetainedWorkScopeId) -> Self {
+        Self {
+            inner: Rc::new(LocalRetainedScopeInner { account, id }),
+        }
+    }
+
+    /// Returns this scope's immutable attribution.
+    #[must_use]
+    pub fn id(&self) -> &RetainedWorkScopeId {
+        &self.inner.id
+    }
+
+    /// Starts one attributed retained-work interval.
+    pub fn charge(
+        &self,
+        site: RetainedWorkSite,
+        bytes: Option<u64>,
+    ) -> Result<LocalRetainedTicket, LocalAccountingError> {
+        let charge = self.inner.account.start_charge(bytes)?;
+        Ok(LocalRetainedTicket {
+            scope: Rc::clone(&self.inner),
+            site,
+            charge,
+            active: true,
+        })
+    }
+}
 
 /// Identifies the counter whose checked arithmetic failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,14 +260,10 @@ impl LocalRetainedAccount {
         })
     }
 
-    /// Starts one retained-work interval and returns its ownership ticket.
-    ///
-    /// `Some(bytes)` records a known logical size. `None` records one
-    /// unknown-size item without guessing its byte size.
-    pub fn charge(
-        self: &Rc<Self>,
+    fn start_charge(
+        &self,
         bytes: Option<u64>,
-    ) -> Result<LocalRetainedTicket, LocalAccountingError> {
+    ) -> Result<LocalRetainedCharge, LocalAccountingError> {
         let charge = match bytes {
             Some(bytes) => {
                 self.checked_add(
@@ -118,11 +279,7 @@ impl LocalRetainedAccount {
             }
         };
 
-        Ok(LocalRetainedTicket {
-            account: Rc::clone(self),
-            charge,
-            active: true,
-        })
+        Ok(charge)
     }
 
     /// Returns the current local counters.
@@ -215,7 +372,8 @@ enum LocalRetainedCharge {
 #[derive(Debug)]
 #[must_use = "the ticket must be completed normally or dropped as abandoned"]
 pub struct LocalRetainedTicket {
-    account: Rc<LocalRetainedAccount>,
+    scope: Rc<LocalRetainedScopeInner>,
+    site: RetainedWorkSite,
     charge: LocalRetainedCharge,
     active: bool,
 }
@@ -230,10 +388,22 @@ impl LocalRetainedTicket {
         }
     }
 
+    /// Returns the immutable attribution for this charge.
+    #[must_use]
+    pub fn scope(&self) -> &RetainedWorkScopeId {
+        &self.scope.id
+    }
+
+    /// Returns the static site retaining this charge.
+    #[must_use]
+    pub const fn site(&self) -> RetainedWorkSite {
+        self.site
+    }
+
     /// Completes this retention interval normally and refunds its charge.
     pub fn complete(mut self) -> Result<(), LocalAccountingError> {
         self.active = false;
-        self.account.settle(self.charge)
+        self.scope.account.settle(self.charge)
     }
 }
 
@@ -243,8 +413,8 @@ impl Drop for LocalRetainedTicket {
             return;
         }
         self.active = false;
-        let _ = self.account.settle(self.charge);
-        self.account.record_abandonment(self.charge);
+        let _ = self.scope.account.settle(self.charge);
+        self.scope.account.record_abandonment(self.charge);
     }
 }
 
@@ -252,12 +422,28 @@ impl Drop for LocalRetainedTicket {
 mod tests {
     use super::*;
 
+    fn test_scope(account: Rc<LocalRetainedAccount>) -> LocalRetainedScope {
+        LocalRetainedScope::new(
+            account,
+            RetainedWorkScopeId {
+                pipeline: PipelineKey::new("group".into(), "pipeline".into()),
+                core_id: 3,
+                runtime_generation: 7,
+                component_id: "processor".into(),
+                owner: WorkOwnerId(2),
+            },
+        )
+    }
+
     /// Scenario: a known-size ticket reaches its normal terminal path.
     /// Guarantees: completion refunds the bytes once and records no abandonment.
     #[test]
     fn known_charge_completes_normally() {
         let account = LocalRetainedAccount::new();
-        let ticket = account.charge(Some(42)).expect("charge should fit");
+        let scope = test_scope(Rc::clone(&account));
+        let ticket = scope
+            .charge(RetainedWorkSite::RetryBuffer, Some(42))
+            .expect("charge should fit");
 
         assert_eq!(ticket.bytes(), Some(42));
         assert_eq!(account.snapshot().retained_bytes, 42);
@@ -270,7 +456,10 @@ mod tests {
     #[test]
     fn unknown_charge_completes_normally() {
         let account = LocalRetainedAccount::new();
-        let ticket = account.charge(None).expect("charge should fit");
+        let scope = test_scope(Rc::clone(&account));
+        let ticket = scope
+            .charge(RetainedWorkSite::RetryBuffer, None)
+            .expect("charge should fit");
 
         assert_eq!(ticket.bytes(), None);
         assert_eq!(account.snapshot().unknown_items, 1);
@@ -283,7 +472,10 @@ mod tests {
     #[test]
     fn unresolved_known_ticket_refunds_and_records_abandonment() {
         let account = LocalRetainedAccount::new();
-        let ticket = account.charge(Some(17)).expect("charge should fit");
+        let scope = test_scope(Rc::clone(&account));
+        let ticket = scope
+            .charge(RetainedWorkSite::BatchPending, Some(17))
+            .expect("charge should fit");
 
         drop(ticket);
 
@@ -302,7 +494,10 @@ mod tests {
     #[test]
     fn unresolved_unknown_ticket_refunds_and_records_abandonment() {
         let account = LocalRetainedAccount::new();
-        let ticket = account.charge(None).expect("charge should fit");
+        let scope = test_scope(Rc::clone(&account));
+        let ticket = scope
+            .charge(RetainedWorkSite::BatchPending, None)
+            .expect("charge should fit");
 
         drop(ticket);
 
@@ -320,7 +515,10 @@ mod tests {
     #[test]
     fn completion_prevents_drop_from_settling_twice() {
         let account = LocalRetainedAccount::new();
-        let ticket = account.charge(Some(9)).expect("charge should fit");
+        let scope = test_scope(Rc::clone(&account));
+        let ticket = scope
+            .charge(RetainedWorkSite::RetryBuffer, Some(9))
+            .expect("charge should fit");
 
         ticket.complete().expect("completion should settle");
 
@@ -332,10 +530,11 @@ mod tests {
     #[test]
     fn charge_overflow_is_rejected_and_recorded() {
         let account = LocalRetainedAccount::new();
+        let scope = test_scope(Rc::clone(&account));
         account.retained_bytes.set(u64::MAX);
 
-        let error = account
-            .charge(Some(1))
+        let error = scope
+            .charge(RetainedWorkSite::RetryBuffer, Some(1))
             .expect_err("overflowing charge must fail");
 
         assert_eq!(
@@ -351,7 +550,10 @@ mod tests {
     #[test]
     fn settlement_underflow_is_reported_and_recorded() {
         let account = LocalRetainedAccount::new();
-        let ticket = account.charge(Some(5)).expect("charge should fit");
+        let scope = test_scope(Rc::clone(&account));
+        let ticket = scope
+            .charge(RetainedWorkSite::RetryBuffer, Some(5))
+            .expect("charge should fit");
         account.retained_bytes.set(0);
 
         let error = ticket
@@ -365,5 +567,83 @@ mod tests {
         assert_eq!(account.snapshot().retained_bytes, 0);
         assert_eq!(account.snapshot().corruption_count, 1);
         assert_eq!(account.snapshot().abandoned_items, 0);
+    }
+
+    /// Scenario: a configured pipeline is registered more than once.
+    /// Guarantees: repeated registration returns one stable compact owner ID.
+    #[test]
+    fn owner_registration_is_stable() {
+        let mut registry = WorkOwnerRegistry::new(2);
+        let pipeline = PipelineKey::new("group".into(), "pipeline".into());
+
+        let first = registry.register_pipeline(&pipeline);
+        let repeated = registry.register_pipeline(&pipeline);
+
+        assert_eq!(first, repeated);
+        assert_eq!(first.as_u32(), WorkOwnerId::FIRST_REGISTERED);
+        assert_eq!(registry.pipeline(first), Some(&pipeline));
+        assert_eq!(registry.len(), 1);
+    }
+
+    /// Scenario: equal pipeline names exist in different configured groups.
+    /// Guarantees: the registry treats the full group and pipeline pair as identity.
+    #[test]
+    fn owner_registration_includes_pipeline_group() {
+        let mut registry = WorkOwnerRegistry::new(2);
+        let first_pipeline = PipelineKey::new("group-a".into(), "pipeline".into());
+        let second_pipeline = PipelineKey::new("group-b".into(), "pipeline".into());
+
+        let first = registry.register_pipeline(&first_pipeline);
+        let second = registry.register_pipeline(&second_pipeline);
+
+        assert_ne!(first, second);
+        assert_eq!(registry.pipeline(first), Some(&first_pipeline));
+        assert_eq!(registry.pipeline(second), Some(&second_pipeline));
+    }
+
+    /// Scenario: more configured owners are observed than the registry permits.
+    /// Guarantees: excess identities use the deterministic Unregistered sentinel
+    /// while existing owners remain stable and the registry stays bounded.
+    #[test]
+    fn owner_registration_is_bounded() {
+        let mut registry = WorkOwnerRegistry::new(1);
+        let first_pipeline = PipelineKey::new("group".into(), "first".into());
+        let second_pipeline = PipelineKey::new("group".into(), "second".into());
+
+        let registered = registry.register_pipeline(&first_pipeline);
+        let overflow = registry.register_pipeline(&second_pipeline);
+
+        assert_eq!(overflow, WorkOwnerId::UNREGISTERED);
+        assert_eq!(registry.register_pipeline(&first_pipeline), registered);
+        assert_eq!(registry.register_pipeline(&second_pipeline), overflow);
+        assert_eq!(registry.pipeline(WorkOwnerId::MIXED), None);
+        assert_eq!(registry.pipeline(WorkOwnerId::UNREGISTERED), None);
+        assert_eq!(registry.len(), 1);
+    }
+
+    /// Scenario: a component charges retained work through an attributed scope.
+    /// Guarantees: the ticket carries the complete immutable scope and its
+    /// per-charge retention site without copying those fields into the account.
+    #[test]
+    fn ticket_carries_scope_and_retention_site() {
+        let account = LocalRetainedAccount::new();
+        let scope = test_scope(Rc::clone(&account));
+
+        let ticket = scope
+            .charge(RetainedWorkSite::BatchPending, Some(11))
+            .expect("charge should fit");
+
+        assert_eq!(ticket.scope(), scope.id());
+        assert_eq!(ticket.site(), RetainedWorkSite::BatchPending);
+        assert_eq!(
+            ticket.scope().pipeline.pipeline_group_id().as_ref(),
+            "group"
+        );
+        assert_eq!(ticket.scope().pipeline.pipeline_id().as_ref(), "pipeline");
+        assert_eq!(ticket.scope().core_id, 3);
+        assert_eq!(ticket.scope().runtime_generation, 7);
+        assert_eq!(ticket.scope().component_id.as_ref(), "processor");
+        assert_eq!(ticket.scope().owner, WorkOwnerId(2));
+        ticket.complete().expect("completion should settle");
     }
 }
