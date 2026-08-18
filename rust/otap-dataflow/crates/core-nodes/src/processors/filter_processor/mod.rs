@@ -23,7 +23,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
-use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
+use otap_df_engine::processor::{FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper};
 use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::TryIntoWithOptions;
@@ -216,8 +216,9 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 effect_handler.record_flow_dropped_items(signal, dropped_items);
 
                 let kept_items = filtered_arrow_records.num_items();
-                let pdata = OtapPdata::new(context, filtered_arrow_records.into());
+                let mut pdata = OtapPdata::new(context, filtered_arrow_records.into());
                 if kept_items == 0 {
+                    pdata.complete_processor_without_output(effect_handler);
                     effect_handler.notify_ack(AckMsg::new(pdata)).await?;
                 } else {
                     effect_handler.send_message_with_source_node(pdata).await?;

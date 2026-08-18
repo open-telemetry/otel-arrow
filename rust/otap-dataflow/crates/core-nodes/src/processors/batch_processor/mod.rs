@@ -44,7 +44,7 @@ use otap_df_engine::{
     local::processor as local,
     message::Message,
     node::NodeId,
-    processor::ProcessorWrapper,
+    processor::{FlowMetricHook, ProcessorWrapper},
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
@@ -946,7 +946,8 @@ where
             // Note: we do not check for empty envelopes, e.g., logs
             // requests with only a resource and no log records. We do
             // not count these.
-            let pdata = OtapPdata::new(ctx, payload.into());
+            let mut pdata = OtapPdata::new(ctx, payload.into());
+            pdata.complete_processor_without_output(effect);
             effect.notify_ack(AckMsg::new(pdata)).await?;
             return Ok(());
         }
@@ -3237,8 +3238,8 @@ mod tests {
             });
     }
 
-    /// A zero-byte OTLP request is acked immediately and never reaches the
-    /// batch buffer.
+    /// Scenario: a subscribed zero-byte OTLP request reaches the batch processor.
+    /// Guarantees: it is acknowledged without output or entering the batch buffer.
     #[test]
     fn test_otlp_zero_byte_request_acked_immediately() {
         let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
@@ -3252,12 +3253,33 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                ctx.set_pipeline_completion_sender(completion_tx);
                 let empty = OtlpProtoBytes::ExportLogsRequest(Bytes::new());
-                ctx.process(Message::PData(OtapPdata::new_default(empty.into())))
+                let pdata = OtapPdata::new_default(empty.into()).test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    11,
+                );
+                ctx.process(Message::PData(pdata))
                     .await
                     .expect("process empty otlp");
 
                 assert!(ctx.drain_pdata().await.is_empty(), "no batch should flush");
+                match next_completion(
+                    &mut completion_rx,
+                    Duration::from_secs(1),
+                    "zero-byte input should be acknowledged",
+                )
+                .await
+                {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
+                        assert_eq!(ack.accepted.num_items(), 0);
+                    }
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        panic!("zero-byte input was unexpectedly nacked: {}", nack.reason);
+                    }
+                }
 
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,
