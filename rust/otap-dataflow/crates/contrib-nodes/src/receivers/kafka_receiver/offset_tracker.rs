@@ -194,8 +194,7 @@ pub struct OffsetTracker {
     /// Maintained incrementally at the three mutation sites ([`track`](Self::track),
     /// [`acknowledge`](Self::acknowledge), [`revoke`](Self::revoke)) so
     /// [`total_pending`](Self::total_pending) never rescans partitions on the
-    /// hot receive path. Kept identical to a full rescan; drift is caught by a
-    /// `debug_assert` in [`total_pending`](Self::total_pending).
+    /// hot receive path.
     total_pending: usize,
 }
 
