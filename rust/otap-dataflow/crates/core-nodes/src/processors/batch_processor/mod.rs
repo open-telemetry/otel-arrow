@@ -2097,7 +2097,7 @@ mod tests {
                             looped += 1;
 
                             // Apply ack/nack policy
-                            if new_output.has_subscribers() {
+                            if new_output.has_ack_or_nack_interests() {
                                 let policy = nack_policy
                                     .as_ref()
                                     .map(|p| p(total_outputs - 1, &new_output))
@@ -3647,7 +3647,7 @@ mod tests {
                 let last = outputs.len() - 1;
                 for (i, out) in outputs.into_iter().enumerate() {
                     assert!(
-                        out.has_subscribers(),
+                        out.has_ack_or_nack_interests(),
                         "every fragment must be subscribed for ack/nack"
                     );
                     if i == last {
