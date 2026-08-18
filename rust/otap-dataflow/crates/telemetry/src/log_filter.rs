@@ -186,25 +186,16 @@ impl RuntimeLogFilterHandle {
     /// stays empty for them. Such directives still work when supplied at
     /// startup. See the crate README for operator-facing details.
     pub fn apply(&self, level: &LogLevel) {
-        let filter =
-            EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use");
-        let mut layers = self
-            .shared
-            .layers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if self.shared.configured_level.load().as_ref() == level
-            && !self.shared.startup_override_active.load(Ordering::Acquire)
-        {
-            return;
-        }
-        self.publish(&mut layers, level.clone(), false, filter);
-        _ = self.shared.revision.fetch_add(1, Ordering::AcqRel);
-        drop(layers);
-        tracing::callsite::rebuild_interest_cache();
+        self.apply_transactionally(level).commit();
     }
 
     /// Applies a candidate level that is rolled back unless the returned guard is committed.
+    ///
+    /// Callers must serialize updates: at most one guard may be outstanding at a
+    /// time. The engine reconciliation path enforces this through the
+    /// engine-operation guard. If another update lands before an outstanding
+    /// guard is dropped, that newer update wins and the stale guard skips its
+    /// rollback rather than clobbering the newer configuration.
     #[must_use]
     pub fn apply_transactionally(&self, level: &LogLevel) -> RuntimeLogFilterUpdateGuard {
         let filter =

@@ -4167,6 +4167,108 @@ fn reconcile_engine_config_rolls_back_log_level_after_pipeline_failure() {
     assert_eq!(event_count.load(Ordering::SeqCst), 0);
 }
 
+/// Scenario: reconciliation raises the log level and then aborts with a planning error
+/// (core relocation conflict) raised after the level was already applied.
+/// Guarantees: the previous log level and committed engine config are restored when
+/// planning rejects the request instead of returning a terminal rollout status.
+#[test]
+fn reconcile_engine_config_rolls_back_log_level_after_planning_error() {
+    let mut config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    config.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse");
+    let (runtime, log_filter_handle, _log_filter) =
+        test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+
+    let mut desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 2
+                  end: 3
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      p2:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("desired config should parse");
+    desired.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("info")).expect("info level should parse");
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("reconcile should reject vacate-before-claim placement");
+
+    match err {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("conflicts with committed or in-flight"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
+    assert_eq!(
+        runtime
+            .engine_config_snapshot()
+            .engine
+            .telemetry
+            .logs
+            .level
+            .as_str(),
+        "warn"
+    );
+}
+
 /// Scenario: a full-config reconciliation request omits live stopped
 /// resources with `delete_missing` enabled.
 /// Guarantees: reconciliation deletes the omitted pipeline and then the

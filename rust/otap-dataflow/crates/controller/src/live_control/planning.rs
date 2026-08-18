@@ -1550,22 +1550,16 @@ impl<
         state.config_revision += 1;
     }
 
+    // Rejects conflicting concurrent operations before the desired log level is
+    // applied. Placement feasibility is validated per pipeline by the planning
+    // loop below, which is reservation-aware; repeating a reservation-free
+    // placement check here would only duplicate it.
     fn preflight_engine_reconciliation(
         &self,
-        desired_config: &OtelDataflowSpec,
         desired_pipeline_keys: &HashSet<PipelineKey>,
         delete_missing: bool,
         engine_operation_id: &str,
     ) -> Result<(), ControlPlaneError> {
-        for pipeline in desired_config
-            .resolve()
-            .pipelines
-            .into_iter()
-            .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
-        {
-            _ = self.pipeline_placement_for_resolved_with_reserved(&pipeline, &BTreeSet::new())?;
-        }
-
         let state = self
             .state
             .lock()
@@ -2051,7 +2045,6 @@ impl<
             .collect();
 
         self.preflight_engine_reconciliation(
-            &desired_config,
             &desired_key_set,
             request.delete_missing,
             guard.operation_id(),
