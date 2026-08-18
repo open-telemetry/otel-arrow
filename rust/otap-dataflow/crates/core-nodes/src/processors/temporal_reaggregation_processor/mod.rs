@@ -2142,8 +2142,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_stream_cardinality_overflow_triggers_early_flush() {
+    fn test_stream_cardinality_triggers_early_flush(data1: MetricsData, data2: MetricsData) {
         // Configure the processor to allow at most 2 unique streams in a batch.
         // Send a batch with 2 streams (fills to the limit), then a second batch
         // with 1 new stream. The new stream should trigger a cardinality overflow:
@@ -2152,20 +2151,68 @@ mod tests {
         run_processor_test(
             json!({ "max_stream_cardinality": 2 }),
             |mut ctx| async move {
-                let batch1 = make_otlp_bytes_pdata(make_n_gauge_metrics(2));
-                // Use offset to ensure distinct metric names from the first batch.
-                let batch2 = make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(1, 2));
+                let batch1 = make_otlp_bytes_pdata(data1.clone());
+                let batch2 = make_otlp_bytes_pdata(data2.clone());
 
                 ctx.process(Message::PData(batch1)).await.unwrap();
-                ctx.process(Message::PData(batch2)).await.unwrap();
-                let _ = ctx.fire_wakeup().await.unwrap();
+                let output1 = ctx.drain_pdata().await;
+                assert_eq!(output1.len(), 0, "expected no output after first batch");
 
-                let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
-                assert_output_metric_count(&output[0], 2);
-                assert_output_metric_count(&output[1], 1);
+                ctx.process(Message::PData(batch2)).await.unwrap();
+                let output2 = ctx.drain_pdata().await;
+                assert_eq!(
+                    output2.len(),
+                    1,
+                    "expected early flush of first batch when limit exceeded"
+                );
+                assert_output_otlp_equivalent(&output2[0], data1);
+
+                let _ = ctx.fire_wakeup().await.unwrap();
+                let output3 = ctx.drain_pdata().await;
+                assert_eq!(output3.len(), 1, "expected wakeup flush of second batch");
+                assert_output_otlp_equivalent(&output3[0], data2);
             },
         );
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing Gauge metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_gauge_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_gauge_metrics_with_offset(2, 0);
+        let data2 = make_n_gauge_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing Histogram metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_histogram_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_histogram_metrics_with_offset(2, 0);
+        let data2 = make_n_histogram_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing ExponentialHistogram metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_exp_histogram_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_exp_histogram_metrics_with_offset(2, 0);
+        let data2 = make_n_exp_histogram_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing Summary metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_summary_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_summary_metrics_with_offset(2, 0);
+        let data2 = make_n_summary_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
     }
 
     #[test]
