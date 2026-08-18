@@ -12,7 +12,6 @@ use geneva_uploader::client::{
     AgentFedCredential, AgentFedCredentialFuture, AgentFedCredentialSource,
 };
 use otap_df_engine::shared::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider;
-use otap_df_telemetry::otel_warn;
 use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};

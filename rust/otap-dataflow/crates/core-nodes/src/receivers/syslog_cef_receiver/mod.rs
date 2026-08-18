@@ -1,6 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+otap_df_telemetry::otel_component_scope!(
+    urn = SYSLOG_CEF_RECEIVER_URN,
+    target = "otel.receiver.syslog_cef",
+);
+
 use self::arrow_records_encoder::ArrowRecordsBuilder;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -27,6 +32,7 @@ use otap_df_telemetry::common_attributes::{
     Outcome, ReceiverRejectionErrorType, SignalOutcomeAttributes,
 };
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
+use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::Deserialize;
@@ -41,7 +47,6 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
-use otap_df_telemetry::otel_debug;
 
 /// Arrow records encoder for syslog messages
 pub mod arrow_records_encoder;

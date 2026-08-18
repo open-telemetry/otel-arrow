@@ -85,6 +85,8 @@ Before making actual changes, run the workflow in dry-run mode:
 1. Run the workflow again with "Dry run mode" set to `false`.
 2. The workflow will:
    - Validate the version format and increment.
+   - Verify that the merge queue is empty and that `main` does not change
+     while the release contents are generated.
    - Auto-generate umbrella chloggen entries summarizing renovate[bot]
      and dependabot[bot] PRs merged since the last release tag (one per
      tree, skipped if none).
@@ -104,7 +106,8 @@ Before making actual changes, run the workflow in dry-run mode:
      the expected entries.
    - `rust/otap-dataflow/Cargo.toml` reflects the new version.
 3. Ensure all CI checks pass.
-4. Merge the pull request.
+4. Merge the pull request. While it is open, the required `changelog` check
+   blocks every other pull request from merging.
 
 ### Step 6: Run Push Release Workflow
 
@@ -129,9 +132,16 @@ Before publishing the release, run the push workflow in dry-run mode:
 
 1. Run the push release workflow again with "Dry run mode" set to `false`.
 2. The workflow will:
+   - Resolve the merged `otelbot/release-vX.Y.Z` pull request and use its
+     merge commit as the release commit.
    - Create git tags for the main release, the Go modules, and the Rust
-     workspace.
+     workspace at that release commit.
    - Publish the GitHub release with the combined changelog content.
+
+Changes merged into `main` after the release pull request are not included in
+these tags. Their `.chloggen/` entries remain pending and are rendered into the
+next release. Normal pull request merges resume after the release pull request
+merges, even if the tags have not been created yet.
 
 The following git tags are created:
 

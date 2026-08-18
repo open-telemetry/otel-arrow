@@ -22,6 +22,8 @@ pub mod attributes;
 pub mod batching;
 /// Common utilities for protobuf encoding.
 pub mod common;
+/// OTLP JSON encoding over pdata views.
+pub mod json;
 /// Common methods for OTLP/OTAP logs.
 pub mod logs;
 /// Common methods for OTLP/OTAP metrics.

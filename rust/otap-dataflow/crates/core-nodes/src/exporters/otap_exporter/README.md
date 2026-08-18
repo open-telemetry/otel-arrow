@@ -90,11 +90,23 @@ Input PData message volume is reported by the engine through
 `channel.receiver.messages` with its `signal` attribute on the PData input
 channel and is not duplicated by the exporter.
 
-#### `exporter.pdata.exports`
+#### `exporter.exports`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal OTAP export result, including stream queueing and encoding but excluding Ack/Nack notification. |
+
+#### `exporter.otap.failures`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otap.failures.messages` | `{message}` | `signal`, `error.type` | Failed OTAP exports classified by actionable error type. |
+
+`error.type` is one of `payload_conversion`, `encoding`, `authentication`,
+`authorization`, `timeout`, `throttled`, `unavailable`, `rejected`,
+`server_error`, `transport`, `internal`, `shutdown`, or `other`. Successful
+exports do not emit this metric.
 
 #### `otap.exporter.grpc.async`
 

@@ -3,6 +3,8 @@
 
 //! Topic exporter.
 
+otap_df_telemetry::otel_component_scope!(urn = TOPIC_EXPORTER_URN, target = "otel.exporter.topic",);
+
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use linkme::distributed_slice;
@@ -28,7 +30,6 @@ use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
