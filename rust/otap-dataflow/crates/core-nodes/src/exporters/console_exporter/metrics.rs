@@ -18,13 +18,13 @@ use std::time::Duration;
 /// Actionable category for a failed console export operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub(super) enum ConsoleExportErrorType {
-    /// An OTLP byte payload could not be exposed as a logs view.
+    /// An OTLP byte payload could not be exposed as a signal view.
     OtlpViewCreation,
-    /// An OTAP Arrow payload could not be exposed as a logs view.
+    /// An OTAP Arrow payload could not be exposed as a signal view.
     OtapViewCreation,
     /// The exporter received a signal that it cannot render.
     UnsupportedSignal,
-    /// The selected output formatter could not encode the logs payload.
+    /// The selected output formatter could not encode the payload.
     Formatting,
     /// The rendered output could not be written to stdout.
     Write,
