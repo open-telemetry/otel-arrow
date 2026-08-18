@@ -71,7 +71,7 @@ pub struct LocalRetainedSnapshot {
 /// let account = LocalRetainedAccount::new();
 /// std::thread::spawn(move || drop(account));
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LocalRetainedAccount {
     retained_bytes: Cell<u64>,
     unknown_items: Cell<u64>,
@@ -85,7 +85,14 @@ impl LocalRetainedAccount {
     /// Creates an empty runtime-local account.
     #[must_use]
     pub fn new() -> Rc<Self> {
-        Rc::new(Self::default())
+        Rc::new(Self {
+            retained_bytes: Cell::new(0),
+            unknown_items: Cell::new(0),
+            abandoned_items: Cell::new(0),
+            abandoned_bytes: Cell::new(0),
+            corruption_count: Cell::new(0),
+            _not_send: PhantomData,
+        })
     }
 
     /// Starts one retained-work interval and returns its ownership ticket.
