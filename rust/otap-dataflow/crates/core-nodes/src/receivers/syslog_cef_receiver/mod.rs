@@ -1350,7 +1350,7 @@ mod tests {
         assert_eq!(m.forwards_for(Outcome::Refused).logs.get(), 0);
         assert!(
             m.rejections_for(
-                SyslogCefProtocol::Udp,
+                SyslogCefProtocol::Tcp,
                 ReceiverRejectionErrorType::MemoryPressure
             )
             .logs
