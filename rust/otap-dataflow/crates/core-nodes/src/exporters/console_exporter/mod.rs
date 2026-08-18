@@ -239,10 +239,14 @@ impl Exporter<OtapPdata> for ConsoleExporter {
                     return Ok(self.terminal_state(deadline));
                 }
                 Message::PData(data) => {
+                    let export_start = Instant::now();
                     let signal = data.signal_type();
                     match self.export(data.payload_ref()).await {
-                        Ok(()) => self.metrics.record_success(signal),
-                        Err(error_type) => self.metrics.record_failure(signal, error_type),
+                        Ok(()) => self.metrics.record_success(signal, export_start.elapsed()),
+                        Err(error_type) => {
+                            self.metrics
+                                .record_failure(signal, error_type, export_start.elapsed())
+                        }
                     }
                     effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }

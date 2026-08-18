@@ -49,7 +49,7 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -108,7 +108,7 @@ const SUPPORTED_ARROW_PAYLOAD_TYPES: &[ArrowPayloadType] = &[
 /// Clickhouse exporter that sends OTAP data to Clickhouse backend
 pub struct ClickhouseExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
     ch_metrics: MetricSet<ClickhouseExporterMetrics>,
 }
 
@@ -119,7 +119,7 @@ impl ClickhouseExporter {
         config: &serde_json::Value,
     ) -> Result<Self, otap_df_config::error::Error> {
         let ch_metrics = pipeline_ctx.register_metrics::<ClickhouseExporterMetrics>();
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
         let patch: ConfigPatch = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -143,7 +143,7 @@ impl ClickhouseExporter {
 
     fn terminal_state(
         deadline: Instant,
-        mut pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+        mut pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
         ch_metrics: MetricSet<ClickhouseExporterMetrics>,
     ) -> TerminalState {
         let mut snapshots = Vec::new();
@@ -159,6 +159,7 @@ impl ClickhouseExporter {
     fn finalize_write(&mut self, completed: CompletedWrite) {
         let CompletedWrite {
             signal_type,
+            export_started_at,
             result,
         } = completed;
 
@@ -172,8 +173,7 @@ impl ClickhouseExporter {
                         signal: signal_type,
                         outcome: Outcome::Success,
                     })
-                    .messages
-                    .inc();
+                    .record(export_started_at.elapsed());
             }
             Err(error) => {
                 self.pdata_metrics
@@ -181,8 +181,7 @@ impl ClickhouseExporter {
                         signal: signal_type,
                         outcome: Outcome::Failure,
                     })
-                    .messages
-                    .inc();
+                    .record(export_started_at.elapsed());
                 otel_warn!(
                     "clickhouse.exporter.write.error",
                     message = format!("Error writing batch to clickhouse: {error}"),
@@ -320,6 +319,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     _ = metrics_reporter.report(&mut self.ch_metrics);
                 }
                 Message::PData(pdata) => {
+                    let export_started_at = Instant::now();
                     let signal_type = pdata.signal_type();
                     let signal_format = pdata.signal_format();
 
@@ -344,8 +344,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                             signal: signal_type,
                                             outcome: Outcome::Failure,
                                         })
-                                        .messages
-                                        .inc();
+                                        .record(export_started_at.elapsed());
                                     otel_warn!(
                                         "clickhouse.exporter.otlp.invalid_protobuf",
                                         message = "Rejecting malformed raw OTLP logs.",
@@ -379,8 +378,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                             signal: signal_type,
                                             outcome: Outcome::Failure,
                                         })
-                                        .messages
-                                        .inc();
+                                        .record(export_started_at.elapsed());
                                     otel_warn!(
                                         "clickhouse.exporter.convert.error",
                                         message = format!(
@@ -401,8 +399,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                         signal: signal_type,
                                         outcome: Outcome::Failure,
                                     })
-                                    .messages
-                                    .inc();
+                                    .record(export_started_at.elapsed());
                                 let source_detail = format_error_sources(&e);
                                 Error::ExporterError {
                                     exporter: exporter_id.clone(),
@@ -441,8 +438,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                         signal: signal_type,
                                         outcome: Outcome::Failure,
                                     })
-                                    .messages
-                                    .inc();
+                                    .record(export_started_at.elapsed());
                                 otel_warn!(
                                     "clickhouse.exporter.transform.error",
                                     message = "Error transforming batch for export.",
@@ -458,6 +454,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         Box::pin(async move {
                             CompletedWrite {
                                 signal_type,
+                                export_started_at,
                                 result: writer.write_batches(&write_batches).await,
                             }
                         });
