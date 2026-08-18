@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787012739206,
+  "lastUpdate": 1787035668625,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -17389,6 +17389,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 101.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7c4fb9a42b7f858d6e97bf08d8ffb2889a04f8e0",
+          "message": "Otap enum attrs (#3534)\n\n**Not ready for review at all!**\n\n# Change Summary\n\nRefactor and align the OTAP receiver and exporter internal telemetry\nusing bounded, enum-based attributes, following the approach established\nfor OTLP telemetry.\n\nThis change:\n\n- Reuses the common signal, outcome, and rejection error-type enums.\n- Aligns OTAP and OTLP acknowledgement and rejection dimensions.\n- Adds receiver batch lifecycle metrics for started and completed\nbatches and payload size, partitioned by signal.\n- Distinguishes stream-level and batch-level receiver rejections by\nbounded `error.type`.\n- Partitions exporter outcome and duration metrics by signal and\nterminal outcome.\n- Adds per-signal OTAP stream queue, encoding, correlation, and response\nmetrics.\n- Replaces lossy per-observation exporter timing messages with\nfixed-memory, per-worker aggregation.\n- Flushes worker timing aggregates during telemetry collection and\nshutdown without dropping or duplicating observations.\n- Renames OTAP metric sets to follow the `receiver.otap.*` and\n`exporter.otap.*` conventions.\n- Updates the component telemetry documentation.\n\n## What issue does this PR close?\n\n* Closes #3300\n\n## How are these changes tested?\n\n- Added tests verifying metric isolation across signal, outcome,\nrejection scope, and error type.\n- Added tests verifying enum attributes are preserved in terminal\nsnapshots and exported exactly once.\n- Added a test proving exporter timing aggregation retains more\nobservations than the former bounded update channel could hold and does\nnot duplicate them across collection intervals.\n- Added real gRPC receiver telemetry coverage for:\n  - Fire-and-forget delivery.\n  - Successful ACK routing.\n  - Refused NACK routing.\n  - Invalid batch rejection.\n  - Memory-pressure stream rejection.\n  - Concurrency-limit batch rejection.\n  - Pipeline send failure lifecycle completion.\n- Added exporter integration coverage verifying pdata counts and\nduration histograms for successful and failed OTAP responses.\n- Ran `cargo xtask check`\n\n## Are there any user-facing changes?\n\nYes. OTAP internal metric names and attribute sets have changed. Metrics\nnow use bounded `signal`, `outcome`, and `error.type` dimensions and\nconsistently follow the `receiver.otap.*` and `exporter.otap.*` naming\nconventions.\n\nExporter stream timing telemetry is also collected reliably under load\nusing fixed-memory aggregation instead of potentially dropping\nobservations when an internal channel is full.\n\n### Changelog\n\n- [x] Added a `.chloggen/*.yaml` entry\n- [ ] This PR is a `chore` (indicated in title)\n- [ ] This is a documentation-only PR.",
+          "timestamp": "2026-08-18T05:32:24Z",
+          "tree_id": "4d0cd708d1ed32ecdf10d4039f088198d10feb8a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7c4fb9a42b7f858d6e97bf08d8ffb2889a04f8e0"
+        },
+        "date": 1787035655961,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 4.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 69.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.91,
             "unit": "MB"
           }
         ]
