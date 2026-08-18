@@ -75,13 +75,32 @@ impl SignalWriter {
         _ = options.read(true);
         match config.open_mode {
             OpenMode::Append => {
-                _ = options.write(true).append(true).create(true);
+                #[cfg(windows)]
+                {
+                    // Windows append-only handles cannot call set_len(). Each frame write seeks
+                    // to EOF first, so write access preserves exporter append behavior while
+                    // allowing tail recovery and transactional rollback.
+                    _ = options.write(true).create(true);
+                }
+                #[cfg(not(windows))]
+                {
+                    _ = options.append(true).create(true);
+                }
             }
             OpenMode::Truncate => {
                 _ = options.write(true).create(true).truncate(true);
             }
             OpenMode::CreateNew => {
-                _ = options.write(true).append(true).create_new(true);
+                #[cfg(windows)]
+                {
+                    // Use the same writable Windows handle as append mode so rollback can
+                    // truncate a partially written first frame.
+                    _ = options.write(true).create_new(true);
+                }
+                #[cfg(not(windows))]
+                {
+                    _ = options.append(true).create_new(true);
+                }
             }
         }
         #[cfg(unix)]
