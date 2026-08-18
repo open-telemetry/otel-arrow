@@ -115,40 +115,66 @@ type ExporterProducer = ExporterFutureProducer<ProducerClientContext>;
 #[cfg(not(feature = "aws"))]
 type ExporterProducer = ExporterFutureProducer<DefaultClientContext>;
 
-/// Retires a producer off the core-local runtime.
+/// Retires a producer on the current (blocking) thread.
 ///
-/// Runs the blocking `flush` (bounded by `flush_timeout`), then purges anything
-/// still queued, then drops the producer (which joins its poll thread). All
-/// three are synchronous librdkafka calls that can block on a slow or
-/// unavailable broker, so they run on a [`tokio::task::spawn_blocking`] thread
-/// and never stall the event loop. Returns the spawned task's handle so the
-/// caller can bound retirement concurrency and await it on shutdown.
+/// Flushes the producer bounded by `flush_timeout`; on flush failure, purges
+/// anything still queued (its delivery callbacks fire with a purge error, which
+/// the send path reports as a transient nack), then drops the producer (which
+/// joins its poll thread). All are synchronous librdkafka calls that can block
+/// on a slow or unavailable broker, so this must run on a
+/// [`tokio::task::spawn_blocking`] thread rather than the event loop.
+fn retire_producer_blocking(producer: ExporterProducer, flush_timeout: Duration) {
+    if let Err(e) = producer.flush(flush_timeout) {
+        otap_df_telemetry::otel_warn!(
+            "kafka.exporter.reconfigure.flush_failed",
+            error = %e,
+        );
+        producer.purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
+    }
+    // Dropping the producer here (on the blocking thread) joins its poll thread;
+    // doing it off the event loop is the point of this task.
+    drop(producer);
+}
+
+/// Spawns retirement of `producer`, serialized behind any `prior` retirement,
+/// and returns the single handle representing the whole retirement chain.
+///
+/// The blocking retirement work ([`retire_producer_blocking`]: flush, purge on
+/// failure, drop-and-join) runs on a [`tokio::task::spawn_blocking`] thread, so
+/// a slow or unavailable broker never stalls the event loop. When a `prior`
+/// retirement is still running it is awaited first (bounded by `flush_timeout`
+/// so a wedged prior retirement cannot make the chain accumulate unbounded
+/// latency), so at most one producer flushes at a time and one handle
+/// represents the chain. The event loop returns immediately either way.
 fn spawn_producer_retirement(
+    prior: Option<tokio::task::JoinHandle<()>>,
     producer: ExporterProducer,
     flush_timeout: Duration,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = producer.flush(flush_timeout) {
-            otap_df_telemetry::otel_warn!(
-                "kafka.exporter.reconfigure.flush_failed",
-                error = %e,
-            );
-            producer.purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
+    tokio::task::spawn(async move {
+        if let Some(prior) = prior {
+            // Bound the wait on the prior retirement: it owns a blocking thread
+            // we cannot cancel, so cap the serialization latency at the flush
+            // timeout rather than waiting on a potentially wedged retirement.
+            let _ = tokio::time::timeout(flush_timeout, prior).await;
         }
-        // Dropping the producer here (on the blocking thread) joins its poll
-        // thread; doing it off the event loop is the point of this task.
-        drop(producer);
+        let _ =
+            tokio::task::spawn_blocking(move || retire_producer_blocking(producer, flush_timeout))
+                .await;
     })
 }
 
 /// Awaits any outstanding producer-retirement task, bounded by `deadline`.
 ///
-/// Retirement runs on a [`tokio::task::spawn_blocking`] thread and cannot be
-/// cancelled, so the wait is bounded: if the task outruns `deadline` the handle
-/// is left in place (the task finishes on its own thread) and the caller
-/// proceeds. Enforces the "at most one retiring producer" bound -- a new
-/// retirement is only spawned after this returns, and a completed task's handle
-/// is cleared here so it does not accumulate.
+/// The stored handle represents the whole retirement chain (see
+/// [`spawn_producer_retirement`]); its inner prior-await is already
+/// `flush_timeout`-bounded, and the chain ultimately runs on a
+/// [`tokio::task::spawn_blocking`] thread that cannot be cancelled. So this wait
+/// is bounded: if the chain outruns `deadline` the handle is left in place (the
+/// task finishes on its own thread) and the caller proceeds. Enforces the "at
+/// most one retiring producer" bound -- a new retirement is only spawned after
+/// this returns, and a completed task's handle is cleared here so it does not
+/// accumulate.
 async fn await_pending_retirement(
     retiring_producer: &mut Option<tokio::task::JoinHandle<()>>,
     deadline: Duration,
@@ -165,8 +191,7 @@ async fn await_pending_retirement(
         // one retiring producer" bound.
         *retiring_producer = Some(handle);
     }
-    // Otherwise the task finished (or panicked, which we ignore -- retirement is
-    // best-effort) and the handle is dropped here.
+    // Otherwise the task finished and the handle is dropped here.
 }
 
 /// URN for the Kafka exporter factory registration.
@@ -298,6 +323,12 @@ impl InFlightSends {
     #[inline]
     fn is_empty(&self) -> bool {
         self.futures.is_empty()
+    }
+
+    /// Number of outstanding (not yet finalized) deliveries.
+    #[inline]
+    fn len(&self) -> usize {
+        self.futures.len()
     }
 
     /// Whether the set has reached its `max_in_flight` bound and must drain a
@@ -1060,25 +1091,15 @@ impl KafkaExporter {
         // blocking it. Retirement (flush of the generation's still in-flight
         // batches to the OLD destination, then purge and drop, which joins the
         // poll thread) runs on a `spawn_blocking` thread, so a slow or unavailable
-        // broker cannot stall the pipeline.
-        //
-        // Bound retirement concurrency to at most one outstanding task by
-        // CHAINING rather than waiting: if a prior generation is still retiring,
-        // spawn a task that first awaits the prior retirement and only then
-        // retires this generation's producer. The single stored handle therefore
-        // represents the whole retirement chain (<= 1 handle, retirements run
-        // strictly one at a time), and the event loop returns immediately either
-        // way.
-        *retiring_producer = Some(match retiring_producer.take() {
-            None => spawn_producer_retirement(old_producer, flush_timeout),
-            Some(prev) => tokio::task::spawn(async move {
-                // Wait for the prior retirement to finish (it owns a blocking
-                // thread we cannot cancel), then retire this producer and await
-                // that too, so the chain stays serialized behind one handle.
-                let _ = prev.await;
-                let _ = spawn_producer_retirement(old_producer, flush_timeout).await;
-            }),
-        });
+        // broker cannot stall the pipeline. Retirement concurrency is bounded to
+        // at most one outstanding task by chaining the previous retirement into
+        // the new one (see `spawn_producer_retirement`); the event loop returns
+        // immediately.
+        *retiring_producer = Some(spawn_producer_retirement(
+            retiring_producer.take(),
+            old_producer,
+            flush_timeout,
+        ));
 
         otap_df_telemetry::otel_info!(
             "kafka.exporter.reconfigured",
@@ -1223,18 +1244,42 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // engine's receiver-first drain. Flush the producer (bounded
                     // by `deadline`) so pipelined deliveries get a final chance,
                     // then finalize every tracked in-flight delivery so its
-                    // ack/nack is reported before we return, then purge anything
-                    // still queued so we never block past the deadline.
+                    // ack/nack is reported before we return.
                     self.drain_and_flush(deadline, &effect_handler).await;
+
+                    // Finalize tracked in-flight deliveries, but bounded by the
+                    // shutdown `deadline`. Deliveries against a retiring generation
+                    // resolve only when that producer's off-loop flush/purge
+                    // completes (bounded by its own, possibly larger, timeout), so
+                    // an unbounded drain here could overrun the deadline. Per the
+                    // engine shutdown contract (deadline-boundedness wins), stop at
+                    // the deadline and abandon the rest: their futures resolve as
+                    // Canceled when the producers drop (a best-effort transient
+                    // nack).
+                    let deadline_at = tokio::time::Instant::from_std(deadline);
                     while !in_flight.is_empty() {
-                        let (meta, result) = in_flight.next_completion().await;
-                        self.finalize_send_completion(
-                            meta,
-                            result,
-                            &ack_nack_reporter,
-                            Some(&effect_handler),
-                        )
-                        .await;
+                        match tokio::time::timeout_at(deadline_at, in_flight.next_completion())
+                            .await
+                        {
+                            Ok((meta, result)) => {
+                                self.finalize_send_completion(
+                                    meta,
+                                    result,
+                                    &ack_nack_reporter,
+                                    Some(&effect_handler),
+                                )
+                                .await;
+                            }
+                            Err(_elapsed) => {
+                                otap_df_telemetry::otel_warn!(
+                                    "kafka.exporter.shutdown.drain_deadline_exceeded",
+                                    abandoned = in_flight.len() as u64,
+                                    error = "shutdown deadline reached before all in-flight \
+                                             deliveries were finalized; abandoning the remainder",
+                                );
+                                break;
+                            }
+                        }
                     }
 
                     // Await any in-flight producer retirement from a recent
@@ -2844,6 +2889,160 @@ pub mod test_support {
                          broker: the interactive phase (including shutdown) exceeded \
                          5s (flush timeout is {FLUSH_TIMEOUT_MS}ms)"
                     );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): configure a large flush
+        /// `timeout_ms`, put a batch in flight on the old generation, take every
+        /// broker down, reconfigure (retiring the old producer, whose flush is now
+        /// blocked for the whole timeout), leave another batch tracked in flight,
+        /// then request a graceful shutdown with a SHORT deadline.
+        /// Guarantees: the shutdown in-flight drain is bounded by the deadline --
+        /// deliveries against the retiring producer cannot be finalized within the
+        /// deadline (the broker is down), so the exporter abandons them and
+        /// returns rather than waiting the much larger flush `timeout_ms`. The
+        /// whole stop completes far below `timeout_ms`.
+        #[tokio::test]
+        async fn shutdown_is_deadline_bounded_with_slow_retiring_producer() {
+            let old_topic = "it-shutdown-deadline-oldgen-old";
+            let new_topic = "it-shutdown-deadline-oldgen-new";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(old_topic)
+                    .topic(new_topic),
+                |cluster| async move {
+                    cluster.faults().all_brokers_down();
+                    // Flush timeout is an order of magnitude larger than the
+                    // shutdown deadline: if the shutdown drain waited on the
+                    // retiring producer's flush it would block for ~FLUSH_TIMEOUT_MS
+                    // (kept to 5s so the detached, uncancellable flush that keeps
+                    // running on its blocking thread does not lengthen the suite).
+                    const FLUSH_TIMEOUT_MS: u64 = 5_000;
+                    const SHUTDOWN_DEADLINE: Duration = Duration::from_millis(500);
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(
+                            old_topic.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        .with_timeout_ms(FLUSH_TIMEOUT_MS)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // P0 is in flight on generation 0 (broker down, so it cannot
+                    // deliver).
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes_seq(1), None))
+                        .await
+                        .expect("send pdata before reconfigure");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    // Reconfigure: retires the generation-0 producer, whose flush
+                    // is now blocked against the down broker for FLUSH_TIMEOUT_MS.
+                    // P0's delivery future stays tracked in the in-flight set.
+                    exporter
+                        .send_config(logs_reconfig_json(cluster.bootstrap_servers(), new_topic))
+                        .await;
+
+                    // A second batch in flight on generation 1 so the in-flight set
+                    // is non-empty at shutdown.
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes_seq(2), None))
+                        .await
+                        .expect("send pdata after reconfigure");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    // Graceful shutdown with a short deadline must complete well
+                    // below FLUSH_TIMEOUT_MS: the in-flight drain is deadline-
+                    // bounded and abandons deliveries it cannot finalize. Without
+                    // the deadline bound this would take ~FLUSH_TIMEOUT_MS.
+                    let start = std::time::Instant::now();
+                    exporter.shutdown(SHUTDOWN_DEADLINE).await;
+                    tokio::time::timeout(Duration::from_secs(10), exporter.await_stopped())
+                        .await
+                        .expect("shutdown must not hang on the retiring producer's flush");
+                    assert!(
+                        start.elapsed() < Duration::from_secs(3),
+                        "shutdown must stay bounded by the {SHUTDOWN_DEADLINE:?} deadline, not the \
+                         {FLUSH_TIMEOUT_MS}ms retiring-producer flush timeout: took {:?}",
+                        start.elapsed()
+                    );
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): with every broker down and
+        /// a large flush `timeout_ms`, apply THREE back-to-back live
+        /// reconfigurations, each with a batch in flight so each spawns a
+        /// retirement that blocks for the whole timeout and chains behind the
+        /// previous one.
+        /// Guarantees: chained retirements never accumulate unbounded latency and
+        /// never stall live reconfiguration -- each reconfigure, and a trailing
+        /// post-config send, returns far below `timeout_ms` even though earlier
+        /// retirements are still blocked (the chain's wait on the prior retirement
+        /// is bounded by the flush timeout and runs off the event loop).
+        #[tokio::test]
+        async fn reconfigure_chain_stays_bounded_under_repeated_reconfig() {
+            let t0 = "it-reconfig-chain-0";
+            let t1 = "it-reconfig-chain-1";
+            let t2 = "it-reconfig-chain-2";
+            let t3 = "it-reconfig-chain-3";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(t0)
+                    .topic(t1)
+                    .topic(t2)
+                    .topic(t3),
+                |cluster| async move {
+                    cluster.faults().all_brokers_down();
+                    const FLUSH_TIMEOUT_MS: u64 = 30_000;
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(t0.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(FLUSH_TIMEOUT_MS)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Put a batch in flight on the initial generation.
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes_seq(0), None))
+                        .await
+                        .expect("send pdata before first reconfigure");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    // Three back-to-back reconfigures, each with a fresh in-flight
+                    // batch so each spawns a blocked retirement that chains behind
+                    // the previous one. The whole sequence plus a trailing send must
+                    // stay far below FLUSH_TIMEOUT_MS.
+                    let start = std::time::Instant::now();
+                    let phase = tokio::time::timeout(Duration::from_secs(3), async {
+                        for (seq, topic) in [(1usize, t1), (2, t2), (3, t3)] {
+                            exporter
+                                .send_config(logs_reconfig_json(cluster.bootstrap_servers(), topic))
+                                .await;
+                            exporter
+                                .send_pdata(logs_pdata(logs_request_bytes_seq(seq), None))
+                                .await
+                                .expect("send pdata between reconfigures");
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    })
+                    .await;
+                    assert!(
+                        phase.is_ok() && start.elapsed() < Duration::from_secs(3),
+                        "chained retirements must not accumulate unbounded latency: \
+                         three cutovers took {:?} (flush timeout is {FLUSH_TIMEOUT_MS}ms)",
+                        start.elapsed()
+                    );
+
+                    // Recover the broker so pending retirements can drain, then shut
+                    // down cleanly within a generous deadline.
+                    cluster.faults().all_brokers_up();
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    exporter.await_stopped().await;
                 },
             )
             .await;
