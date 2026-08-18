@@ -1,7 +1,5 @@
 # Pipeline Data Context
 
-**Status:** Draft
-
 ## Overview
 
 A **Pdata Context** is message-scoped metadata attached to an
@@ -24,7 +22,7 @@ example:
   using transport header configuration. The existing
   `policies::transport_headers` section already has a mechanism for
   defining context entries though its `store_as` verb.
-- Network information such as source address can be placed into 
+- Network information such as source address can be placed into
   context entries using network configuration, and so on.
 
 For users with multitenancy requirements, we introduce a form of
@@ -124,7 +122,7 @@ I have the desires as A/B/C/G, in addition I may wish to:
 
 While these partitioning steps are orthogonal from context, the
 partition function must support configuration that preserves context
-entries in its output. For example, the partition procsesor
+entries in its output. For example, the partition processor
 configuration will support partitioning by metric name, TraceID, and
 other aspects including context entry values, so that the partition
 function produces the necessary context for the next node in the
@@ -243,7 +241,7 @@ Or `constant`,
 policies:
   context:
     entries:
-      receiver:                 # Named context entry
+      routename:                # Named context entry
         type: constant
         value: otlp-http-json
 ```
@@ -261,7 +259,7 @@ options:
 - Take both, a one-dimensional entry and a two-dimensional entry.
 
 The choice lets users determine the cardinality of the context entry
-values used in a pipeline, for example to form batches using two dimensions 
+values used in a pipeline, for example to form batches using two dimensions
 while rate-limiting in one dimension, ignoring the other.
 
 Generally, when referring to a composite entry by a specific
@@ -336,7 +334,7 @@ policies:
         entry: product_user
 ```
 
-or for example, to indicate that a processor must produce a certain 
+or for example, to indicate that a processor must produce a certain
 output context entry.
 
 ```yaml
@@ -350,61 +348,169 @@ policies:
 ## Developer interfaces
 
 In this section, we describe the interfaces that nodes will use to
-bind to context entries. These describe the different kinds of
-contracts between Pdata context and its users.
+bind to context entries. These describe various kinds of contracts
+between Pdata context and its users.
+
+The engine resolves `policies.context` by combining entries from the
+engine, group, pipeline policy levels. Nodes can bind Pdata context
+interfaces from the engine level, their own pipeline, and their own
+pipeline group. For context entries to be shared by a pair of nodes,
+they must be defined at the appropriate level; pipeline/group-level
+entries can only be shared within a pipeline/pipeline-group.
 
 ### Pdata context sources
 
-For receivers and for processors that form new Pdata context values, a
-**Pdata source binding** is registered. The relevant optional and
-required context policies will be evaluated through an
-interface. Multiple methods of formation may be provided, for example
-the receiver that constructs new Pdata context values from arriving
-messages will use a different binding than a processor that partitions
-by a specific context field.
-
-For receivers, the source address, the HTTP headers, and the
-`AuthorizedData` value will be passed to the binding.
+For receivers and for processors that form new Pdata contexts, a Pdata
+context source binding is registered with builder methods for creating
+new contexts. Receivers use the context arrival source binding with
+source address, the HTTP headers, and the `AuthorizedData` value
+passed to the binding. Processors will use the context projector
+source binding to transform contexts, or they will use context
+predicate bindings. Exporters typically use 
 
 ```rust
-TODO e.g.,
+/// Part of PipelineContext, used at construction time.
+pub trait PdataContextBinder {
+    /// Create a new Pdata context arrival source for receivers to
+    /// produce new contexts.
+    fn bind_arrival_source(&self, node: NodeId) -> Result<Box<dyn PdataContextArrival>, ContextError>;
+
+    /// Create a new Pdata context projector source for processors that
+    /// use an N:1 or N:M contexts as input and output.
+    fn bind_projector_source(
+        &self,
+        node: NodeId,
+        projection: ContextProjection,
+    ) -> Result<Box<dyn PdataContextProjector>, ContextError>;
+
+    /// Create a new Pdata context sink, typically for exporters.
+    fn bind_sink(
+        &self,
+        node: NodeId,
+        requested: &[ContextEntryRef],
+    ) -> Result<Box<dyn PdataContextSink>, ContextError>;
+
+    /// Create a compiled predicate, used by all nodes.
+    fn bind_predicate(
+        &self,
+        node: NodeId,
+        spec: &ContextPredicateSpec,
+    ) -> Result<Box<dyn PdataContextPredicate>, ContextError>;
+}
 ```
-In other cases, where there is an incoming Pdata context being
-extended or projected, the input Pdata context will be used
-through a different binding method.
+
+As an example, the context arrival source binding consists of:
 
 ```rust
-TODO e.g.,
+/// Pdata context is an existing type.
+type PdataContext = otap_df_pdata::pdata::Context;
+
+/// Compute a context for a new arrival.
+pub trait PdataContextArrival {
+    fn from_arrival(
+        &self,
+        arrival: PdataArrival<'_>,
+    ) -> Result<PdataContext, ContextError>;
+}
+
+/// Argument to the context arrival function.
+pub struct PdataArrival<'a> {
+    pub peer_addr: Option<SocketAddr>,
+    pub headers: &'a TransportHeaders,
+    pub identity: Option<&'a AuthorizedIdentity>,
+}
+```
+
+To create and use this interface, for example:
+
+```rust
+fn create_otlp_receiver(
+    pipeline_ctx: PipelineContext,
+    node_id: NodeId,
+    // ...
+) -> Result<ReceiverWrapper<OtapPdata>, Error> {
+    // Bind the context arrival source, a PDataContextArrival.
+    let context_binding = pipeline_ctx
+        .pdata_context()
+        .bind_arrival_source(node_id)?;
+
+    Ok(ReceiverWrapper::local(OtlpReceiver { context_binding /* ... */ }))
+}
+
+impl OtlpReceiver {
+    fn accept(&mut self, request: Request<ExportRequest>) -> Result<OtapPdata, Error> {
+        let identity = request.auth_extension.authorize(request)?;
+        let context = self.context_binding.from_arrival(PdataArrival {
+            peer_addr: request.remote_addr(),
+            headers: request.transport_headers(),
+            identity,
+        })?;
+        Ok(OtapPdata::new(context, decode(request)?))
+    }
+}
+```
+
+In other cases, where there is an incoming Pdata context being
+extended or projected, the input Pdata context will be used through a
+projector binding.
+
+```rust
+pub trait PdataContextProjector {
+    fn from_projection(
+        &self,
+        input: &PdataContext,
+        additions: ContextAdditions<'_>,
+    ) -> Result<PdataContext, ContextError>;
+}
+
+impl PartitionProcessor {
+    fn partition(&mut self, pdata: OtapPdata) -> Result<Vec<OtapPdata>, Error> {
+        self.partitioner.partition(pdata).map(|partitioned| {
+            partitioned.map_context(|input, partition| {
+                self.context.from_projection(input, partition.into())
+            })
+        })
+    }
+}
 ```
 
 ### Pdata context sinks
 
 For exporters that produce external message context encoding from
-Pdata context entries, use the **Pdata sink binding**, (e.g., as done
-in `header_propagation`) with `type: context_entry`.
+Pdata context entries, use the Pdata context sink binding, which
+factors in `header_propagation` clauses. This sort of binding used
+here will support the node in injecting Pdata context entry fields
+into outgoing messages.
 
-```yaml
-groups:
-  default:
-    pipelines:
-      main:
-        nodes:
-          batch:
-            type: exporter:otlp
-            policies:
-              transport_headers:
-                header_propagation:
-                  default:
-                    action: propagate
-                    selector:
-                      type: context_entry
-                      entry: origin_addr
-                  overrides: 
-                    ...
+```rust
+/// Exporters use context sink bindings to propagate context.
+pub trait PdataContextSink {
+    /// Writes context entries into a new carrier.
+    fn write_to(
+        &self,
+        context: &PdataContext,
+        output: &mut dyn ContextOutput,
+    ) -> Result<(), ContextError>;
+}
+
+/// Adapter implemented by an HTTP or gRPC request builder.
+pub trait ContextOutput {
+    /// Sets an individual context entry with its typed value reference.
+    fn set(&mut self, name: &str, value: ContextValueRef<'_>) -> Result<(), ContextError>;
+}
+
+impl OtlpExporter {
+    /// Encodes a request and injects the context into HTTP headers.
+    fn encode(&mut self, pdata: OtapPdata) -> Result<Request<ExportRequest>, Error> {
+        let mut request = Request::new(encode(pdata.payload())?);
+        self.context.write_to(
+            pdata.context(),
+            &mut HTTPHeaderOutput::new(&mut request),
+        )?;
+        Ok(request)
+    }
+}
 ```
-
-This sort of binding used here will support the node in injecting
-Pdata context entry fields into outgoing messages.
 
 ### Pdata context predicates
 
@@ -415,10 +521,35 @@ applications of per-entry configuration.
 These bindings will refer to entries in effect for the nodes. Such an
 interface will support fast table lookup and equality checking.
 
-```yaml
-TODO e.g.
+```rust
+/// A processor or exporter holds one predicate object per configured
+/// context-dependent decision. `evaluate` performs no name lookup.
+pub trait PdataContextPredicate {
+    fn evaluate(&self, context: &PdataContext) -> ContextDecision;
+}
+
+pub enum ContextDecision {
+    /// A configured table row matched. `action` is the precompiled row index.
+    Matched { action: u16 },
+    /// The named entry was absent.
+    Missing,
+    /// The entry was present but no row matched.
+    NoMatch,
+}
+
+impl ContextRouter {
+    fn route(&self, pdata: &OtapPdata) -> &Route {
+        match self.predicate.evaluate(pdata.context()) {
+            ContextDecision::Matched { action } => &self.routes[action as usize],
+            ContextDecision::Missing | ContextDecision::NoMatch => &self.routes.default,
+        }
+    }
+}
 ```
 
 ### Conslusion
 
-The users A/B/C/G/L/P each meet their needs, here.
+The users A/B/C/G/L/P each have their needs met, we think, by
+configuring context entry policies and policy bindings in a variety of
+nodes that use entries values for a variety of configurable
+behaviors in dataflow engine pipelines.
