@@ -661,6 +661,7 @@ mod tests {
     use bytes::Bytes;
     use futures::StreamExt;
     use http::StatusCode;
+    use http::header::HeaderValue;
     use otap_df_channel::mpsc;
     use otap_df_engine::Interests;
     use otap_df_engine::capability::CapabilityError;
@@ -674,8 +675,11 @@ mod tests {
     use otap_df_otap::pdata::Context;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
+    use rand::{RngExt, SeedableRng, rngs::SmallRng};
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
+    use wiremock::matchers::{header, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Test double for the `BearerTokenProvider` capability. Yields a single
     /// non-expiring token and then ends the stream.
@@ -746,6 +750,45 @@ mod tests {
         let pipeline_ctx = create_test_pipeline_ctx();
         let _ =
             AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
+    }
+
+    fn test_effect_handler() -> EffectHandler<OtapPdata> {
+        let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
+        EffectHandler::new(
+            NodeId {
+                index: 0,
+                name: "test_exporter".to_string().into(),
+            },
+            reporter,
+        )
+    }
+
+    /// Build an exporter whose client pool targets `endpoint`, as `start` would.
+    async fn exporter_targeting(endpoint: String) -> AzureMonitorExporter {
+        let mut config = create_test_config();
+        config.api.dcr_endpoint = endpoint;
+        let mut exporter = AzureMonitorExporter::new(
+            create_test_pipeline_ctx(),
+            config,
+            Box::new(MockTokenProvider),
+        )
+        .unwrap();
+        exporter
+            .client_pool
+            .initialize(&exporter.config.api)
+            .await
+            .unwrap();
+        exporter
+    }
+
+    async fn auth_with_cached_token() -> BearerAuth {
+        let mut auth = BearerAuth::new(
+            Box::new(MockTokenProvider),
+            AZURE_MONITOR_BEARER_AUTH_EVENTS,
+        );
+        auth.poll_refresh().await;
+        assert!(auth.is_ready());
+        auth
     }
 
     /// Scenario: A completed export succeeds with a known compressed request-body size.
@@ -890,6 +933,205 @@ mod tests {
             .unwrap();
 
         assert!(!auth.is_ready());
+    }
+
+    /// Scenario: pdata arrives before the bearer token provider has published a
+    /// usable token.
+    /// Guarantees: the message is refused instead of buffered, so the exporter
+    /// never batches records it cannot authenticate.
+    #[tokio::test]
+    async fn pdata_is_refused_while_no_bearer_token_is_cached() {
+        let mut exporter = exporter_targeting("http://localhost".to_string()).await;
+        let mut auth = BearerAuth::new(
+            Box::new(MockTokenProvider),
+            AZURE_MONITOR_BEARER_AUTH_EVENTS,
+        );
+        assert!(!auth.is_ready(), "no token has been polled yet");
+        assert!(!auth.not_ready_reason().is_empty());
+
+        let mut msg_id = 0;
+        exporter
+            .handle_message(
+                &test_effect_handler(),
+                Ok(Message::PData(OtapPdata::new(
+                    Context::default(),
+                    OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new())),
+                ))),
+                &mut msg_id,
+                &mut auth,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(msg_id, 0, "refused pdata must not consume a message id");
+        assert!(exporter.state.msg_to_data.is_empty());
+    }
+
+    /// Scenario: a logs message arrives once a bearer token is cached, carrying
+    /// no convertible log records.
+    /// Guarantees: it is admitted for processing rather than refused for auth
+    /// reasons, and is then released instead of being retained by the exporter.
+    #[tokio::test]
+    async fn logs_are_admitted_once_a_bearer_token_is_cached() {
+        let mut exporter = exporter_targeting("http://localhost".to_string()).await;
+        let mut auth = auth_with_cached_token().await;
+
+        let mut msg_id = 0;
+        exporter
+            .handle_message(
+                &test_effect_handler(),
+                Ok(Message::PData(OtapPdata::new(
+                    Context::default(),
+                    OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new())),
+                ))),
+                &mut msg_id,
+                &mut auth,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(msg_id, 1, "admitted pdata consumes a message id");
+        assert!(exporter.state.msg_to_data.is_empty());
+    }
+
+    /// Scenario: buffered log entries are flushed by shutdown while a bearer
+    /// token is cached.
+    /// Guarantees: the batch reaches the ingestion endpoint carrying that token,
+    /// and the drained export is accounted as a success.
+    #[tokio::test]
+    async fn shutdown_exports_buffered_logs_with_the_cached_token() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut exporter = exporter_targeting(mock_server.uri()).await;
+        let mut auth = auth_with_cached_token().await;
+        let effect_handler = test_effect_handler();
+
+        exporter
+            .handle_logs(
+                &effect_handler,
+                Context::default(),
+                OtapPayload::empty(SignalType::Logs),
+                vec![Bytes::from_static(br#"{"Message":"hello"}"#)],
+                1,
+                &mut auth,
+            )
+            .await
+            .unwrap();
+        assert_eq!(exporter.state.msg_to_data.len(), 1);
+
+        exporter
+            .handle_shutdown(&effect_handler, &mut auth)
+            .await
+            .unwrap();
+
+        assert_eq!(exporter.in_flight_exports.len(), 0);
+        assert!(exporter.state.msg_to_data.is_empty());
+        let m = exporter.metrics.borrow();
+        assert_eq!(m.export_for(Outcome::Success).batches.get(), 1);
+        assert_eq!(m.export_for(Outcome::Failure).batches.get(), 0);
+    }
+
+    /// Scenario: a single logs message carries enough records to fill a batch.
+    /// Guarantees: the full batch is dispatched as soon as it is ready, rather
+    /// than waiting for shutdown or the periodic flush.
+    #[tokio::test]
+    async fn a_full_batch_is_dispatched_as_soon_as_it_is_ready() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut exporter = exporter_targeting(mock_server.uri()).await;
+        let mut auth = auth_with_cached_token().await;
+        let effect_handler = test_effect_handler();
+
+        // Entries must be distinct: identical ones compress too well to reach
+        // the compressed batch limit.
+        let mut rng = SmallRng::seed_from_u64(7);
+        let entries: Vec<Bytes> = (0..2_500)
+            .map(|_| {
+                let msg: String = (0..1_024)
+                    .map(|_| rng.random_range(b'a'..=b'z') as char)
+                    .collect();
+                Bytes::from(format!(r#"{{"Message":"{msg}"}}"#))
+            })
+            .collect();
+
+        exporter
+            .handle_logs(
+                &effect_handler,
+                Context::default(),
+                OtapPayload::empty(SignalType::Logs),
+                entries,
+                1,
+                &mut auth,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            exporter.in_flight_exports.len(),
+            1,
+            "a ready batch is dispatched without waiting for shutdown"
+        );
+
+        exporter
+            .drain_in_flight_exports(&effect_handler, &mut auth)
+            .await
+            .unwrap();
+        assert_eq!(
+            exporter
+                .metrics
+                .borrow()
+                .export_for(Outcome::Success)
+                .batches
+                .get(),
+            1
+        );
+    }
+
+    /// Scenario: shutdown arrives while no bearer token is cached.
+    /// Guarantees: the exporter skips the flush it cannot authenticate and still
+    /// releases every buffered message rather than dropping it silently.
+    #[tokio::test]
+    async fn shutdown_without_a_token_releases_buffered_messages() {
+        let mut exporter = exporter_targeting("http://localhost".to_string()).await;
+        let mut auth = BearerAuth::new(
+            Box::new(MockTokenProvider),
+            AZURE_MONITOR_BEARER_AUTH_EVENTS,
+        );
+        assert!(!auth.is_ready(), "no token has been polled yet");
+
+        exporter
+            .state
+            .add_msg_to_data(7, Context::default(), OtapPayload::empty(SignalType::Logs));
+
+        exporter
+            .handle_shutdown(&test_effect_handler(), &mut auth)
+            .await
+            .unwrap();
+
+        assert!(exporter.state.msg_to_data.is_empty());
+    }
+
+    /// Scenario: the bearer-auth adapter reports an unusable token and a closed
+    /// token stream.
+    /// Guarantees: both hooks are wired to Azure Monitor's event namespace and
+    /// can be raised without panicking.
+    #[test]
+    fn bearer_auth_events_are_reportable() {
+        let invalid = HeaderValue::from_str("\n").expect_err("control chars are invalid");
+        (AZURE_MONITOR_BEARER_AUTH_EVENTS.invalid_token)(&invalid);
+        (AZURE_MONITOR_BEARER_AUTH_EVENTS.token_stream_closed)();
     }
 
     // Azure Monitor can temporarily stop accepting new pdata while it is at

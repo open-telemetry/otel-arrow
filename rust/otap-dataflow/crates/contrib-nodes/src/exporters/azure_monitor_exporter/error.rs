@@ -423,6 +423,27 @@ mod tests {
         assert!(error.is_unauthorized());
     }
 
+    /// Scenario: failures that are not an HTTP 401, including an export that
+    /// exhausted its retries on a server error.
+    /// Guarantees: they do not invalidate the cached bearer token, so a healthy
+    /// credential survives unrelated export failures.
+    #[test]
+    fn non_401_errors_are_not_reported_as_unauthorized() {
+        assert!(!Error::forbidden("denied".to_string()).is_unauthorized());
+        assert!(!Error::PayloadTooLarge.is_unauthorized());
+        assert!(
+            !Error::ExportFailed {
+                attempts: 5,
+                last_error: Box::new(Error::ServerError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    body: String::new(),
+                    retry_after: None,
+                }),
+            }
+            .is_unauthorized()
+        );
+    }
+
     // ==================== Display Tests ====================
 
     #[test]

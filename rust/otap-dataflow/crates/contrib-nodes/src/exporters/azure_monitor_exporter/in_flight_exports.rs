@@ -152,6 +152,8 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::Duration as StdDuration;
+    use wiremock::matchers::{header, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // ==================== Test Helpers ====================
 
@@ -408,6 +410,56 @@ mod tests {
         assert!(completed.is_some());
         assert_eq!(completed.unwrap().row_count, 10);
         assert_eq!(exports.queued_rows(), 25);
+    }
+
+    /// Scenario: an export is enqueued with a bearer header and the generation
+    /// of the token that header was built from.
+    /// Guarantees: the dispatched request carries that header, and the completion
+    /// reports the same generation, so a rejection invalidates exactly the token
+    /// the request used.
+    #[tokio::test]
+    async fn push_export_sends_the_stamped_header_and_reports_its_generation() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("authorization", "Bearer gen-7"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let client = LogsIngestionClient::from_parts(
+            Client::new(),
+            mock_server.uri(),
+            create_test_metrics(),
+        );
+
+        let mut exports = InFlightExports::new(5);
+        let backpressured = exports
+            .push_export(
+                client,
+                7,
+                3,
+                Bytes::from_static(b"payload"),
+                HeaderValue::from_static("Bearer gen-7"),
+                42,
+            )
+            .await;
+        assert!(backpressured.is_none());
+        assert_eq!(exports.queued_rows(), 3);
+
+        let completed = exports.next_completion().await.expect("export completes");
+
+        assert_eq!(completed.batch_id, 7);
+        assert_eq!(completed.token_generation, 42);
+        assert_eq!(completed.row_count, 3);
+        assert_eq!(completed.body_size_bytes, 7);
+        assert!(
+            completed.result.is_ok(),
+            "expected success, got {:?}",
+            completed.result
+        );
+        assert_eq!(exports.queued_rows(), 0);
     }
 
     // ==================== drain Tests ====================
