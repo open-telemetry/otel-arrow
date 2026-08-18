@@ -28,6 +28,28 @@ use crate::capability::error::CapabilityError;
 use futures::Stream;
 use otap_df_engine_macros::capability;
 use std::pin::Pin;
+use std::time::Duration;
+
+/// How close to [`BearerToken::expires_on`] a token stops being usable.
+///
+/// Part of the capability contract rather than either side's private tuning,
+/// because both sides have to agree on it:
+///
+/// - A **provider** must not serve a token inside this window, and must
+///   schedule its refresh far enough ahead of expiry to publish a replacement
+///   before the current one enters it. A provider whose refresh lead time is
+///   smaller than this margin strands its consumers: the token it is still
+///   serving has already stopped being usable.
+/// - A **consumer** must stop sending requests once its cached token is inside
+///   this window, so a request cannot outlive the credential it carries while
+///   in flight, in the presence of clock skew between the consumer, the token
+///   issuer and the service.
+///
+/// Fixed rather than configurable so a provider can validate its own refresh
+/// settings against the same value every consumer enforces. It has to cover a
+/// request's own duration plus that clock skew; 30s matches the default token
+/// endpoint timeout.
+pub const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 
 /// A per-consumer subscription to token refreshes.
 ///

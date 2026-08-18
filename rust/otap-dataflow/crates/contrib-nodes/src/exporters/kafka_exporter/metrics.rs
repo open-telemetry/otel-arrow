@@ -1,123 +1,366 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Telemetry metrics for the Kafka exporter.
-//!
-//! These metrics are exposed via the OTAP telemetry system and can be queried
-//! from the data-plane admin `/api/v1/metrics` endpoint. They follow the standard
-//! `metric_set` pattern used by other OTAP nodes.
+//! Bounded-cardinality internal telemetry for the Kafka exporter.
 
+use otap_df_config::SignalType;
 use otap_df_engine::context::PipelineContext;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::instrument::{Counter, HistogramNormal};
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use rdkafka::error::KafkaError;
+use rdkafka::types::RDKafkaErrorCode;
+use std::time::Duration;
 
-/// Signal-specific export completion metrics.
+/// Bounded reason that a Kafka export failed before or during delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum KafkaExporterErrorType {
+    /// The incoming signal has no Kafka exporter configuration.
+    UnconfiguredSignal,
+    /// A dynamic topic supplied by a transport header was invalid.
+    InvalidTopic,
+    /// The pdata payload could not be encoded for Kafka.
+    Encoding,
+    /// The local librdkafka producer queue stayed full until the enqueue deadline.
+    QueueFull,
+    /// The enqueue, request, or broker delivery deadline expired.
+    Timeout,
+    /// The encoded Kafka record exceeded a client or broker size limit.
+    MessageTooLarge,
+    /// Broker authentication or TLS authentication failed.
+    Authentication,
+    /// The principal lacks permission for the requested Kafka operation.
+    Authorization,
+    /// The destination topic or partition is unavailable.
+    UnknownTopicOrPartition,
+    /// The broker could not meet the configured in-sync replica requirement.
+    InsufficientReplicas,
+    /// Broker connectivity, name resolution, or network transport failed.
+    Transport,
+    /// The delivery failure does not fit another bounded category.
+    Other,
+}
+
+impl KafkaExporterErrorType {
+    /// Classifies a librdkafka delivery error into an operator-actionable bounded category.
+    #[must_use]
+    pub fn from_kafka_error(error: &KafkaError) -> Self {
+        match error.rdkafka_error_code() {
+            Some(RDKafkaErrorCode::QueueFull) => Self::QueueFull,
+            Some(
+                RDKafkaErrorCode::MessageTimedOut
+                | RDKafkaErrorCode::OperationTimedOut
+                | RDKafkaErrorCode::TimedOutQueue
+                | RDKafkaErrorCode::RequestTimedOut,
+            ) => Self::Timeout,
+            Some(
+                RDKafkaErrorCode::InvalidMessageSize
+                | RDKafkaErrorCode::MessageSizeTooLarge
+                | RDKafkaErrorCode::MessageBatchTooLarge,
+            ) => Self::MessageTooLarge,
+            Some(
+                RDKafkaErrorCode::Authentication
+                | RDKafkaErrorCode::SSL
+                | RDKafkaErrorCode::SaslAuthenticationFailed
+                | RDKafkaErrorCode::UnsupportedSASLMechanism
+                | RDKafkaErrorCode::IllegalSASLState,
+            ) => Self::Authentication,
+            Some(
+                RDKafkaErrorCode::TopicAuthorizationFailed
+                | RDKafkaErrorCode::GroupAuthorizationFailed
+                | RDKafkaErrorCode::ClusterAuthorizationFailed
+                | RDKafkaErrorCode::TransactionalIdAuthorizationFailed
+                | RDKafkaErrorCode::DelegationTokenAuthorizationFailed,
+            ) => Self::Authorization,
+            Some(
+                RDKafkaErrorCode::UnknownTopic
+                | RDKafkaErrorCode::UnknownPartition
+                | RDKafkaErrorCode::UnknownTopicOrPartition
+                | RDKafkaErrorCode::InvalidTopic,
+            ) => Self::UnknownTopicOrPartition,
+            Some(
+                RDKafkaErrorCode::ISRInsufficient
+                | RDKafkaErrorCode::NotEnoughReplicas
+                | RDKafkaErrorCode::NotEnoughReplicasAfterAppend,
+            ) => Self::InsufficientReplicas,
+            Some(
+                RDKafkaErrorCode::BrokerDestroy
+                | RDKafkaErrorCode::DestroyBroker
+                | RDKafkaErrorCode::BrokerTransportFailure
+                | RDKafkaErrorCode::Resolve
+                | RDKafkaErrorCode::AllBrokersDown
+                | RDKafkaErrorCode::UnknownBroker
+                | RDKafkaErrorCode::BrokerNotAvailable
+                | RDKafkaErrorCode::LeaderNotAvailable
+                | RDKafkaErrorCode::NotLeaderForPartition
+                | RDKafkaErrorCode::ReplicaNotAvailable
+                | RDKafkaErrorCode::CoordinatorNotAvailable
+                | RDKafkaErrorCode::NotCoordinator
+                | RDKafkaErrorCode::ListenerNotFound
+                | RDKafkaErrorCode::NetworkException,
+            ) => Self::Transport,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Timed phase of one Kafka export attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum KafkaExporterOperation {
+    /// Convert pdata into the configured Kafka wire encoding.
+    Encoding,
+    /// Enqueue the encoded record and wait for its broker delivery result.
+    Delivery,
+}
+
+/// Source used to resolve a Kafka destination topic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum KafkaTopicSource {
+    /// A captured transport header supplied the destination topic.
+    Header,
+    /// Static per-signal configuration supplied the destination topic.
+    StaticConfig,
+}
+
+/// Signal and failure reason dimensions for failed Kafka exports.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct KafkaExporterFailureAttributes {
+    /// Signal carried by the failed export.
+    pub signal: SignalType,
+    /// Bounded Kafka export failure category.
+    #[attribute_key = "error.type"]
+    pub error_type: KafkaExporterErrorType,
+}
+
+/// Signal, operation, and outcome dimensions for Kafka export phase latency.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct KafkaExporterOperationAttributes {
+    /// Signal carried by the export attempt.
+    pub signal: SignalType,
+    /// Timed exporter phase.
+    pub operation: KafkaExporterOperation,
+    /// Terminal outcome of the phase.
+    pub outcome: Outcome,
+}
+
+/// Signal and bounded topic-source dimensions for successful routing decisions.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct KafkaExporterRoutingAttributes {
+    /// Signal whose destination was resolved.
+    pub signal: SignalType,
+    /// Bounded source of the resolved topic.
+    #[attribute_key = "topic.source"]
+    pub source: KafkaTopicSource,
+}
+
+/// Encoded Kafka export payload measurements.
 #[metric_set(
     name = "exporter.kafka.exports",
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct KafkaExporterExportMetrics {
-    /// Number of exported messages partitioned by `signal` and `outcome` (`success` or `failure`).
+    /// Encoded Kafka payload bytes for attempts that reached the producer.
+    #[metric(unit = "By")]
+    pub bytes: HistogramNormal,
+}
+
+/// Kafka export phase latency.
+#[metric_set(
+    name = "exporter.kafka.operations",
+    measurement_attributes = KafkaExporterOperationAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct KafkaExporterOperationMetrics {
+    /// Time spent in the selected exporter phase.
+    #[metric(unit = "s")]
+    pub duration: HistogramNormal,
+}
+
+/// Failed Kafka export attempts classified by actionable reason.
+#[metric_set(
+    name = "exporter.kafka.failures",
+    measurement_attributes = KafkaExporterFailureAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct KafkaExporterFailureMetrics {
+    /// Number of failed export attempts.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
 }
 
-/// Operational metrics for the Kafka exporter.
-#[metric_set(name = "exporter.kafka")]
+/// Kafka topic-routing decisions without recording unbounded topic names.
+#[metric_set(
+    name = "exporter.kafka.routing",
+    measurement_attributes = KafkaExporterRoutingAttributes
+)]
 #[derive(Debug, Default, Clone)]
-pub struct KafkaExporterOperationalMetrics {
-    /// Number of acks received from downstream.
-    #[metric(unit = "{batch}")]
-    pub acks_received: Counter<u64>,
-    /// Number of nacks received from downstream.
-    #[metric(unit = "{batch}")]
-    pub nacks_received: Counter<u64>,
-    /// Batches where topic was resolved from a transport header.
-    #[metric(unit = "{batch}")]
-    pub topic_from_header: Counter<u64>,
-    /// Batches where topic was resolved from static per-signal config.
-    #[metric(unit = "{batch}")]
-    pub topic_from_static_config: Counter<u64>,
+pub struct KafkaExporterRoutingMetrics {
+    /// Number of messages routed using the selected bounded source.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
 }
 
 /// Composite metrics for the Kafka exporter.
+#[derive(Debug)]
 pub struct KafkaExporterMetrics {
-    /// Metrics related to export outcomes.
-    pub export_metrics: MeasurementMetricSet<KafkaExporterExportMetrics>,
-    /// Operational metrics for the Kafka exporter.
-    pub operational_metrics: MetricSet<KafkaExporterOperationalMetrics>,
+    /// Generic terminal export counts shared by all aligned exporters.
+    pub exports: MeasurementMetricSet<ExporterExportMetrics>,
+    /// Kafka-specific encoded payload measurements.
+    pub kafka_exports: MeasurementMetricSet<KafkaExporterExportMetrics>,
+    /// Kafka exporter phase latency.
+    pub operations: MeasurementMetricSet<KafkaExporterOperationMetrics>,
+    /// Kafka-specific failure classifications.
+    pub failures: MeasurementMetricSet<KafkaExporterFailureMetrics>,
+    /// Bounded topic-routing decisions.
+    pub routing: MeasurementMetricSet<KafkaExporterRoutingMetrics>,
 }
 
 impl KafkaExporterMetrics {
-    /// Registers the metrics for the Kafka exporter.
+    /// Registers all Kafka exporter metric sets for a pipeline node.
+    #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
-            export_metrics: KafkaExporterExportMetrics::register(pipeline_ctx),
-            operational_metrics: KafkaExporterOperationalMetrics::register(pipeline_ctx),
+            exports: ExporterExportMetrics::register(pipeline_ctx),
+            kafka_exports: KafkaExporterExportMetrics::register(pipeline_ctx),
+            operations: KafkaExporterOperationMetrics::register(pipeline_ctx),
+            failures: KafkaExporterFailureMetrics::register(pipeline_ctx),
+            routing: KafkaExporterRoutingMetrics::register(pipeline_ctx),
         }
     }
 
-    /// Reports the current metrics to the provided reporter.
-    pub fn report(
+    /// Records the terminal outcome, duration, and optional encoded bytes of one export.
+    fn record_export(
         &mut self,
-        reporter: &mut MetricsReporter,
-    ) -> Result<(), otap_df_telemetry::error::Error> {
-        reporter
-            .report(&mut self.operational_metrics)
-            .and_then(|()| reporter.report_measurement(&mut self.export_metrics))
+        signal: SignalType,
+        outcome: Outcome,
+        duration: Duration,
+        payload_bytes: Option<usize>,
+    ) {
+        let attributes = SignalOutcomeAttributes { signal, outcome };
+        self.exports.with(attributes).record(duration);
+        if let Some(payload_bytes) = payload_bytes {
+            self.kafka_exports
+                .with(attributes)
+                .bytes
+                .record(payload_bytes as f64);
+        }
     }
 
-    /// Retrieves the terminal snapshots of the metrics.
-    pub fn terminal_snapshots(&mut self) -> Vec<otap_df_telemetry::metrics::MetricSetSnapshot> {
-        let mut snapshots = self.operational_metrics.terminal_snapshots();
-        snapshots.extend(self.export_metrics.terminal_snapshots());
+    /// Records one successful terminal Kafka export.
+    pub fn record_success(&mut self, signal: SignalType, duration: Duration, payload_bytes: usize) {
+        self.record_export(signal, Outcome::Success, duration, Some(payload_bytes));
+    }
+
+    /// Records the latency and outcome of one bounded export phase.
+    pub fn record_operation(
+        &mut self,
+        signal: SignalType,
+        operation: KafkaExporterOperation,
+        outcome: Outcome,
+        duration_seconds: f64,
+    ) {
+        self.operations
+            .with(KafkaExporterOperationAttributes {
+                signal,
+                operation,
+                outcome,
+            })
+            .duration
+            .record(duration_seconds);
+    }
+
+    /// Records one failed terminal Kafka export and exactly one diagnostic category.
+    pub fn record_failure(
+        &mut self,
+        signal: SignalType,
+        error_type: KafkaExporterErrorType,
+        duration: Duration,
+        payload_bytes: Option<usize>,
+    ) {
+        self.record_export(signal, Outcome::Failure, duration, payload_bytes);
+        self.failures
+            .with(KafkaExporterFailureAttributes { signal, error_type })
+            .messages
+            .inc();
+    }
+
+    /// Records every operational observation for a failed Kafka delivery.
+    pub fn record_delivery_failure(
+        &mut self,
+        signal: SignalType,
+        error: &KafkaError,
+        delivery_duration_seconds: f64,
+        export_duration: Duration,
+        payload_bytes: usize,
+    ) {
+        self.record_operation(
+            signal,
+            KafkaExporterOperation::Delivery,
+            Outcome::Failure,
+            delivery_duration_seconds,
+        );
+        self.record_failure(
+            signal,
+            KafkaExporterErrorType::from_kafka_error(error),
+            export_duration,
+            Some(payload_bytes),
+        );
+    }
+
+    /// Records the bounded source of a successful topic-routing decision.
+    pub fn record_routing(&mut self, signal: SignalType, source: KafkaTopicSource) {
+        self.routing
+            .with(KafkaExporterRoutingAttributes { signal, source })
+            .messages
+            .inc();
+    }
+
+    /// Returns a routing bucket for inspection without marking it for export.
+    #[must_use]
+    pub fn routing_for(
+        &self,
+        signal: SignalType,
+        source: KafkaTopicSource,
+    ) -> &KafkaExporterRoutingMetrics {
+        self.routing
+            .get(KafkaExporterRoutingAttributes { signal, source })
+    }
+
+    /// Reports every touched Kafka exporter metric bucket.
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        reporter.report_measurement(&mut self.exports)?;
+        reporter.report_measurement(&mut self.kafka_exports)?;
+        reporter.report_measurement(&mut self.operations)?;
+        reporter.report_measurement(&mut self.failures)?;
+        reporter.report_measurement(&mut self.routing)
+    }
+
+    /// Takes every touched Kafka exporter metric bucket for terminal handoff.
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let mut snapshots = self.exports.terminal_snapshots();
+        snapshots.extend(self.kafka_exports.terminal_snapshots());
+        snapshots.extend(self.operations.terminal_snapshots());
+        snapshots.extend(self.failures.terminal_snapshots());
+        snapshots.extend(self.routing.terminal_snapshots());
         snapshots
     }
 
-    /// Increments the counter for successfully exported messages.
-    pub fn inc_exported(&mut self, signal: otap_df_config::SignalType) {
-        self.export_metrics
-            .with(SignalOutcomeAttributes {
-                signal,
-                outcome: Outcome::Success,
-            })
-            .messages
-            .inc();
-    }
-
-    /// Increments the counter for failed export attempts.
-    pub fn inc_failed(&mut self, signal: otap_df_config::SignalType) {
-        self.export_metrics
-            .with(SignalOutcomeAttributes {
-                signal,
-                outcome: Outcome::Failure,
-            })
-            .messages
-            .inc();
-    }
-
-    /// Increments the counter for acks received from downstream.
-    pub fn inc_ack(&mut self) {
-        self.operational_metrics.acks_received.inc();
-    }
-
-    /// Increments the counter for nacks received from downstream.
-    pub fn inc_nack(&mut self) {
-        self.operational_metrics.nacks_received.inc();
-    }
-
-    /// Increments the counter for batches where the topic was resolved from a header.
-    pub fn inc_topic_from_header(&mut self) {
-        self.operational_metrics.topic_from_header.inc();
-    }
-
-    /// Increments the counter for batches where the topic was resolved from static configuration.
-    pub fn inc_topic_from_static_config(&mut self) {
-        self.operational_metrics.topic_from_static_config.inc();
+    #[cfg(test)]
+    fn kafka_exports_for(
+        &self,
+        signal: SignalType,
+        outcome: Outcome,
+    ) -> &KafkaExporterExportMetrics {
+        self.kafka_exports
+            .get(SignalOutcomeAttributes { signal, outcome })
     }
 }
 
@@ -125,213 +368,291 @@ impl KafkaExporterMetrics {
 mod tests {
     use super::*;
     use crate::exporters::kafka_exporter::exporter::test_support::pipeline_context;
-    use otap_df_config::SignalType;
 
     fn new_metrics() -> KafkaExporterMetrics {
         KafkaExporterMetrics::register(&pipeline_context())
     }
 
-    /// Scenario: Traces are exported successfully.
-    /// Guarantees: The traces success counter is incremented.
+    /// Scenario: librdkafka delivery failures cover each operator-actionable category.
+    /// Guarantees: Error codes map to bounded queue, timeout, size, auth, topic, replica, transport, and fallback values.
     #[test]
-    fn inc_exported_traces() {
-        let mut m = new_metrics();
-        m.inc_exported(SignalType::Traces);
-        m.inc_exported(SignalType::Traces);
-        assert_eq!(
-            m.export_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: SignalType::Traces,
-                    outcome: Outcome::Success
-                })
-                .messages
-                .get(),
-            2
-        );
+    fn delivery_errors_are_classified_into_bounded_categories() {
+        let cases = [
+            (
+                RDKafkaErrorCode::QueueFull,
+                KafkaExporterErrorType::QueueFull,
+            ),
+            (
+                RDKafkaErrorCode::MessageTimedOut,
+                KafkaExporterErrorType::Timeout,
+            ),
+            (
+                RDKafkaErrorCode::MessageSizeTooLarge,
+                KafkaExporterErrorType::MessageTooLarge,
+            ),
+            (
+                RDKafkaErrorCode::Authentication,
+                KafkaExporterErrorType::Authentication,
+            ),
+            (
+                RDKafkaErrorCode::TopicAuthorizationFailed,
+                KafkaExporterErrorType::Authorization,
+            ),
+            (
+                RDKafkaErrorCode::UnknownTopicOrPartition,
+                KafkaExporterErrorType::UnknownTopicOrPartition,
+            ),
+            (
+                RDKafkaErrorCode::NotEnoughReplicas,
+                KafkaExporterErrorType::InsufficientReplicas,
+            ),
+            (
+                RDKafkaErrorCode::BrokerTransportFailure,
+                KafkaExporterErrorType::Transport,
+            ),
+            (
+                RDKafkaErrorCode::InvalidArgument,
+                KafkaExporterErrorType::Other,
+            ),
+        ];
+
+        for (code, expected) in cases {
+            let error = KafkaError::MessageProduction(code);
+            assert_eq!(KafkaExporterErrorType::from_kafka_error(&error), expected);
+        }
     }
 
-    /// Scenario: Metrics are exported successfully.
-    /// Guarantees: The metrics success counter is incremented.
+    /// Scenario: Successful and failed exports span signals, phases, failures, and routing sources.
+    /// Guarantees: Terminal failures are paired with one diagnostic category and every measurement remains isolated by its bounded attributes.
     #[test]
-    fn inc_exported_metrics() {
-        let mut m = new_metrics();
-        m.inc_exported(SignalType::Metrics);
-        assert_eq!(
-            m.export_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: SignalType::Metrics,
-                    outcome: Outcome::Success
-                })
-                .messages
-                .get(),
-            1
+    fn exporter_metrics_are_partitioned_by_context() {
+        let mut metrics = new_metrics();
+        metrics.record_success(SignalType::Logs, Duration::from_millis(250), 128);
+        metrics.record_failure(
+            SignalType::Traces,
+            KafkaExporterErrorType::Transport,
+            Duration::from_millis(500),
+            None,
         );
-    }
+        metrics.record_operation(
+            SignalType::Logs,
+            KafkaExporterOperation::Encoding,
+            Outcome::Success,
+            0.01,
+        );
+        metrics.record_routing(SignalType::Logs, KafkaTopicSource::Header);
 
-    /// Scenario: Logs are exported successfully.
-    /// Guarantees: The logs success counter is incremented.
-    #[test]
-    fn inc_exported_logs() {
-        let mut m = new_metrics();
-        m.inc_exported(SignalType::Logs);
         assert_eq!(
-            m.export_metrics
-                .with(SignalOutcomeAttributes {
+            metrics
+                .exports
+                .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
-                    outcome: Outcome::Success
+                    outcome: Outcome::Success,
                 })
                 .messages
                 .get(),
             1
         );
-    }
-
-    /// Scenario: Traces export fails.
-    /// Guarantees: The traces failure counter is incremented.
-    #[test]
-    fn inc_failed_traces() {
-        let mut m = new_metrics();
-        m.inc_failed(SignalType::Traces);
         assert_eq!(
-            m.export_metrics
-                .with(SignalOutcomeAttributes {
+            metrics
+                .exports
+                .get(SignalOutcomeAttributes {
                     signal: SignalType::Traces,
-                    outcome: Outcome::Failure
+                    outcome: Outcome::Failure,
                 })
                 .messages
                 .get(),
             1
         );
-    }
-
-    /// Scenario: Metrics export fails.
-    /// Guarantees: The metrics failure counter is incremented.
-    #[test]
-    fn inc_failed_metrics() {
-        let mut m = new_metrics();
-        m.inc_failed(SignalType::Metrics);
         assert_eq!(
-            m.export_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: SignalType::Metrics,
-                    outcome: Outcome::Failure
-                })
-                .messages
-                .get(),
-            1
-        );
-    }
-
-    /// Scenario: Logs export fails.
-    /// Guarantees: The logs failure counter is incremented.
-    #[test]
-    fn inc_failed_logs() {
-        let mut m = new_metrics();
-        m.inc_failed(SignalType::Logs);
-        assert_eq!(
-            m.export_metrics
-                .with(SignalOutcomeAttributes {
+            metrics
+                .exports
+                .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
-                    outcome: Outcome::Failure
+                    outcome: Outcome::Success,
                 })
-                .messages
-                .get(),
-            1
-        );
-    }
-
-    /// Scenario: Acks and nacks are received.
-    /// Guarantees: Operational counters for acks and nacks are incremented correctly.
-    #[test]
-    fn inc_ack_and_nack() {
-        let mut m = new_metrics();
-        m.inc_ack();
-        m.inc_ack();
-        m.inc_nack();
-        assert_eq!(m.operational_metrics.acks_received.get(), 2);
-        assert_eq!(m.operational_metrics.nacks_received.get(), 1);
-    }
-
-    /// Scenario: Export, ACK, NACK, and topic routing events occur simultaneously.
-    /// Guarantees: All counters increment independently without interfering with each other.
-    #[test]
-    fn counters_are_independent() {
-        let mut m = new_metrics();
-        m.inc_exported(SignalType::Traces);
-        m.inc_exported(SignalType::Metrics);
-        m.inc_exported(SignalType::Logs);
-        m.inc_failed(SignalType::Traces);
-        m.inc_ack();
-        m.inc_nack();
-        m.inc_topic_from_header();
-        m.inc_topic_from_static_config();
-
-        assert_eq!(
-            m.export_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: SignalType::Traces,
-                    outcome: Outcome::Success
-                })
-                .messages
-                .get(),
+                .duration_seconds
+                .get()
+                .count(),
             1
         );
         assert_eq!(
-            m.export_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: SignalType::Metrics,
-                    outcome: Outcome::Success
-                })
-                .messages
-                .get(),
+            metrics
+                .kafka_exports_for(SignalType::Logs, Outcome::Success)
+                .bytes
+                .get()
+                .count(),
             1
         );
         assert_eq!(
-            m.export_metrics
-                .with(SignalOutcomeAttributes {
+            metrics
+                .operations
+                .get(KafkaExporterOperationAttributes {
                     signal: SignalType::Logs,
-                    outcome: Outcome::Success
+                    operation: KafkaExporterOperation::Encoding,
+                    outcome: Outcome::Success,
+                })
+                .duration
+                .get()
+                .count(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .failures
+                .get(KafkaExporterFailureAttributes {
+                    signal: SignalType::Traces,
+                    error_type: KafkaExporterErrorType::Transport,
                 })
                 .messages
                 .get(),
             1
         );
         assert_eq!(
-            m.export_metrics
-                .with(SignalOutcomeAttributes {
-                    signal: SignalType::Traces,
-                    outcome: Outcome::Failure
+            metrics
+                .routing
+                .get(KafkaExporterRoutingAttributes {
+                    signal: SignalType::Logs,
+                    source: KafkaTopicSource::Header,
                 })
                 .messages
                 .get(),
             1
         );
-
-        assert_eq!(m.operational_metrics.acks_received.get(), 1);
-        assert_eq!(m.operational_metrics.nacks_received.get(), 1);
-        assert_eq!(m.operational_metrics.topic_from_header.get(), 1);
-        assert_eq!(m.operational_metrics.topic_from_static_config.get(), 1);
     }
 
-    /// Scenario: Topic is resolved from a header.
-    /// Guarantees: The corresponding operational counter is incremented.
+    /// Scenario: Kafka reports a timed-out delivery after encoding a logs payload.
+    /// Guarantees: One helper call records the delivery phase, classified failure, terminal outcome, duration, and payload bytes.
     #[test]
-    fn inc_topic_from_header() {
-        let mut m = new_metrics();
-        m.inc_topic_from_header();
-        m.inc_topic_from_header();
-        assert_eq!(m.operational_metrics.topic_from_header.get(), 2);
-        assert_eq!(m.operational_metrics.topic_from_static_config.get(), 0);
+    fn delivery_failure_records_the_complete_operational_context() {
+        let mut metrics = new_metrics();
+        let error = KafkaError::MessageProduction(RDKafkaErrorCode::MessageTimedOut);
+
+        metrics.record_delivery_failure(
+            SignalType::Logs,
+            &error,
+            0.25,
+            Duration::from_millis(500),
+            128,
+        );
+
+        assert_eq!(
+            metrics
+                .operations
+                .get(KafkaExporterOperationAttributes {
+                    signal: SignalType::Logs,
+                    operation: KafkaExporterOperation::Delivery,
+                    outcome: Outcome::Failure,
+                })
+                .duration
+                .get()
+                .count(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .failures
+                .get(KafkaExporterFailureAttributes {
+                    signal: SignalType::Logs,
+                    error_type: KafkaExporterErrorType::Timeout,
+                })
+                .messages
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .exports
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
+                .messages
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .exports
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
+                .duration_seconds
+                .get()
+                .count(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .kafka_exports_for(SignalType::Logs, Outcome::Failure)
+                .bytes
+                .get()
+                .count(),
+            1
+        );
     }
 
-    /// Scenario: Topic is resolved from static config.
-    /// Guarantees: The corresponding operational counter is incremented.
+    /// Scenario: Kafka exporter enum metrics are transferred into terminal snapshots twice.
+    /// Guarantees: Wire values are preserved on first handoff and all touched buckets then clear.
     #[test]
-    fn inc_topic_from_static_config() {
-        let mut m = new_metrics();
-        m.inc_topic_from_static_config();
-        m.inc_topic_from_static_config();
-        assert_eq!(m.operational_metrics.topic_from_static_config.get(), 2);
-        assert_eq!(m.operational_metrics.topic_from_header.get(), 0);
+    fn terminal_snapshots_preserve_enum_attribute_values_once() {
+        let mut metrics = new_metrics();
+        metrics.record_failure(
+            SignalType::Metrics,
+            KafkaExporterErrorType::Encoding,
+            Duration::from_millis(500),
+            Some(64),
+        );
+        metrics.record_routing(SignalType::Metrics, KafkaTopicSource::StaticConfig);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 4);
+        assert_eq!(
+            snapshots
+                .iter()
+                .filter(|snapshot| snapshot.descriptor().name == "exporter.exports")
+                .count(),
+            1
+        );
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.exports"
+                && snapshot.measurement_attribute_value("signal") == Some("metrics")
+                && snapshot.measurement_attribute_value("outcome") == Some("failure")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .any(|field| field.name == "messages")
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.exports"
+                && snapshot.measurement_attribute_value("signal") == Some("metrics")
+                && snapshot.measurement_attribute_value("outcome") == Some("failure")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .any(|field| field.name == "duration")
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.kafka.exports"
+                && snapshot.measurement_attribute_value("signal") == Some("metrics")
+                && snapshot.measurement_attribute_value("outcome") == Some("failure")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .any(|field| field.name == "bytes")
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.kafka.failures"
+                && snapshot.measurement_attribute_value("error.type") == Some("encoding")
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.kafka.routing"
+                && snapshot.measurement_attribute_value("topic.source") == Some("static_config")
+        }));
+        assert!(metrics.terminal_snapshots().is_empty());
     }
 }

@@ -17,6 +17,11 @@
 //!
 //! The `delay` field uses humantime format (e.g., "100ms", "1s", "2s500ms").
 
+otap_df_telemetry::otel_component_scope!(
+    urn = DELAY_PROCESSOR_URN,
+    target = "otel.processor.delay",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;

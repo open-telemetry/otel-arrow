@@ -40,6 +40,11 @@
 //! If neither a signal-specific named route nor a default output exists, the
 //! message is dropped with the historical routing-failure behavior.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = SIGNAL_TYPE_ROUTER_URN,
+    target = "otel.processor.type_router",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::PortName;
@@ -59,9 +64,11 @@ use otap_df_engine::{
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_telemetry::common_attributes::Outcome;
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry::metrics::MeasurementMetricSet;
+use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -82,130 +89,84 @@ pub const PORT_METRICS: &str = "metrics";
 /// Name of the output port used for log signals
 pub const PORT_LOGS: &str = "logs";
 
-/// Metrics for the SignalTypeRouter processor.
-#[metric_set(name = "processor.signal_type_router")]
+/// Specific reasons for SignalTypeRouter outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum SignalTypeRouterReason {
+    /// Routed to a named port.
+    NamedRoute,
+    /// Routed to default because named port was not connected.
+    DefaultRouteUnwired,
+    /// NACKed because the selected route was full.
+    RouteFull,
+    /// NACKed because the selected route was closed.
+    RouteClosed,
+    /// Dropped because no matching named or default route exists.
+    NoAvailableRoute,
+    /// NACKed because the node was shutting down.
+    NodeShutdown,
+}
+
+/// Attributes for SignalTypeRouter outcome metric.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct SignalTypeRouterAttributes {
+    /// General outcome of the routing decision.
+    pub outcome: Outcome,
+    /// Specific reason for the outcome.
+    pub reason: SignalTypeRouterReason,
+    /// The telemetry signal type.
+    pub signal: otap_df_config::SignalType,
+}
+
+/// Measurement metrics for the SignalTypeRouter processor.
+#[metric_set(
+    name = "processor.type_router",
+    measurement_attributes = SignalTypeRouterAttributes
+)]
 #[derive(Debug, Default, Clone)]
+pub struct SignalTypeRouterMeasurementMetrics {
+    /// Number of messages with this outcome.
+    #[metric(name = "signals.decision", unit = "{message}")]
+    pub messages: Counter<u64>,
+}
+
+/// Metrics for the SignalTypeRouter processor.
 pub struct SignalTypeRouterMetrics {
-    /// Number of log messages received by the router.
-    #[metric(unit = "{msg}")]
-    pub signals_received_logs: Counter<u64>,
-    /// Number of metric messages received by the router.
-    #[metric(unit = "{msg}")]
-    pub signals_received_metrics: Counter<u64>,
-    /// Number of trace messages received by the router.
-    #[metric(unit = "{msg}")]
-    pub signals_received_traces: Counter<u64>,
-
-    /// Number of log messages routed to a named port.
-    #[metric(unit = "{msg}")]
-    pub signals_routed_named_logs: Counter<u64>,
-    /// Number of metric messages routed to a named port.
-    #[metric(unit = "{msg}")]
-    pub signals_routed_named_metrics: Counter<u64>,
-    /// Number of trace messages routed to a named port.
-    #[metric(unit = "{msg}")]
-    pub signals_routed_named_traces: Counter<u64>,
-
-    /// Number of log messages routed via the default port.
-    #[metric(unit = "{msg}")]
-    pub signals_routed_default_logs: Counter<u64>,
-    /// Number of metric messages routed via the default port.
-    #[metric(unit = "{msg}")]
-    pub signals_routed_default_metrics: Counter<u64>,
-    /// Number of trace messages routed via the default port.
-    #[metric(unit = "{msg}")]
-    pub signals_routed_default_traces: Counter<u64>,
-
-    /// Number of log messages NACKed due to route-local rejection.
-    #[metric(unit = "{msg}")]
-    pub signals_nacked_logs: Counter<u64>,
-    /// Number of metric messages NACKed due to route-local rejection.
-    #[metric(unit = "{msg}")]
-    pub signals_nacked_metrics: Counter<u64>,
-    /// Number of trace messages NACKed due to route-local rejection.
-    #[metric(unit = "{msg}")]
-    pub signals_nacked_traces: Counter<u64>,
-
-    /// Number of log messages rejected because the selected route was full.
-    #[metric(unit = "{msg}")]
-    pub signals_rejected_route_full_logs: Counter<u64>,
-    /// Number of metric messages rejected because the selected route was full.
-    #[metric(unit = "{msg}")]
-    pub signals_rejected_route_full_metrics: Counter<u64>,
-    /// Number of trace messages rejected because the selected route was full.
-    #[metric(unit = "{msg}")]
-    pub signals_rejected_route_full_traces: Counter<u64>,
-
-    /// Number of log messages rejected because the selected route was closed.
-    #[metric(unit = "{msg}")]
-    pub signals_rejected_route_closed_logs: Counter<u64>,
-    /// Number of metric messages rejected because the selected route was closed.
-    #[metric(unit = "{msg}")]
-    pub signals_rejected_route_closed_metrics: Counter<u64>,
-    /// Number of trace messages rejected because the selected route was closed.
-    #[metric(unit = "{msg}")]
-    pub signals_rejected_route_closed_traces: Counter<u64>,
-
-    /// Number of log messages dropped due to routing failure.
-    #[metric(unit = "{msg}")]
-    pub signals_dropped_logs: Counter<u64>,
-    /// Number of metric messages dropped due to routing failure.
-    #[metric(unit = "{msg}")]
-    pub signals_dropped_metrics: Counter<u64>,
-    /// Number of trace messages dropped due to routing failure.
-    #[metric(unit = "{msg}")]
-    pub signals_dropped_traces: Counter<u64>,
+    /// Measurement metric set for outcomes.
+    pub metrics: MeasurementMetricSet<SignalTypeRouterMeasurementMetrics>,
 }
 
 impl SignalTypeRouterMetrics {
-    const fn inc_received(&mut self, st: otap_df_config::SignalType) {
-        match st {
-            otap_df_config::SignalType::Logs => self.signals_received_logs.inc(),
-            otap_df_config::SignalType::Metrics => self.signals_received_metrics.inc(),
-            otap_df_config::SignalType::Traces => self.signals_received_traces.inc(),
+    /// Creates a new SignalTypeRouterMetrics.
+    pub fn new(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            metrics: SignalTypeRouterMeasurementMetrics::register(pipeline_ctx),
         }
     }
-    const fn inc_routed_named(&mut self, st: otap_df_config::SignalType) {
-        match st {
-            otap_df_config::SignalType::Logs => self.signals_routed_named_logs.inc(),
-            otap_df_config::SignalType::Metrics => self.signals_routed_named_metrics.inc(),
-            otap_df_config::SignalType::Traces => self.signals_routed_named_traces.inc(),
-        }
+
+    /// Reports the metrics.
+    pub fn report(
+        &mut self,
+        reporter: &mut MetricsReporter,
+    ) -> Result<(), otap_df_telemetry::error::Error> {
+        reporter.report_measurement(&mut self.metrics)
     }
-    const fn inc_routed_default(&mut self, st: otap_df_config::SignalType) {
-        match st {
-            otap_df_config::SignalType::Logs => self.signals_routed_default_logs.inc(),
-            otap_df_config::SignalType::Metrics => self.signals_routed_default_metrics.inc(),
-            otap_df_config::SignalType::Traces => self.signals_routed_default_traces.inc(),
-        }
-    }
-    const fn inc_nacked(&mut self, st: otap_df_config::SignalType) {
-        match st {
-            otap_df_config::SignalType::Logs => self.signals_nacked_logs.inc(),
-            otap_df_config::SignalType::Metrics => self.signals_nacked_metrics.inc(),
-            otap_df_config::SignalType::Traces => self.signals_nacked_traces.inc(),
-        }
-    }
-    const fn inc_rejected_route_full(&mut self, st: otap_df_config::SignalType) {
-        match st {
-            otap_df_config::SignalType::Logs => self.signals_rejected_route_full_logs.inc(),
-            otap_df_config::SignalType::Metrics => self.signals_rejected_route_full_metrics.inc(),
-            otap_df_config::SignalType::Traces => self.signals_rejected_route_full_traces.inc(),
-        }
-    }
-    const fn inc_rejected_route_closed(&mut self, st: otap_df_config::SignalType) {
-        match st {
-            otap_df_config::SignalType::Logs => self.signals_rejected_route_closed_logs.inc(),
-            otap_df_config::SignalType::Metrics => self.signals_rejected_route_closed_metrics.inc(),
-            otap_df_config::SignalType::Traces => self.signals_rejected_route_closed_traces.inc(),
-        }
-    }
-    const fn inc_dropped(&mut self, st: otap_df_config::SignalType) {
-        match st {
-            otap_df_config::SignalType::Logs => self.signals_dropped_logs.inc(),
-            otap_df_config::SignalType::Metrics => self.signals_dropped_metrics.inc(),
-            otap_df_config::SignalType::Traces => self.signals_dropped_traces.inc(),
-        }
+
+    /// Records a specific outcome and reason.
+    pub fn record(
+        &mut self,
+        signal: otap_df_config::SignalType,
+        outcome: Outcome,
+        reason: SignalTypeRouterReason,
+    ) {
+        self.metrics
+            .with(SignalTypeRouterAttributes {
+                signal,
+                outcome,
+                reason,
+            })
+            .messages
+            .inc();
     }
 }
 
@@ -240,7 +201,7 @@ pub struct SignalTypeRouter {
     /// Selected-route admission scheduler.
     admission: ExclusiveRouteScheduler<OtapPdata, SelectedRouteContext>,
     /// Telemetry metrics for this router (optional when constructed without PipelineContext)
-    metrics: Option<MetricSet<SignalTypeRouterMetrics>>,
+    metrics: Option<SignalTypeRouterMetrics>,
 }
 
 impl SignalTypeRouter {
@@ -260,7 +221,7 @@ impl SignalTypeRouter {
         pipeline_ctx: PipelineContext,
         config: SignalTypeRouterConfig,
     ) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<SignalTypeRouterMetrics>();
+        let metrics = SignalTypeRouterMetrics::new(&pipeline_ctx);
         let mut router = Self::new(config);
         router.metrics = Some(metrics);
         router
@@ -273,8 +234,16 @@ impl SignalTypeRouter {
     fn record_forwarded_route(&mut self, context: SelectedRouteContext) {
         if let Some(m) = self.metrics.as_mut() {
             match context.route_kind {
-                SelectedRouteKind::Named => m.inc_routed_named(context.signal_type),
-                SelectedRouteKind::Default => m.inc_routed_default(context.signal_type),
+                SelectedRouteKind::Named => m.record(
+                    context.signal_type,
+                    Outcome::Success,
+                    SignalTypeRouterReason::NamedRoute,
+                ),
+                SelectedRouteKind::Default => m.record(
+                    context.signal_type,
+                    Outcome::Success,
+                    SignalTypeRouterReason::DefaultRouteUnwired,
+                ),
             }
         }
     }
@@ -334,8 +303,11 @@ impl SignalTypeRouter {
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.inc_nacked(signal_type);
-            m.inc_rejected_route_full(signal_type);
+            m.record(
+                signal_type,
+                Outcome::Refused,
+                SignalTypeRouterReason::RouteFull,
+            );
         }
 
         effect_handler
@@ -357,8 +329,11 @@ impl SignalTypeRouter {
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.inc_nacked(signal_type);
-            m.inc_rejected_route_closed(signal_type);
+            m.record(
+                signal_type,
+                Outcome::Refused,
+                SignalTypeRouterReason::RouteClosed,
+            );
         }
 
         effect_handler
@@ -382,7 +357,11 @@ impl SignalTypeRouter {
         reason: &str,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.inc_nacked(signal_type);
+            m.record(
+                signal_type,
+                Outcome::Failure,
+                SignalTypeRouterReason::NodeShutdown,
+            );
         }
 
         effect_handler
@@ -521,7 +500,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                     mut metrics_reporter,
                 } => {
                     if let Some(m) = self.metrics.as_mut() {
-                        let _ = metrics_reporter.report(m);
+                        let _ = m.report(&mut metrics_reporter);
                     }
                     Ok(())
                 }
@@ -540,9 +519,8 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
             },
             Message::PData(data) => {
                 let st = data.signal_type();
-                if let Some(m) = self.metrics.as_mut() {
-                    m.inc_received(st);
-                }
+                // Notice: we do NOT record received here in Outcome based recording,
+                // prefer using the node consumed metric instead.
 
                 // Resolve the preferred named route first. Falling back is only
                 // allowed when the named port is not wired at all, not when the
@@ -639,7 +617,11 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                         ),
                         Err(e) => {
                             if let Some(m) = self.metrics.as_mut() {
-                                m.inc_dropped(st);
+                                m.record(
+                                    st,
+                                    Outcome::Failure,
+                                    SignalTypeRouterReason::NoAvailableRoute,
+                                );
                             }
                             Err(e.into())
                         }
@@ -1240,11 +1222,19 @@ mod tests {
             telemetry_registry: &TelemetryRegistryHandle,
         ) -> HashMap<String, u64> {
             let mut out = HashMap::new();
-            telemetry_registry.visit_current_metrics(|_desc, _attrs, iter| {
-                for (field, value) in iter {
-                    let _ = out.insert(field.name.to_string(), value.to_u64_lossy());
-                }
-            });
+            telemetry_registry.visit_current_metrics_with_item_attrs(
+                |_desc, _attrs, dp, iter| {
+                    let mut dp_str = String::new();
+                    for (k, v) in dp {
+                        dp_str.push_str(&format!(" {}={}", k, v));
+                    }
+                    for (field, value) in iter {
+                        let key = format!("{}{}", field.name, dp_str);
+                        let _ = out.insert(key, value.to_u64_lossy());
+                    }
+                },
+                false,
+            );
             out
         }
 
@@ -1388,49 +1378,62 @@ mod tests {
             let signal = signal_name(st);
             assert_eq!(
                 metrics
-                    .get(format!("signals.received.{signal}").as_str())
-                    .copied()
-                    .unwrap_or(0),
-                1
-            );
-            assert_eq!(
-                metrics
-                    .get(format!("signals.routed.named.{signal}").as_str())
-                    .copied()
-                    .unwrap_or(0),
-                0
-            );
-            assert_eq!(
-                metrics
-                    .get(format!("signals.routed.default.{signal}").as_str())
+                    .get(
+                        format!(
+                            "signals.decision outcome=success reason=named_route signal={signal}"
+                        )
+                        .as_str()
+                    )
                     .copied()
                     .unwrap_or(0),
                 0
             );
             assert_eq!(
                 metrics
-                    .get(format!("signals.nacked.{signal}").as_str())
-                    .copied()
-                    .unwrap_or(0),
-                1
-            );
-            assert_eq!(
-                metrics
-                    .get(format!("signals.rejected.route.full.{signal}").as_str())
-                    .copied()
-                    .unwrap_or(0),
-                1
-            );
-            assert_eq!(
-                metrics
-                    .get(format!("signals.rejected.route.closed.{signal}").as_str())
+                    .get(format!("signals.decision outcome=success reason=default_route_unwired signal={signal}").as_str())
                     .copied()
                     .unwrap_or(0),
                 0
             );
             assert_eq!(
                 metrics
-                    .get(format!("signals.dropped.{signal}").as_str())
+                    .get(
+                        format!(
+                            "signals.decision outcome=failure reason=node_shutdown signal={signal}"
+                        )
+                        .as_str()
+                    )
+                    .copied()
+                    .unwrap_or(0),
+                0
+            );
+            assert_eq!(
+                metrics
+                    .get(
+                        format!(
+                            "signals.decision outcome=refused reason=route_full signal={signal}"
+                        )
+                        .as_str()
+                    )
+                    .copied()
+                    .unwrap_or(0),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .get(
+                        format!(
+                            "signals.decision outcome=refused reason=route_closed signal={signal}"
+                        )
+                        .as_str()
+                    )
+                    .copied()
+                    .unwrap_or(0),
+                0
+            );
+            assert_eq!(
+                metrics
+                    .get(format!("signals.decision outcome=failure reason=no_available_route signal={signal}").as_str())
                     .copied()
                     .unwrap_or(0),
                 0
@@ -1490,25 +1493,28 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(
-                    metrics.get("signals.received.logs").copied().unwrap_or(0),
-                    1
-                );
-                assert_eq!(
+
+assert_eq!(
                     metrics
-                        .get("signals.routed.named.logs")
+                        .get("signals.decision outcome=success reason=named_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.routed.default.logs")
+                        .get("signals.decision outcome=success reason=default_route_unwired signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
-                assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=failure reason=no_available_route signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 // shutdown collector
                 stop_telemetry(reporter, collector_task);
@@ -1578,40 +1584,49 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
+
+assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=success reason=named_route signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
                 assert_eq!(
-                    metrics.get("signals.received.logs").copied().unwrap_or(0),
+                    metrics
+                        .get("signals.decision outcome=success reason=default_route_unwired signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=failure reason=node_shutdown signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=refused reason=route_full signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=refused reason=route_closed signal=logs")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.routed.named.logs")
+                        .get("signals.decision outcome=failure reason=no_available_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
-                assert_eq!(
-                    metrics
-                        .get("signals.routed.default.logs")
-                        .copied()
-                        .unwrap_or(0),
-                    0
-                );
-                assert_eq!(metrics.get("signals.nacked.logs").copied().unwrap_or(0), 1);
-                assert_eq!(
-                    metrics
-                        .get("signals.rejected.route.full.logs")
-                        .copied()
-                        .unwrap_or(0),
-                    0
-                );
-                assert_eq!(
-                    metrics
-                        .get("signals.rejected.route.closed.logs")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -1676,25 +1691,28 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(
-                    metrics.get("signals.received.logs").copied().unwrap_or(0),
-                    1
-                );
-                assert_eq!(
+
+assert_eq!(
                     metrics
-                        .get("signals.routed.named.logs")
+                        .get("signals.decision outcome=success reason=named_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.routed.default.logs")
+                        .get("signals.decision outcome=success reason=default_route_unwired signal=logs")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
-                assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=failure reason=no_available_route signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -1761,40 +1779,49 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
+
+assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=success reason=named_route signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
                 assert_eq!(
-                    metrics.get("signals.received.logs").copied().unwrap_or(0),
+                    metrics
+                        .get("signals.decision outcome=success reason=default_route_unwired signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=failure reason=node_shutdown signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=refused reason=route_full signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=refused reason=route_closed signal=logs")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.routed.named.logs")
+                        .get("signals.decision outcome=failure reason=no_available_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
-                assert_eq!(
-                    metrics
-                        .get("signals.routed.default.logs")
-                        .copied()
-                        .unwrap_or(0),
-                    0
-                );
-                assert_eq!(metrics.get("signals.nacked.logs").copied().unwrap_or(0), 1);
-                assert_eq!(
-                    metrics
-                        .get("signals.rejected.route.full.logs")
-                        .copied()
-                        .unwrap_or(0),
-                    0
-                );
-                assert_eq!(
-                    metrics
-                        .get("signals.rejected.route.closed.logs")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -1895,42 +1922,49 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(
-                    metrics.get("signals.received.logs").copied().unwrap_or(0),
-                    1
-                );
+
                 assert_eq!(
                     metrics
-                        .get("signals.received.metrics")
-                        .copied()
-                        .unwrap_or(0),
-                    1
-                );
-                assert_eq!(
-                    metrics
-                        .get("signals.routed.named.logs")
+                        .get("signals.decision outcome=success reason=named_route signal=logs")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.routed.named.metrics")
+                        .get("signals.decision outcome=success reason=named_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
-                assert_eq!(metrics.get("signals.nacked.logs").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
-                        .get("signals.rejected.route.full.logs")
+                        .get("signals.decision outcome=failure reason=node_shutdown signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("signals.decision outcome=refused reason=route_full signal=logs")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
-                assert_eq!(metrics.get("signals.dropped.logs").copied().unwrap_or(0), 0);
                 assert_eq!(
-                    metrics.get("signals.dropped.metrics").copied().unwrap_or(0),
+                    metrics
+                        .get("signals.decision outcome=failure reason=no_available_route signal=logs")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get(
+                            "signals.decision outcome=failure reason=no_available_route signal=metrics"
+                        )
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
 
@@ -1980,16 +2014,26 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&telemetry_registry);
-                assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    m.get("signals.routed.named.traces").copied().unwrap_or(0),
+                    m.get("signals.decision outcome=success reason=named_route signal=traces")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    m.get("signals.routed.default.traces").copied().unwrap_or(0),
+                    m.get(
+                        "signals.decision outcome=success reason=default_route_unwired signal=traces"
+                    )
+                    .copied()
+                    .unwrap_or(0),
                     0
                 );
-                assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=no_available_route signal=traces")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2040,29 +2084,44 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&telemetry_registry);
-                assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    m.get("signals.routed.named.traces").copied().unwrap_or(0),
-                    0
-                );
-                assert_eq!(
-                    m.get("signals.routed.default.traces").copied().unwrap_or(0),
-                    0
-                );
-                assert_eq!(m.get("signals.nacked.traces").copied().unwrap_or(0), 1);
-                assert_eq!(
-                    m.get("signals.rejected.route.full.traces")
+                    m.get("signals.decision outcome=success reason=named_route signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.rejected.route.closed.traces")
+                    m.get(
+                        "signals.decision outcome=success reason=default_route_unwired signal=traces"
+                    )
+                    .copied()
+                    .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=node_shutdown signal=traces")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=refused reason=route_full signal=traces")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=refused reason=route_closed signal=traces")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
-                assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=no_available_route signal=traces")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2124,16 +2183,26 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&telemetry_registry);
-                assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    m.get("signals.routed.named.traces").copied().unwrap_or(0),
+                    m.get("signals.decision outcome=success reason=named_route signal=traces")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.routed.default.traces").copied().unwrap_or(0),
+                    m.get(
+                        "signals.decision outcome=success reason=default_route_unwired signal=traces"
+                    )
+                    .copied()
+                    .unwrap_or(0),
                     1
                 );
-                assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=no_available_route signal=traces")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2184,29 +2253,44 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&telemetry_registry);
-                assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    m.get("signals.routed.named.traces").copied().unwrap_or(0),
-                    0
-                );
-                assert_eq!(
-                    m.get("signals.routed.default.traces").copied().unwrap_or(0),
-                    0
-                );
-                assert_eq!(m.get("signals.nacked.traces").copied().unwrap_or(0), 1);
-                assert_eq!(
-                    m.get("signals.rejected.route.full.traces")
+                    m.get("signals.decision outcome=success reason=named_route signal=traces")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.rejected.route.closed.traces")
+                    m.get(
+                        "signals.decision outcome=success reason=default_route_unwired signal=traces"
+                    )
+                    .copied()
+                    .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=node_shutdown signal=traces")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=refused reason=route_full signal=traces")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=refused reason=route_closed signal=traces")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
-                assert_eq!(m.get("signals.dropped.traces").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=no_available_route signal=traces")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2269,18 +2353,26 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&telemetry_registry);
-                assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    m.get("signals.routed.named.metrics").copied().unwrap_or(0),
+                    m.get("signals.decision outcome=success reason=named_route signal=metrics")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
                 assert_eq!(
-                    m.get("signals.routed.default.metrics")
+                    m.get(
+                        "signals.decision outcome=success reason=default_route_unwired signal=metrics"
+                    )
+                    .copied()
+                    .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=no_available_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
-                assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2331,31 +2423,44 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&telemetry_registry);
-                assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    m.get("signals.routed.named.metrics").copied().unwrap_or(0),
-                    0
-                );
-                assert_eq!(
-                    m.get("signals.routed.default.metrics")
-                        .copied()
-                        .unwrap_or(0),
-                    0
-                );
-                assert_eq!(m.get("signals.nacked.metrics").copied().unwrap_or(0), 1);
-                assert_eq!(
-                    m.get("signals.rejected.route.full.metrics")
+                    m.get("signals.decision outcome=success reason=named_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.rejected.route.closed.metrics")
+                    m.get(
+                        "signals.decision outcome=success reason=default_route_unwired signal=metrics"
+                    )
+                    .copied()
+                    .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=node_shutdown signal=metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=refused reason=route_full signal=metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=refused reason=route_closed signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
-                assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=no_available_route signal=metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2417,18 +2522,26 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&telemetry_registry);
-                assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    m.get("signals.routed.named.metrics").copied().unwrap_or(0),
+                    m.get("signals.decision outcome=success reason=named_route signal=metrics")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.routed.default.metrics")
-                        .copied()
-                        .unwrap_or(0),
+                    m.get(
+                        "signals.decision outcome=success reason=default_route_unwired signal=metrics"
+                    )
+                    .copied()
+                    .unwrap_or(0),
                     1
                 );
-                assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=no_available_route signal=metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2479,31 +2592,44 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let m = collect_metrics_map(&telemetry_registry);
-                assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
                 assert_eq!(
-                    m.get("signals.routed.named.metrics").copied().unwrap_or(0),
-                    0
-                );
-                assert_eq!(
-                    m.get("signals.routed.default.metrics")
-                        .copied()
-                        .unwrap_or(0),
-                    0
-                );
-                assert_eq!(m.get("signals.nacked.metrics").copied().unwrap_or(0), 1);
-                assert_eq!(
-                    m.get("signals.rejected.route.full.metrics")
+                    m.get("signals.decision outcome=success reason=named_route signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
-                    m.get("signals.rejected.route.closed.metrics")
+                    m.get(
+                        "signals.decision outcome=success reason=default_route_unwired signal=metrics"
+                    )
+                    .copied()
+                    .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=node_shutdown signal=metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=refused reason=route_full signal=metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    m.get("signals.decision outcome=refused reason=route_closed signal=metrics")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
-                assert_eq!(m.get("signals.dropped.metrics").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    m.get("signals.decision outcome=failure reason=no_available_route signal=metrics")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));

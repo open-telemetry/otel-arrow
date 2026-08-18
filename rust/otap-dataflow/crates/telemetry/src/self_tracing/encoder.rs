@@ -86,8 +86,9 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
 /// Encode the event name from callsite metadata.
 ///
 /// Emits the bare `callsite.name()` (the first argument to `otel_info!` /
-/// `otel_warn!` / ...). The crate name (`callsite.target()`) is **not**
-/// prefixed here; it is conveyed separately through
+/// `otel_warn!` / ...). The tracing target (`callsite.target()`) is **not**
+/// prefixed here; it identifies the static logical software unit and is
+/// conveyed separately through
 /// `InstrumentationScope.name` by [`encode_export_logs_request`] so that
 /// `event.name` on the wire matches the value declared in the
 /// `rust/otap-dataflow/semconv/` registry and validated by
@@ -189,17 +190,32 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         })
     }
 
-    /// Encode a Debug attribute into a buffer.
+    /// Encode a Debug attribute into a buffer, truncating the value with a
+    /// `[...]` suffix if it does not fit.
+    ///
+    /// Returns `Ok(false)` if the full value was written, `Ok(true)` if the
+    /// value was truncated, or `Err(Dropped)` if even a truncated form would
+    /// not fit.
     #[inline]
     fn encode_debug_attribute_to(
         buf: &mut B,
         key: &str,
         value: &dyn std::fmt::Debug,
-    ) -> EncodeResult {
-        buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |buf| {
+    ) -> Result<bool, Dropped> {
+        let mut truncated = false;
+        buf.encode_len_delimited_partial(LOG_RECORD_ATTRIBUTES, |buf| {
             buf.encode_string(KEY_VALUE_KEY, key)?;
-            buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| encode_debug_string(buf, value))
-        })
+            buf.encode_len_delimited_partial(KEY_VALUE_VALUE, |buf| {
+                match encode_debug_string(buf, value) {
+                    Ok(was_truncated) => {
+                        truncated = was_truncated;
+                        Ok(())
+                    }
+                    Err(Dropped) => Err(Dropped),
+                }
+            })
+        })?;
+        Ok(truncated)
     }
 
     /// Encode the body as a string. Empty strings are skipped.
@@ -222,43 +238,148 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
 
     /// Encode the body from a Debug value without allocation.
     ///
-    /// Wrapped in `try_encode` so partial bytes are rolled back on overflow;
-    /// see [`Self::encode_body_string`] for rationale.
+    /// Uses `encode_len_delimited_partial` so the length placeholder is patched
+    /// even when truncation occurs. Wrapped in `try_encode` so a hard failure
+    /// (nothing fits at all) rolls back partial bytes; see
+    /// [`Self::encode_body_string`] for rationale.
     #[inline]
     pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
         let _ = self.buf.try_encode(|buf| {
-            buf.encode_len_delimited(LOG_RECORD_BODY, |buf| encode_debug_string(buf, value))
+            buf.encode_len_delimited_partial(LOG_RECORD_BODY, |buf| {
+                match encode_debug_string(buf, value) {
+                    Ok(_truncated) => Ok(()),
+                    Err(Dropped) => Err(Dropped),
+                }
+            })
         });
     }
 }
 
-/// Adapter that lets `write!` format directly into a `BoundedBuf` without
-/// an intermediate `String`. `try_extend` returns `Err(Dropped)` on
-/// overflow; we map that to `fmt::Error` so `write!` short-circuits and
-/// the caller learns truncation occurred.
-struct BoundedBufFmt<'a, B: BoundedBuf>(&'a mut B);
+/// Adapter that lets `write!` format directly into a [`BoundedBuf`] without
+/// an intermediate `String`.
+///
+/// When the buffer fills up, the adapter backtracks to make room for a
+/// `[...]` truncation suffix and silently discards all subsequent writes.
+/// The `truncated` flag records whether truncation occurred so callers can
+/// report the partial value instead of dropping it entirely.
+struct BoundedBufFmt<'a, B: BoundedBuf> {
+    buf: &'a mut B,
+    /// Buffer position where formatted content starts (after protobuf framing).
+    content_start: usize,
+    /// Set to `true` once truncation has occurred.
+    truncated: bool,
+}
+
+impl<'a, B: BoundedBuf> BoundedBufFmt<'a, B> {
+    /// Create a new adapter. `content_start` is recorded as the current
+    /// buffer length so the backtracking logic knows which bytes are ours.
+    #[inline]
+    fn new(buf: &'a mut B) -> Self {
+        let content_start = buf.len();
+        Self {
+            buf,
+            content_start,
+            truncated: false,
+        }
+    }
+
+    /// Backtrack from the end of the buffer to make room for `TRUNCATION_SUFFIX`,
+    /// append it, and mark ourselves as truncated.
+    ///
+    /// If there is not enough content to free space for the suffix the buffer
+    /// is left at `content_start` (empty content) and the caller should treat
+    /// this as a hard drop.
+    fn truncate_with_suffix(&mut self) {
+        use otap_df_pdata::otlp::common::TRUNCATION_SUFFIX;
+
+        let suffix_len = TRUNCATION_SUFFIX.len();
+        let cur = self.buf.len();
+
+        // Target position: back up `suffix_len` bytes from the current end,
+        // then walk backwards (at most 3 extra bytes) to a UTF-8 char boundary.
+        // UTF-8 continuation bytes have the bit pattern 10xxxxxx, so we skip
+        // them until we land on a leading byte.
+        let target = cur.saturating_sub(suffix_len).max(self.content_start);
+        let mut pos = target;
+        let slice = self.buf.as_slice();
+        while pos > self.content_start && (slice[pos] & 0xC0) == 0x80 {
+            pos -= 1;
+        }
+        self.buf.truncate(pos);
+
+        // Try to append the suffix. If even this fails (degenerate budget),
+        // leave the buffer at whatever position truncate() set.
+        let _ = self.buf.try_extend(TRUNCATION_SUFFIX);
+        self.truncated = true;
+    }
+}
 
 impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
     #[inline]
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        self.0.try_extend(s.as_bytes()).map_err(|_| std::fmt::Error)
+        if self.truncated {
+            // Already truncated -- silently discard further output so the
+            // formatter finishes cleanly.
+            return Ok(());
+        }
+        match self.buf.try_extend(s.as_bytes()) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                // The full chunk did not fit. Write as much as we can, then
+                // backtrack to append the truncation suffix.
+                let remaining = self.buf.remaining();
+                if remaining > 0 {
+                    // Find the last UTF-8 char boundary within the portion
+                    // of `s` that fits.
+                    let mut end = remaining;
+                    while end > 0 && !s.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    if end > 0 {
+                        // This extend cannot fail -- we checked remaining.
+                        let _ = self.buf.try_extend(&s.as_bytes()[..end]);
+                    }
+                }
+                self.truncate_with_suffix();
+                Ok(())
+            }
+        }
     }
 }
 
-/// Helper to encode a Debug value as a protobuf string field.
-/// This is separate from DirectFieldVisitor to avoid borrow conflicts with the macro.
+/// Encode a `Debug` value as a protobuf string field with truncation support.
+///
+/// If the formatted output fits, returns `Ok(false)`. If it overflows the
+/// buffer, the value is truncated with a `[...]` suffix and `Ok(true)` is
+/// returned. `Err(Dropped)` is returned only when even a minimal truncated
+/// form cannot fit (nothing useful was written).
+///
+/// This function is separate from `DirectFieldVisitor` to avoid borrow
+/// conflicts with the macro.
 #[inline]
-fn encode_debug_string<B: BoundedBuf>(buf: &mut B, value: &dyn std::fmt::Debug) -> EncodeResult {
-    buf.encode_len_delimited(ANY_VALUE_STRING_VALUE, |buf| {
-        // Wrap in a local fmt::Write adapter so the formatter machinery
-        // writes directly into the buffer (no intermediate String). If the
-        // buffer fills up, `write!` returns `Err(fmt::Error)` and we
-        // propagate as `Dropped` so the surrounding `try_encode` rolls
-        // back partial bytes and the caller bumps `dropped_count`.
+fn encode_debug_string<B: BoundedBuf>(
+    buf: &mut B,
+    value: &dyn std::fmt::Debug,
+) -> Result<bool, Dropped> {
+    let mut truncated = false;
+    buf.encode_len_delimited_partial(ANY_VALUE_STRING_VALUE, |buf| {
         use std::fmt::Write as _;
-        let mut adapter = BoundedBufFmt(buf);
-        write!(adapter, "{:?}", value).map_err(|_| Dropped)
-    })
+        let mut adapter = BoundedBufFmt::new(buf);
+        // Ignore the fmt result -- truncation is handled internally by the
+        // adapter; the write!() call always returns Ok because the adapter
+        // silently discards overflow bytes after appending the suffix.
+        let _ = write!(adapter, "{:?}", value);
+        // Extract state before dropping the adapter (which borrows buf).
+        let was_truncated = adapter.truncated;
+        let content_start = adapter.content_start;
+        truncated = was_truncated;
+        if was_truncated && buf.len() <= content_start {
+            // Nothing useful was written (not even the suffix fit).
+            return Err(Dropped);
+        }
+        Ok(())
+    })?;
+    Ok(truncated)
 }
 
 /// Compute the per-attribute budget: at most half of remaining space, but
@@ -367,13 +488,24 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
             return;
         }
         let budget = attr_budget(self.buf);
+        let key = field.name();
+        let mut truncated = false;
         let fit = self.buf.with_max_remaining(budget, |buf| {
             buf.try_encode(|b| {
-                DirectFieldVisitor::encode_debug_attribute_to(b, field.name(), value)
+                truncated = DirectFieldVisitor::encode_debug_attribute_to(b, key, value)?;
+                Ok::<(), Dropped>(())
             })
         });
-        if fit.is_err() {
-            self.dropped_count += 1;
+        match (fit, truncated) {
+            (Ok(()), false) => {} // Fully encoded.
+            (Ok(()), true) => {
+                // Truncated; bytes were preserved with [...] suffix.
+                self.dropped_count += 1;
+            }
+            (Err(Dropped), _) => {
+                // Hard failure; everything rolled back.
+                self.dropped_count += 1;
+            }
         }
     }
 }
@@ -644,12 +776,12 @@ pub fn encode_export_logs_request(
         buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
             // ScopeLogs.scope (field 1, InstrumentationScope message)
             buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
-                // InstrumentationScope.name (field 1, string) -- the crate
-                // that emitted the event (i.e. the tracing target,
-                // `env!("CARGO_PKG_NAME")` at the call site). Pairing
-                // scope.name with the bare `event.name` encoded below
-                // keeps `event.name` aligned with the
-                // `rust/otap-dataflow/semconv/` registry.
+                // InstrumentationScope.name (field 1, string) -- the tracing
+                // target identifying the static logical software unit that
+                // emitted the event. Component-owned events use a
+                // component-aware target; shared code uses its package target.
+                // Pairing scope.name with the bare `event.name` encoded below
+                // keeps `event.name` aligned with the semconv registry.
                 buf.encode_string(INSTRUMENTATION_SCOPE_NAME, event.record.callsite().target())?;
                 for entity_key in event.record.context.iter() {
                     let scope_bytes = scope_cache.get_or_encode(*entity_key);
@@ -1164,14 +1296,15 @@ mod tests {
         assert_eq!(s, expected_repr);
     }
 
-    /// When a Debug value overflows the available buffer, `BoundedBufFmt`
-    /// returns `fmt::Error` from the formatter, `encode_debug_string`
-    /// propagates `Dropped`, and the surrounding `try_encode` rolls back
-    /// any partial KeyValue bytes -- leaving the buffer unchanged and
-    /// incrementing `dropped_count`.
+    /// Scenario: a Debug value overflows the available buffer.
+    /// Guarantees: the value is truncated with a `[...]` suffix instead of
+    /// being dropped entirely, `dropped_count` is incremented, and the
+    /// encoded KeyValue is decodable with the suffix at the end.
     #[test]
-    fn record_debug_overflow_rolls_back_and_increments_dropped() {
-        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+    fn record_debug_overflow_truncates_with_suffix() {
+        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer, TRUNCATION_SUFFIX};
+        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use prost::Message;
         use tracing::field::Visit;
 
         // A Debug impl that writes far more than the buffer can hold.
@@ -1191,20 +1324,182 @@ mod tests {
         let dbg = fields.field("dbg").unwrap();
 
         let mut buf = StackProtoBuffer::<64>::default();
-        let before_len = buf.len();
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         visitor.record_debug(&dbg, &Huge);
         assert_eq!(
             visitor.dropped_count(),
             1,
-            "the single oversized debug field should be counted as dropped"
+            "the single oversized debug field should be counted as dropped (truncated)"
         );
 
-        // No partial KeyValue bytes survive -- the transaction was rolled back.
+        // Buffer should contain a truncated KeyValue, not be empty.
+        assert!(
+            buf.len() > 0,
+            "buffer should contain a truncated attribute, not be empty"
+        );
+
+        // Decode the KeyValue and verify the value ends with the suffix.
+        let bytes = buf.as_ref().to_vec();
+        let mut cursor = bytes.as_slice();
+        let (tag, n) = read_varint(cursor);
+        cursor = &cursor[n..];
+        assert_eq!(tag >> 3, LOG_RECORD_ATTRIBUTES);
+        assert_eq!(tag & 0x7, wire_types::LEN);
+        let (len, n) = read_varint(cursor);
+        cursor = &cursor[n..];
+        let kv = ProtoKeyValue::decode(&cursor[..len as usize]).unwrap();
+        assert_eq!(kv.key, "dbg");
+        let s = match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
+            otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
+                s.clone()
+            }
+            other => panic!("expected StringValue, got {other:?}"),
+        };
+        let suffix = std::str::from_utf8(TRUNCATION_SUFFIX).unwrap();
+        assert!(
+            s.ends_with(suffix),
+            "truncated debug value should end with {suffix}, got: {s}"
+        );
+        // The value should contain some content before the suffix.
+        assert!(
+            s.len() > suffix.len(),
+            "truncated value should have content before the suffix"
+        );
+    }
+
+    /// Scenario: a Debug value cannot fit even in truncated form because the
+    /// buffer is too small for key + suffix + protobuf overhead.
+    /// Guarantees: the attribute is hard-dropped (buffer rolled back to
+    /// pre-call length) and `dropped_count` is incremented.
+    #[test]
+    fn record_debug_hard_drop_when_budget_too_small() {
+        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+        use tracing::field::Visit;
+
+        struct Tiny;
+        impl std::fmt::Debug for Tiny {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("x")
+            }
+        }
+
+        let meta = &DEBUG_TEST_METADATA;
+        let fields = meta.fields();
+        let dbg = fields.field("dbg").unwrap();
+
+        // A buffer so tiny that even the key "dbg" + protobuf overhead
+        // cannot fit, forcing a hard drop.
+        let mut buf = StackProtoBuffer::<8>::default();
+        let before_len = buf.len();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_debug(&dbg, &Tiny);
+        assert_eq!(
+            visitor.dropped_count(),
+            1,
+            "the field should be counted as dropped"
+        );
         assert_eq!(
             buf.len(),
             before_len,
-            "buffer must be rolled back to its pre-call length"
+            "buffer must be rolled back to its pre-call length on hard drop"
+        );
+    }
+
+    /// Scenario: four Debug values compete for a 256-byte buffer with the
+    /// halving budget policy.
+    /// Guarantees: all four values are truncated (each ends with `[...]`),
+    /// each successive value is shorter than the previous, and the buffer
+    /// does not exceed the inline limit.
+    #[test]
+    fn record_debug_halves_remaining_budget_across_attributes() {
+        use otap_df_pdata::otlp::common::TRUNCATION_SUFFIX;
+        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use prost::Message;
+        use tracing::field::Visit;
+
+        const INLINE: usize = 256;
+
+        // A Debug impl that writes 1000 bytes.
+        struct Big;
+        impl std::fmt::Debug for Big {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                for _ in 0..125 {
+                    f.write_str("xxxxxxxx")?;
+                }
+                Ok(())
+            }
+        }
+
+        let meta = &BUDGET_TEST_METADATA;
+        let fields = meta.fields();
+        let a = fields.field("a").unwrap();
+        let b = fields.field("b").unwrap();
+        let c = fields.field("c").unwrap();
+        let d = fields.field("d").unwrap();
+
+        let mut buf = StackProtoBuffer::<INLINE>::default();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_debug(&a, &Big);
+        visitor.record_debug(&b, &Big);
+        visitor.record_debug(&c, &Big);
+        visitor.record_debug(&d, &Big);
+        let dropped = visitor.dropped_count();
+
+        assert_eq!(dropped, 4, "expected 4 truncated attributes");
+        assert!(
+            buf.len() <= INLINE,
+            "buffer len {} exceeds INLINE {}",
+            buf.len(),
+            INLINE
+        );
+
+        // Decode each attribute.
+        let bytes = buf.as_ref().to_vec();
+        let mut cursor = bytes.as_slice();
+        let mut decoded: Vec<(String, String)> = Vec::new();
+        while !cursor.is_empty() {
+            let (tag, n) = read_varint(cursor);
+            cursor = &cursor[n..];
+            let field_num = tag >> 3;
+            let wire_type = tag & 0x7;
+            assert_eq!(wire_type, wire_types::LEN, "expected LEN wire type");
+            assert_eq!(field_num, LOG_RECORD_ATTRIBUTES, "expected ATTRIBUTES tag");
+            let (len, n) = read_varint(cursor);
+            cursor = &cursor[n..];
+            let len = len as usize;
+            let kv_bytes = &cursor[..len];
+            cursor = &cursor[len..];
+            let kv = ProtoKeyValue::decode(kv_bytes).unwrap();
+            let val = kv
+                .value
+                .as_ref()
+                .and_then(|v| v.value.as_ref())
+                .map(|v| match v {
+                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
+                    _ => panic!("expected string value"),
+                })
+                .unwrap();
+            decoded.push((kv.key, val));
+        }
+
+        assert_eq!(decoded.len(), 4, "expected 4 decoded attributes");
+
+        let suffix = std::str::from_utf8(TRUNCATION_SUFFIX).unwrap();
+        for (k, v) in &decoded {
+            assert!(
+                v.ends_with(suffix),
+                "attribute {k} value should end with {suffix}, got len {}",
+                v.len()
+            );
+        }
+
+        // Each successive value should be no longer than the previous one
+        // as the remaining budget is halved across attributes.
+        let lens: Vec<usize> = decoded.iter().map(|(_, v)| v.len()).collect();
+        assert!(
+            lens.windows(2).all(|w| w[0] >= w[1]),
+            "expected non-increasing value lengths, got {lens:?}"
         );
     }
 

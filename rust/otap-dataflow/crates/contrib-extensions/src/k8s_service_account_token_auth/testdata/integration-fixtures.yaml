@@ -1,0 +1,48 @@
+# Integration-test fixtures for the Kubernetes service-account-token auth extension.
+#
+# Apply to a live cluster before running the extension's #[ignore]d integration
+# tests, then mint a token for the audience the tests expect:
+#
+#   kubectl apply -f integration-fixtures.yaml
+#   K8S_SAT_TOKEN="$(kubectl create token sat-tester -n sat-authz-test \
+#     --audience=https://sat-authz-test.example --duration=3600s)" \
+#   cargo test -p otap-df-contrib-extensions \
+#     --features k8s-service-account-token-auth-extension \
+#     k8s_service_account_token_auth -- --ignored --nocapture
+#
+# The RBAC test authorizes `get pods` (granted below) and `delete pods` (not
+# granted) in the sat-authz-test namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sat-authz-test
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sat-tester
+  namespace: sat-authz-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sat-tester-role
+  namespace: sat-authz-test
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sat-tester-binding
+  namespace: sat-authz-test
+subjects:
+  - kind: ServiceAccount
+    name: sat-tester
+    namespace: sat-authz-test
+roleRef:
+  kind: Role
+  name: sat-tester-role
+  apiGroup: rbac.authorization.k8s.io

@@ -35,6 +35,11 @@
 //! Implementation uses otap_df_pdata::otap::transform::transform_attributes for
 //! efficient batch processing of Arrow record batches.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = ATTRIBUTES_PROCESSOR_URN,
+    target = "otel.processor.attribute",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
