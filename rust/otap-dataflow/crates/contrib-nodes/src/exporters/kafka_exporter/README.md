@@ -319,35 +319,33 @@ how many deliveries may be outstanding at once:
 ### Live Reconfiguration
 
 The exporter accepts live configuration changes at runtime (via a `Config`
-control message). Reconfiguration builds a new librdkafka producer from the
-incoming config, performs a bounded drain (flush, then purge) of the old
-producer, and then swaps in the new producer, config, and compiled
-dynamic-routing allowlists. If the new config fails to deserialize/validate or
+control message) as a **generation cutover**. Reconfiguration builds a new
+librdkafka producer and compiled dynamic-routing allowlists from the incoming
+config, swaps them in for pdata processed after the change, and retires the old
+producer off the event loop. If the new config fails to deserialize/validate or
 the new producer fails to build, the change is logged and ignored and the
 current producer keeps running.
 
-Live reconfiguration is currently **experimental** and does not yet provide two
-guarantees. Both are tracked in the live-reconfiguration issue
-([#ISSUE](https://github.com/open-telemetry/otel-arrow/issues/3768)):
+Two properties hold across a reconfiguration:
 
-- **In-flight data can cross configurations.** Control messages (including the
-  reconfiguration message) and telemetry data travel on separate channels, and
-  control messages are processed with priority. Telemetry the exporter already
-  accepted *before* the config change can therefore still be waiting in its
-  inbox and be processed *after* the producer and config are swapped. Those
-  records are then sent using the **new** topic, credentials, or tenant rather
-  than the configuration that was in effect when they were accepted. There is no
-  ordered cutover barrier that applies the new config only after all preceding
-  data has been sent.
-- **The swap can briefly block the pipeline.** The old producer is flushed and
-  retired synchronously, so a slow or unavailable broker can stall normal
-  processing and backpressure for up to the configured flush timeout
-  (`timeout_ms`) instead of letting the pipeline keep making progress.
+- **A batch is never rerouted across a configuration.** Each configuration is a
+  generation. A batch is routed and enqueued under the generation active when
+  the exporter processes it; once enqueued to librdkafka its destination is
+  fixed. A batch already in flight on the retiring generation's producer when
+  the change arrives is therefore delivered to the **old** topic, credentials,
+  and tenant, and is never sent under the new configuration. pdata processed
+  after the cutover uses the new configuration.
+- **The cutover does not block the pipeline.** The retiring generation's
+  producer is flushed and dropped on a background (blocking) thread, so a slow
+  or unavailable broker cannot stall normal processing or backpressure for the
+  configured flush timeout (`timeout_ms`). At most one generation is retiring at
+  a time; back-to-back reconfigurations chain their retirements.
 
-Until these are addressed, avoid live reconfiguration changes that alter the
-destination topic, credentials, or tenant while data is in flight if
-cross-configuration delivery would be unsafe for your deployment. Prefer draining
-the exporter (or restarting the node) for such changes.
+Note that pdata still buffered in the exporter's inbox (accepted by an upstream
+node but not yet processed by the exporter) is concurrent with the config change
+and is processed under whichever generation is active when the exporter dequeues
+it; only batches already in flight are guaranteed to stay on the old
+configuration.
 
 ### Comparison with the Go Kafka exporter
 
@@ -656,9 +654,10 @@ This node does not emit structured events.
   interval as a workaround for high idle CPU utilization in the upstream
   rdkafka implementation.
 - Resource attribute-based partitioning is not yet implemented.
-- Live reconfiguration is experimental: data accepted before a config change may
-  be delivered using the new topic/credentials/tenant, and the producer swap can
-  briefly block the pipeline. See
+- Live reconfiguration is a generation cutover: a batch already in flight when a
+  config change arrives stays on the old topic/credentials/tenant, and the old
+  producer is retired off the event loop so the swap does not block the pipeline.
+  Buffered but not-yet-processed pdata is concurrent with the change. See
   [Live Reconfiguration](#live-reconfiguration).
 - Compared to the Go Kafka exporter, this exporter delegates retry to an
   upstream `processor:retry` node (no built-in `retry_on_failure`), has no
