@@ -117,10 +117,13 @@ jobs:
         with:
           toolchain: stable
 
+      # Manual runs can target non-main refs. Restore their shared cache, but
+      # only let main and its scheduled runs update the repository cache.
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
