@@ -6,6 +6,11 @@
 //! This processor decreases telemetry volume by reaggregating metrics collected
 //! at a higher frequency into a lower one.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = TEMPORAL_REAGGREGATION_PROCESSOR_URN,
+    target = "otel.processor.temporal_reaggregation",
+);
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -46,7 +51,6 @@ use otap_df_pdata_views::views::metrics::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_warn;
 
 mod builder;
 mod config;

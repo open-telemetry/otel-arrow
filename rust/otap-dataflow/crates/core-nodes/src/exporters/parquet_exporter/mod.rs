@@ -21,6 +21,11 @@
 //! - dynamic configuration updates
 //!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = PARQUET_EXPORTER_URN,
+    target = "otel.exporter.parquet",
+);
+
 pub mod config;
 pub mod error;
 #[cfg(test)]
@@ -58,7 +63,6 @@ use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
-use otap_df_telemetry::otel_warn;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
