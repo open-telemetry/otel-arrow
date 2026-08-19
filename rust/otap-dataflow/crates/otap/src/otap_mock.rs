@@ -263,7 +263,7 @@ pub fn create_otap_batch_with_rows(
     otap_batch
 }
 
-/// creates a basic batch arrow record to use for testing
+/// Creates a basic batch arrow record to use for testing
 #[must_use]
 pub fn create_otap_batch(
     batch_id: i64,
