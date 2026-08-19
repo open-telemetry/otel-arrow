@@ -164,34 +164,55 @@ fn spawn_producer_retirement(
     })
 }
 
-/// Awaits any outstanding producer-retirement task, bounded by `deadline`.
+/// Shutdown-only step that waits for an outstanding producer retirement to
+/// finish, bounded by `deadline`.
 ///
 /// The stored handle represents the whole retirement chain (see
-/// [`spawn_producer_retirement`]); its inner prior-await is already
-/// `flush_timeout`-bounded, and the chain ultimately runs on a
-/// [`tokio::task::spawn_blocking`] thread that cannot be cancelled. So this wait
-/// is bounded: if the chain outruns `deadline` the handle is left in place (the
-/// task finishes on its own thread) and the caller proceeds. Enforces the "at
-/// most one retiring producer" bound -- a new retirement is only spawned after
-/// this returns, and a completed task's handle is cleared here so it does not
-/// accumulate.
+/// [`spawn_producer_retirement`]), which ultimately runs a synchronous
+/// librdkafka `flush`/`purge`/drop on a [`tokio::task::spawn_blocking`] thread.
+/// That blocking thread cannot be cancelled or killed: an in-progress librdkafka
+/// `flush` runs inside C code on an OS thread, so neither aborting nor dropping
+/// this handle stops it. This function therefore only bounds the *wait*:
+///
+/// - If the retirement finishes within `deadline`, its handle is cleared (its
+///   poll thread has been joined) so shutdown returns cleanly.
+/// - If `deadline` is reached first, the retirement continues to completion on
+///   its own blocking thread and finishes independently of shutdown; a warning
+///   is emitted and the caller returns, so shutdown stays deadline-bounded.
+///
+/// This does not enforce the "at most one retiring producer" bound -- that is
+/// guaranteed by reconfigure chaining (see [`spawn_producer_retirement`]), not
+/// here. This function is only called on the shutdown path.
 async fn await_pending_retirement(
     retiring_producer: &mut Option<tokio::task::JoinHandle<()>>,
     deadline: Duration,
 ) {
-    let Some(mut handle) = retiring_producer.take() else {
+    let Some(handle) = retiring_producer.take() else {
         return;
     };
-    // Borrow the handle for the bounded wait so it can be re-armed if the task
-    // outruns `deadline` (timeout must not consume it).
-    if tokio::time::timeout(deadline, &mut handle).await.is_err() {
-        // Still running after the bound. The original blocking task keeps running
-        // on its own thread; re-arm the handle so a subsequent reconfigure waits
-        // on it rather than stacking a second retirement, preserving the "at most
-        // one retiring producer" bound.
-        *retiring_producer = Some(handle);
+    match tokio::time::timeout(deadline, handle).await {
+        // Retirement finished within the budget; its handle is dropped.
+        Ok(Ok(())) => {}
+        // Retirement task failed (panicked or was aborted).
+        Ok(Err(join_err)) => {
+            otap_df_telemetry::otel_warn!(
+                "kafka.exporter.retirement.join_failed",
+                error = %join_err,
+            );
+        }
+        // Deadline reached before the retirement finished. The in-progress
+        // librdkafka flush runs to completion on its own blocking thread and
+        // finishes independently of shutdown; record that the deadline was
+        // exceeded so the outcome is observable.
+        Err(_elapsed) => {
+            otap_df_telemetry::otel_warn!(
+                "kafka.exporter.shutdown.retirement_deadline_exceeded",
+                error = "shutdown deadline reached before the in-flight producer retirement \
+                         finished; it continues flushing on its own blocking thread and \
+                         completes independently of shutdown",
+            );
+        }
     }
-    // Otherwise the task finished and the handle is dropped here.
 }
 
 /// URN for the Kafka exporter factory registration.
@@ -1282,11 +1303,16 @@ impl Exporter<OtapPdata> for KafkaExporter {
                         }
                     }
 
-                    // Await any in-flight producer retirement from a recent
-                    // reconfiguration, bounded by the shutdown deadline. If it
-                    // outruns the deadline it is left to finish on its own
-                    // blocking thread while we return, so shutdown stays
-                    // deadline-bounded even against an unavailable broker.
+                    // Wait for any in-flight producer retirement from a recent
+                    // reconfiguration to finish, bounded by the remaining shutdown
+                    // deadline. The prior drain steps may have already consumed
+                    // the budget (so `remaining` can be zero); in that case this
+                    // only checks whether the retirement already completed. If the
+                    // deadline is exceeded, the retirement continues to completion
+                    // on its own blocking thread (a
+                    // `retirement_deadline_exceeded` warning is emitted) while we
+                    // return, keeping shutdown deadline-bounded even against an
+                    // unavailable broker.
                     let remaining = deadline
                         .checked_duration_since(std::time::Instant::now())
                         .unwrap_or(Duration::ZERO);
@@ -1612,6 +1638,70 @@ pub mod test_support {
             Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric,
         };
         use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+
+        /// Scenario: await_pending_retirement is given a retirement task that
+        /// completes well within the deadline.
+        /// Guarantees: it returns promptly and clears the retiring-producer slot
+        /// so a completed retirement's handle does not linger.
+        #[tokio::test]
+        async fn await_pending_retirement_clears_slot_when_task_finishes() {
+            let handle = tokio::task::spawn(async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            });
+            let mut retiring_producer = Some(handle);
+
+            let start = std::time::Instant::now();
+            await_pending_retirement(&mut retiring_producer, Duration::from_secs(5)).await;
+
+            assert!(
+                retiring_producer.is_none(),
+                "a completed retirement's handle must be cleared from the slot"
+            );
+            assert!(
+                start.elapsed() < Duration::from_secs(1),
+                "the wait must return as soon as the retirement finishes, not \
+                 hold the full deadline: took {:?}",
+                start.elapsed()
+            );
+        }
+
+        /// Scenario: await_pending_retirement is given a retirement task that
+        /// outlives the (short) deadline, modeling a librdkafka flush still
+        /// running on its own blocking thread.
+        /// Guarantees: the call returns bounded by the deadline, does NOT re-arm
+        /// the slot (it is left empty), and does NOT abort the still-running
+        /// task -- the retirement continues to completion on its own thread.
+        #[tokio::test]
+        async fn await_pending_retirement_returns_when_task_outlives_deadline() {
+            use std::sync::atomic::{AtomicBool, Ordering};
+
+            let done = Arc::new(AtomicBool::new(false));
+            let task_done = done.clone();
+            let handle = tokio::task::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                task_done.store(true, Ordering::SeqCst);
+            });
+            let mut retiring_producer = Some(handle);
+
+            let start = std::time::Instant::now();
+            await_pending_retirement(&mut retiring_producer, Duration::from_millis(50)).await;
+
+            assert!(
+                start.elapsed() < Duration::from_millis(400),
+                "the wait must be bounded by the deadline, not the task duration: took {:?}",
+                start.elapsed()
+            );
+            assert!(
+                retiring_producer.is_none(),
+                "a timed-out retirement must NOT be re-armed into the slot; the \
+                 slot is discarded on shutdown"
+            );
+            assert!(
+                !done.load(Ordering::SeqCst),
+                "the retirement task must still be running (not aborted) after the \
+                 deadline is reached; it continues to completion on its own thread"
+            );
+        }
 
         /// Tests that payload is properly cloned for both OTLP and OTAP serialization formats.
         /// This ensures no borrow-after-move errors occur when the encoder consumes the payload.
@@ -2958,6 +3048,14 @@ pub mod test_support {
                     // below FLUSH_TIMEOUT_MS: the in-flight drain is deadline-
                     // bounded and abandons deliveries it cannot finalize. Without
                     // the deadline bound this would take ~FLUSH_TIMEOUT_MS.
+                    //
+                    // Contract note: the retiring producer's in-progress
+                    // librdkafka flush continues to completion on its own blocking
+                    // thread and may finish past SHUTDOWN_DEADLINE (up to
+                    // FLUSH_TIMEOUT_MS), by design. Shutdown bounds only its own
+                    // wait and emits
+                    // kafka.exporter.shutdown.retirement_deadline_exceeded before
+                    // returning.
                     let start = std::time::Instant::now();
                     exporter.shutdown(SHUTDOWN_DEADLINE).await;
                     tokio::time::timeout(Duration::from_secs(10), exporter.await_stopped())
