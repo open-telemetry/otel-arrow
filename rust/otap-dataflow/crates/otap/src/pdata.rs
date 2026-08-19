@@ -685,14 +685,6 @@ impl OtapPdata {
         self.payload.num_items()
     }
 
-    /// Returns the normalized uncompressed OTLP protobuf size.
-    ///
-    /// Both representations require normalization, so the result is computed
-    /// once per payload value. Clones copy measurements computed before cloning.
-    pub fn normalized_otlp_size(&mut self) -> Result<u64, otap_df_pdata::error::Error> {
-        self.payload.normalized_otlp_size()
-    }
-
     /// Enable testing Ack/Nack without an effect handler. Consumes,
     /// modifies and returns self.
     #[cfg(any(test, feature = "test-utils"))]
@@ -2796,85 +2788,10 @@ mod test {
                 .payload_ref()
                 .test_has_cached_item_count()
         );
-        assert!(!pdata.payload_ref().test_has_cached_normalized_size());
-    }
-
-    /// Scenario: normalized size is requested for OTAP Arrow records.
-    /// Guarantees: the size is cached after conversion into the normalized OTLP message model.
-    #[test]
-    fn normalized_otlp_size_converts_otap_records() {
-        use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
-
-        let payload = create_test_pdata().into_parts().1;
-        let records: OtapArrowRecords = payload.try_into_with_default().expect("OTAP conversion");
-        let expected = OtapPayload::from_otap(records.clone())
-            .size()
-            .expect("normalized OTLP size");
-        let mut pdata = OtapPdata::new_default(records.into());
-
-        assert_eq!(
-            pdata.normalized_otlp_size().expect("normalized OTLP size"),
-            expected
-        );
-        assert!(pdata.payload_ref().test_has_cached_normalized_size());
-    }
-
-    /// Scenario: equivalent OTLP and OTAP payloads use different physical encodings.
-    /// Guarantees: normalized OTLP size is representation-independent and ignores extra wire bytes.
-    #[test]
-    fn normalized_otlp_size_matches_across_representations() {
-        use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes, PayloadData, TryIntoWithOptions};
-
-        let payload = create_test_pdata().into_parts().1;
-        let otlp = match payload.into_data() {
-            PayloadData::OtlpBytes(otlp) => otlp,
-            PayloadData::OtapArrowRecords(_) => panic!("expected OTLP test payload"),
-        };
-        let mut bytes = bytes::BytesMut::from(otlp.as_bytes());
-        // Unknown field 100 with value 1 changes wire size but not decoded telemetry.
-        bytes.extend_from_slice(&[0xa0, 0x06, 0x01]);
-        let otlp = match otlp {
-            OtlpProtoBytes::ExportLogsRequest(_) => {
-                OtlpProtoBytes::ExportLogsRequest(bytes.freeze())
-            }
-            OtlpProtoBytes::ExportMetricsRequest(_) => {
-                OtlpProtoBytes::ExportMetricsRequest(bytes.freeze())
-            }
-            OtlpProtoBytes::ExportTracesRequest(_) => {
-                OtlpProtoBytes::ExportTracesRequest(bytes.freeze())
-            }
-        };
-        let wire_size = otlp.num_bytes() as u64;
-        let records: OtapArrowRecords = otlp
-            .clone()
-            .try_into_with_default()
-            .expect("OTAP conversion");
-        let mut otlp = OtapPdata::new_default(otlp.into());
-        let mut otap = OtapPdata::new_default(records.into());
-
-        let otlp_size = otlp.normalized_otlp_size().expect("normalized OTLP size");
-        let otap_size = otap.normalized_otlp_size().expect("normalized OTLP size");
-        assert_eq!(otlp_size, otap_size);
-        assert!(otlp_size < wire_size);
-    }
-
-    /// Scenario: normalized sizing fails while decoding invalid OTLP bytes.
-    /// Guarantees: failures are returned directly and do not populate the plain size cache.
-    #[test]
-    fn normalized_otlp_size_does_not_cache_failures() {
-        use otap_df_pdata::OtlpProtoBytes;
-
-        let invalid = OtlpProtoBytes::ExportLogsRequest(bytes::Bytes::from_static(&[0xff]));
-        let mut pdata = OtapPdata::new_default(OtapPayload::from_otlp(invalid));
-
-        assert!(pdata.normalized_otlp_size().is_err());
-        assert!(!pdata.payload_ref().test_has_cached_normalized_size());
-        assert!(pdata.normalized_otlp_size().is_err());
-        assert!(!pdata.payload_ref().test_has_cached_normalized_size());
     }
 
     /// Scenario: OTAP item count is requested without traversing individual records.
-    /// Guarantees: the direct Arrow row count bypasses allocation of the measurement cache.
+    /// Guarantees: the direct Arrow row count leaves the OTLP item-count cache empty.
     #[test]
     fn otap_item_count_bypasses_cache() {
         use otap_df_pdata::{OtapArrowRecords, TryIntoWithOptions};
@@ -2885,7 +2802,6 @@ mod test {
         let expected_items = otap.payload.num_items();
         assert_eq!(otap.num_items(), expected_items);
         assert!(!otap.payload_ref().test_has_cached_item_count());
-        assert!(!otap.payload_ref().test_has_cached_normalized_size());
     }
 
     /// Scenario: cached measurements exist before the payload is taken from PData.
@@ -2894,23 +2810,13 @@ mod test {
     fn take_payload_invalidates_cached_measurements() {
         let mut pdata = create_test_pdata();
         assert!(pdata.num_items() > 0);
-        assert!(pdata.normalized_otlp_size().expect("normalized OTLP size") > 0);
         let payload = pdata.take_payload();
 
         assert!(!payload.is_empty());
         assert!(payload.test_has_cached_item_count());
-        assert!(payload.test_has_cached_normalized_size());
         assert!(!pdata.payload_ref().test_has_cached_item_count());
-        assert!(!pdata.payload_ref().test_has_cached_normalized_size());
         assert_eq!(pdata.num_items(), 0);
-        assert_eq!(
-            pdata
-                .normalized_otlp_size()
-                .expect("empty normalized OTLP size"),
-            0
-        );
         assert!(pdata.payload_ref().test_has_cached_item_count());
-        assert!(pdata.payload_ref().test_has_cached_normalized_size());
     }
 
     /// Scenario: an unchanged payload's cache is queried, split via `into_parts`, and the
@@ -2932,8 +2838,8 @@ mod test {
 
     /// Scenario: a brand new `OtapPayload` is constructed from raw representation data,
     /// distinct from any previously measured payload.
-    /// Guarantees: constructing a new logical payload always starts with an
-    /// uninitialized measurement cache, never reusing another payload's cache.
+    /// Guarantees: constructing a new logical payload starts with an empty
+    /// item-count cache and never reuses another payload's count.
     #[test]
     fn new_payload_construction_has_fresh_measurements() {
         let mut measured = create_test_pdata();
@@ -2942,6 +2848,5 @@ mod test {
 
         let (_, payload) = create_test_pdata().into_parts();
         assert!(!payload.test_has_cached_item_count());
-        assert!(!payload.test_has_cached_normalized_size());
     }
 }

@@ -152,26 +152,6 @@ impl PayloadData {
         }
     }
 
-    /// See [`OtapPayload::size`] for the documented contract;
-    /// this performs the uncached conversion/decoding work.
-    fn size(&self) -> Result<u64, Error> {
-        let otlp = match self {
-            Self::OtlpBytes(value) => value.clone(),
-            Self::OtapArrowRecords(value) => {
-                let otlp: OtlpProtoBytes = value.clone().try_into_with_default()?;
-                otlp
-            }
-        };
-
-        let message = OtlpProtoMessage::try_from(otlp)
-            .map_err(|source| Error::DecodeOtlpForSizing { source })?;
-        Ok(match message {
-            OtlpProtoMessage::Logs(data) => data.encoded_len(),
-            OtlpProtoMessage::Metrics(data) => data.encoded_len(),
-            OtlpProtoMessage::Traces(data) => data.encoded_len(),
-        } as u64)
-    }
-
     fn num_bytes(&self) -> Option<usize> {
         match self {
             Self::OtlpBytes(value) => Some(value.num_bytes()),
@@ -189,9 +169,10 @@ impl PayloadData {
 
 /// Container for the various representations of the telemetry data.
 ///
-/// `OtapPayload` owns both the concrete [`PayloadData`] and cached
-/// expensive measurements (OTLP item count and normalized OTLP size). The
-/// cache is scoped to the exact logical payload version it was created for:
+/// `OtapPayload` owns both the concrete [`PayloadData`] and cached expensive
+/// measurements. The only cached measurement currently implemented is the
+/// OTLP item count. The cache is scoped to the exact logical payload version
+/// it was created for:
 ///
 /// - Constructing a new `OtapPayload` (via `From`, [`Self::empty`], or
 ///   [`Self::take_payload`]'s emptied remainder) always starts with a fresh,
@@ -207,7 +188,6 @@ impl PayloadData {
 pub struct OtapPayload {
     data: PayloadData,
     item_count: Option<usize>,
-    size: Option<u64>,
 }
 
 impl OtapPayload {
@@ -217,7 +197,6 @@ impl OtapPayload {
         Self {
             data,
             item_count: None,
-            size: None,
         }
     }
 
@@ -275,16 +254,15 @@ impl OtapPayload {
 
     /// Removes the payload from this request, leaving an empty request.
     ///
-    /// The returned `OtapPayload` retains this payload's cached measurements
-    /// intact. `self` is left holding an emptied representation with a fresh,
-    /// uninitialized cache, so it cannot reuse stale measurements.
+    /// The returned `OtapPayload` retains this payload's cached measurements.
+    /// `self` is left holding an emptied representation with a fresh cache, so
+    /// it cannot reuse stale measurements.
     #[must_use]
     pub fn take_payload(&mut self) -> Self {
         let old_data = self.data.take_payload();
         Self {
             data: old_data,
             item_count: self.item_count.take(),
-            size: self.size.take(),
         }
     }
 
@@ -305,33 +283,6 @@ impl OtapPayload {
             // Bypass the cache for OTAP because Arrow batches store row counts.
             PayloadData::OtapArrowRecords(_) => self.data.num_items(),
         }
-    }
-
-    /// Returns the normalized uncompressed OTLP protobuf size.
-    ///
-    /// Both representations are decoded into the same OTLP message model before
-    /// sizing so equivalent telemetry has the same result even when its original
-    /// protobuf encoding differs. OTAP payloads are first converted with the
-    /// default unbounded conversion options.
-    ///
-    /// Both representations require normalization, so the result is computed
-    /// once per payload value. Clones copy a result that has already been
-    /// computed.
-    ///
-    /// Arrow retained-memory accounting from issue #3442 is not a valid
-    /// substitute because it measures allocation capacity, not protobuf size.
-    pub fn size(&mut self) -> Result<u64, Error> {
-        if let Some(size) = self.size {
-            return Ok(size);
-        }
-        let size = self.data.size()?;
-        self.size = Some(size);
-        Ok(size)
-    }
-
-    /// Returns the normalized uncompressed OTLP protobuf size.
-    pub fn normalized_otlp_size(&mut self) -> Result<u64, Error> {
-        self.size()
     }
 
     /// Returns the number of encoded bytes, if known.
@@ -357,7 +308,6 @@ impl OtapPayload {
         Self {
             data: PayloadData::OtlpBytes(OtlpProtoBytes::empty(signal)),
             item_count: None,
-            size: None,
         }
     }
 
@@ -367,14 +317,6 @@ impl OtapPayload {
     #[must_use]
     pub fn test_has_cached_item_count(&self) -> bool {
         self.item_count.is_some()
-    }
-
-    /// Test-only introspection: true if the normalized-size cache has been
-    /// computed.
-    #[cfg(any(test, feature = "testing"))]
-    #[must_use]
-    pub fn test_has_cached_normalized_size(&self) -> bool {
-        self.size.is_some()
     }
 }
 
@@ -411,7 +353,6 @@ impl OtapPayloadHelpers for OtapArrowRecords {
     }
 
     fn num_bytes(&self) -> Option<usize> {
-        // Arrow memory and IPC sizes are not normalized OTLP protobuf size.
         None
     }
 
@@ -461,7 +402,6 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
     }
 
     fn num_bytes(&self) -> Option<usize> {
-        // This is the original wire length, not the normalized OTLP size.
         Some(self.num_bytes())
     }
 
