@@ -50,7 +50,20 @@ groups:
               environment: "your-environment"
               account: "your-account"
               account_routing:
+                # Fallback account group for any event/table not listed under `events`.
+                # Every account group referenced here (default_group and each value in
+                # `events`) must exist in the Geneva configuration and have exactly one primary moniker
+                # (isDefault = true); the uploader auto-selects that primary moniker.
+                # Zero, multiple, or empty primaries fail at upload time.
                 default_group: "your-account-group"
+                # Route specific destination event/table names to different account
+                # groups. Each distinct group resolves to its own primary moniker, so a
+                # single exporter can send to multiple monikers. Keys are the FINAL
+                # event/table names (after `event_name_mapping` has run) -- e.g. the
+                # `MyLogTable` and `LogTable1` destinations configured below.
+                events:
+                  MyLogTable: "security-account-group"
+                  LogTable1: "audit-account-group"
               namespace: "your-namespace"
               region: "your-region"
               config_major_version: 1
