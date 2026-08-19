@@ -40,7 +40,7 @@ use otap_df_pdata::views::otap::{OtapLogsView, OtapMetricsView, OtapTracesView};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
-use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
+use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
 use otap_df_telemetry::attributes::AttributeEnum as _;
 use otap_df_telemetry::common_attributes::{Outcome, SignalAttributes, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MeasurementMetricSet;
@@ -147,7 +147,7 @@ impl Exporter<OtapPdata> for FileExporter {
 impl FileExporter {
     async fn export_pdata(
         &mut self,
-        pdata: OtapPdata,
+        mut pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let signal = pdata.signal_type();
@@ -223,7 +223,7 @@ impl FileExporter {
         self.signal_metrics
             .with(SignalAttributes { signal })
             .items
-            .add(pdata.payload_ref().num_items() as u64);
+            .add(pdata.num_items() as u64);
         self.signal_metrics
             .with(SignalAttributes { signal })
             .bytes
@@ -364,8 +364,8 @@ fn encode_payload(
     max_frame_bytes: usize,
 ) -> Result<(), EncodeFailure> {
     frame.clear();
-    match payload {
-        OtapPayload::OtlpBytes(bytes) => match bytes {
+    match payload.data() {
+        PayloadData::OtlpBytes(bytes) => match bytes {
             otap_df_pdata::OtlpProtoBytes::ExportLogsRequest(_) => {
                 let view = RawLogsData::try_from(bytes)
                     .map_err(|error| EncodeFailure::View(error.to_string()))?;
@@ -382,7 +382,7 @@ fn encode_payload(
                 encode_traces(&view, frame, max_frame_bytes)?;
             }
         },
-        OtapPayload::OtapArrowRecords(records) => match records.signal_type() {
+        PayloadData::OtapArrowRecords(records) => match records.signal_type() {
             SignalType::Logs => {
                 let view = OtapLogsView::try_from(records)
                     .map_err(|error| EncodeFailure::View(error.to_string()))?;
@@ -541,9 +541,9 @@ mod tests {
         let metrics = RawMetricsData::try_new(&metrics_bytes).unwrap();
         let traces = RawTraceData::try_new(&traces_bytes).unwrap();
         let payloads = [
-            OtapPayload::OtapArrowRecords(encode_logs_otap_batch(&logs).unwrap()),
-            OtapPayload::OtapArrowRecords(encode_metrics_otap_batch(&metrics).unwrap()),
-            OtapPayload::OtapArrowRecords(encode_spans_otap_batch(&traces).unwrap()),
+            OtapPayload::from(encode_logs_otap_batch(&logs).unwrap()),
+            OtapPayload::from(encode_metrics_otap_batch(&metrics).unwrap()),
+            OtapPayload::from(encode_spans_otap_batch(&traces).unwrap()),
         ];
         let expected_fields = ["resourceLogs", "resourceMetrics", "resourceSpans"];
         let mut frame = Vec::new();
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn malformed_otlp_payload_clears_the_reusable_frame() {
         let payload =
-            OtapPayload::OtlpBytes(OtlpProtoBytes::new_from_bytes(SignalType::Logs, vec![0x80]));
+            OtapPayload::from(OtlpProtoBytes::new_from_bytes(SignalType::Logs, vec![0x80]));
         let mut frame = b"previous telemetry\n".to_vec();
         assert!(encode_payload(&payload, &mut frame, 4096).is_err());
         assert!(frame.is_empty());

@@ -56,7 +56,7 @@ use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
-    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes,
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData,
     error::Error as PDataError,
     otap::batching::make_item_batches,
     otlp::batching::{BytesBatches, make_bytes_batches_owned},
@@ -258,11 +258,11 @@ pub struct Config {
     #[serde(with = "humantime_serde", default = "default_max_batch_duration")]
     pub max_batch_duration: Duration,
 
-    /// Limits the number of pending requests for ack/nack tracking.
+    /// Limits the number of pending requests for completion tracking.
     #[serde(default = "default_inbound_request_limit")]
     pub inbound_request_limit: NonZeroUsize,
 
-    /// Limits the number of outbound requests for ack/nack tracking.
+    /// Limits the number of outbound requests for completion tracking.
     #[serde(default = "default_outbound_request_limit")]
     pub outbound_request_limit: NonZeroUsize,
 
@@ -802,8 +802,8 @@ impl BatchProcessor {
 
         let (ctx, payload) = request.into_parts();
 
-        match payload {
-            OtapPayload::OtapArrowRecords(otap) => {
+        match payload.into_data() {
+            PayloadData::OtapArrowRecords(otap) => {
                 if let Some(mut otap_format) = self.otap_format() {
                     otap_format
                         .for_signal(signal)
@@ -819,7 +819,7 @@ impl BatchProcessor {
                     return Err(Self::no_active_format_error());
                 }
             }
-            OtapPayload::OtlpBytes(otlp) => {
+            PayloadData::OtlpBytes(otlp) => {
                 if let Some(mut otlp_format) = self.otlp_format() {
                     otlp_format
                         .for_signal(signal)
@@ -963,8 +963,8 @@ where
         // when none of them subscribed to ack/nack.
         let peer_addr = ctx.peer_addr();
 
-        // If there are subscribers, calculate an inbound slot key.
-        let inkey = if ctx.has_subscribers() {
+        // Retain contexts needed for Ack/Nack routing or metrics unwinding.
+        let inkey = if ctx.needs_completion_tracking() {
             let slot = self
                 .buffer
                 .inbound
@@ -1187,8 +1187,8 @@ where
             let weight = ownership;
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
-            // If any inputs in this batch require notification, get an
-            // outbound slot and subscribe.
+            // If any inputs require completion tracking, get an outbound slot
+            // and subscribe so their contexts can unwind after this output.
             let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
             // Forward the receiver-observed peer address only when every
             // input merged into this output batch came from the same peer
@@ -2098,7 +2098,7 @@ mod tests {
                             looped += 1;
 
                             // Apply ack/nack policy
-                            if new_output.has_subscribers() {
+                            if new_output.has_ack_or_nack_interests() {
                                 let policy = nack_policy
                                     .as_ref()
                                     .map(|p| p(total_outputs - 1, &new_output))
@@ -3278,7 +3278,7 @@ mod tests {
                 )
                 .await
                 {
-                    PipelineCompletionMsg::DeliverAck { ack } => {
+                    PipelineCompletionMsg::DeliverAck { mut ack } => {
                         assert_eq!(ack.accepted.num_items(), 0);
                     }
                     PipelineCompletionMsg::DeliverNack { nack } => {
@@ -3669,7 +3669,7 @@ mod tests {
                 let last = outputs.len() - 1;
                 for (i, out) in outputs.into_iter().enumerate() {
                     assert!(
-                        out.has_subscribers(),
+                        out.has_ack_or_nack_interests(),
                         "every fragment must be subscribed for ack/nack"
                     );
                     if i == last {

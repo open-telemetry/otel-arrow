@@ -749,7 +749,7 @@ mod tests {
             .expect("ack completion should arrive before timeout")
             .expect("completion channel should contain an ack");
         match completion {
-            PipelineCompletionMsg::DeliverAck { ack } => {
+            PipelineCompletionMsg::DeliverAck { mut ack } => {
                 assert_eq!(ack.accepted.num_items(), 0);
                 assert_eq!(ack.accepted.signal_type(), expected_signal);
             }

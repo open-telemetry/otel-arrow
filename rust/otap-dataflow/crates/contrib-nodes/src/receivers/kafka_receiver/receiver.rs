@@ -1709,7 +1709,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-    use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+    use otap_df_pdata::{OtapArrowRecords, OtapPayload, PayloadData, TryIntoWithOptions};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message;
     use rdkafka::ClientConfig;
@@ -3606,6 +3606,7 @@ mod tests {
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
         // Own partition 0 and track three in-flight offsets under its generation.
+        // in flight: traces/0={0,1,2} => gauge 3
         let mut tpl = TopicPartitionList::new();
         let _ = tpl.add_partition("traces", 0);
         receiver.rebalance_state.set_assignment_for_test(&tpl);
@@ -3623,6 +3624,7 @@ mod tests {
         );
 
         // Acknowledge the two lowest offsets; only offset 2 remains pending.
+        // in flight: traces/0={2} => gauge 1
         let _ = receiver.offset_tracker.acknowledge("traces", 0, 0);
         let _ = receiver.offset_tracker.acknowledge("traces", 0, 1);
         receiver.reconcile_rebalance_state();
@@ -3633,6 +3635,7 @@ mod tests {
         );
 
         // Revoke and purge the partition; nothing remains in flight.
+        // in flight: {} => gauge 0
         receiver
             .rebalance_state
             .push_revoked_for_test("traces", 0, generation);
@@ -6075,8 +6078,8 @@ mod tests {
         let payload: OtapPayload = pdata.take_payload();
         assert!(
             matches!(
-                payload,
-                OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                payload.into_data(),
+                PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
             ),
             "expected OtapArrowRecords::Traces"
         );
@@ -6094,8 +6097,8 @@ mod tests {
         let payload: OtapPayload = pdata.take_payload();
         assert!(
             matches!(
-                payload,
-                OtapPayload::OtapArrowRecords(OtapArrowRecords::Metrics(_))
+                payload.into_data(),
+                PayloadData::OtapArrowRecords(OtapArrowRecords::Metrics(_))
             ),
             "expected OtapArrowRecords::Metrics"
         );
@@ -6113,8 +6116,8 @@ mod tests {
         let payload: OtapPayload = pdata.take_payload();
         assert!(
             matches!(
-                payload,
-                OtapPayload::OtapArrowRecords(OtapArrowRecords::Logs(_))
+                payload.into_data(),
+                PayloadData::OtapArrowRecords(OtapArrowRecords::Logs(_))
             ),
             "expected OtapArrowRecords::Logs"
         );
@@ -6337,8 +6340,8 @@ mod tests {
                     let payload: OtapPayload = pdata.take_payload();
                     assert!(
                         matches!(
-                            payload,
-                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                            payload.into_data(),
+                            PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
                         ),
                         "Expected OtapArrowRecords::Traces for message {i}"
                     );
@@ -6386,7 +6389,7 @@ mod tests {
                 for i in 0..3 {
                     let mut pdata = receiver.recv_pdata().await;
                     let payload: OtapPayload = pdata.take_payload();
-                    if let OtapPayload::OtapArrowRecords(arrow_records) = payload {
+                    if let PayloadData::OtapArrowRecords(arrow_records) = payload.into_data() {
                         let expected = OtapArrowRecords::Metrics(Metrics::default());
                         assert_eq!(expected, arrow_records);
                     } else {
@@ -6436,7 +6439,7 @@ mod tests {
                 for i in 0..3 {
                     let mut pdata = receiver.recv_pdata().await;
                     let payload: OtapPayload = pdata.take_payload();
-                    if let OtapPayload::OtapArrowRecords(arrow_records) = payload {
+                    if let PayloadData::OtapArrowRecords(arrow_records) = payload.into_data() {
                         let expected = OtapArrowRecords::Logs(Logs::default());
                         assert_eq!(expected, arrow_records);
                     } else {
@@ -6503,8 +6506,8 @@ mod tests {
                     let payload: OtapPayload = pdata.take_payload();
                     assert!(
                         matches!(
-                            payload,
-                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                            payload.into_data(),
+                            PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
                         ),
                         "message {i}: MessageFormat=otap header must override the \
                          OtlpProto per-signal default and decode via the OTAP path",

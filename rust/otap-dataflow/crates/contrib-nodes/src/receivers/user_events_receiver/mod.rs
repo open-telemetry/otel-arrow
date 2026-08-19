@@ -1275,12 +1275,12 @@ mod config_tests {
                 _ = time::sleep(Duration::from_millis(10)) => {}
             }
 
-            let prefilled = rx.recv().await.expect("prefilled item received");
+            let mut prefilled = rx.recv().await.expect("prefilled item received");
             assert_eq!(prefilled.num_items(), 0);
             flush.await.expect("flush completed after capacity opened");
         }
 
-        let pdata = rx.recv().await.expect("flushed batch received");
+        let mut pdata = rx.recv().await.expect("flushed batch received");
         assert_eq!(pdata.num_items(), 1);
 
         let metrics = metrics.borrow();
@@ -1354,7 +1354,7 @@ mod config_tests {
         .await
         .expect("drained records processed");
 
-        let pdata = rx.recv().await.expect("flushed batch received");
+        let mut pdata = rx.recv().await.expect("flushed batch received");
         assert_eq!(pdata.num_items(), 1);
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
@@ -1434,7 +1434,7 @@ mod config_tests {
             .await
             .expect("partial batch flushed");
 
-        let pdata = rx.recv().await.expect("flushed batch received");
+        let mut pdata = rx.recv().await.expect("flushed batch received");
         assert_eq!(pdata.num_items(), 1);
         let metrics = metrics.borrow();
         assert!(builder.is_empty());

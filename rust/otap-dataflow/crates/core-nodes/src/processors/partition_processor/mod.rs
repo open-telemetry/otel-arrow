@@ -292,10 +292,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         ));
                         inbound_context.set_transport_headers(headers);
 
-                        let pdata = OtapPdata::new(
-                            inbound_context,
-                            OtapPayload::OtapArrowRecords(partition.batch),
-                        );
+                        let pdata =
+                            OtapPdata::new(inbound_context, OtapPayload::from(partition.batch));
                         effect_handler.send_message_with_source_node(pdata).await?;
                     }
                     _ => {
@@ -1028,7 +1026,7 @@ mod test {
                 headers.push(TransportHeader::text("h1", "header1", "hello world"));
                 context.set_transport_headers(headers);
                 context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
-                let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
+                let mut pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
                 pdata.start_flow_metric();
                 pdata.add_flow_compute(8);
                 ctx.process(Message::PData(pdata))
@@ -1080,7 +1078,7 @@ mod test {
                 let mut headers = context.take_transport_headers().unwrap_or_default();
                 headers.push(TransportHeader::text("h1", "header1", "hello world"));
                 context.set_transport_headers(headers);
-                let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
+                let pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
                 ctx.process(Message::PData(pdata))
                     .await
                     .expect("no process error");

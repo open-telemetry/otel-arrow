@@ -28,9 +28,9 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::OtapPayload;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+use otap_df_pdata::{OtapPayload, PayloadData};
 use otap_df_pdata_views::views::common::InstrumentationScopeView;
 use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
@@ -268,15 +268,15 @@ impl ConsoleExporter {
     }
 
     async fn export_logs(&self, payload: &OtapPayload) -> Result<(), ConsoleExportErrorType> {
-        match payload {
-            OtapPayload::OtlpBytes(bytes) => match RawLogsData::try_from(bytes) {
+        match payload.data() {
+            PayloadData::OtlpBytes(bytes) => match RawLogsData::try_from(bytes) {
                 Ok(logs_view) => self.formatter.print_logs_data(&logs_view).await,
                 Err(e) => {
                     otel_error!("console.logs_view.otlp_create_failed", error = ?e, message = "Failed to create OTLP logs view");
                     Err(ConsoleExportErrorType::OtlpViewCreation)
                 }
             },
-            OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
+            PayloadData::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
                 Ok(logs_view) => self.formatter.print_logs_data(&logs_view).await,
                 Err(e) => {
                     otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");

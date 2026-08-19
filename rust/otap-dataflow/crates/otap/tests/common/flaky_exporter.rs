@@ -226,7 +226,7 @@ impl Exporter<OtapPdata> for FlakyExporter {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     break;
                 }
-                Message::PData(data) => {
+                Message::PData(mut data) => {
                     let should_ack = self
                         .should_ack
                         .as_ref()

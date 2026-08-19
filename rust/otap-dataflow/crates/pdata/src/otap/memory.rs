@@ -93,7 +93,7 @@ mod tests {
 
     use crate::otap::{Logs, OtapArrowRecords};
     use crate::otlp::OtlpProtoBytes;
-    use crate::payload::{OtapPayload, OtapPayloadHelpers};
+    use crate::payload::{OtapPayload, OtapPayloadHelpers, PayloadData};
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
     use super::{CountedAllocations, record_batch_pinned_bytes};
@@ -242,8 +242,8 @@ mod tests {
     #[test]
     fn payload_retained_memory_bytes_preserves_num_bytes_semantics() {
         let otlp_bytes = OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(b"abc"));
-        let otlp_payload = OtapPayload::OtlpBytes(otlp_bytes.clone());
-        let arrow_payload = OtapPayload::OtapArrowRecords(OtapArrowRecords::Logs(Logs::default()));
+        let otlp_payload: OtapPayload = otlp_bytes.clone().into();
+        let arrow_payload: OtapPayload = OtapArrowRecords::Logs(Logs::default()).into();
 
         assert_eq!(otlp_bytes.retained_memory_bytes(), 3);
         assert_eq!(otlp_payload.retained_memory_bytes(), 3);
@@ -254,9 +254,9 @@ mod tests {
         // Keep the root payload type reachable on an empty OTAP batch without
         // implying there is retained Arrow memory.
         assert_eq!(
-            match arrow_payload {
-                OtapPayload::OtapArrowRecords(records) => records.root_payload_type(),
-                OtapPayload::OtlpBytes(_) => unreachable!(),
+            match arrow_payload.into_data() {
+                PayloadData::OtapArrowRecords(records) => records.root_payload_type(),
+                PayloadData::OtlpBytes(_) => unreachable!(),
             },
             ArrowPayloadType::Logs
         );

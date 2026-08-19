@@ -106,7 +106,7 @@ impl LogSamplingProcessor {
     /// Processes a log payload: sample, filter, and forward or ack.
     async fn process_logs(
         &mut self,
-        pdata: OtapPdata,
+        mut pdata: OtapPdata,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         let total = pdata.num_items();
@@ -148,7 +148,7 @@ impl LogSamplingProcessor {
             Ok(filtered) => filtered,
             Err(e) => {
                 self.metrics.filtering_errors.inc();
-                let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+                let pdata = OtapPdata::new(context, OtapPayload::from(records));
                 effect_handler
                     .notify_nack(NackMsg::new(
                         format!("failed to filter otap batch: {e}"),
@@ -170,7 +170,7 @@ impl LogSamplingProcessor {
         // decision node in a flow that enables `dropped.items`.
         effect_handler.record_flow_dropped_items(SignalType::Logs, dropped as u64);
 
-        let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(filtered));
+        let mut pdata = OtapPdata::new(context, OtapPayload::from(filtered));
         if kept == 0 {
             pdata.complete_processor_without_output(effect_handler);
             effect_handler.notify_ack(AckMsg::new(pdata)).await?;
@@ -261,6 +261,7 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otap_df_otap::pdata::Context;
     use otap_df_otap::testing::TestCallData;
+    use otap_df_pdata::PayloadData;
     use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
     use otap_df_pdata::otap::OtapBatchStore;
     use otap_df_pdata::proto::OtlpProtoMessage;
@@ -310,18 +311,17 @@ mod tests {
 
                 let mut records = OtapArrowRecords::Logs(input_logs);
                 records.encode_transport_optimized().unwrap();
-                let pdata =
-                    OtapPdata::new(Context::default(), OtapPayload::OtapArrowRecords(records));
+                let pdata = OtapPdata::new(Context::default(), OtapPayload::from(records));
 
                 ctx.process(Message::PData(pdata)).await.expect("process");
-                let msgs = ctx.drain_pdata().await;
+                let mut msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1);
                 assert_eq!(msgs[0].num_items(), 2);
 
                 let output_payload = msgs[0].clone().into_parts().1.take_payload();
-                let output_otap = match output_payload {
-                    OtapPayload::OtlpBytes(_) => panic!("Unexpected otlp bytes"),
-                    OtapPayload::OtapArrowRecords(otap_arrow_records) => otap_arrow_records,
+                let output_otap = match output_payload.into_data() {
+                    PayloadData::OtlpBytes(_) => panic!("Unexpected otlp bytes"),
+                    PayloadData::OtapArrowRecords(otap_arrow_records) => otap_arrow_records,
                 };
 
                 let output_attrs = output_otap.get(ArrowPayloadType::LogAttrs).unwrap();
@@ -358,14 +358,14 @@ mod tests {
                 // Send 10 logs (within budget of 20)
                 let pdata = make_log_pdata_arrow(10);
                 ctx.process(Message::PData(pdata)).await.expect("process");
-                let msgs = ctx.drain_pdata().await;
+                let mut msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1, "all 10 should be forwarded");
                 assert_eq!(msgs[0].num_items(), 10);
 
                 // Send 15 more logs (exceeds remaining budget of 10)
                 let pdata = make_log_pdata_arrow(15);
                 ctx.process(Message::PData(pdata)).await.expect("process");
-                let msgs = ctx.drain_pdata().await;
+                let mut msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1, "partial batch should be forwarded");
                 assert_eq!(msgs[0].num_items(), 10, "only 10 remaining budget");
 
@@ -381,7 +381,7 @@ mod tests {
                 let msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 0, "budget exhausted, nothing forwarded");
                 match completion_rx.recv().await.expect("expected completion") {
-                    PipelineCompletionMsg::DeliverAck { ack } => {
+                    PipelineCompletionMsg::DeliverAck { mut ack } => {
                         assert_eq!(ack.accepted.num_items(), 0);
                     }
                     PipelineCompletionMsg::DeliverNack { nack } => {
@@ -411,7 +411,7 @@ mod tests {
                 // Send 100 logs, expect 10 (1:10 ratio)
                 let pdata = make_log_pdata_arrow(100);
                 ctx.process(Message::PData(pdata)).await.expect("process");
-                let msgs = ctx.drain_pdata().await;
+                let mut msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1);
                 assert_eq!(msgs[0].num_items(), 10);
             })
@@ -431,10 +431,10 @@ mod tests {
 
         run_processor_test(config, |mut ctx: TestContext<OtapPdata>| {
             Box::pin(async move {
-                let pdata = make_trace_pdata_arrow();
+                let mut pdata = make_trace_pdata_arrow();
                 let original_items = pdata.num_items();
                 ctx.process(Message::PData(pdata)).await.expect("process");
-                let msgs = ctx.drain_pdata().await;
+                let mut msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1, "traces should pass through");
                 assert_eq!(msgs[0].num_items(), original_items);
             })
@@ -454,10 +454,10 @@ mod tests {
 
         run_processor_test(config, |mut ctx: TestContext<OtapPdata>| {
             Box::pin(async move {
-                let pdata = make_trace_pdata_otlp();
+                let mut pdata = make_trace_pdata_otlp();
                 let original_items = pdata.num_items();
                 ctx.process(Message::PData(pdata)).await.expect("process");
-                let msgs = ctx.drain_pdata().await;
+                let mut msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1, "traces (OTLP bytes) should pass through");
                 assert_eq!(msgs[0].num_items(), original_items);
             })
@@ -477,10 +477,10 @@ mod tests {
 
         run_processor_test(config, |mut ctx: TestContext<OtapPdata>| {
             Box::pin(async move {
-                let pdata = make_metrics_pdata_otlp();
+                let mut pdata = make_metrics_pdata_otlp();
                 let original_items = pdata.num_items();
                 ctx.process(Message::PData(pdata)).await.expect("process");
-                let msgs = ctx.drain_pdata().await;
+                let mut msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1, "metrics should pass through");
                 assert_eq!(msgs[0].num_items(), original_items);
             })
@@ -503,7 +503,7 @@ mod tests {
                 // Fill the budget
                 let pdata = make_log_pdata_arrow(10);
                 ctx.process(Message::PData(pdata)).await.expect("process");
-                let msgs = ctx.drain_pdata().await;
+                let mut msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1);
                 assert_eq!(msgs[0].num_items(), 10);
 
@@ -521,7 +521,7 @@ mod tests {
                 // Now we have budget again
                 let pdata = make_log_pdata_arrow(5);
                 ctx.process(Message::PData(pdata)).await.expect("process");
-                let msgs = ctx.drain_pdata().await;
+                let mut msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 1, "budget restored after timer tick");
                 assert_eq!(msgs[0].num_items(), 5);
             })
@@ -562,13 +562,13 @@ mod tests {
     fn make_log_pdata_arrow(n: usize) -> OtapPdata {
         let logs_data = logs_with_varying_attributes_and_properties(n);
         let records = encode_logs_otap_batch(&logs_data).expect("encode");
-        OtapPdata::new(Context::default(), OtapPayload::OtapArrowRecords(records))
+        OtapPdata::new(Context::default(), OtapPayload::from(records))
     }
 
     fn make_trace_pdata_arrow() -> OtapPdata {
         let traces_data = traces_with_full_resource_and_scope();
         let records = encode_spans_otap_batch(&traces_data).expect("encode");
-        OtapPdata::new(Context::default(), OtapPayload::OtapArrowRecords(records))
+        OtapPdata::new(Context::default(), OtapPayload::from(records))
     }
 
     fn make_trace_pdata_otlp() -> OtapPdata {

@@ -1,0 +1,5 @@
+change_type: enhancement
+component: observability
+note: "Allow admin API clients to set a User-Agent and identify dfctl requests with its version."
+issues: [3800]
+subtext:

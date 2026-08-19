@@ -98,9 +98,15 @@ use bytes::BytesMut;
 use otap_df_config::{ConversionOptions, SignalFormat, SignalType};
 use prost::{EncodeError, Message};
 
-/// Container for the various representations of the telemetry data
+/// Concrete storage representation backing an [`OtapPayload`].
+///
+/// This enum is public so callers can pattern-match on the representation via
+/// [`OtapPayload::data`] / [`OtapPayload::into_data`], but constructing or
+/// consuming an [`OtapPayload`] should normally go through the wrapper so its
+/// cached measurements stay correctly scoped to the exact logical payload
+/// version.
 #[derive(Clone, Debug)]
-pub enum OtapPayload {
+pub enum PayloadData {
     /// data is serialized as a protobuf service message for one of the OTLP GRPC services
     OtlpBytes(OtlpProtoBytes),
 
@@ -109,61 +115,180 @@ pub enum OtapPayload {
     OtapArrowRecords(OtapArrowRecords),
 }
 
-impl OtapPayload {
-    /// Returns the type of signal represented by this `OtapPdata` instance.
-    #[must_use]
-    pub fn signal_type(&self) -> SignalType {
+impl PayloadData {
+    fn signal_type(&self) -> SignalType {
         match self {
             Self::OtlpBytes(value) => value.signal_type(),
             Self::OtapArrowRecords(value) => value.signal_type(),
         }
     }
 
-    /// Returns the signal format.
-    #[must_use]
-    pub const fn signal_format(&self) -> SignalFormat {
+    const fn signal_format(&self) -> SignalFormat {
         match self {
             Self::OtapArrowRecords(_) => SignalFormat::OtapRecords,
             Self::OtlpBytes(_) => SignalFormat::OtlpBytes,
         }
     }
 
-    /// True if the payload is empty. By definition, we can skip sending an
-    /// empty request.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         match self {
             Self::OtlpBytes(value) => value.is_empty(),
             Self::OtapArrowRecords(value) => value.is_empty(),
         }
     }
 
-    /// Removes the payload from this request, leaving an empty request.
-    #[must_use]
-    pub fn take_payload(&mut self) -> Self {
+    /// Empties this representation in place, returning the old contents.
+    fn take_payload(&mut self) -> Self {
         match self {
             Self::OtlpBytes(value) => Self::OtlpBytes(value.take_payload()),
             Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.take_payload()),
         }
     }
 
-    /// Returns the number of items of the primary signal (spans, data
-    /// points, log records).
-    #[must_use]
-    pub fn num_items(&self) -> usize {
+    fn num_items(&self) -> usize {
         match self {
             Self::OtlpBytes(value) => value.num_items(),
             Self::OtapArrowRecords(value) => value.num_items(),
         }
     }
 
-    /// Returns the number of encoded bytes, if known.
-    #[must_use]
-    pub fn num_bytes(&self) -> Option<usize> {
+    fn num_bytes(&self) -> Option<usize> {
         match self {
             Self::OtlpBytes(value) => Some(value.num_bytes()),
             Self::OtapArrowRecords(value) => value.num_bytes(),
         }
+    }
+
+    fn retained_memory_bytes(&self) -> usize {
+        match self {
+            Self::OtlpBytes(value) => value.retained_memory_bytes(),
+            Self::OtapArrowRecords(value) => value.retained_memory_bytes(),
+        }
+    }
+}
+
+/// Container for the various representations of the telemetry data.
+///
+/// `OtapPayload` owns both the concrete [`PayloadData`] and cached expensive
+/// measurements. The only cached measurement currently implemented is the
+/// OTLP item count. The cache is scoped to the exact logical payload version
+/// it was created for:
+///
+/// - Constructing a new `OtapPayload` (via `From`, [`Self::empty`], or
+///   [`Self::take_payload`]'s emptied remainder) always starts with a fresh,
+///   uninitialized cache.
+/// - Ordinary clones copy any measurements already computed for the source
+///   payload.
+/// - [`Self::take_payload`]'s returned value preserves the cache of the
+///   payload version it contains.
+///
+/// This makes it impossible for a processor to observe stale measurements
+/// without any manual invalidation step.
+#[derive(Clone, Debug)]
+pub struct OtapPayload {
+    data: PayloadData,
+    item_count: Option<usize>,
+}
+
+impl OtapPayload {
+    /// Wraps payload data in a fresh `OtapPayload` with an uninitialized
+    /// measurement cache.
+    fn from_data(data: PayloadData) -> Self {
+        Self {
+            data,
+            item_count: None,
+        }
+    }
+
+    /// Constructs a fresh payload from OTLP protobuf bytes.
+    #[must_use]
+    pub fn from_otlp(payload: OtlpProtoBytes) -> Self {
+        Self::from_data(PayloadData::OtlpBytes(payload))
+    }
+
+    /// Constructs a fresh payload from OTAP Arrow records.
+    #[must_use]
+    pub fn from_otap(payload: OtapArrowRecords) -> Self {
+        Self::from_data(PayloadData::OtapArrowRecords(payload))
+    }
+
+    /// Borrows the concrete payload data for pattern matching.
+    #[must_use]
+    pub fn data(&self) -> &PayloadData {
+        &self.data
+    }
+
+    /// Consumes this payload, returning its concrete payload data.
+    ///
+    /// The cached measurements are dropped; construct a new `OtapPayload`
+    /// (for example via `From`) to wrap the representation again with a
+    /// fresh cache.
+    #[must_use]
+    pub fn into_data(self) -> PayloadData {
+        self.data
+    }
+
+    /// Consumes this payload and extracts or converts it to OTAP records.
+    pub fn into_otap(self) -> Result<OtapArrowRecords, crate::encode::Error> {
+        self.try_into_with_default()
+    }
+
+    /// Returns the type of signal represented by this `OtapPdata` instance.
+    #[must_use]
+    pub fn signal_type(&self) -> SignalType {
+        self.data.signal_type()
+    }
+
+    /// Returns the signal format.
+    #[must_use]
+    pub const fn signal_format(&self) -> SignalFormat {
+        self.data.signal_format()
+    }
+
+    /// True if the payload is empty. By definition, we can skip sending an
+    /// empty request.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Removes the payload from this request, leaving an empty request.
+    ///
+    /// The returned `OtapPayload` retains this payload's cached measurements.
+    /// `self` is left holding an emptied representation with a fresh cache, so
+    /// it cannot reuse stale measurements.
+    #[must_use]
+    pub fn take_payload(&mut self) -> Self {
+        let old_data = self.data.take_payload();
+        Self {
+            data: old_data,
+            item_count: self.item_count.take(),
+        }
+    }
+
+    /// Returns the number of items of the primary signal (spans, data
+    /// points, log records).
+    #[must_use]
+    pub fn num_items(&mut self) -> usize {
+        match &self.data {
+            // Cache OTLP counts because counting traverses protobuf records.
+            PayloadData::OtlpBytes(_) => {
+                if let Some(item_count) = self.item_count {
+                    return item_count;
+                }
+                let item_count = self.data.num_items();
+                self.item_count = Some(item_count);
+                item_count
+            }
+            // Bypass the cache for OTAP because Arrow batches store row counts.
+            PayloadData::OtapArrowRecords(_) => self.data.num_items(),
+        }
+    }
+
+    /// Returns the number of encoded bytes, if known.
+    #[must_use]
+    pub fn num_bytes(&self) -> Option<usize> {
+        self.data.num_bytes()
     }
 
     /// Returns the best available retained-memory byte estimate.
@@ -174,16 +299,24 @@ impl OtapPayload {
     /// capacity is not measurable here.
     #[must_use]
     pub fn retained_memory_bytes(&self) -> usize {
-        match self {
-            Self::OtlpBytes(value) => value.retained_memory_bytes(),
-            Self::OtapArrowRecords(value) => value.retained_memory_bytes(),
-        }
+        self.data.retained_memory_bytes()
     }
 
     /// Return an empty payload of a certain type.
     #[must_use]
     pub const fn empty(signal: SignalType) -> Self {
-        Self::OtlpBytes(OtlpProtoBytes::empty(signal))
+        Self {
+            data: PayloadData::OtlpBytes(OtlpProtoBytes::empty(signal)),
+            item_count: None,
+        }
+    }
+
+    /// Test-only introspection: true if the OTLP item-count cache has been
+    /// computed.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn test_has_cached_item_count(&self) -> bool {
+        self.item_count.is_some()
     }
 }
 
@@ -250,6 +383,7 @@ impl OtapPayloadHelpers for OtapArrowRecords {
     }
 
     fn num_items(&self) -> usize {
+        // Arrow batches store row counts, so this does not scan individual items.
         match self {
             Self::Logs(records) => records.num_items(),
             Self::Traces(records) => records.num_items(),
@@ -292,6 +426,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
     }
 
     fn num_items(&self) -> usize {
+        // Counting requires traversing the encoded protobuf record hierarchy.
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes.as_ref());
@@ -366,13 +501,19 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
 
 impl From<OtapArrowRecords> for OtapPayload {
     fn from(value: OtapArrowRecords) -> Self {
-        Self::OtapArrowRecords(value)
+        Self::from_otap(value)
     }
 }
 
 impl From<OtlpProtoBytes> for OtapPayload {
     fn from(value: OtlpProtoBytes) -> Self {
-        Self::OtlpBytes(value)
+        Self::from_otlp(value)
+    }
+}
+
+impl From<PayloadData> for OtapPayload {
+    fn from(value: PayloadData) -> Self {
+        Self::from_data(value)
     }
 }
 
@@ -383,9 +524,9 @@ impl TryFromWithOptions<OtapPayload> for OtapArrowRecords {
         value: OtapPayload,
         opts: ConversionOptions,
     ) -> Result<Self, Self::Error> {
-        match value {
-            OtapPayload::OtapArrowRecords(value) => Ok(value),
-            OtapPayload::OtlpBytes(value) => value.try_into_with_options(opts),
+        match value.into_data() {
+            PayloadData::OtapArrowRecords(value) => Ok(value),
+            PayloadData::OtlpBytes(value) => value.try_into_with_options(opts),
         }
     }
 }
@@ -397,9 +538,9 @@ impl TryFromWithOptions<OtapPayload> for OtlpProtoBytes {
         value: OtapPayload,
         opts: ConversionOptions,
     ) -> Result<Self, Self::Error> {
-        match value {
-            OtapPayload::OtapArrowRecords(value) => value.try_into_with_options(opts),
-            OtapPayload::OtlpBytes(value) => Ok(value),
+        match value.into_data() {
+            PayloadData::OtapArrowRecords(value) => value.try_into_with_options(opts),
+            PayloadData::OtlpBytes(value) => Ok(value),
         }
     }
 }
@@ -476,15 +617,15 @@ impl TryFrom<OtlpProtoMessage> for OtapPayload {
         Ok(match value {
             OtlpProtoMessage::Logs(logs_data) => {
                 logs_data.encode(&mut bytes)?;
-                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()))
+                OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into()
             }
             OtlpProtoMessage::Metrics(metrics_data) => {
                 metrics_data.encode(&mut bytes)?;
-                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()))
+                OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()).into()
             }
             OtlpProtoMessage::Traces(trace_data) => {
                 trace_data.encode(&mut bytes)?;
-                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportTracesRequest(bytes.freeze()))
+                OtlpProtoBytes::ExportTracesRequest(bytes.freeze()).into()
             }
         })
     }
