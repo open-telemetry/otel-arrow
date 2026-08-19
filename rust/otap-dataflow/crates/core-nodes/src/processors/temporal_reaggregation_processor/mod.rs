@@ -325,8 +325,8 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         // We may need up to one inbound slot and three outbound slots.
         //
         // The inbound slot is used to track the inbound request context and is
-        // needed if either there are ack/nack interests on the context OR if some of
-        // the data is aggregable meaning we won't just pass the whole batch
+        // needed if the context requires completion tracking OR if some of the
+        // data is aggregable, meaning we won't just pass the whole batch
         // through untouched.
         //
         // One outbound slot may be needed to flush the existing batch if we
@@ -652,10 +652,10 @@ impl TemporalReaggregationProcessor {
                     // the in-progress builder; remember its peer_addr so the
                     // next flush can compute the merged output peer_addr.
                     self.aggregated_peer.push(pdata.peer_addr());
-                    // Pass data through if there are no subscribers -- but we
-                    // still need a wakeup to flush the aggregated portion.
+                    // Pass data through directly if no completion routing or
+                    // metrics unwinding depends on the inbound context.
                     let (inbound_ctx, _) = pdata.into_parts();
-                    if !inbound_ctx.has_subscribers() {
+                    if !inbound_ctx.needs_completion_tracking() {
                         self.ensure_wakeup_scheduled(effect_handler)?;
                         let pt_pdata =
                             OtapPdata::new(inbound_ctx, OtapPayload::OtapArrowRecords(records));
@@ -710,11 +710,10 @@ impl TemporalReaggregationProcessor {
                     // The full input was folded into the in-progress builder;
                     // remember its peer_addr for the next flush.
                     self.aggregated_peer.push(pdata.peer_addr());
-                    // Nothing to passthrough and no subscribers so we don't
-                    // care about ack/nack -- but we still need a wakeup to
-                    // flush the aggregated data.
+                    // If no completion routing or metrics unwinding depends on
+                    // the inbound context, only schedule the aggregate flush.
                     let (inbound_ctx, _) = pdata.into_parts();
-                    if !inbound_ctx.has_subscribers() {
+                    if !inbound_ctx.needs_completion_tracking() {
                         self.ensure_wakeup_scheduled(effect_handler)?;
                         return Ok(());
                     }

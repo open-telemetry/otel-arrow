@@ -159,15 +159,17 @@ impl Context {
         self.stack.last().map(|f| f.route.clone())
     }
 
-    /// Are there any subscribers with actual interests (ACKS or
-    /// NACKS)?
+    /// Returns true when this context must be retained until processing completes.
     ///
-    /// TODO: This could be O(1) by propagating a new interest bit.
+    /// Ack/Nack subscribers require completion routing, while pipeline metric
+    /// frames require completion unwinding so their measurements are recorded.
     #[must_use]
-    pub fn has_subscribers(&self) -> bool {
-        self.stack
-            .iter()
-            .any(|f| f.interests.intersects(Interests::ACKS_OR_NACKS))
+    pub fn needs_completion_tracking(&self) -> bool {
+        self.stack.iter().any(|frame| {
+            frame
+                .interests
+                .intersects(Interests::ACKS_OR_NACKS | Interests::PIPELINE_METRICS)
+        })
     }
 
     /// Returns true if the context stack has any frames at all.
@@ -693,13 +695,6 @@ impl OtapPdata {
     ) -> Self {
         self.context.subscribe_to(interests, calldata, node_id);
         self
-    }
-
-    /// Returns Context::has_subscribers()
-    #[cfg(any(test, feature = "test-utils"))]
-    #[must_use]
-    pub fn has_subscribers(&self) -> bool {
-        self.context.has_subscribers()
     }
 
     /// Stamp the top context frame with a receive timestamp.
@@ -2048,7 +2043,7 @@ mod test {
         assert_eq!(ctx.source_node(), Some(42));
         assert_eq!(ctx.stack.len(), 1);
         // Source-node-only frames have empty interests -- not subscribers.
-        assert!(!ctx.has_subscribers());
+        assert!(!ctx.has_ack_or_nack_subscribers());
 
         // Same node_id is a no-op (dedup).
         ctx.set_source_node(42);
@@ -2058,7 +2053,7 @@ mod test {
         ctx.set_source_node(99);
         assert_eq!(ctx.source_node(), Some(99));
         assert_eq!(ctx.stack.len(), 2);
-        assert!(!ctx.has_subscribers());
+        assert!(!ctx.has_ack_or_nack_subscribers());
     }
 
     #[test]
@@ -2072,7 +2067,7 @@ mod test {
             100,
         );
         let pdata = pdata.add_source_node(200);
-        assert!(pdata.has_subscribers());
+        assert!(pdata.has_ack_or_nack_interests());
 
         // next_ack skips the empty-interests frame and finds node 100.
         let ack = AckMsg::new(pdata);
@@ -2152,11 +2147,11 @@ mod test {
                 101,
             )
             .add_source_node(202);
-        assert!(pdata.has_subscribers());
+        assert!(pdata.has_ack_or_nack_interests());
         assert_eq!(pdata.get_source_node(), Some(202));
 
         let cloned = pdata.clone_without_context();
-        assert!(!cloned.has_subscribers());
+        assert!(!cloned.has_ack_or_nack_interests());
         assert_eq!(cloned.get_source_node(), None);
 
         let ack = AckMsg::new(cloned.clone());
@@ -2191,14 +2186,17 @@ mod test {
 
         let (mut context, _payload) = pdata.into_parts();
         context.capture_signal(SignalType::Logs);
-        assert!(context.has_subscribers(), "precondition: has subscribers");
+        assert!(
+            context.has_ack_or_nack_subscribers(),
+            "precondition: has subscribers"
+        );
 
         let detached = context.clone_detached();
 
         assert_eq!(detached.transport_headers(), Some(&headers));
         assert_eq!(detached.peer_addr(), Some(addr));
         assert!(
-            !detached.has_subscribers(),
+            !detached.has_ack_or_nack_subscribers(),
             "detached context must not inherit the inbound subscribers"
         );
         assert_eq!(detached.source_node(), None);
@@ -2210,7 +2208,7 @@ mod test {
 
         // The source context is untouched: it stays parked in the split
         // processor's slot map and Acks upstream once its outbounds settle.
-        assert!(context.has_subscribers());
+        assert!(context.has_ack_or_nack_subscribers());
         assert_eq!(context.signal(), Some(SignalType::Logs));
     }
 
@@ -2250,6 +2248,25 @@ mod test {
             frames[0].route.entry_time_ns, 0,
             "CONSUMER_METRICS alone should not stamp time"
         );
+    }
+
+    /// Scenario: Contexts contain no frames, source-tagging only, pipeline metrics, or Ack interests.
+    /// Guarantees: Completion tracking is required only for pipeline metrics and Ack/Nack routing.
+    #[test]
+    fn needs_completion_tracking_matches_completion_interests() {
+        let mut empty = Context::default();
+        assert!(!empty.needs_completion_tracking());
+
+        empty.set_source_node(1);
+        assert!(!empty.needs_completion_tracking());
+
+        let mut metrics = Context::default();
+        metrics.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        assert!(metrics.needs_completion_tracking());
+
+        let mut subscriber = Context::default();
+        subscriber.subscribe_to(Interests::ACKS, CallData::new(), 1);
+        assert!(subscriber.needs_completion_tracking());
     }
 
     #[test]
