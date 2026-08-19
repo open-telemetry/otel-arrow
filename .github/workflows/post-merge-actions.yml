@@ -1,0 +1,81 @@
+name: Post-Merge Actions
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Populate only the two caches used by required test builds. Warming every
+# Rust configuration would approach the cost of full CI and exceed the value
+# of the repository's shared 10 GB Actions cache budget.
+jobs:
+  warm-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: v1-rust
+          shared-key: build_required
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
+          sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
+          sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
+      - name: install nextest
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-nextest
+      - name: Warm required build cache
+        run: cargo nextest archive --locked --all-features --workspace --archive-file nextest-archive.tar.zst
+        working-directory: ./rust/otap-dataflow
+
+  warm-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - name: Install SymCrypt
+        uses: ./.github/actions/install-symcrypt
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: v1-rust
+          shared-key: build_required
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Free disk space
+        shell: pwsh
+        run: |
+          if (Test-Path "C:\Android") { Remove-Item -Recurse -Force "C:\Android" }
+          if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
+          if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
+      - name: install nextest
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-nextest
+      - name: Warm required build cache
+        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
+        working-directory: ./rust/otap-dataflow

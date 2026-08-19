@@ -49,6 +49,8 @@ groups:
               endpoint: "https://your-geneva-endpoint.example"
               environment: "your-environment"
               account: "your-account"
+              account_routing:
+                default_group: "your-account-group"
               namespace: "your-namespace"
               region: "your-region"
               config_major_version: 1
@@ -56,9 +58,8 @@ groups:
               role_name: "your-role-name"
               role_instance: "your-role-instance"
               auth:
-                type: "certificate"
-                path: "/path/to/your/certificate.p12"
-                password: "your-cert-password"
+                type: "systemmanagedidentity"
+                msi_resource: "https://monitor.azure.com/"
               max_buffer_size: 1000
               max_concurrent_uploads: 4
               logs:
@@ -112,6 +113,8 @@ groups:
               endpoint: "https://your-geneva-endpoint.example"
               environment: "your-environment"
               account: "your-account"
+              account_routing:
+                default_group: "your-account-group"
               namespace: "your-namespace"
               region: "your-region"
               config_major_version: 1
@@ -119,9 +122,8 @@ groups:
               role_name: "your-role-name"
               role_instance: "your-role-instance"
               auth:
-                type: "certificate"
-                path: "/path/to/your/certificate.p12"
-                password: "your-cert-password"
+                type: "systemmanagedidentity"
+                msi_resource: "https://monitor.azure.com/"
               max_buffer_size: 1000
               max_concurrent_uploads: 4
               spans:

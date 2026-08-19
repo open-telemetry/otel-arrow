@@ -48,6 +48,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:exporter:file",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:exporter:kafka",
     "category": "Exporter",
     "description": null,
@@ -92,6 +98,18 @@
   {
     "id": "urn:otel:exporter:topic",
     "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:oauth2_client_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:k8s_service_account_token_auth",
+    "category": "Extension",
     "description": null,
     "attributes": {}
   },

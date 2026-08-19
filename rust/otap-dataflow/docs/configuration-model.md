@@ -574,6 +574,75 @@ Defaults at top-level:
 - `runtime_recovery.reset_after = 60s`
 - `transport_headers = not set` (opt-in; no headers captured or propagated)
 
+### Core Allocation
+
+`resources.core_allocation` controls the worker cores assigned to each regular
+pipeline. It resolves independently at pipeline, group, and top-level policy
+scope. The default is:
+
+```yaml
+resources:
+  core_allocation:
+    type: all_cores
+```
+
+The supported forms are:
+
+```yaml
+# Shared: use every process-visible core.
+core_allocation:
+  type: all_cores
+```
+
+```yaml
+# Exclusive: select four cores through the controller's placement strategy.
+core_allocation:
+  type: core_count
+  count: 4
+```
+
+```yaml
+# Explicit: use inclusive ranges 0-1 and 4-5.
+core_allocation:
+  type: core_set
+  set:
+    - start: 0
+      end: 1
+    - start: 4
+      end: 5
+```
+
+| Type | Required fields | Placement and reservation semantics |
+| --- | --- | --- |
+| `all_cores` | Neither `count` nor `set` | Uses every process-visible core and does not reserve cores from other pipelines. |
+| `core_count` | `count` in YAML | Selects the requested number of unreserved process-visible cores and reserves them against other `core_count` allocations. Explicit `core_set` cores are also excluded. |
+| `core_set` | Non-empty `set` | Uses the exact inclusive ranges. Explicit sets may overlap one another and reserve their cores against `core_count` allocations. |
+
+`core_count` uses strict exhaustion behavior. A positive count fails if there
+are too few unreserved visible cores, and a count greater than the number of
+process-visible cores is always invalid. A count of `0`, or an omitted count in
+programmatically constructed configuration, selects all currently unreserved
+visible cores and fails if that set is empty.
+
+Each `core_set` range requires `start <= end`; ranges in one allocation cannot
+overlap, every requested core must be process-visible, and the set cannot be
+empty. `count` is invalid for `all_cores` and `core_set`, while `set` is invalid
+for `all_cores` and `core_count`.
+
+On Linux, visible cores reflect the process affinity and cgroup constraints.
+The default `core_count` strategy deterministically prefers a single NUMA node
+that can satisfy the complete request. If no one node can do so, it selects by
+ascending visible core ID across nodes. When NUMA topology is unavailable,
+ascending visible core ID provides the deterministic fallback.
+
+The controller plans explicit `core_set` allocations before `core_count`
+allocations at startup, then validates the complete regular-pipeline placement
+before launching any worker. Live updates account for committed and accepted
+in-flight placements and exclude the pipeline being replaced from its own
+reservation calculation. Resource policies are rejected on the system
+observability pipeline. Its worker runs on one core that is not reserved and
+may overlap any regular-pipeline allocation.
+
 Runtime recovery notes:
 
 - `runtime_recovery` applies to regular pipelines and inherits through the

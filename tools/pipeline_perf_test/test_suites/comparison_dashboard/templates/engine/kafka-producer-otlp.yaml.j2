@@ -1,0 +1,65 @@
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 100
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: {{core_start}}
+          end: {{core_end}}
+engine:
+  telemetry:
+    logs:
+      level: info
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: urn:otel:receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: 0.0.0.0:4317
+                  wait_for_result: {% if wait_for_result | default(false) %}true{% else %}false{% endif %}
+          exporter:
+            # Benchmarked DFE Kafka exporter (exporter-isolation suites).
+            # Aligned producer tuning injected from canonical kafka_producer_*
+            # suite variables so DFE and Rotel are byte-identical at the
+            # librdkafka level.
+            type: urn:otel:exporter:kafka
+            config:
+              brokers: "{{kafka_hostname}}:9092"
+              client_id: "dfe-kafka-producer"
+              required_acks: {{ kafka_producer_acks | default("one") }}
+{%- if kafka_producer_compression is defined and kafka_producer_compression != "none" %}
+              compression: {{ kafka_producer_compression }}
+{%- endif %}
+              linger_ms: {{ kafka_producer_linger_ms | default(5) }}
+              max_message_bytes: {{ kafka_producer_max_message_bytes | default(1000000) }}
+              # Concurrent in-flight Kafka deliveries before intake parks
+              # (normalized across exporters). rotel is fixed at
+              # MAX_CONCURRENT_SENDS=1000; the Go collector approximates this
+              # via exporterhelper sending_queue.num_consumers.
+              max_in_flight: {{ kafka_producer_max_in_flight | default(1) }}
+              partitioning_strategy: {{ kafka_producer_partitioner | default("consistent_random") }}
+              producer_config:
+                batch.num.messages: "{{ kafka_producer_batch_num_messages | default(10000) }}"
+                queue.buffering.max.messages: "{{ kafka_producer_queue_buffering_max_messages | default(100000) }}"
+              logs:
+                topic: "otel-logs"
+                encoding: otlp_proto
+              metrics:
+                topic: "otel-metrics"
+                encoding: otlp_proto
+              traces:
+                topic: "otel-spans"
+                encoding: otlp_proto
+        connections:
+          - from: receiver
+            to: exporter

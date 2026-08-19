@@ -1,7 +1,0 @@
-change_type: bug_fix
-component: engine
-note: Reject invalid node rate limiter bindings during configuration-only validation.
-issues: [3529]
-subtext: >-
-  --validate-and-exit now rejects unknown limiter names and V1 node bindings
-  that select more than one limiter.

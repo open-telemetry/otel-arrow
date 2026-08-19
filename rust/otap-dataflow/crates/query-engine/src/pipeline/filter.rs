@@ -399,6 +399,7 @@ mod test {
     use crate::pipeline::{Pipeline, PipelineOptions};
 
     use super::*;
+    use otap_df_pdata::OtapPayloadHelpers;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::schema::consts;
 
@@ -420,22 +421,25 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
+
     use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
-        Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
-        HistogramDataPoint, Metric, NumberDataPoint, Summary, SummaryDataPoint,
+        AggregationTemporality, Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint,
+        Gauge, Histogram, HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Sum, Summary,
+        SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
     use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
     use otap_df_pdata::testing::round_trip::{
-        otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
-        to_traces_data,
+        otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_otap_logs, to_otap_metrics,
+        to_otap_traces, to_traces_data,
     };
     use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::test::{
-        exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,
+        exec_logs_pipeline, exec_metrics_pipeline, otap_to_logs_data, otap_to_metrics_data,
+        otap_to_traces_data,
     };
 
     async fn test_simple_filter<P: Parser, F: Fn(&str) -> String>(date_time_formatter: F) {
@@ -5697,6 +5701,122 @@ mod test {
         let traces_ouptut = pipeline.execute(traces_input.clone()).await.unwrap();
 
         assert_eq!(traces_input, traces_ouptut);
+    }
+
+    /// Scenario: Filter a metrics stream using `is <MetricType>` predicates.
+    /// Guarantees: Only metrics of the requested concrete type remain after filtering.
+    #[tokio::test]
+    async fn test_filter_check_metric_type() {
+        let gauge_metric = Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge {
+                data_points: vec![NumberDataPoint::build().finish()],
+            })
+            .finish();
+        let sum_metric = Metric::build()
+            .name("sum_metric")
+            .data_sum(Sum {
+                data_points: vec![NumberDataPoint::build().finish()],
+                ..Default::default()
+            })
+            .finish();
+        let histogram_metric = Metric::build()
+            .name("histogram_metric")
+            .data_histogram(Histogram {
+                data_points: vec![HistogramDataPoint::build().finish()],
+                aggregation_temporality: AggregationTemporality::Unspecified as i32,
+            })
+            .finish();
+        let exp_histogram_metric = Metric::build()
+            .name("exp_histogram_metric")
+            .data_exponential_histogram(ExponentialHistogram {
+                data_points: vec![
+                    ExponentialHistogramDataPoint::build()
+                        .positive(Buckets::default())
+                        .negative(Buckets::default())
+                        .finish(),
+                ],
+                aggregation_temporality: AggregationTemporality::Unspecified as i32,
+            })
+            .finish();
+        let summary_metric = Metric::build()
+            .name("summary_metric")
+            .data_summary(Summary {
+                data_points: vec![SummaryDataPoint::build().finish()],
+            })
+            .finish();
+
+        let input = to_metrics_data(vec![
+            gauge_metric.clone(),
+            sum_metric.clone(),
+            histogram_metric.clone(),
+            exp_histogram_metric.clone(),
+            summary_metric.clone(),
+        ]);
+
+        // helper to assert on which metrics were present after filtering
+        let assert_results = |result: MetricsData, expected| {
+            assert_eq!(result.resource_metrics.len(), 1);
+            assert_eq!(result.resource_metrics[0].scope_metrics.len(), 1);
+            pretty_assertions::assert_eq!(
+                result.resource_metrics[0].scope_metrics[0].metrics,
+                expected
+            );
+        };
+
+        let query = "metrics | where is Gauge";
+        let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
+        assert_results(result, vec![gauge_metric.clone()]);
+
+        let query = "metrics | where is Sum";
+        let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
+        assert_results(result, vec![sum_metric.clone()]);
+
+        let query = "metrics | where is Histogram";
+        let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
+        assert_results(result, vec![histogram_metric.clone()]);
+
+        let query = "metrics | where is ExponentialHistogram";
+        let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
+        assert_results(result, vec![exp_histogram_metric.clone()]);
+
+        let query = "metrics | where is Summary";
+        let result = exec_metrics_pipeline::<OplParser>(query, input.clone()).await;
+        assert_results(result, vec![summary_metric.clone()]);
+    }
+
+    /// Scenario: Run selecting some concrete metric type against a mixed stream of batches of
+    /// various signal types
+    /// Guarantees: Only rows from metrics batches having the selected metric type remain
+    #[tokio::test]
+    async fn test_filter_check_signal_type_as_concrete_metric_type() {
+        let logs_batch = vec![LogRecord::build().finish()];
+        let spans_batch = vec![Span::build().finish()];
+        let metrics_batch = vec![Metric::build().data_gauge(Gauge::default()).finish()];
+
+        let query = "signals | where is Gauge";
+        let parser_result = OplParser::parse(query).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+
+        let logs_result = pipeline.execute(to_otap_logs(logs_batch)).await.unwrap();
+        assert!(logs_result.is_empty());
+
+        let spans_result = pipeline.execute(to_otap_traces(spans_batch)).await.unwrap();
+        assert!(spans_result.is_empty());
+
+        let metrics_result = pipeline
+            .execute(to_otap_metrics(metrics_batch.clone()))
+            .await
+            .unwrap();
+        let OtlpProtoMessage::Metrics(result) = otap_to_otlp(&metrics_result) else {
+            panic!("invalid signal type after conversion")
+        };
+        assert_eq!(result.resource_metrics.len(), 1);
+        assert_eq!(result.resource_metrics[0].scope_metrics.len(), 1);
+        pretty_assertions::assert_eq!(
+            result.resource_metrics[0].scope_metrics[0].metrics,
+            metrics_batch
+        );
     }
 
     #[tokio::test]

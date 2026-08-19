@@ -13,8 +13,6 @@ The batch processor should be defined in the pipeline after the `memory_limiter`
 as well as any sampling processors. This is because batching should happen after
 any data drops such as sampling.
 
-Please refer to [config.go](./config.go) for the config spec.
-
 The following configuration options can be modified:
 
 - `send_batch_size` (default = 8192): Number of spans, metric data points, or
@@ -68,9 +66,6 @@ processors:
     send_batch_max_size: 10000
     timeout: 0s
 ```
-
-Refer to [config.yaml](./testdata/config.yaml) for detailed examples on using
-the processor.
 
 ## Batching and client metadata
 

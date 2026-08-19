@@ -3,9 +3,6 @@ permissions:
   contents: read
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
     branches:
       - main
@@ -13,6 +10,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+
+# GitHub limits Actions caches to 10 GB per repository. PR and merge-group
+# caches are scoped to ephemeral refs and cannot benefit other PRs, so this
+# workflow restores caches but leaves cache writes to trusted main workflows.
 
 # Cancel in-progress runs on new commits to same PR
 concurrency:
@@ -112,6 +113,7 @@ jobs:
           prefix-key: v1-rust
           workspaces: ./rust/${{ matrix.folder }}
           cache-bin: false
+          save-if: false
       - name: Free disk space (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -207,6 +209,7 @@ jobs:
         with:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
+          save-if: false
       - name: Run user_events Linux smoke test when supported
         env:
           OTAP_DF_RUN_USEREVENTS_E2E: "1"
@@ -228,6 +231,7 @@ jobs:
         with:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
+          save-if: false
       - name: Run ETW Windows smoke test
         run: cargo test --locked -p otap-df-contrib-nodes etw_receiver_decodes_tracelogging_events_end_to_end --features etw-receiver -- --ignored
         working-directory: ./rust/otap-dataflow
@@ -343,6 +347,7 @@ jobs:
           prefix-key: v1-rust
           workspaces: ./rust/${{ matrix.folder }}
           cache-bin: false
+          save-if: false
       - name: cargo clippy ${{ matrix.folder }}
         run: |
           cargo clippy --all-targets --all-features --workspace -- -D warnings
@@ -479,15 +484,10 @@ jobs:
         run: cargo test --locked -p otap-df-otap --tests --no-run
         working-directory: ./rust/${{ matrix.folder }}
 
-  # Required builds for otap-dataflow: compile once per OS, create nextest archive.
-  # Test binaries are uploaded as artifacts so test partitions don't re-compile.
-  build_required:
-    strategy:
-      fail-fast: false
-      matrix:
-        folder: [otap-dataflow]
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  # Required Linux build: compile once and create a nextest archive.
+  # Linux test partitions depend only on this job, not the Windows build.
+  build_required_linux:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -495,22 +495,57 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - name: Install SymCrypt (Windows)
-        if: runner.os == 'Windows'
-        uses: ./.github/actions/install-symcrypt
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           prefix-key: v1-rust
-          workspaces: ./rust/${{ matrix.folder }}
+          # Keep one stable required-build namespace; platform and Rust hashes
+          # still separate incompatible Linux and Windows artifacts.
+          shared-key: build_required
+          workspaces: ./rust/otap-dataflow
           cache-bin: false
-      - name: Free disk space (Linux)
-        if: runner.os == 'Linux'
+          save-if: false
+      - name: Free disk space
         run: |
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
-      - name: Free disk space (Windows)
-        if: runner.os == 'Windows'
+      - name: install nextest
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-nextest
+      - name: Build and archive tests
+        run: cargo nextest archive --locked --all-features --workspace --archive-file nextest-archive.tar.zst
+        working-directory: ./rust/otap-dataflow
+      - name: Upload nextest archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive-ubuntu-latest
+          path: ./rust/otap-dataflow/nextest-archive.tar.zst
+          retention-days: 1
+
+  # Required Windows build: compile once and create a nextest archive.
+  # Windows test partitions depend only on this job, not the Linux build.
+  build_required_windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - name: Install SymCrypt
+        uses: ./.github/actions/install-symcrypt
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: v1-rust
+          # Keep one stable required-build namespace; platform and Rust hashes
+          # still separate incompatible Linux and Windows artifacts.
+          shared-key: build_required
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+          save-if: false
+      - name: Free disk space
         shell: pwsh
         run: |
           if (Test-Path "C:\Android") { Remove-Item -Recurse -Force "C:\Android" }
@@ -520,31 +555,24 @@ jobs:
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-nextest
-      - name: Build and archive tests (Incomplete)
-        if: runner.os == 'Windows'
+      - name: Build and archive tests
         run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
-        working-directory: ./rust/${{ matrix.folder }}
-      - name: Build and archive tests (Complete)
-        if: runner.os != 'Windows'
-        run: cargo nextest archive --locked --all-features --workspace --archive-file nextest-archive.tar.zst
-        working-directory: ./rust/${{ matrix.folder }}
+        working-directory: ./rust/otap-dataflow
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nextest-archive-${{ matrix.os }}
-          path: ./rust/${{ matrix.folder }}/nextest-archive.tar.zst
+          name: nextest-archive-windows-latest
+          path: ./rust/otap-dataflow/nextest-archive.tar.zst
           retention-days: 1
 
-  # Required test partitions: download pre-built archive and run 1/3 of tests each.
-  test_required:
-    needs: build_required
+  # Required Linux test partitions: run immediately after the Linux build.
+  test_required_linux:
+    needs: build_required_linux
     strategy:
       fail-fast: false
       matrix:
-        folder: [otap-dataflow]
-        os: [ubuntu-latest, windows-latest]
         partition: [1, 2, 3]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -552,47 +580,87 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - name: Install SymCrypt (Windows)
-        if: runner.os == 'Windows'
-        uses: ./.github/actions/install-symcrypt
       - name: install nextest
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-nextest
-      - name: Free disk space (Linux)
-        if: runner.os == 'Linux'
+      - name: Free disk space
         run: |
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - name: Build the test collector
-        if: runner.os == 'Linux'
         run: make otelarrowcol
-      - name: Install wasm32-wasip2 target (Linux)
-        if: runner.os == 'Linux'
+      - name: Install wasm32-wasip2 target
         run: rustup target add wasm32-wasip2
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: nextest-archive-${{ matrix.os }}
-          path: ./rust/${{ matrix.folder }}
+          name: nextest-archive-ubuntu-latest
+          path: ./rust/otap-dataflow
       - name: Run tests (partition ${{ matrix.partition }}/3)
         run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
-        working-directory: ./rust/${{ matrix.folder }}
+        working-directory: ./rust/otap-dataflow
       - name: Write JUnit artifact metadata
         if: always()
         shell: bash
         run: |
-          echo '{"job": "${{ github.job }}", "os": "${{ matrix.os }}", "partition": "${{ matrix.partition }}", "folder": "${{ matrix.folder }}"}' \
-            > ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
+          echo '{"job": "${{ github.job }}", "os": "ubuntu-latest", "partition": "${{ matrix.partition }}", "folder": "otap-dataflow"}' \
+            > ./rust/otap-dataflow/target/nextest/ci/metadata.json
       - name: Upload JUnit XML results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: junit-xml-required-${{ matrix.os }}-${{ matrix.partition }}
+          name: junit-xml-required-ubuntu-latest-${{ matrix.partition }}
           path: |
-            ./rust/${{ matrix.folder }}/target/nextest/ci/junit.xml
-            ./rust/${{ matrix.folder }}/target/nextest/ci/metadata.json
+            ./rust/otap-dataflow/target/nextest/ci/junit.xml
+            ./rust/otap-dataflow/target/nextest/ci/metadata.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # Required Windows test partitions: run immediately after the Windows build.
+  test_required_windows:
+    needs: build_required_windows
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - name: Install SymCrypt
+        uses: ./.github/actions/install-symcrypt
+      - name: install nextest
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-nextest
+      - name: Download nextest archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nextest-archive-windows-latest
+          path: ./rust/otap-dataflow
+      - name: Run tests (partition ${{ matrix.partition }}/3)
+        run: cargo nextest run --profile ci --config-file .config/nextest.toml --archive-file nextest-archive.tar.zst --partition count:${{ matrix.partition }}/3
+        working-directory: ./rust/otap-dataflow
+      - name: Write JUnit artifact metadata
+        if: always()
+        shell: bash
+        run: |
+          echo '{"job": "${{ github.job }}", "os": "windows-latest", "partition": "${{ matrix.partition }}", "folder": "otap-dataflow"}' \
+            > ./rust/otap-dataflow/target/nextest/ci/metadata.json
+      - name: Upload JUnit XML results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-xml-required-windows-latest-${{ matrix.partition }}
+          path: |
+            ./rust/otap-dataflow/target/nextest/ci/junit.xml
+            ./rust/otap-dataflow/target/nextest/ci/metadata.json
           retention-days: 30
           if-no-files-found: ignore
 
@@ -612,6 +680,7 @@ jobs:
           prefix-key: v1-rust
           workspaces: ./rust/otap-dataflow
           cache-bin: false
+          save-if: false
       - name: Free disk space
         run: |
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
@@ -679,6 +748,7 @@ jobs:
           prefix-key: v1-rust
           workspaces: ./rust/${{ matrix.folder }}
           cache-bin: false
+          save-if: false
       - name: Install OpenSSL (Windows)
         if: runner.os == 'Windows'
         # Required for the crypto-openssl feature (rustls-openssl -> openssl-sys).
@@ -712,6 +782,7 @@ jobs:
         with:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
+          save-if: false
       - name: Run host metrics semconv drift check
         env:
           OTAP_HOST_METRICS_SEMCONV_REGISTRY: ${{ github.workspace }}/semantic-conventions/model
@@ -732,7 +803,7 @@ jobs:
   host-metrics-weaver-live-check:
     runs-on: ubuntu-latest
     env:
-      WEAVER_VERSION: v0.24.0
+      WEAVER_VERSION: v0.25.1
       # Semantic-conventions tag to validate against. Keep in sync with
       # the `VERSION` constant in
       # rust/otap-dataflow/crates/core-nodes/src/receivers/host_metrics_receiver/semconv.rs
@@ -753,6 +824,7 @@ jobs:
         with:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
+          save-if: false
       - name: Setup Weaver
         uses: open-telemetry/weaver/.github/actions/setup-weaver@26c685ff52b925056ff1d53476c6022638c01220 # v0.25.1
         with:
@@ -1042,7 +1114,8 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
-      - test_required
+      - test_required_linux
+      - test_required_windows
       - test_nonrequired
     permissions:
       checks: write
@@ -1111,7 +1184,8 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
-      - test_required
+      - test_required_linux
+      - test_required_windows
       - fmt_required
       - clippy_required
       - deny_required
@@ -1128,8 +1202,12 @@ jobs:
     steps:
       - name: Check if all required jobs succeeded
         run: |
-          if [[ "${{ needs.test_required.result }}" != "success" ]]; then
-            echo "test_required failed or was cancelled"
+          if [[ "${{ needs.test_required_linux.result }}" != "success" ]]; then
+            echo "test_required_linux failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.test_required_windows.result }}" != "success" ]]; then
+            echo "test_required_windows failed or was cancelled"
             exit 1
           fi
           if [[ "${{ needs.fmt_required.result }}" != "success" ]]; then

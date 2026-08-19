@@ -64,6 +64,11 @@
 //! The processor still returns `Ok(())` after those route-local rejections so a
 //! blocked route cannot fail the router task itself.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = CONTENT_ROUTER_URN,
+    target = "otel.processor.content_router",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::PortName;
@@ -96,10 +101,11 @@ use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otap_df_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_pdata_views::views::trace::{ResourceSpansView, TracesView};
+use otap_df_telemetry::common_attributes::Outcome;
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
-
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry::metrics::MeasurementMetricSet;
+use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -133,34 +139,82 @@ impl std::fmt::Display for RoutingKeyExpr {
     }
 }
 
-/// Metrics for the ContentRouter processor.
-#[metric_set(name = "processor.content_router")]
-#[derive(Debug, Default, Clone)]
-pub struct ContentRouterMetrics {
-    /// Number of messages routed to a named port.
-    #[metric(unit = "{msg}")]
-    pub signals_routed: Counter<u64>,
-    /// Number of messages routed to the default output.
-    #[metric(unit = "{msg}")]
-    pub signals_routed_default: Counter<u64>,
-    /// Number of messages NACKed (no route match, missing key, mixed batch,
-    /// conversion error, or send failure).
-    #[metric(unit = "{msg}")]
-    pub signals_nacked: Counter<u64>,
-    /// Number of messages where the routing key was missing.
-    #[metric(unit = "{msg}")]
-    pub signals_no_routing_key: Counter<u64>,
-    /// Number of messages that failed due to internal conversion errors.
-    #[metric(unit = "{msg}")]
-    pub signals_conversion_error: Counter<u64>,
+/// Specific reasons for ContentRouter outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum ContentRouterReason {
+    /// Routed to a matched route.
+    MatchedRoute,
+    /// Routed to default because no configured route matched.
+    DefaultRouteNoMatch,
+    /// Routed to default because the routing key was missing.
+    DefaultRouteMissingKey,
+    /// NACKed because no configured route matched and no default was set.
+    NoMatchingRoute,
+    /// NACKed because the routing key was missing and no default was set.
+    MissingRoutingKey,
+    /// NACKed because the batch contained mixed destinations.
+    MixedBatch,
+    /// NACKed due to an internal conversion error.
+    ConversionError,
+    /// NACKed because the selected route was full.
+    RouteFull,
+    /// NACKed because the selected route was closed.
+    RouteClosed,
+    /// NACKed because the node was shutting down.
+    NodeShutdown,
+}
 
-    // ToDo Currently, we do not have the ability to report a bounded attribute representing the name of the output whose route is blocked or closed.
-    /// Number of messages rejected because the selected route was full.
-    #[metric(unit = "{msg}")]
-    pub signals_rejected_route_full: Counter<u64>,
-    /// Number of messages rejected because the selected route was closed.
-    #[metric(unit = "{msg}")]
-    pub signals_rejected_route_closed: Counter<u64>,
+/// Attributes for ContentRouter outcome metric.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct ContentRouterAttributes {
+    /// General outcome of the routing decision.
+    pub outcome: Outcome,
+    /// Specific reason for the outcome.
+    pub reason: ContentRouterReason,
+}
+
+/// Measurement metrics for the ContentRouter processor.
+#[metric_set(
+    name = "processor.content_router",
+    measurement_attributes = ContentRouterAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ContentRouterMeasurementMetrics {
+    /// Number of messages with this outcome.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
+}
+
+/// Metrics for the ContentRouter processor.
+pub struct ContentRouterMetrics {
+    /// Measurement metric set for outcomes.
+    pub metrics: MeasurementMetricSet<ContentRouterMeasurementMetrics>,
+}
+
+impl ContentRouterMetrics {
+    /// Creates a new ContentRouterMetrics.
+    pub fn new(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            metrics: ContentRouterMeasurementMetrics::register(pipeline_ctx),
+        }
+    }
+
+    /// Reports the metrics.
+    pub fn report(
+        &mut self,
+        reporter: &mut MetricsReporter,
+    ) -> Result<(), otap_df_telemetry::error::Error> {
+        reporter.report_measurement(&mut self.metrics)
+    }
+
+    /// Records a specific outcome and reason.
+    pub fn record(&mut self, outcome: Outcome, reason: ContentRouterReason) {
+        self.metrics
+            .with(ContentRouterAttributes { outcome, reason })
+            .messages
+            .inc();
+    }
 }
 
 /// Configuration for the ContentRouter processor.
@@ -312,7 +366,8 @@ enum RouteResolution {
 #[derive(Clone, Copy, Debug)]
 enum SelectedRouteKind {
     Matched,
-    Default,
+    DefaultNoMatch,
+    DefaultMissingKey,
 }
 
 /// The ContentRouter processor routes messages to output ports based on
@@ -329,7 +384,7 @@ pub struct ContentRouter {
     /// Selected-route admission scheduler.
     admission: ExclusiveRouteScheduler<OtapPdata, SelectedRouteKind>,
     /// Telemetry metrics.
-    metrics: Option<MetricSet<ContentRouterMetrics>>,
+    metrics: Option<ContentRouterMetrics>,
 }
 
 impl ContentRouter {
@@ -350,7 +405,7 @@ impl ContentRouter {
     /// Creates a new ContentRouter with metrics registered via PipelineContext.
     #[must_use]
     pub fn with_pipeline_ctx(pipeline_ctx: PipelineContext, config: ContentRouterConfig) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<ContentRouterMetrics>();
+        let metrics = ContentRouterMetrics::new(&pipeline_ctx);
         let mut router = Self::new(config);
         router.metrics = Some(metrics);
         router
@@ -557,8 +612,16 @@ impl ContentRouter {
     fn record_forwarded_route(&mut self, route_kind: SelectedRouteKind) {
         if let Some(m) = self.metrics.as_mut() {
             match route_kind {
-                SelectedRouteKind::Matched => m.signals_routed.inc(),
-                SelectedRouteKind::Default => m.signals_routed_default.inc(),
+                SelectedRouteKind::Matched => {
+                    m.record(Outcome::Success, ContentRouterReason::MatchedRoute)
+                }
+                SelectedRouteKind::DefaultNoMatch => {
+                    m.record(Outcome::Success, ContentRouterReason::DefaultRouteNoMatch)
+                }
+                SelectedRouteKind::DefaultMissingKey => m.record(
+                    Outcome::Success,
+                    ContentRouterReason::DefaultRouteMissingKey,
+                ),
             }
         }
     }
@@ -612,8 +675,7 @@ impl ContentRouter {
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.signals_nacked.inc();
-            m.signals_rejected_route_full.inc();
+            m.record(Outcome::Refused, ContentRouterReason::RouteFull);
         }
 
         effect_handler
@@ -634,8 +696,7 @@ impl ContentRouter {
         data: OtapPdata,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.signals_nacked.inc();
-            m.signals_rejected_route_closed.inc();
+            m.record(Outcome::Refused, ContentRouterReason::RouteClosed);
         }
 
         effect_handler
@@ -658,7 +719,7 @@ impl ContentRouter {
         reason: &str,
     ) -> Result<(), EngineError> {
         if let Some(m) = self.metrics.as_mut() {
-            m.signals_nacked.inc();
+            m.record(Outcome::Failure, ContentRouterReason::NodeShutdown);
         }
 
         effect_handler
@@ -788,7 +849,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     mut metrics_reporter,
                 } => {
                     if let Some(m) = self.metrics.as_mut() {
-                        let _ = metrics_reporter.report(m);
+                        let _ = m.report(&mut metrics_reporter);
                     }
                     Ok(())
                 }
@@ -838,28 +899,29 @@ impl local::Processor<OtapPdata> for ContentRouter {
                         }
                     }
                     RouteResolution::NoMatch | RouteResolution::MissingKey => {
-                        if matches!(resolution, RouteResolution::MissingKey) {
-                            if let Some(m) = self.metrics.as_mut() {
-                                m.signals_no_routing_key.inc();
-                            }
-                        }
                         // Default-route admission follows the same contract as
                         // matched-route admission once the default port has
                         // been selected.
                         if let Some(default_port) = self.default_output.clone() {
+                            let default_kind = if matches!(resolution, RouteResolution::MissingKey)
+                            {
+                                SelectedRouteKind::DefaultMissingKey
+                            } else {
+                                SelectedRouteKind::DefaultNoMatch
+                            };
                             let admission = effect_handler
                                 .try_admit_message_with_source_node_to(default_port.clone(), data)
                                 .map_err(EngineError::from)?;
                             match admission {
                                 RouteAdmission::Accepted => {
-                                    self.record_forwarded_route(SelectedRouteKind::Default);
+                                    self.record_forwarded_route(default_kind);
                                     Ok(())
                                 }
                                 RouteAdmission::RejectedFull(data) => {
                                     self.handle_selected_route_full(
                                         effect_handler,
                                         PortName::from(default_port),
-                                        SelectedRouteKind::Default,
+                                        default_kind,
                                         data,
                                     )
                                     .await
@@ -875,8 +937,13 @@ impl local::Processor<OtapPdata> for ContentRouter {
                             }
                         } else {
                             // No default output - NACK to inform upstream
+                            let reason_enum = if matches!(resolution, RouteResolution::MissingKey) {
+                                ContentRouterReason::MissingRoutingKey
+                            } else {
+                                ContentRouterReason::NoMatchingRoute
+                            };
                             if let Some(m) = self.metrics.as_mut() {
-                                m.signals_nacked.inc();
+                                m.record(Outcome::Failure, reason_enum);
                             }
                             let reason = if matches!(resolution, RouteResolution::MissingKey) {
                                 format!(
@@ -897,7 +964,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     }
                     RouteResolution::MixedBatch => {
                         if let Some(m) = self.metrics.as_mut() {
-                            m.signals_nacked.inc();
+                            m.record(Outcome::Failure, ContentRouterReason::MixedBatch);
                         }
                         let reason = format!(
                             "batch contains resources with inconsistent routing for key '{}'; \
@@ -911,8 +978,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     }
                     RouteResolution::ConversionError => {
                         if let Some(m) = self.metrics.as_mut() {
-                            m.signals_conversion_error.inc();
-                            m.signals_nacked.inc();
+                            m.record(Outcome::Failure, ContentRouterReason::ConversionError);
                         }
                         let reason =
                             "internal error: failed to convert telemetry format for routing"
@@ -2100,11 +2166,24 @@ mod tests {
             telemetry_registry: &TelemetryRegistryHandle,
         ) -> HashMap<String, u64> {
             let mut out = HashMap::new();
-            telemetry_registry.visit_current_metrics(|_desc, _attrs, iter| {
-                for (field, value) in iter {
-                    let _ = out.insert(field.name.to_string(), value.to_u64_lossy());
-                }
-            });
+            telemetry_registry.visit_current_metrics_with_item_attrs(
+                |_desc, _scope_attrs, item_attrs, iter| {
+                    for (field, value) in iter {
+                        let mut name = field.name.to_string();
+                        println!("ITEM ATTRS: {:?}", item_attrs);
+                        if let Some((_, v)) = item_attrs.iter().find(|(k, _)| *k == "outcome") {
+                            name.push('.');
+                            name.push_str(v);
+                        }
+                        if let Some((_, v)) = item_attrs.iter().find(|(k, _)| *k == "reason") {
+                            name.push('.');
+                            name.push_str(v);
+                        }
+                        let _ = out.insert(name, value.to_u64_lossy());
+                    }
+                },
+                false,
+            );
             out
         }
 
@@ -2223,8 +2302,21 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
+                println!("COLLECTED METRICS: {:?}", metrics);
+                assert_eq!(
+                    metrics
+                        .get("messages.success.matched_route")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("messages.failure.no_matching_route")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2274,8 +2366,20 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
                 let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics
+                        .get("messages.failure.no_matching_route")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("messages.success.matched_route")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2331,10 +2435,19 @@ mod tests {
 
                 let metrics = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
-                    metrics.get("signals.routed.default").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.success.default_route_no_match")
+                        .copied()
+                        .unwrap_or(0),
                     1
                 );
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 0);
+                assert_eq!(
+                    metrics
+                        .get("messages.failure.no_matching_route")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
 
                 stop_telemetry(reporter, collector_task);
             }));
@@ -2398,18 +2511,23 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
-                        .get("signals.rejected.route.full")
+                        .get("messages.success.matched_route")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+                assert_eq!(
+                    metrics
+                        .get("messages.refused.route_full")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.rejected.route.closed")
+                        .get("messages.refused.route_closed")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2476,21 +2594,26 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 0);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
-                        .get("signals.rejected.route.full")
+                        .get("messages.success.matched_route")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.rejected.route.closed")
+                        .get("messages.refused.route_closed")
                         .copied()
                         .unwrap_or(0),
                     1
+                );
+                assert_eq!(
+                    metrics
+                        .get("messages.refused.route_full")
+                        .copied()
+                        .unwrap_or(0),
+                    0
                 );
 
                 stop_telemetry(reporter, collector_task);
@@ -2555,20 +2678,22 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("signals.routed.default").copied().unwrap_or(0),
+                    metrics
+                        .get("messages.success.default_route_no_match")
+                        .copied()
+                        .unwrap_or(0),
                     0
                 );
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
-                        .get("signals.rejected.route.full")
+                        .get("messages.refused.route_full")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.rejected.route.closed")
+                        .get("messages.refused.route_closed")
                         .copied()
                         .unwrap_or(0),
                     0
@@ -2635,23 +2760,25 @@ mod tests {
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
                 assert_eq!(
-                    metrics.get("signals.routed.default").copied().unwrap_or(0),
-                    0
-                );
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
-                assert_eq!(
                     metrics
-                        .get("signals.rejected.route.full")
+                        .get("messages.success.default_route_no_match")
                         .copied()
                         .unwrap_or(0),
                     0
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.rejected.route.closed")
+                        .get("messages.refused.route_closed")
                         .copied()
                         .unwrap_or(0),
                     1
+                );
+                assert_eq!(
+                    metrics
+                        .get("messages.refused.route_full")
+                        .copied()
+                        .unwrap_or(0),
+                    0
                 );
 
                 stop_telemetry(reporter, collector_task);
@@ -2739,18 +2866,23 @@ mod tests {
                 let metrics =
                     flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
                         .await;
-                assert_eq!(metrics.get("signals.routed").copied().unwrap_or(0), 1);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
                 assert_eq!(
                     metrics
-                        .get("signals.rejected.route.full")
+                        .get("messages.success.matched_route")
                         .copied()
                         .unwrap_or(0),
                     1
                 );
                 assert_eq!(
                     metrics
-                        .get("signals.rejected.route.closed")
+                        .get("messages.refused.route_full")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("messages.refused.route_closed")
                         .copied()
                         .unwrap_or(0),
                     0

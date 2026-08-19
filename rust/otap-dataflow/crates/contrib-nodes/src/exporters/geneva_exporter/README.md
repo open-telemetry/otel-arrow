@@ -4,6 +4,7 @@
 
 - Type: `urn:microsoft:exporter:geneva`
 - Feature gate: `geneva-exporter`
+- Optional certificate authentication: `geneva-certificate-auth` (disabled by default)
 - Stability: Alpha; supports logs and traces
 
 ## Overview
@@ -24,6 +25,8 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "my-account-group"
   region: westus2
   config_major_version: 1
   tenant: "my-tenant"
@@ -48,6 +51,8 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "my-account-group"
   config_major_version: 1
   tenant: "my-tenant"
   role_name: "df-engine"
@@ -63,8 +68,8 @@ The `attributes` object in each credential snapshot must use this shape:
 {
   "endpoint": "https://ingest.example.com",
   "moniker_map": {
-    "my-account": "my-moniker",
-    "default": "fallback-moniker"
+    "my-account-group": "my-primary-moniker",
+    "another-account-group": "another-primary-moniker"
   }
 }
 ```
@@ -75,16 +80,15 @@ That attribute must be a non-empty absolute HTTPS URL with a host and cannot
 contain embedded credentials, a query string, or a fragment. The exporter
 canonicalizes it before use. The uploader uses that canonical value as both the
 upload base URL and the `endpoint=` query fallback when a token has no usable
-Endpoint claim. The exporter
-selects a non-empty string from `moniker_map` by the configured `account`,
-falling back only to an explicit `default`. A map containing neither key is
-rejected, even if it has a single entry. Empty or malformed routing is also
-rejected. If the configured account or `default` key exists with an invalid
-value, the snapshot is rejected instead of falling back to another entry. The
-selected moniker must be safe to use as one URL query value without additional
-encoding. Surrounding whitespace is trimmed; the remaining value may contain
-only ASCII letters, digits, hyphen, dot, underscore, and tilde. Embedded
-whitespace, non-ASCII text, and reserved delimiters are rejected.
+Endpoint claim. `moniker_map` maps each logical account group to its current
+primary physical moniker. The exporter validates and preserves the complete
+map; the uploader selects the entry named by `account_routing` for each batch.
+An empty map, blank group, or invalid moniker rejects the complete snapshot
+instead of allowing partial routing. Each moniker must be safe to use as one
+URL query value without additional encoding. Surrounding whitespace is
+trimmed; the remaining value may contain only ASCII letters, digits, hyphen,
+dot, underscore, and tilde. Embedded whitespace, non-ASCII text, and reserved
+delimiters are rejected.
 
 The provider must load the token and routing attributes from one atomically
 published host snapshot. Each upload consumes one immutable snapshot, so a host
@@ -112,6 +116,11 @@ From the `otap-dataflow` directory:
 ```bash
 cargo build --release --features geneva-exporter
 ```
+
+Password-protected PKCS#12 certificate authentication is excluded by default.
+Build with `--features geneva-certificate-auth` only when certificate
+authentication is required. This opt-in feature adds PKCS#12 parsing and its
+cryptographic dependencies.
 
 ## Verify the exporter is registered
 
@@ -146,15 +155,18 @@ config:
   environment: production
   account: "my-account"
   namespace: "my-namespace"
+  account_routing:
+    default_group: "diagnostics"
   region: westus2
   config_major_version: 1
   tenant: "my-tenant"
   role_name: "df-engine"
   role_instance: "instance-001"
 
-  # Authentication method. Other supported values are "certificate",
+  # Authentication method. Other default-build values are
   # "usermanagedidentity", "usermanagedidentitybyarmresourceid",
-  # "workloadidentity", and "agentfed".
+  # "workloadidentity", and "agentfed". "certificate" requires the
+  # opt-in "geneva-certificate-auth" build feature.
   auth:
     type: systemmanagedidentity
     msi_resource: "https://monitor.azure.com/"
@@ -165,6 +177,101 @@ config:
   # Maximum concurrent uploads (default: 4).
   max_concurrent_uploads: 4
 ```
+
+## On-Behalf-Of (OBO) with table routing
+
+OBO lets a single agent upload telemetry on behalf of multiple customer
+identities. When a batch's event/table name has an OBO entry, the exporter
+attaches the customer identity (`onbehalfid`) and an optional annotations recipe
+(`onbehalfannotations`) as GIG query parameters on the upload.
+
+OBO entries are keyed by the **destination** event/table name -- the name
+*after* `event_name_mapping` resolves it, not the pre-mapping source value.
+
+The following example both renames tables via `event_name_mapping` and enables
+OBO on the resolved destinations:
+
+```yaml
+type: urn:microsoft:exporter:geneva
+config:
+  endpoint: "https://geneva.example.com"
+  environment: production
+  account: "my-account"
+  namespace: "my-namespace"
+  account_routing:
+    default_group: "diagnostics"
+    events:
+      AuditLogs: "audit"
+      raw: "raw"
+  region: westus2
+  config_major_version: 1
+  tenant: "my-tenant"
+  role_name: "df-engine"
+  role_instance: "instance-001"
+  auth:
+    type: systemmanagedidentity
+    msi_resource: "https://monitor.azure.com/"
+
+  # Routing: source event name -> destination table.
+  logs:
+    default_event_name: "Log"        # fallback table for unmapped records
+    event_name_mapping:
+      routing_key: event_name        # route by the record's event name
+      events:
+        audit: AuditLogs             # source "audit" -> table "AuditLogs"
+        raw:                         # null: source "raw" -> table "raw" (unchanged)
+
+  # OBO: keyed by the DESTINATION table name (post-mapping).
+  obo:
+    events:
+      AuditLogs:                     # the destination name, NOT "audit"
+        identity: "Microsoft.AuditService"
+        annotations: '<Config onBehalfFields="resourceId" />'
+      raw:                           # destination == source here (passthrough)
+        identity: "Microsoft.RawService"
+```
+
+How a record flows through the exporter and uploader:
+
+<!-- markdownlint-disable MD013 -->
+
+| Incoming event | Destination table | Account group | OBO query parameters |
+| --- | --- | --- | --- |
+| `audit` | `AuditLogs` | `audit` | `onbehalfid=Microsoft.AuditService`, `onbehalfannotations=<Config .../>` |
+| `raw` | `raw` | `raw` | `onbehalfid=Microsoft.RawService` |
+| `foo` | `Log` | `diagnostics` | none |
+
+<!-- markdownlint-enable MD013 -->
+
+The uploader resolves the destination table first, then looks up OBO by that
+resolved name. A single flat `obo.events` map is shared across `logs` and
+`spans`, keyed by event/table name.
+
+`account_routing` uses the same destination event/table names. Its required
+`default_group` handles events without an exact override, while `events` maps
+selected destinations to logical GCS account groups. The uploader resolves the
+chosen logical group to the primary physical moniker from the current GCS or
+agent-fed credential snapshot; YAML config contains group names, not physical
+monikers.
+
+Gotcha: because OBO keys on the destination, keying an entry on the source value
+silently disables OBO. If you wrote `obo.events.audit` instead of
+`obo.events.AuditLogs`, the post-routing lookup (`AuditLogs`) would miss and the
+`audit` records would upload without OBO -- no error, just silently omitted.
+
+## Telemetry
+
+Input PData message volume is reported by the engine through
+`channel.receiver.messages` and is not duplicated by the exporter.
+
+<!-- markdownlint-disable MD013 -->
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose Geneva export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal Geneva upload result, including conversion and upload preparation but excluding Ack/Nack notification. |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Test Configuration
 

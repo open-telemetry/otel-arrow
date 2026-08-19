@@ -3,6 +3,8 @@
 
 //! Topic receiver.
 
+otap_df_telemetry::otel_component_scope!(urn = TOPIC_RECEIVER_URN, target = "otel.receiver.topic",);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_channel::error::SendError;
@@ -31,7 +33,6 @@ use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

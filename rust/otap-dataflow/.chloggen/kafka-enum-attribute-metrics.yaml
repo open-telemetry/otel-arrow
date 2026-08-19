@@ -1,0 +1,8 @@
+# Use this changelog template to create an entry for release notes.
+
+change_type: breaking
+component: pipeline
+note: Align exporter and Kafka metrics with bounded attributes, end-to-end latency, wire-byte terminology, and actionable failure categories.
+issues: [2884, 3300, 3649]
+subtext: |
+  Migration: Rename `exporter.pdata.exports.*` to `exporter.exports.*`; Kafka ingress to `receiver.kafka.consumer.records.*`; admitted lifecycle to `receiver.messages.*`. Export duration is seconds and excludes Ack/Nack. OTLP/OTAP failures add bounded `error.type` counters.

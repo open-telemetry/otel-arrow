@@ -58,6 +58,8 @@
 //!       max_duration: "100ms"
 //! ```
 
+otap_df_telemetry::otel_component_scope!(urn = ETW_RECEIVER_URN, target = "otel.receiver.etw",);
+
 mod arrow_records_encoder;
 mod session;
 
@@ -84,7 +86,6 @@ use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;

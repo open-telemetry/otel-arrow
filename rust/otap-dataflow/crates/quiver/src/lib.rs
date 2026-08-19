@@ -132,7 +132,10 @@ pub use budget::{BudgetConfigError, DiskBudget};
 pub use config::{
     DurabilityMode, QuiverConfig, RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig,
 };
-pub use engine::{MaintenanceStats, QuiverEngine, QuiverEngineBuilder};
+pub use engine::{
+    MaintenanceStats, QuiverEngine, QuiverEngineBuilder, RetentionLossCounts,
+    RetentionLossSnapshot, WalItemCounter,
+};
 pub use error::{QuiverError, Result};
 
 pub use segment::SegmentError;

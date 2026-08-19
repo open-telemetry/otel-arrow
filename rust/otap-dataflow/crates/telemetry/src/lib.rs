@@ -28,6 +28,7 @@
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
+use log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::telemetry::TelemetryConfig;
 use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
@@ -46,6 +47,8 @@ pub mod event;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
+/// Runtime-reloadable filtering for internal logs.
+pub mod log_filter;
 /// Internal log tap for admin-side log queries.
 pub mod log_tap;
 pub mod metrics;
@@ -58,6 +61,7 @@ pub mod semconv;
 pub mod tracing_init;
 
 // Re-export tracing setup types for per-thread subscriber configuration.
+pub use otap_df_telemetry_macros::otel_component_scope;
 pub use tracing_init::TracingSetup;
 
 #[cfg(test)]
@@ -68,6 +72,15 @@ pub use tracing_init::TracingSetup;
 /// The helper serializes access because `RUST_LOG` is process-global and restores
 /// the previous value even if the closure panics.
 pub(crate) fn with_cleared_rust_log<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R + std::panic::UnwindSafe,
+{
+    with_rust_log(None, f)
+}
+
+#[cfg(test)]
+#[allow(unsafe_code)] // std::env mutation is synchronized and restored for test isolation.
+pub(crate) fn with_rust_log<F, R>(value: Option<&str>, f: F) -> R
 where
     F: FnOnce() -> R + std::panic::UnwindSafe,
 {
@@ -83,8 +96,13 @@ where
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let previous = env::var_os("RUST_LOG");
-    unsafe {
-        env::remove_var("RUST_LOG");
+    match value {
+        Some(value) => unsafe {
+            env::set_var("RUST_LOG", value);
+        },
+        None => unsafe {
+            env::remove_var("RUST_LOG");
+        },
     }
 
     let result = catch_unwind(AssertUnwindSafe(f));
@@ -185,8 +203,11 @@ pub struct InternalTelemetrySystem {
     metrics_reporter: reporter::MetricsReporter,
 
     // === Logging Configuration ===
-    /// Log level from config.
-    log_level: LogLevel,
+    /// Shared runtime filter installed into every tracing dispatcher.
+    log_filter: RuntimeLogFilter,
+
+    /// Handle used to apply reconciled log-level configuration.
+    log_filter_handle: RuntimeLogFilterHandle,
 
     /// The logging providers.
     provider_modes: LoggingProviders,
@@ -264,11 +285,14 @@ impl InternalTelemetrySystem {
             )
         };
 
+        let (log_filter, log_filter_handle) = RuntimeLogFilter::new(&config.logs.level);
+
         Ok(Self {
             registry: telemetry_registry,
             collector,
             metrics_reporter,
-            log_level: config.logs.level.clone(),
+            log_filter,
+            log_filter_handle,
             provider_modes: config.logs.providers.clone(),
             context_fn,
             console_async_reporter,
@@ -314,7 +338,7 @@ impl InternalTelemetrySystem {
             },
         };
 
-        TracingSetup::new(provider, self.log_level.clone(), self.context_fn)
+        TracingSetup::from_log_filter(provider, self.log_filter.clone(), self.context_fn)
     }
 
     /// Returns a `TracingSetup` for engine threads.
@@ -357,10 +381,19 @@ impl InternalTelemetrySystem {
         &self.its_reporter
     }
 
-    /// Returns the configured log level.
+    /// Returns the desired configured log level.
+    ///
+    /// Before the first reconciliation this may differ from the effective startup
+    /// filter when `RUST_LOG` supplied that filter.
     #[must_use]
-    pub const fn log_level(&self) -> &LogLevel {
-        &self.log_level
+    pub fn log_level(&self) -> LogLevel {
+        self.log_filter.configured_level()
+    }
+
+    /// Returns the handle for applying runtime log-level configuration.
+    #[must_use]
+    pub fn log_filter_handle(&self) -> RuntimeLogFilterHandle {
+        self.log_filter_handle.clone()
     }
 
     /// Returns a shareable/cloneable handle to the telemetry registry.
@@ -440,6 +473,20 @@ mod tests {
             None,
         )
         .expect("should create internal telemetry system")
+    }
+
+    /// Scenario: runtime reconciliation changes the shared internal log filter.
+    /// Guarantees: InternalTelemetrySystem reports the current configured level.
+    #[test]
+    fn log_level_follows_runtime_filter_updates() {
+        with_cleared_rust_log(|| {
+            let its = test_system(&TelemetryConfig::default());
+            let level: LogLevel = serde_yaml::from_str("debug").expect("valid log level");
+
+            its.log_filter_handle().apply(&level);
+
+            assert_eq!(its.log_level(), level);
+        });
     }
 
     /// Scenario: all log providers explicitly disable ITS delivery.

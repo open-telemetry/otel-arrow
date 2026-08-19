@@ -22,6 +22,7 @@ struct RuntimeRecoveryAttempt {
     attempt: usize,
     target_key: DeployedPipelineKey,
     resolved: ResolvedPipelineConfig,
+    placement: LivePipelinePlacement,
     backoff: Duration,
 }
 
@@ -76,16 +77,23 @@ impl<
     pub(super) fn launch_regular_pipeline_instance(
         self: &Arc<Self>,
         resolved_pipeline: &ResolvedPipelineConfig,
+        placement: &LivePipelinePlacement,
         core_id: usize,
         deployment_generation: u64,
     ) -> Result<DeployedPipelineKey, Error> {
         let thread_id = self.next_thread_id();
-        let num_cores = self
-            .assigned_cores_for_resolved(resolved_pipeline)
-            .map_err(|err| Error::PipelineRuntimeError {
-                source: Box::new(io::Error::other(format!("{err:?}"))),
-            })?
-            .len();
+        let core_placement =
+            placement
+                .core(core_id)
+                .ok_or_else(|| Error::PipelineRuntimeError {
+                    source: Box::new(io::Error::other(format!(
+                        "core {core_id} is not present in resolved placement for {}:{}",
+                        resolved_pipeline.pipeline_group_id.as_ref(),
+                        resolved_pipeline.pipeline_id.as_ref()
+                    ))),
+                })?;
+        let num_cores = placement.placement.core_count();
+        let live_config = self.engine_config_snapshot();
         let deployed_key = DeployedPipelineKey {
             pipeline_group_id: resolved_pipeline.pipeline_group_id.clone(),
             pipeline_id: resolved_pipeline.pipeline_id.clone(),
@@ -96,6 +104,8 @@ impl<
             self.pipeline_factory,
             deployed_key.clone(),
             CoreId { id: core_id },
+            core_placement.numa_node_id,
+            Arc::clone(&placement.listener_group_snapshot),
             num_cores,
             resolved_pipeline.pipeline.clone(),
             resolved_pipeline.policies.channel_capacity.clone(),
@@ -109,11 +119,7 @@ impl<
             self.engine_tracing_setup.clone(),
             self.telemetry_reporting_interval,
             self.memory_pressure_tx.clone(),
-            &self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .live_config,
+            &live_config,
             &self.declared_topics,
             Arc::downgrade(self),
             thread_id,
@@ -349,20 +355,12 @@ impl<
             return;
         };
         let policy = current_record.resolved.policies.runtime_recovery.clone();
-        let assigned_cores = match self.assigned_cores_for_resolved(&current_record.resolved) {
-            Ok(assigned_cores) => assigned_cores,
-            Err(err) => {
-                self.fail_runtime_recovery(
-                    &pipeline_key,
-                    failed_key.core_id,
-                    failed_key.deployment_generation,
-                    0,
-                    policy.max_restarts,
-                    format!("failed to resolve recovery core allocation: {err:?}"),
-                );
-                return;
-            }
-        };
+        let assigned_cores: Vec<_> = current_record
+            .placement
+            .cores
+            .iter()
+            .map(|core| core.core_id.id)
+            .collect();
         if !assigned_cores.contains(&failed_key.core_id) {
             return;
         }
@@ -608,6 +606,7 @@ impl<
 
             let target_key = match self.launch_regular_pipeline_instance(
                 &attempt.resolved,
+                &attempt.placement,
                 core_id,
                 attempt.target_key.deployment_generation,
             ) {
@@ -785,13 +784,19 @@ impl<
             return RuntimeRecoveryAttemptDecision::Exhausted;
         }
 
-        let Some(resolved) = state
-            .logical_pipelines
-            .get(pipeline_key)
-            .map(|record| record.resolved.clone())
+        let Some((resolved, placement, placement_generation)) =
+            state.logical_pipelines.get(pipeline_key).map(|record| {
+                (
+                    record.resolved.clone(),
+                    record.placement.clone(),
+                    record.placement_generation,
+                )
+            })
         else {
             return RuntimeRecoveryAttemptDecision::Exhausted;
         };
+        let placement =
+            self.live_pipeline_placement_from(&resolved, placement, placement_generation);
         let attempt = recovery.restart_count + 1;
         let target_generation = {
             // Recovery and rollouts share this counter. Generations must remain
@@ -820,6 +825,7 @@ impl<
                 deployment_generation: target_generation,
             },
             resolved,
+            placement,
             backoff: runtime_recovery_backoff(policy, attempt),
         }))
     }

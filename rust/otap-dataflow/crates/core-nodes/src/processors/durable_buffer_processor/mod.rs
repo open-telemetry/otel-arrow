@@ -71,6 +71,11 @@
 //!   stuck data when space is needed for new data
 //! - `max_in_flight` limit prevents thundering herd after recovery
 
+otap_df_telemetry::otel_component_scope!(
+    urn = DURABLE_BUFFER_URN,
+    target = "otel.processor.durable_buffer",
+);
+
 mod bundle_adapter;
 mod config;
 mod deferred_retry_state;
@@ -89,17 +94,16 @@ use quiver::segment_store::SegmentStore;
 use quiver::subscriber::{
     BundleHandle, BundleIndex, BundleRef, RegistryCallback, SegmentProvider, SubscriberId,
 };
-use quiver::{QuiverConfig, QuiverEngine};
+use quiver::{QuiverConfig, QuiverEngine, RetentionLossCounts, RetentionLossSnapshot};
 use smallvec::smallvec;
-
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::TryIntoWithOptions;
 
 use bundle_adapter::{
-    OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, signal_type_from_slot_id,
+    OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, recover_item_count,
+    signal_type_from_slot_id,
 };
 pub use config::{DurableBufferConfig, OtlpHandling, SizeCapPolicy};
 use deferred_retry_state::DeferredRetryState;
@@ -252,6 +256,28 @@ struct CachedSegmentMetrics {
     last_seen_generation: u64,
 }
 
+fn retention_loss_delta(
+    current: RetentionLossSnapshot,
+    previous: RetentionLossSnapshot,
+) -> RetentionLossSnapshot {
+    fn counts_delta(
+        current: RetentionLossCounts,
+        previous: RetentionLossCounts,
+    ) -> RetentionLossCounts {
+        RetentionLossCounts {
+            segments: current.segments.saturating_sub(previous.segments),
+            bundles: current.bundles.saturating_sub(previous.bundles),
+            items: current.items.saturating_sub(previous.items),
+            bytes: current.bytes.saturating_sub(previous.bytes),
+        }
+    }
+
+    RetentionLossSnapshot {
+        drop_oldest: counts_delta(current.drop_oldest, previous.drop_oldest),
+        expired: counts_delta(current.expired, previous.expired),
+    }
+}
+
 /// Durable buffer that provides crash-resilient buffering via Quiver.
 ///
 /// # Segment Metrics Cache
@@ -311,6 +337,9 @@ pub struct DurableBuffer {
     /// Prevents warning spam when `bundle_metadata` repeatedly fails for the
     /// same segment across telemetry ticks.
     metadata_load_warned_segments: HashSet<u64>,
+
+    /// Last cumulative Quiver retention-loss totals used to compute segment/bundle deltas.
+    last_loss_snapshot: RetentionLossSnapshot,
 }
 
 impl DurableBuffer {
@@ -376,6 +405,7 @@ impl DurableBuffer {
             segment_cache: HashMap::new(),
             segment_cache_generation: 0,
             metadata_load_warned_segments: HashSet::new(),
+            last_loss_snapshot: RetentionLossSnapshot::default(),
         })
     }
 
@@ -766,58 +796,37 @@ impl DurableBuffer {
         self.segment_cache
             .retain(|seq, _| progress_snapshot.contains_key(&SegmentSeq::new(*seq)));
 
-        // NOTE (temporality inconsistency): these aggregate loss metrics are
-        // still cumulative ObserveCounters sourced from monotonic engine atomics
-        // via .observe(), so the dispatcher exports them as gauges regardless of
-        // reader temporality. Their per-signal breakdowns below are now delta
-        // Counters, so `dropped_items` will NOT equal the sum of the per-signal
-        // `dropped_*` across intervals. Making these delta-native (and every other
-        // ObserveCounter temporality-aware) is tracked as a follow-up; it needs
-        // either engine-side drain methods or a dispatcher-level fix rather than
-        // reintroducing per-metric last-value bookkeeping here.
-        self.metrics
-            .loss_for(LossReason::DropOldest)
-            .segments
-            .observe(engine.force_dropped_segments());
-        self.metrics
-            .loss_for(LossReason::DropOldest)
-            .bundles
-            .observe(engine.force_dropped_bundles());
-        self.metrics
-            .loss_for(LossReason::DropOldest)
-            .items
-            .observe(engine.force_dropped_items());
-        self.metrics
-            .loss_for(LossReason::Expired)
-            .segments
-            .observe(engine.expired_segments());
-        self.metrics
-            .loss_for(LossReason::Expired)
-            .bundles
-            .observe(engine.expired_bundles());
-        self.metrics
-            .loss_for(LossReason::Expired)
-            .items
-            .observe(engine.expired_items());
+        let current_loss_snapshot = engine.retention_loss_snapshot();
+        let loss_delta = retention_loss_delta(current_loss_snapshot, self.last_loss_snapshot);
+        self.last_loss_snapshot = current_loss_snapshot;
 
-        // Update dropped and expired metrics by draining the engine's pending bundles
-        // and aggregating by signal type via signal_type_from_slot_id(). This handles all
-        // slot ranges (Arrow 10-45 and OTLP 60-62) without hardcoding any slot IDs here.
-        for (slot_ids, count) in engine.drain_dropped_bundles_pending() {
+        let dropped = self.metrics.loss_for(LossReason::DropOldest);
+        dropped.segments.add(loss_delta.drop_oldest.segments);
+        dropped.bundles.add(loss_delta.drop_oldest.bundles);
+        dropped.bytes.add(loss_delta.drop_oldest.bytes);
+
+        let expired = self.metrics.loss_for(LossReason::Expired);
+        expired.segments.add(loss_delta.expired.segments);
+        expired.bundles.add(loss_delta.expired.bundles);
+        expired.bytes.add(loss_delta.expired.bytes);
+
+        // Classify Quiver's opaque slot shapes in the OTAP layer, where signal
+        // semantics are known.
+        for (slot_ids, item_count) in engine.drain_dropped_items_by_shape() {
             if let Some(signal) = slot_ids.iter().copied().find_map(signal_type_from_slot_id) {
                 self.metrics
-                    .item_loss_for(signal, LossReason::DropOldest)
+                    .loss_items_for(signal, LossReason::DropOldest)
                     .items
-                    .add(count);
+                    .add(item_count);
             }
         }
 
-        for (slot_ids, count) in engine.drain_expired_bundles_pending() {
+        for (slot_ids, item_count) in engine.drain_expired_items_by_shape() {
             if let Some(signal) = slot_ids.iter().copied().find_map(signal_type_from_slot_id) {
                 self.metrics
-                    .item_loss_for(signal, LossReason::Expired)
+                    .loss_items_for(signal, LossReason::Expired)
                     .items
-                    .add(count);
+                    .add(item_count);
             }
         }
 
@@ -884,6 +893,7 @@ impl DurableBuffer {
         // Build the Quiver engine
         let engine = QuiverEngine::builder(quiver_config)
             .with_budget(budget)
+            .with_wal_item_counter(Arc::new(recover_item_count))
             .build()
             .await
             .map_err(|e| Error::InternalError {
@@ -1770,12 +1780,6 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                         Some((
                             budget.used(),
                             budget.hard_cap(),
-                            engine.force_dropped_segments(),
-                            engine.force_dropped_bundles(),
-                            engine.force_dropped_items(),
-                            engine.expired_segments(),
-                            engine.expired_bundles(),
-                            engine.expired_items(),
                             engine.clone(),
                             subscriber_id.clone(),
                         ))
@@ -1783,19 +1787,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                         None
                     };
 
-                    if let Some((
-                        used,
-                        cap,
-                        dropped_segs,
-                        dropped_buns,
-                        dropped_items,
-                        expired_segs,
-                        expired_buns,
-                        expired_items,
-                        engine,
-                        subscriber_id,
-                    )) = quiver_metrics
-                    {
+                    if let Some((used, cap, engine, subscriber_id)) = quiver_metrics {
                         self.metrics
                             .operational_metrics
                             .storage_bytes_used
@@ -1811,31 +1803,6 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                             .operational_metrics
                             .storage_utilization
                             .set(utilization);
-
-                        self.metrics
-                            .loss_for(LossReason::DropOldest)
-                            .segments
-                            .observe(dropped_segs);
-                        self.metrics
-                            .loss_for(LossReason::DropOldest)
-                            .bundles
-                            .observe(dropped_buns);
-                        self.metrics
-                            .loss_for(LossReason::DropOldest)
-                            .items
-                            .observe(dropped_items);
-                        self.metrics
-                            .loss_for(LossReason::Expired)
-                            .segments
-                            .observe(expired_segs);
-                        self.metrics
-                            .loss_for(LossReason::Expired)
-                            .bundles
-                            .observe(expired_buns);
-                        self.metrics
-                            .loss_for(LossReason::Expired)
-                            .items
-                            .observe(expired_items);
 
                         // Recompute queued item gauges from the subscriber
                         // registry. This is the single source of truth for
@@ -2860,8 +2827,8 @@ mod tests {
             .validate(|_| async {});
     }
 
-    /// Scenario: DropOldest and max_age retention each remove log segments.
-    /// Guarantees: Per-signal item loss stays interval-scoped and aggregate expiry loss includes the expired segment count.
+    /// Scenario: DropOldest and max_age retention each remove log items.
+    /// Guarantees: Signal-partitioned item loss stays interval-scoped.
     #[tokio::test]
     async fn test_per_signal_dropped_expired_metrics() {
         let (mut processor, engine, subscriber_id, _temp_dir) =
@@ -2875,7 +2842,7 @@ mod tests {
             p.recompute_metrics(&engine, &subscriber_id);
             let sample = (
                 p.metrics
-                    .item_loss_metrics
+                    .loss_item_metrics
                     .get(SignalLossAttributes {
                         signal: SignalType::Logs,
                         reason: LossReason::DropOldest,
@@ -2883,7 +2850,7 @@ mod tests {
                     .items
                     .get(),
                 p.metrics
-                    .item_loss_metrics
+                    .loss_item_metrics
                     .get(SignalLossAttributes {
                         signal: SignalType::Logs,
                         reason: LossReason::Expired,
@@ -2892,7 +2859,7 @@ mod tests {
                     .get(),
             );
             reporter
-                .report_measurement(&mut p.metrics.item_loss_metrics)
+                .report_measurement(&mut p.metrics.loss_item_metrics)
                 .unwrap();
             while metrics_rx.try_recv().is_ok() {}
             sample
@@ -2941,6 +2908,89 @@ mod tests {
         assert_eq!(sample(&mut processor), (4, 0));
     }
 
+    /// Scenario: Segment, bundle, and byte loss occur in separate reporting intervals.
+    /// Guarantees: Each reason-only aggregate counter reports its delta and resets after export.
+    #[tokio::test]
+    async fn test_aggregate_loss_metrics_are_delta_counters() {
+        let (mut processor, engine, subscriber_id, _temp_dir) =
+            setup_test_processor(Some(Duration::from_millis(5))).await;
+        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(4);
+
+        let mut sample = |processor: &mut DurableBuffer| {
+            processor.recompute_metrics(&engine, &subscriber_id);
+            let dropped = processor.metrics.loss_metrics.get(LossAttributes {
+                reason: LossReason::DropOldest,
+            });
+            let dropped_values = (
+                dropped.segments.get(),
+                dropped.bundles.get(),
+                dropped.bytes.get(),
+            );
+            let expired = processor.metrics.loss_metrics.get(LossAttributes {
+                reason: LossReason::Expired,
+            });
+            let expired_values = (
+                expired.segments.get(),
+                expired.bundles.get(),
+                expired.bytes.get(),
+            );
+
+            reporter
+                .report_measurement(&mut processor.metrics.loss_metrics)
+                .expect("report loss metrics");
+            while metrics_rx.try_recv().is_ok() {}
+
+            (dropped_values, expired_values)
+        };
+
+        engine
+            .ingest(&make_simple_bundle(SlotId::new(30), 5))
+            .await
+            .expect("ingest dropped bundle");
+        engine.flush().await.expect("flush dropped bundle");
+        let dropped_bytes = engine
+            .segment_store()
+            .segment_sequences()
+            .into_iter()
+            .min()
+            .map(|seq| {
+                engine
+                    .segment_store()
+                    .segment_file_size(seq)
+                    .expect("segment file size")
+            })
+            .expect("oldest segment");
+        assert_eq!(engine.force_drop_oldest_pending_segments(), 1);
+        assert_eq!(sample(&mut processor), ((1, 1, dropped_bytes), (0, 0, 0)));
+
+        engine
+            .ingest(&make_simple_bundle(SlotId::new(30), 3))
+            .await
+            .expect("ingest expired bundle");
+        engine.flush().await.expect("flush expired bundle");
+        let expired_bytes = engine
+            .segment_store()
+            .segment_sequences()
+            .into_iter()
+            .map(|seq| {
+                engine
+                    .segment_store()
+                    .segment_file_size(seq)
+                    .expect("segment file size")
+            })
+            .sum::<u64>();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            engine.cleanup_expired_segments().expect("expire segment"),
+            1
+        );
+        assert_eq!(sample(&mut processor), ((0, 0, 0), (1, 1, expired_bytes)));
+
+        assert_eq!(sample(&mut processor), ((0, 0, 0), (0, 0, 0)));
+    }
+
+    /// Scenario: DropOldest removes a metrics bundle containing 42 items.
+    /// Guarantees: Item loss is attributed to the metrics signal.
     #[tokio::test]
     async fn test_dropped_metrics_item_count() {
         let (mut processor, engine, subscriber_id, _temp_dir) = setup_test_processor(None).await;
@@ -2960,7 +3010,7 @@ mod tests {
         assert_eq!(
             processor
                 .metrics
-                .item_loss_metrics
+                .loss_item_metrics
                 .get(SignalLossAttributes {
                     signal: SignalType::Metrics,
                     reason: LossReason::DropOldest,
@@ -2969,19 +3019,10 @@ mod tests {
                 .get(),
             42
         );
-        assert_eq!(
-            processor
-                .metrics
-                .loss_metrics
-                .get(LossAttributes {
-                    reason: LossReason::DropOldest,
-                })
-                .items
-                .get(),
-            42
-        );
     }
 
+    /// Scenario: DropOldest removes a trace bundle containing 55 spans.
+    /// Guarantees: Item loss is attributed to the traces signal.
     #[tokio::test]
     async fn test_dropped_spans_item_count() {
         let (mut processor, engine, subscriber_id, _temp_dir) = setup_test_processor(None).await;
@@ -3001,7 +3042,7 @@ mod tests {
         assert_eq!(
             processor
                 .metrics
-                .item_loss_metrics
+                .loss_item_metrics
                 .get(SignalLossAttributes {
                     signal: SignalType::Traces,
                     reason: LossReason::DropOldest,
@@ -3012,6 +3053,8 @@ mod tests {
         );
     }
 
+    /// Scenario: DropOldest removes an OTLP pass-through log bundle.
+    /// Guarantees: Logical log loss uses the adapter item count.
     #[tokio::test]
     async fn test_dropped_otlp_passthrough_item_count() {
         let (mut processor, engine, subscriber_id, _temp_dir) = setup_test_processor(None).await;
@@ -3032,7 +3075,7 @@ mod tests {
         assert_eq!(
             processor
                 .metrics
-                .item_loss_metrics
+                .loss_item_metrics
                 .get(SignalLossAttributes {
                     signal: SignalType::Logs,
                     reason: LossReason::DropOldest,
@@ -3043,6 +3086,8 @@ mod tests {
         );
     }
 
+    /// Scenario: DropOldest and expiry remove items for all three signals.
+    /// Guarantees: Item totals reconcile across signal and reason dimensions.
     #[tokio::test]
     async fn test_reconciliation() {
         let (mut processor, engine, subscriber_id, _temp_dir) =
@@ -3098,7 +3143,7 @@ mod tests {
         let item_loss = |signal, reason| {
             processor
                 .metrics
-                .item_loss_metrics
+                .loss_item_metrics
                 .get(SignalLossAttributes { signal, reason })
                 .items
                 .get()
@@ -3109,39 +3154,16 @@ mod tests {
         let expired_logs = item_loss(SignalType::Logs, LossReason::Expired);
         let expired_spans = item_loss(SignalType::Traces, LossReason::Expired);
         let expired_metrics = item_loss(SignalType::Metrics, LossReason::Expired);
-        let dropped_items = processor
-            .metrics
-            .loss_metrics
-            .get(LossAttributes {
-                reason: LossReason::DropOldest,
-            })
-            .items
-            .get();
-        let expired_items = processor
-            .metrics
-            .loss_metrics
-            .get(LossAttributes {
-                reason: LossReason::Expired,
-            })
-            .items
-            .get();
-
-        // Assert dropped reconciliation
+        // Assert dropped signal breakdown.
         assert_eq!(dropped_logs, 10);
         assert_eq!(dropped_spans, 20);
         assert_eq!(dropped_metrics, 30);
-        assert_eq!(
-            dropped_logs + dropped_spans + dropped_metrics,
-            dropped_items
-        );
+        assert_eq!(dropped_logs + dropped_spans + dropped_metrics, 60);
 
-        // Assert expired reconciliation
+        // Assert expired signal breakdown.
         assert_eq!(expired_logs, 5);
         assert_eq!(expired_spans, 15);
         assert_eq!(expired_metrics, 25);
-        assert_eq!(
-            expired_logs + expired_spans + expired_metrics,
-            expired_items
-        );
+        assert_eq!(expired_logs + expired_spans + expired_metrics, 45);
     }
 }

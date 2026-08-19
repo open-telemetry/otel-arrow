@@ -65,14 +65,15 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ### Metric Sets
 
 Input PData message volume is reported by the engine through
-`channel.receiver.recv.count` on the PData input channel and is not duplicated
-by the exporter.
+`channel.receiver.messages` with its `signal` attribute on the PData input
+channel and is not duplicated by the exporter.
 
-#### `exporter.pdata.exports`
+#### `exporter.exports`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal local export result, excluding Ack notification. |
 
 ### Events
 

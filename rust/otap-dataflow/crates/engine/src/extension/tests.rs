@@ -4,6 +4,7 @@
 //! Unit tests for the extension module (wrapper + builder + control channel).
 
 use super::wrapper::{EffectHandler, ExtensionWrapper};
+use crate::attributes::{ChannelImplementation, ChannelMode};
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::config::ExtensionConfig;
 use crate::control::ExtensionControlMsg;
@@ -696,6 +697,8 @@ fn test_extension_attribute_set_carries_pipeline_scope() {
     );
 }
 
+/// Scenario: An extension control channel is represented by its scoped entity attributes.
+/// Guarantees: Typed mode and implementation values serialize while invariant fields stay absent.
 #[test]
 fn test_extension_channel_attribute_set_shape() {
     use crate::attributes::{
@@ -715,26 +718,35 @@ fn test_extension_channel_attribute_set_shape() {
                 ..PipelineAttributeSet::default()
             }),
         },
-        channel_mode: "local".into(),
-        channel_impl: "internal".into(),
+        channel_mode: ChannelMode::Local,
+        channel_impl: ChannelImplementation::Internal,
     };
     assert_eq!(attrs.schema_name(), "extension.channel.attrs");
-    let keys: Vec<&'static str> = attrs.iter_attributes().map(|(k, _)| k).collect();
+    let attr_map: std::collections::HashMap<&'static str, String> = attrs
+        .iter_attributes()
+        .map(|(key, value)| (key, value.to_string_value()))
+        .collect();
     // Invariants (channel.kind, channel.type) and node-only fields (node.port)
     // must not be present.
-    assert!(keys.contains(&"channel.id"));
-    assert!(keys.contains(&"extension.id"));
-    assert!(keys.contains(&"channel.mode"));
-    assert!(keys.contains(&"channel.impl"));
-    assert!(!keys.contains(&"channel.kind"));
-    assert!(!keys.contains(&"channel.type"));
-    assert!(!keys.contains(&"node.port"));
-    assert!(keys.contains(&"scope.kind"));
-    assert!(keys.contains(&"pipeline.id"));
-    assert!(keys.contains(&"pipeline.group.id"));
+    assert!(attr_map.contains_key("channel.id"));
+    assert!(attr_map.contains_key("extension.id"));
+    assert_eq!(
+        attr_map.get("channel.mode").map(String::as_str),
+        Some("local")
+    );
+    assert_eq!(
+        attr_map.get("channel.impl").map(String::as_str),
+        Some("internal")
+    );
+    assert!(!attr_map.contains_key("channel.kind"));
+    assert!(!attr_map.contains_key("channel.type"));
+    assert!(!attr_map.contains_key("node.port"));
+    assert!(attr_map.contains_key("scope.kind"));
+    assert!(attr_map.contains_key("pipeline.id"));
+    assert!(attr_map.contains_key("pipeline.group.id"));
     assert!(
-        !keys.contains(&"scope.id"),
-        "scope.id was replaced by typed composed pipeline attributes; got keys: {keys:?}"
+        !attr_map.contains_key("scope.id"),
+        "scope.id was replaced by typed composed pipeline attributes; got: {attr_map:?}"
     );
 }
 
@@ -755,6 +767,8 @@ fn test_register_extension_entity_unregister_roundtrip() {
     assert_eq!(registry.entity_count(), before);
 }
 
+/// Scenario: An extension control channel entity is registered in a pipeline scope.
+/// Guarantees: Typed channel attributes preserve the extension channel schema and lifecycle.
 #[test]
 fn test_register_extension_channel_entity_carries_extension_scope() {
     let (ctx, registry) = crate::testing::test_extension_ctx();
@@ -762,8 +776,8 @@ fn test_register_extension_channel_entity_carries_extension_scope() {
         "ext1".into(),
         crate::extension::wrapper::ExtensionVariant::Shared,
         "ext1:control".into(),
-        "shared",
-        "tokio",
+        ChannelMode::Shared,
+        ChannelImplementation::Tokio,
     );
     let schema = registry
         .visit_entity(key, |attrs| attrs.schema_name())
@@ -1237,6 +1251,8 @@ fn extension_entity_isolated_across_pipeline_groups() {
     );
 }
 
+/// Scenario: Matching extension control channels are registered in two different pipelines.
+/// Guarantees: Typed channel attributes do not collapse entities across pipeline scopes.
 #[test]
 fn extension_channel_entity_isolated_across_pipelines() {
     use crate::extension::wrapper::ExtensionVariant;
@@ -1254,8 +1270,8 @@ fn extension_channel_entity_isolated_across_pipelines() {
             "same_ext".into(),
             ExtensionVariant::Shared,
             "same_ext:control".into(),
-            "shared",
-            "tokio",
+            ChannelMode::Shared,
+            ChannelImplementation::Tokio,
         );
     let chan_b = pipe_b
         .extension_context()
@@ -1263,8 +1279,8 @@ fn extension_channel_entity_isolated_across_pipelines() {
             "same_ext".into(),
             ExtensionVariant::Shared,
             "same_ext:control".into(),
-            "shared",
-            "tokio",
+            ChannelMode::Shared,
+            ChannelImplementation::Tokio,
         );
 
     assert_ne!(
