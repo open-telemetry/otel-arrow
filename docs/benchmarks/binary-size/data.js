@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787102975532,
+  "lastUpdate": 1787169820792,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -18683,6 +18683,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 101.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "17158774d6438805b29c76314fb72162b06aad7f",
+          "message": "Clickhouse otlp allocation reuse (#3812)\n\n# Change Summary\n\nReduces allocation overhead in the ClickHouse exporter's direct raw OTLP\nlog transformation path.\n\nThe transformer now reuses attribute storage between requests, sizes\nArrow builders from recent batch characteristics, and shares protobuf\nparser state through one allocation. Projected builder capacities remain\ncapped at a 16K-row equivalent, and reusable attribute arenas release\nbacking storage above 64 KiB or 1,024 entries.\n\n## Performance impact\n\nThe end-to-end change was benchmarked against #3712 using:\n\n- 8,192-log batches\n- synchronous ClickHouse inserts\n- `max_in_flight: 10`\n- one df_engine core\n- six ClickHouse cores\n- twelve traffic-generator cores\n- ClickHouse 25.6\n- three 60-second repetitions per scenario\n\nMedian results for DFE OTLP logs:\n\n| Metric | #3712 baseline | This change | Impact |\n| --- | ---: | ---: | ---: |\n| DFE CPU at ~100,000 logs/s | 30.71% | 28.12% | -8.4% |\n| Written throughput at maximum load | 538,141 logs/s | 545,551 logs/s |\n+1.4% |\n\nWritten throughput at the fixed offered load remained approximately\n100,000 logs/s, as expected. The primary end-to-end benefit is reduced\nCPU consumption. The maximum-throughput difference is small enough to be\nwithin normal benchmark variability.\n\nA pinned-core Criterion A/B using 8,192-log batches confirmed that the\noptimization remains effective:\n\n| Metric | Current upstream main | This change | Impact |\n| --- | ---: | ---: | ---: |\n| Transformation time | 2.5239 ms | 2.2167 ms | -12.15% |\n| Transformation throughput | 3.2457 M logs/s | 3.6957 M logs/s |\n+13.83% |\n\nThe measured transformation-time improvement had a 95% confidence\ninterval of -12.26% to -12.05%. Actual end-to-end gains depend on\nworkload and batch characteristics.\n\n## What issue does this PR close?\n\n- Related to #3512\n- Implements the raw OTLP allocation optimization identified by the\nClickHouse exporter benchmarks in #3512\n\n## How are these changes tested?\n\nAutomated tests verify:\n\n- reusable transformation state is cleared between requests\n- oversized resource and scope attribute arenas are released before a\nfollowing small request\n- Arrow builder capacity projection scales with request size and remains\nbounded\n- capacity projection handles zero and overflow cases\n- transformed output remains equivalent to the legacy and OTAP fast\npaths\n- malformed and invalid inputs retain their existing behavior\n- protobuf byte-view parsing remains correct across logs and metrics\n\n## Are there any user-facing changes?\n\nYes. Raw OTLP log transformation uses less CPU before insertion into\nClickHouse.\n\nThere is no new configuration and no expected change to the generated\nClickHouse schema or values.\n\n### Changelog\n\n- [x] Added a `.chloggen/*.yaml` entry\n- [ ] This PR is a `chore` (indicated in title)\n- [ ] This is a documentation-only PR.",
+          "timestamp": "2026-08-19T18:57:39Z",
+          "tree_id": "fcccf158deac9e0cc084083199b6cf9e5d541a9e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/17158774d6438805b29c76314fb72162b06aad7f"
+        },
+        "date": 1787169808770,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.58,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.61,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 69.93,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.79,
             "unit": "MB"
           }
         ]
