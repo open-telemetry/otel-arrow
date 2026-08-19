@@ -367,7 +367,7 @@ new contexts. Receivers use the context arrival source binding with
 source address, the HTTP headers, and the `AuthorizedIdentity` value
 passed to the binding. Processors will use the context projector
 source binding to transform contexts, or they will use context
-predicate bindings. Exporters typically use
+predicate bindings. Exporters typically use context sink bindings.
 
 ```rust
 /// Part of PipelineContext, used at construction time.
