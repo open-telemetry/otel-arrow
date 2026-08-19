@@ -19,7 +19,7 @@ use otap_df_engine::{
     node::NodeWithPDataReceiver,
     testing::test_node,
 };
-use otap_df_otap::otap_mock::create_otap_batch;
+use otap_df_otap::otap_mock::create_otap_batch_with_rows;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
@@ -314,11 +314,11 @@ fn bench_exporter(c: &mut Criterion) {
         for _ in 0..size {
             
             let trace_records =
-                create_otap_batch(TRACES_BATCH_ID, ArrowPayloadType::Spans);
-            let log_records =
-                create_otap_batch(LOGS_BATCH_ID, ArrowPayloadType::Logs);
+                create_otap_batch_with_rows(TRACES_BATCH_ID, ArrowPayloadType::Spans, 50);
+           let log_records =
+                create_otap_batch_with_rows(LOGS_BATCH_ID, ArrowPayloadType::Logs, 50);
             let metrics_records =
-                create_otap_batch(METRICS_BATCH_ID, ArrowPayloadType::UnivariateMetrics);
+                create_otap_batch_with_rows(METRICS_BATCH_ID, ArrowPayloadType::UnivariateMetrics, 50);
 
             otap_signals.push(OtapPdata::new(Context::default(), trace_records.into()));
             otap_signals.push(OtapPdata::new(Context::default(), log_records.into()));
