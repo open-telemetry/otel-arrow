@@ -10,6 +10,60 @@ SASL-over-TLS pipelines:
 | `SCRAM-SHA-256` | `otlp-logs-scram-256` | `otap-scram-256-consumer` |
 | `SCRAM-SHA-512` | `otlp-logs-scram-512` | `otap-scram-512-consumer` |
 
+## End-to-End Validation Flow
+
+The configuration runs this path independently for `PLAIN`, `SCRAM-SHA-256`,
+and `SCRAM-SHA-512`:
+
+```mermaid
+flowchart LR
+    subgraph producer[Producer pipeline]
+        generator[Traffic generator]
+        kafka_exporter[Kafka exporter]
+        generator -->|Synthetic OTLP logs| kafka_exporter
+    end
+
+    subgraph broker[Kafka broker]
+        topic[Mechanism-specific topic]
+    end
+
+    subgraph consumer[Consumer pipeline]
+        kafka_receiver[Kafka receiver]
+        console[Console exporter]
+        kafka_receiver -->|Decoded OTLP logs| console
+    end
+
+    kafka_exporter -->|Produce with SASL over TLS| topic
+    topic -->|Consume with SASL over TLS| kafka_receiver
+    auth_test[Test-KafkaAuth.ps1] -. Broker-only preflight .-> broker
+```
+
+- **Traffic generator** (`receiver:traffic_generator`) is the dataflow source.
+  It creates synthetic logs at five signals per second, up to 20 signals per
+  mechanism.
+- **Producer pipeline** groups the traffic generator and Kafka exporter. It is
+  a pipeline name, not a separate runtime component.
+- **Kafka exporter** (`exporter:kafka`) encodes the generated logs as OTLP
+  protobuf and produces them to the mechanism-specific topic using SASL over
+  TLS.
+- **Kafka broker** is the real Confluent Kafka instance started by Docker
+  Compose. Its authenticated client listener is available at
+  `localhost:9093`.
+- **Kafka topic** separates the messages for each mechanism so every path can
+  be verified independently.
+- **Consumer pipeline** groups the Kafka receiver and console exporter. Like
+  the producer pipeline, it describes node composition and connections.
+- **Kafka receiver** (`receiver:kafka`) authenticates with Kafka, joins the
+  configured consumer group, reads the matching topic, and decodes the OTLP
+  protobuf messages.
+- **Consumer group** tracks the receiver's committed offsets. A lag of zero
+  proves that the receiver consumed all messages produced to its topic.
+- **Console exporter** (`exporter:console`) prints the decoded logs, proving
+  that telemetry reached the end of the otel-arrow pipeline.
+- **Broker authentication test** (`Test-KafkaAuth.ps1`) verifies the broker's
+  three SASL-over-TLS handshakes before otel-arrow starts. It is a preflight
+  check and is not part of the dataflow path.
+
 The fixed credentials and generated certificates are for local development
 only.
 
