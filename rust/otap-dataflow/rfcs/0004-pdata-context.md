@@ -364,7 +364,7 @@ entries can only be shared within a pipeline/pipeline-group.
 For receivers and for processors that form new Pdata contexts, a Pdata
 context source binding is registered with builder methods for creating
 new contexts. Receivers use the context arrival source binding with
-source address, the HTTP headers, and the `AuthorizedData` value
+source address, the HTTP headers, and the `AuthorizedIdentity` value
 passed to the binding. Processors will use the context projector
 source binding to transform contexts, or they will use context
 predicate bindings. Exporters typically use
@@ -374,7 +374,10 @@ predicate bindings. Exporters typically use
 pub trait PdataContextBinder {
     /// Create a new Pdata context arrival source for receivers to
     /// produce new contexts.
-    fn bind_arrival_source(&self, node: NodeId) -> Result<Box<dyn PdataContextArrival>, ContextError>;
+    fn bind_arrival_source(
+        &self,
+        node: NodeId,
+    ) -> Result<Box<dyn PdataContextArrivalSource>, ContextError>;
 
     /// Create a new Pdata context projector source for processors that
     /// use an N:1 or N:M contexts as input and output.
@@ -382,7 +385,7 @@ pub trait PdataContextBinder {
         &self,
         node: NodeId,
         projection: ContextProjection,
-    ) -> Result<Box<dyn PdataContextProjector>, ContextError>;
+    ) -> Result<Box<dyn PdataContextProjectorSource>, ContextError>;
 
     /// Create a new Pdata context sink, typically for exporters.
     fn bind_sink(
@@ -407,7 +410,7 @@ As an example, the context arrival source binding consists of:
 type PdataContext = otap_df_pdata::pdata::Context;
 
 /// Compute a context for a new arrival.
-pub trait PdataContextArrival {
+pub trait PdataContextArrivalSource {
     fn from_arrival(
         &self,
         arrival: PdataArrival<'_>,
@@ -430,7 +433,7 @@ fn create_otlp_receiver(
     node_id: NodeId,
     // ...
 ) -> Result<ReceiverWrapper<OtapPdata>, Error> {
-    // Bind the context arrival source, a PDataContextArrival.
+    // Bind the context arrival source, a PdataContextArrivalSource.
     let context_binding = pipeline_ctx
         .pdata_context()
         .bind_arrival_source(node_id)?;
@@ -451,13 +454,13 @@ impl OtlpReceiver {
 }
 ```
 
-### Pata context projection
+### Pdata context projector sources
 
 In processors, where there is an incoming Pdata context being extended
-or projected, use a projector binding:
+or projected, use a projector source binding:
 
 ```rust
-pub trait PdataContextProjector {
+pub trait PdataContextProjectorSource {
     fn from_projection(
         &self,
         input: &PdataContext,
