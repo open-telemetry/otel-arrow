@@ -4559,6 +4559,8 @@ topics:
       broadcast:
         on_lag: disconnect
         ack_mode: all
+      ack_propagation:
+        mode: auto
 groups:
   g1:
     pipelines:
@@ -4618,6 +4620,8 @@ topics:
       broadcast:
         on_lag: disconnect
         ack_mode: all
+      ack_propagation:
+        mode: auto
 groups:
   g1:
     pipelines:
