@@ -52,7 +52,7 @@ use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+use otap_df_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
 use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry_macros::metric_set;
@@ -1396,9 +1396,9 @@ impl GenevaExporter {
         }
 
         // Handle based on payload type
-        match payload {
+        match payload.into_data() {
             // OTAP Arrow path: encode logs through LogsDataView without converting back to OTLP.
-            OtapPayload::OtapArrowRecords(otap_records) => {
+            PayloadData::OtapArrowRecords(otap_records) => {
                 match otap_records {
                     mut otap_records @ OtapArrowRecords::Logs(_) => {
                         otel_info!(
@@ -1446,7 +1446,7 @@ impl GenevaExporter {
                         );
 
                         let otlp_bytes: OtlpProtoBytes =
-                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(otap_records))
+                            OtapPayload::from(OtapArrowRecords::Traces(otap_records))
                                 .try_into_with_default()
                                 .map_err(|e| {
                                     self.metrics.conversion_errors.inc();
@@ -1495,7 +1495,7 @@ impl GenevaExporter {
             }
 
             // OTLP path: Direct OTLP bytes from receivers without OTAP conversion (e.g., OTLP receiver -> Geneva exporter without batch processor)
-            OtapPayload::OtlpBytes(otlp_bytes) => {
+            PayloadData::OtlpBytes(otlp_bytes) => {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         otel_info!(
@@ -2042,7 +2042,8 @@ mod tests {
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
                         PipelineCompletionMsg::DeliverAck { ack } => {
-                            let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
+                            let (node_id, mut ack) =
+                                next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(node_id, 4242);
                             let got: TestCallData = ack.unwind.route.calldata.try_into().unwrap();
                             assert_eq!(TestCallData::default(), got);
@@ -2088,7 +2089,7 @@ mod tests {
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
                         PipelineCompletionMsg::DeliverNack { nack } => {
-                            let (node_id, nack) =
+                            let (node_id, mut nack) =
                                 next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(node_id, 777);
                             let got: TestCallData = nack.unwind.route.calldata.try_into().unwrap();
