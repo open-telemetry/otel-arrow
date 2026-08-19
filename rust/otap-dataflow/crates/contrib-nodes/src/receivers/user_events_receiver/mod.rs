@@ -3,6 +3,11 @@
 
 //! Linux user_events receiver.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = USER_EVENTS_RECEIVER_URN,
+    target = "otel.receiver.user_events",
+);
+
 mod arrow_records_encoder;
 mod decoder;
 mod metrics;
@@ -40,7 +45,6 @@ use self::metrics::UserEventsReceiverMetrics;
 use self::session::SessionInitError;
 use self::session::{RawUserEventsRecord, SessionDrainStats, UserEventsSession};
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_telemetry::{otel_info, otel_warn};
 use tokio::time::{self, MissedTickBehavior};
 
 const DEFAULT_PER_CPU_BUFFER_SIZE: usize = 1024 * 1024;

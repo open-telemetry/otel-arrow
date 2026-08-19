@@ -25,6 +25,16 @@
     "config:best-practices",
     "helpers:pinGitHubActionDigestsToSemver"
   ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update Weaver CLI versions in GitHub workflows",
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "matchStrings": ["WEAVER_VERSION:\\s*(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "open-telemetry/weaver",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
   // NOTE: Rule ordering matters here
   // Later rules will override earlier rules
   "packageRules": [
@@ -35,6 +45,24 @@
       "matchUpdateTypes": [
         "patch"
       ],
+      "schedule": [
+        "before 8am on Monday"
+      ]
+    },
+    {
+      // keep Go patch updates separate from other ecosystems
+      "groupName": "go patch versions",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch"],
+      "schedule": [
+        "before 8am on Monday"
+      ]
+    },
+    {
+      // keep Rust patch updates separate from other ecosystems
+      "groupName": "rust patch versions",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["patch"],
       "schedule": [
         "before 8am on Monday"
       ]

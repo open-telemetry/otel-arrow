@@ -63,9 +63,38 @@ macros all require a constant event-name string as the first argument;
 the event name must follow
 [OpenTelemetry Event naming conventions](../../docs/telemetry/events-guide.md#event-naming)
 (lowercase, dot-separated, stable, low-cardinality). The `target`
-(equivalent to OpenTelemetry `InstrumentationScope.name`) is
-automatically set to the crate name by these macros. Otherwise, they
-follow Tokio `tracing` syntax for key-value expressions.
+(equivalent to OpenTelemetry `InstrumentationScope.name`) is set to the
+component target established by `otel_component_scope!`, or to the Cargo
+package name outside registered component modules. Otherwise, the macros follow
+Tokio `tracing` syntax for key-value expressions.
+
+Registered components bind their target once in the component root, before
+declaring child modules:
+
+```rust
+pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
+
+otap_df_telemetry::otel_component_scope!(
+    urn = TRANSFORM_PROCESSOR_URN,
+    target = "otel.processor.transform",
+);
+
+mod config;
+mod routing;
+```
+
+The component and all child modules can then use `otel_info!`, `otel_debug!`,
+and the other event macros without repeating a target. The target is the
+component URN without the `urn:` prefix and with colons replaced by dots. The
+macro validates that projection at compile time, so the target above cannot
+drift from `urn:otel:processor:transform`.
+
+The component target applies to instrumentation owned by that module subtree.
+Events emitted by shared libraries retain the shared library's target, as is
+normal for `tracing`; enabling a caller's target does not automatically enable
+targets used by its dependencies. Component modules should use the unqualified
+local `otel_*` macros because fully qualified calls to the base macros retain
+the Cargo package target.
 
 For example:
 
@@ -91,6 +120,19 @@ The `engine.telemetry.logs.level` field accepts either a severity such as
 reconciliation applies changes to this field to existing tracing subscribers,
 so an OpAMP or admin control plane can temporarily increase verbosity without
 restarting the engine. Failed reconciliation preserves the active filter.
+
+`EnvFilter` target directives use prefix matching. A directive for
+`<namespace>.<kind>.<name>` also matches another component whose target begins
+with that complete string. For example, `otel.processor.transform` also
+matches a hypothetical `otel.processor.transform_extra` target.
+
+When an investigation also needs diagnostics from a shared library, enable
+both targets. For example, OTLP receiver HTTP diagnostics include events owned
+by `otap-df-otap`:
+
+```text
+warn,otel.receiver.otlp=debug,otap-df-otap=debug
+```
 
 At startup, a valid `RUST_LOG` environment variable takes precedence over
 `logs.level`. After startup, a successful full-engine reconciliation makes the

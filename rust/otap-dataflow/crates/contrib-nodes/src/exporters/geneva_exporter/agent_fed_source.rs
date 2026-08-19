@@ -12,8 +12,8 @@ use geneva_uploader::client::{
     AgentFedCredential, AgentFedCredentialFuture, AgentFedCredentialSource,
 };
 use otap_df_engine::shared::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider;
-use otap_df_telemetry::otel_warn;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -21,7 +21,6 @@ use url::Url;
 
 const ENDPOINT_KEY: &str = "endpoint";
 const MONIKER_MAP_KEY: &str = "moniker_map";
-const DEFAULT_MONIKER_KEY: &str = "default";
 const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 const CREDENTIAL_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -53,7 +52,6 @@ impl FailureLogLimiter {
 /// guard (satisfying `AgentFedCredentialSource: Send + Sync`).
 pub(crate) struct AgentFedGenevaSource {
     credential_provider: Mutex<Box<dyn AgentFedCredentialProvider>>,
-    account: String,
     credential_failures: FailureLogLimiter,
     empty_token_failures: FailureLogLimiter,
     expiry_failures: FailureLogLimiter,
@@ -68,13 +66,9 @@ impl std::fmt::Debug for AgentFedGenevaSource {
 
 impl AgentFedGenevaSource {
     /// Builds the adapter from the resolved shared capability.
-    pub(crate) fn new(
-        credential_provider: Box<dyn AgentFedCredentialProvider>,
-        account: String,
-    ) -> Self {
+    pub(crate) fn new(credential_provider: Box<dyn AgentFedCredentialProvider>) -> Self {
         Self {
             credential_provider: Mutex::new(credential_provider),
-            account,
             credential_failures: FailureLogLimiter::default(),
             empty_token_failures: FailureLogLimiter::default(),
             expiry_failures: FailureLogLimiter::default(),
@@ -144,7 +138,7 @@ impl AgentFedCredentialSource for AgentFedGenevaSource {
             }
             self.expiry_failures.record_success();
 
-            let (endpoint, moniker) = match resolve_routing(snapshot.attributes(), &self.account) {
+            let (endpoint, primary_monikers) = match resolve_routing(snapshot.attributes()) {
                 Ok(routing) => {
                     self.routing_failures.record_success();
                     routing
@@ -162,7 +156,7 @@ impl AgentFedCredentialSource for AgentFedGenevaSource {
             Some(AgentFedCredential::new(
                 token.expose_token(),
                 endpoint.to_string(),
-                moniker,
+                primary_monikers,
             ))
         })
     }
@@ -215,36 +209,37 @@ fn validated_endpoint(value: Option<&Value>) -> Result<Url, &'static str> {
     Ok(parsed)
 }
 
-fn resolve_routing<'a>(
-    attributes: &'a Map<String, Value>,
-    account: &str,
-) -> Result<(Url, &'a str), &'static str> {
+fn resolve_routing(
+    attributes: &Map<String, Value>,
+) -> Result<(Url, HashMap<String, String>), &'static str> {
     let endpoint = validated_endpoint(attributes.get(ENDPOINT_KEY))?;
     let moniker_map = attributes
         .get(MONIKER_MAP_KEY)
         .and_then(Value::as_object)
         .ok_or("agent-fed routing moniker_map is missing or invalid")?;
 
-    let account = account.trim();
-    let moniker = if let Some(value) = moniker_map.get(account) {
-        validated_moniker(
-            Some(value),
-            "agent-fed routing moniker for the configured account is invalid or empty",
-        )?
-    } else if let Some(value) = moniker_map.get(DEFAULT_MONIKER_KEY) {
-        validated_moniker(
-            Some(value),
-            "agent-fed routing default moniker is invalid or empty",
-        )?
-    } else if moniker_map.is_empty() {
+    if moniker_map.is_empty() {
         return Err("agent-fed routing moniker_map is empty");
-    } else {
-        return Err(
-            "agent-fed routing moniker_map has no entry for the configured account or default",
-        );
-    };
+    }
 
-    Ok((endpoint, moniker))
+    let mut primary_monikers = HashMap::with_capacity(moniker_map.len());
+    for (account_group, value) in moniker_map {
+        if account_group.trim().is_empty() {
+            return Err("agent-fed routing moniker_map contains an empty account group");
+        }
+        if account_group.trim() != account_group {
+            return Err(
+                "agent-fed routing moniker_map account groups must not have surrounding whitespace",
+            );
+        }
+        let moniker = validated_moniker(
+            Some(value),
+            "agent-fed routing moniker_map contains an invalid or empty moniker",
+        )?;
+        let _ = primary_monikers.insert(account_group.clone(), moniker.to_owned());
+    }
+
+    Ok((endpoint, primary_monikers))
 }
 
 #[cfg(test)]
@@ -284,20 +279,10 @@ mod tests {
     }
 
     fn source(token: &str, yield_first: bool, attrs: Value) -> AgentFedGenevaSource {
-        source_for_account(token, yield_first, attrs, "account")
-    }
-
-    fn source_for_account(
-        token: &str,
-        yield_first: bool,
-        attrs: Value,
-        account: &str,
-    ) -> AgentFedGenevaSource {
         source_with_token(
             BearerToken::without_expiry(token.to_owned()),
             yield_first,
             attrs,
-            account,
         )
     }
 
@@ -305,16 +290,12 @@ mod tests {
         token: BearerToken,
         yield_first: bool,
         attrs: Value,
-        account: &str,
     ) -> AgentFedGenevaSource {
-        AgentFedGenevaSource::new(
-            Box::new(MockCredential {
-                token,
-                yield_first,
-                attributes: obj(attrs),
-            }),
-            account.to_owned(),
-        )
+        AgentFedGenevaSource::new(Box::new(MockCredential {
+            token,
+            yield_first,
+            attributes: obj(attrs),
+        }))
     }
 
     fn full_attrs() -> Value {
@@ -325,14 +306,17 @@ mod tests {
     }
 
     /// Scenario: The provider returns a snapshot containing valid token and routing data.
-    /// Guarantees: The adapter returns the exact token, endpoint, and moniker.
+    /// Guarantees: The adapter returns the exact token, endpoint, and moniker map.
     #[tokio::test]
     async fn returns_credential_when_token_and_routing_present() {
         let s = source("tok", false, full_attrs());
         let c = s.current().await.expect("credential");
         assert_eq!(c.expose_token(), "tok");
         assert_eq!(c.endpoint, "https://ep/");
-        assert_eq!(c.moniker, "mon");
+        assert_eq!(
+            c.primary_monikers.get("default").map(String::as_str),
+            Some("mon")
+        );
     }
 
     /// Scenario: The supplied endpoint uses a valid but non-canonical URL spelling.
@@ -387,7 +371,6 @@ mod tests {
                 BearerToken::with_expiry("tok".to_owned(), Some(expires_on)),
                 false,
                 full_attrs(),
-                "account",
             );
             assert!(s.current().await.is_none());
         }
@@ -399,7 +382,6 @@ mod tests {
             ),
             false,
             full_attrs(),
-            "account",
         );
         assert!(s.current().await.is_some());
     }
@@ -522,15 +504,17 @@ mod tests {
                 .current()
                 .await
                 .expect("credential")
-                .moniker,
-            moniker
+                .primary_monikers
+                .get("default")
+                .map(String::as_str),
+            Some(moniker)
         );
     }
 
-    /// Scenario: The map contains both account-specific and default monikers.
-    /// Guarantees: The configured account mapping takes precedence over default.
+    /// Scenario: The host supplies primary monikers for multiple logical groups.
+    /// Guarantees: The adapter preserves every group so the uploader can route each batch.
     #[tokio::test]
-    async fn moniker_prefers_configured_account() {
+    async fn preserves_all_primary_monikers() {
         let attrs = json!({
             "endpoint": "https://ep",
             "moniker_map": {
@@ -538,41 +522,43 @@ mod tests {
                 "default": "default-moniker"
             },
         });
-        let s = source("tok", false, attrs);
-        assert_eq!(s.current().await.unwrap().moniker, "account-moniker");
+        let credential = source("tok", false, attrs).current().await.unwrap();
+        assert_eq!(credential.primary_monikers.len(), 2);
+        assert_eq!(
+            credential
+                .primary_monikers
+                .get("account")
+                .map(String::as_str),
+            Some("account-moniker")
+        );
+        assert_eq!(
+            credential
+                .primary_monikers
+                .get("default")
+                .map(String::as_str),
+            Some("default-moniker")
+        );
     }
 
-    /// Scenario: The configured account has no entry and a default is present.
-    /// Guarantees: The adapter selects the explicit default moniker.
+    /// Scenario: The map has one logical group unrelated to the exporter account name.
+    /// Guarantees: The adapter preserves it because account routing is resolved per batch.
     #[tokio::test]
-    async fn moniker_falls_back_to_default() {
-        let attrs = json!({
-            "endpoint": "https://ep",
-            "moniker_map": {
-                "other": "other-moniker",
-                "default": "default-moniker"
-            },
-        });
-        let s = source("tok", false, attrs);
-        assert_eq!(s.current().await.unwrap().moniker, "default-moniker");
-    }
-
-    /// Scenario: The map has one unrelated entry and no account or default match.
-    /// Guarantees: A sole unrelated entry is rejected instead of selected implicitly.
-    #[tokio::test]
-    async fn fails_closed_on_sole_unmatched_moniker() {
+    async fn accepts_moniker_for_any_logical_group() {
         let attrs = json!({
             "endpoint": "https://ep",
             "moniker_map": { "only": "sole-moniker" },
         });
-        let s = source("tok", false, attrs);
-        assert!(s.current().await.is_none());
+        let credential = source("tok", false, attrs).current().await.unwrap();
+        assert_eq!(
+            credential.primary_monikers.get("only").map(String::as_str),
+            Some("sole-moniker")
+        );
     }
 
-    /// Scenario: An explicitly selected account or default entry is malformed.
-    /// Guarantees: Invalid selected routing fails instead of using another map entry.
+    /// Scenario: Any logical group has a malformed moniker.
+    /// Guarantees: The complete atomic routing snapshot is rejected instead of partially used.
     #[tokio::test]
-    async fn invalid_selected_moniker_does_not_fall_back() {
+    async fn invalid_moniker_rejects_complete_map() {
         let invalid_account = json!({
             "endpoint": "https://ep",
             "moniker_map": {
@@ -602,16 +588,29 @@ mod tests {
         );
     }
 
-    /// Scenario: Multiple unrelated entries exist with no account or default match.
-    /// Guarantees: Unmatched routing is rejected instead of selecting arbitrarily.
+    /// Scenario: Multiple logical groups have valid primary monikers.
+    /// Guarantees: All mappings remain available for per-batch account routing.
     #[tokio::test]
-    async fn fails_closed_on_multiple_unmatched_monikers() {
+    async fn accepts_multiple_logical_groups() {
         let attrs = json!({
             "endpoint": "https://ep",
             "moniker_map": { "b": "mb", "a": "ma" },
         });
-        let s = source("tok", false, attrs);
-        assert!(s.current().await.is_none());
+        let credential = source("tok", false, attrs).current().await.unwrap();
+        assert_eq!(credential.primary_monikers.len(), 2);
+    }
+
+    /// Scenario: A host snapshot contains an account-group key with surrounding whitespace.
+    /// Guarantees: The snapshot is rejected instead of creating an exact-match routing miss.
+    #[tokio::test]
+    async fn rejects_account_group_with_surrounding_whitespace() {
+        for account_group in [" group", "group "] {
+            let attrs = json!({
+                "endpoint": "https://ep",
+                "moniker_map": { account_group: "moniker" },
+            });
+            assert!(source("tok", false, attrs).current().await.is_none());
+        }
     }
 
     struct ErrorCredential;
@@ -648,7 +647,7 @@ mod tests {
     /// Guarantees: Capability failure does not produce a partial credential.
     #[tokio::test]
     async fn fails_closed_when_credential_provider_errors() {
-        let source = AgentFedGenevaSource::new(Box::new(ErrorCredential), "account".to_owned());
+        let source = AgentFedGenevaSource::new(Box::new(ErrorCredential));
         assert!(source.current().await.is_none());
     }
 
@@ -656,16 +655,19 @@ mod tests {
     /// Guarantees: Subsequent reads recover without reconstructing the exporter.
     #[tokio::test]
     async fn recovers_when_credential_becomes_available() {
-        let source = AgentFedGenevaSource::new(
-            Box::new(RecoveringCredential(AtomicUsize::new(0))),
-            "account".to_owned(),
-        );
+        let source = AgentFedGenevaSource::new(Box::new(RecoveringCredential(AtomicUsize::new(0))));
 
         assert!(source.current().await.is_none());
         let credential = source.current().await.expect("recovered credential");
         assert_eq!(credential.expose_token(), "recovered-token");
         assert_eq!(credential.endpoint, "https://ep/");
-        assert_eq!(credential.moniker, "mon");
+        assert_eq!(
+            credential
+                .primary_monikers
+                .get("default")
+                .map(String::as_str),
+            Some("mon")
+        );
     }
 
     struct PendingThenReadyCredential(AtomicUsize);
@@ -684,10 +686,8 @@ mod tests {
     /// Guarantees: The lookup times out, releases the mutex, and a later read can recover.
     #[tokio::test(start_paused = true)]
     async fn times_out_stuck_provider_and_recovers() {
-        let source = AgentFedGenevaSource::new(
-            Box::new(PendingThenReadyCredential(AtomicUsize::new(0))),
-            "account".to_owned(),
-        );
+        let source =
+            AgentFedGenevaSource::new(Box::new(PendingThenReadyCredential(AtomicUsize::new(0))));
 
         assert!(source.current().await.is_none());
         let credential = source.current().await.expect("recovered credential");
@@ -726,20 +726,23 @@ mod tests {
     /// Guarantees: Every lookup observes token and routing from one generation.
     #[tokio::test]
     async fn observes_coherent_rotation_on_each_read() {
-        let source = AgentFedGenevaSource::new(
-            Box::new(RotatingCredential(AtomicUsize::new(0))),
-            "account".to_owned(),
-        );
+        let source = AgentFedGenevaSource::new(Box::new(RotatingCredential(AtomicUsize::new(0))));
 
         let first = source.current().await.expect("first credential");
         assert_eq!(first.expose_token(), "token-1");
         assert_eq!(first.endpoint, "https://endpoint-1/");
-        assert_eq!(first.moniker, "moniker-1");
+        assert_eq!(
+            first.primary_monikers.get("default").map(String::as_str),
+            Some("moniker-1")
+        );
 
         let second = source.current().await.expect("second credential");
         assert_eq!(second.expose_token(), "token-2");
         assert_eq!(second.endpoint, "https://endpoint-2/");
-        assert_eq!(second.moniker, "moniker-2");
+        assert_eq!(
+            second.primary_monikers.get("default").map(String::as_str),
+            Some("moniker-2")
+        );
     }
 
     struct RotateAfterLoadCredential {
@@ -785,18 +788,21 @@ mod tests {
             "https://endpoint-after-rotation",
             "moniker-after-rotation",
         );
-        let source = AgentFedGenevaSource::new(
-            Box::new(RotateAfterLoadCredential {
-                current: Arc::new(RwLock::new(before)),
-                replacement: Arc::clone(&after),
-            }),
-            "account".to_owned(),
-        );
+        let source = AgentFedGenevaSource::new(Box::new(RotateAfterLoadCredential {
+            current: Arc::new(RwLock::new(before)),
+            replacement: Arc::clone(&after),
+        }));
 
         let credential = source.current().await.expect("atomic credential");
         assert_eq!(credential.expose_token(), "token-before-rotation");
         assert_eq!(credential.endpoint, "https://endpoint-before-rotation/");
-        assert_eq!(credential.moniker, "moniker-before-rotation");
+        assert_eq!(
+            credential
+                .primary_monikers
+                .get("default")
+                .map(String::as_str),
+            Some("moniker-before-rotation")
+        );
     }
 
     /// Scenario: Credential failures continue and later recover.

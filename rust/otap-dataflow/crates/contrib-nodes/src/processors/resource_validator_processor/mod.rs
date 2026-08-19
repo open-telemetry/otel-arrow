@@ -39,6 +39,11 @@
 //! The `get_allowed_values` method provides the extension point - it currently
 //! returns static config values, but can be extended to check auth context first.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = RESOURCE_VALIDATOR_PROCESSOR_URN,
+    target = "otel.processor.resource_validator",
+);
+
 mod config;
 mod metrics;
 
@@ -75,7 +80,6 @@ use otap_df_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_pdata_views::views::trace::{ResourceSpansView, TracesView};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_warn;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashSet;

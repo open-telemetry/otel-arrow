@@ -15,11 +15,13 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   push-release:
     permissions:
       contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -63,6 +65,35 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve release pull request commit
+        id: release
+        env:
+          GH_TOKEN: ${{ inputs.dry_run && github.token || steps.app-token.outputs.token }}
+        run: |
+          BRANCH="otelbot/release-v${{ inputs.version }}"
+          RELEASE_PRS=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls?state=closed&base=main&head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}&per_page=100" \
+            --jq '[.[] | select(.merged_at != null)]')
+          RELEASE_PR_COUNT=$(jq 'length' <<< "$RELEASE_PRS")
+
+          if [ "$RELEASE_PR_COUNT" -ne 1 ]; then
+            echo "Error: Expected exactly one merged release PR from ${BRANCH}, found ${RELEASE_PR_COUNT}"
+            echo "Make sure the Prepare Release PR for v${{ inputs.version }} has been merged"
+            exit 1
+          fi
+
+          RELEASE_PR=$(jq -r '.[0].number' <<< "$RELEASE_PRS")
+          RELEASE_SHA=$(jq -r '.[0].merge_commit_sha' <<< "$RELEASE_PRS")
+
+          echo "pr_number=$RELEASE_PR" >> "$GITHUB_OUTPUT"
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Resolved release PR #${RELEASE_PR} to commit ${RELEASE_SHA}"
+
+      - name: Check out release pull request commit
+        run: |
+          git fetch --quiet origin main --tags
+          git checkout --detach "${{ steps.release.outputs.sha }}"
+
       - name: Verify release preparation
         run: |
           # Check if the version is already in go/CHANGELOG.md.
@@ -77,6 +108,11 @@ jobs:
           if [ -n "$(git status --porcelain)" ]; then
             echo "Error: Repository has uncommitted changes"
             git status
+            exit 1
+          fi
+
+          if [ "$(git rev-parse HEAD)" != "${{ steps.release.outputs.sha }}" ]; then
+            echo "Error: Checkout does not match the resolved release PR commit"
             exit 1
           fi
 
@@ -174,6 +210,8 @@ jobs:
 
           ## Planned Operations
           - **Version to tag**: `v${{ inputs.version }}`
+          - **Release PR**: `#${{ steps.release.outputs.pr_number }}`
+          - **Commit to tag**: `${{ steps.release.outputs.sha }}`
           - **Last version**: `v${{ steps.last_version.outputs.last_version }}`
 
           ## Git Tags to Create
@@ -217,13 +255,13 @@ jobs:
           git config user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
 
           # Create main release tag
-          git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
+          git tag -a "v${{ inputs.version }}" "${{ steps.release.outputs.sha }}" -m "Release v${{ inputs.version }}"
 
           # Create Go module tags
-          git tag -a "go/v${{ inputs.version }}" -m "Release go/v${{ inputs.version }}"
+          git tag -a "go/v${{ inputs.version }}" "${{ steps.release.outputs.sha }}" -m "Release go/v${{ inputs.version }}"
 
           # Create Rust workspace tag (git-tag only; no crates.io publish yet)
-          git tag -a "rust/otap-dataflow/v${{ inputs.version }}" -m "Release rust/otap-dataflow/v${{ inputs.version }}"
+          git tag -a "rust/otap-dataflow/v${{ inputs.version }}" "${{ steps.release.outputs.sha }}" -m "Release rust/otap-dataflow/v${{ inputs.version }}"
 
           echo "Created tags:"
           git tag --list "v${{ inputs.version }}"
@@ -275,6 +313,8 @@ jobs:
             echo ""
             echo "Release details:"
             echo "- Version: v${{ inputs.version }}"
+            echo "- Release PR: #${{ steps.release.outputs.pr_number }}"
+            echo "- Tagged commit: ${{ steps.release.outputs.sha }}"
             echo "- GitHub release: https://github.com/open-telemetry/otel-arrow/releases/tag/v${{ inputs.version }}"
             echo ""
             echo "Git tags created:"

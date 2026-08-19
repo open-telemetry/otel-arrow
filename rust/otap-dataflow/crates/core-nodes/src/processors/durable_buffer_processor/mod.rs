@@ -71,6 +71,11 @@
 //!   stuck data when space is needed for new data
 //! - `max_in_flight` limit prevents thundering herd after recovery
 
+otap_df_telemetry::otel_component_scope!(
+    urn = DURABLE_BUFFER_URN,
+    target = "otel.processor.durable_buffer",
+);
+
 mod bundle_adapter;
 mod config;
 mod deferred_retry_state;
@@ -92,14 +97,13 @@ use quiver::subscriber::{
 use quiver::{QuiverConfig, QuiverEngine, RetentionLossCounts, RetentionLossSnapshot};
 use smallvec::smallvec;
 
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
-
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::TryIntoWithOptions;
 
 use bundle_adapter::{
-    OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, signal_type_from_slot_id,
+    OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, recover_item_count,
+    signal_type_from_slot_id,
 };
 pub use config::{DurableBufferConfig, OtlpHandling, SizeCapPolicy};
 use deferred_retry_state::DeferredRetryState;
@@ -264,6 +268,7 @@ fn retention_loss_delta(
             segments: current.segments.saturating_sub(previous.segments),
             bundles: current.bundles.saturating_sub(previous.bundles),
             items: current.items.saturating_sub(previous.items),
+            bytes: current.bytes.saturating_sub(previous.bytes),
         }
     }
 
@@ -798,10 +803,12 @@ impl DurableBuffer {
         let dropped = self.metrics.loss_for(LossReason::DropOldest);
         dropped.segments.add(loss_delta.drop_oldest.segments);
         dropped.bundles.add(loss_delta.drop_oldest.bundles);
+        dropped.bytes.add(loss_delta.drop_oldest.bytes);
 
         let expired = self.metrics.loss_for(LossReason::Expired);
         expired.segments.add(loss_delta.expired.segments);
         expired.bundles.add(loss_delta.expired.bundles);
+        expired.bytes.add(loss_delta.expired.bytes);
 
         // Classify Quiver's opaque slot shapes in the OTAP layer, where signal
         // semantics are known.
@@ -886,6 +893,7 @@ impl DurableBuffer {
         // Build the Quiver engine
         let engine = QuiverEngine::builder(quiver_config)
             .with_budget(budget)
+            .with_wal_item_counter(Arc::new(recover_item_count))
             .build()
             .await
             .map_err(|e| Error::InternalError {
@@ -2895,7 +2903,7 @@ mod tests {
         assert_eq!(sample(&mut processor), (4, 0));
     }
 
-    /// Scenario: Segment and bundle loss occur in separate reporting intervals.
+    /// Scenario: Segment, bundle, and byte loss occur in separate reporting intervals.
     /// Guarantees: Each reason-only aggregate counter reports its delta and resets after export.
     #[tokio::test]
     async fn test_aggregate_loss_metrics_are_delta_counters() {
@@ -2908,11 +2916,19 @@ mod tests {
             let dropped = processor.metrics.loss_metrics.get(LossAttributes {
                 reason: LossReason::DropOldest,
             });
-            let dropped_values = (dropped.segments.get(), dropped.bundles.get());
+            let dropped_values = (
+                dropped.segments.get(),
+                dropped.bundles.get(),
+                dropped.bytes.get(),
+            );
             let expired = processor.metrics.loss_metrics.get(LossAttributes {
                 reason: LossReason::Expired,
             });
-            let expired_values = (expired.segments.get(), expired.bundles.get());
+            let expired_values = (
+                expired.segments.get(),
+                expired.bundles.get(),
+                expired.bytes.get(),
+            );
 
             reporter
                 .report_measurement(&mut processor.metrics.loss_metrics)
@@ -2927,22 +2943,45 @@ mod tests {
             .await
             .expect("ingest dropped bundle");
         engine.flush().await.expect("flush dropped bundle");
+        let dropped_bytes = engine
+            .segment_store()
+            .segment_sequences()
+            .into_iter()
+            .min()
+            .map(|seq| {
+                engine
+                    .segment_store()
+                    .segment_file_size(seq)
+                    .expect("segment file size")
+            })
+            .expect("oldest segment");
         assert_eq!(engine.force_drop_oldest_pending_segments(), 1);
-        assert_eq!(sample(&mut processor), ((1, 1), (0, 0)));
+        assert_eq!(sample(&mut processor), ((1, 1, dropped_bytes), (0, 0, 0)));
 
         engine
             .ingest(&make_simple_bundle(SlotId::new(30), 3))
             .await
             .expect("ingest expired bundle");
         engine.flush().await.expect("flush expired bundle");
+        let expired_bytes = engine
+            .segment_store()
+            .segment_sequences()
+            .into_iter()
+            .map(|seq| {
+                engine
+                    .segment_store()
+                    .segment_file_size(seq)
+                    .expect("segment file size")
+            })
+            .sum::<u64>();
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(
             engine.cleanup_expired_segments().expect("expire segment"),
             1
         );
-        assert_eq!(sample(&mut processor), ((0, 0), (1, 1)));
+        assert_eq!(sample(&mut processor), ((0, 0, 0), (1, 1, expired_bytes)));
 
-        assert_eq!(sample(&mut processor), ((0, 0), (0, 0)));
+        assert_eq!(sample(&mut processor), ((0, 0, 0), (0, 0, 0)));
     }
 
     /// Scenario: DropOldest removes a metrics bundle containing 42 items.

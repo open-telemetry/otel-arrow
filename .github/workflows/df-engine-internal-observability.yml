@@ -32,7 +32,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  WEAVER_VERSION: v0.24.0
+  WEAVER_VERSION: v0.25.1
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -49,10 +49,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
+      # Keep specialized validation caches restore-only so they do not compete
+      # with the required build caches published by Post-Merge Actions.
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
+          save-if: false
       - name: Setup Weaver
         uses: open-telemetry/weaver/.github/actions/setup-weaver@26c685ff52b925056ff1d53476c6022638c01220 # v0.25.1
         with:
@@ -73,8 +76,8 @@ jobs:
         working-directory: ./rust/otap-dataflow
       # Weaver listener lifecycle (start, readiness probe, /stop, report
       # capture, artifact upload) is owned by the upstream composite
-      # actions below. Pinned to the published v0.24.0 release, which is
-      # the first tag to ship these actions.
+      # actions below. The CLI and actions are pinned to v0.25.1, which
+      # fixes a race that could truncate the report returned by /stop.
       - name: Start weaver live-check listener
         id: weaver-start
         uses: open-telemetry/weaver/.github/actions/weaver-live-check-start@26c685ff52b925056ff1d53476c6022638c01220 # v0.25.1

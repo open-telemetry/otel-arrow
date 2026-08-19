@@ -166,14 +166,27 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ### Metric Sets
 
 Input PData message volume is reported by the engine through
-`channel.receiver.recv.count` on the PData input channel and is not duplicated
-by the exporter.
+`channel.receiver.messages` with its `signal` attribute on the PData input
+channel and is not duplicated by the exporter.
 
-#### `exporter.pdata.exports`
+#### `exporter.exports`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal HTTP export result, including encoding, compression, and in-flight queueing but excluding Ack/Nack notification. |
+
+#### `exporter.otlp_http.failures`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otlp_http.failures.messages` | `{message}` | `signal`, `error.type` | Failed OTLP HTTP exports classified by actionable error type. |
+
+`error.type` is one of `encoding`, `compression`, `authentication`,
+`authorization`, `timeout`, `throttled`, `unavailable`, `rejected`,
+`server_error`, `transport`, `response_too_large`, `response_decode`,
+`partial_rejection`, or `other`. Successful exports, zero-rejection partial
+successes, and Ack/Nack notification failures do not emit this metric.
 
 ### Events
 

@@ -23,7 +23,6 @@ use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsSe
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
 use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-use otap_df_telemetry::otel_error;
 use prost::Message;
 use rdkafka::Message as _;
 use rdkafka::message::{BorrowedMessage, Headers};
@@ -495,6 +494,8 @@ mod tests {
     use prost::Message;
     use std::collections::BTreeMap;
 
+    // ---- Shared test helpers ----
+
     /// Build a string-valued `KeyValue` for test assertions.
     fn string_kv(key: &str, value: &str) -> KeyValue {
         KeyValue {
@@ -621,8 +622,12 @@ mod tests {
         ExportTraceServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP traces")
     }
 
-    // ---- OTLP traces tests ----
+    // ---- Routing and payload correctness: header extraction ----
 
+    /// Scenario (routing and payload correctness): a single header-derived attribute is
+    /// applied to an OTLP traces request.
+    /// Guarantees: the attribute is added to every resource (and not to spans), so
+    /// header-to-resource extraction works for OTLP traces.
     #[test]
     fn apply_otlp_traces_attribute_added_to_resource() {
         let request = create_traces_with_spans();
@@ -685,6 +690,10 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): several header-derived attributes are
+    /// applied to an OTLP traces request.
+    /// Guarantees: all attributes are added to every resource, so multi-attribute header
+    /// extraction works for OTLP traces.
     #[test]
     fn apply_otlp_traces_multiple_attributes() {
         let request = create_traces_with_spans();
@@ -716,6 +725,10 @@ mod tests {
         }
     }
 
+    /// Scenario (routing and payload correctness): a header-derived attribute collides with
+    /// an existing resource attribute in an OTLP traces request.
+    /// Guarantees: the existing value is upserted (replaced), so header extraction
+    /// overrides rather than duplicates a resource attribute.
     #[test]
     fn apply_otlp_traces_upserts_existing_resource_attribute() {
         let request = create_traces_with_spans();
@@ -755,6 +768,10 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): header extraction is applied to an empty
+    /// OTLP traces request.
+    /// Guarantees: extraction is a no-op that does not error, so an empty batch is handled
+    /// gracefully.
     #[test]
     fn apply_otlp_traces_empty_request_does_not_fail() {
         let request = ExportTraceServiceRequest {
@@ -772,8 +789,10 @@ mod tests {
         assert!(result.is_ok(), "should succeed even with empty request");
     }
 
-    // ---- OTLP metrics tests ----
-
+    /// Scenario (routing and payload correctness): a header-derived attribute is applied to
+    /// an OTLP metrics request.
+    /// Guarantees: the attribute is added to every resource, so header-to-resource
+    /// extraction works for OTLP metrics.
     #[test]
     fn apply_otlp_metrics_attribute_added_to_resource() {
         let request = create_metrics_request();
@@ -811,8 +830,10 @@ mod tests {
         }
     }
 
-    // ---- OTLP logs tests ----
-
+    /// Scenario (routing and payload correctness): a header-derived attribute is applied to
+    /// an OTLP logs request.
+    /// Guarantees: the attribute is added to every resource, so header-to-resource
+    /// extraction works for OTLP logs.
     #[test]
     fn apply_otlp_logs_attribute_added_to_resource() {
         let request = create_logs_request();
@@ -858,8 +879,10 @@ mod tests {
         }
     }
 
-    // ---- has_any tests ----
-
+    /// Scenario (routing and payload correctness): `HeaderExtractions` is queried for
+    /// whether any OTLP or OTAP extraction is configured.
+    /// Guarantees: `has_any()` is false only when neither is set, so the receiver can
+    /// cheaply skip extraction when nothing is configured.
     #[test]
     fn header_extractions_has_any() {
         let empty = HeaderExtractions {
@@ -886,8 +909,10 @@ mod tests {
         assert!(with_otap_attributes.has_any());
     }
 
-    // ---- OTAP Arrow traces tests ----
-
+    /// Scenario (routing and payload correctness): header extraction is applied to an empty
+    /// OTAP-Arrow traces batch.
+    /// Guarantees: extraction is a no-op that does not error, so an empty OTAP batch is
+    /// handled gracefully.
     #[test]
     fn apply_otap_traces_empty_does_not_fail() {
         let otap_bytes = arrow_records_to_bytes(&mut OtapArrowRecords::Traces(Traces::default()));
@@ -906,6 +931,10 @@ mod tests {
         assert!(result.is_ok(), "should handle empty OTAP traces gracefully");
     }
 
+    /// Scenario (routing and payload correctness): a header-derived attribute is applied to
+    /// an OTAP-Arrow traces batch.
+    /// Guarantees: the attribute lands on the resource via the Arrow attributes transform,
+    /// so header extraction works for OTAP traces.
     #[test]
     fn apply_otap_traces_attribute_added_to_resource() {
         let otap_bytes = create_traces_otap_bytes();
@@ -954,6 +983,10 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): several header-derived attributes are
+    /// applied to an OTAP-Arrow traces batch.
+    /// Guarantees: all attributes land on the resource via the Arrow attributes transform,
+    /// so multi-attribute extraction works for OTAP traces.
     #[test]
     fn apply_otap_traces_multiple_attributes() {
         let otap_bytes = create_traces_otap_bytes();
@@ -987,6 +1020,100 @@ mod tests {
                 resource.attributes.iter().any(|kv| kv.key == "env"),
                 "resource should have env attribute",
             );
+        }
+    }
+
+    // ---- Security: adversarial header values ----
+
+    /// Scenario (security): a client-controlled header value that cannot be
+    /// parsed into the configured typed attribute (a non-numeric string for an
+    /// `Int`/`Float`, a non-boolean for a `Bool`) or is invalid UTF-8 is fed to
+    /// the header-value parser for both the OTLP and OTAP paths.
+    /// Guarantees: parsing returns `None` (the attribute is dropped, not
+    /// fabricated) rather than panicking or erroring the whole extraction, so a
+    /// single adversarial header value cannot crash the receive loop or corrupt
+    /// the other extracted attributes. A well-formed value of the same type
+    /// still parses, proving the failure is isolated to the bad value.
+    #[test]
+    fn header_value_parse_failure_returns_none_and_is_isolated() {
+        // Non-numeric string for an Int attribute -> None (both paths).
+        assert!(
+            parse_any_value(
+                "x-count",
+                "count",
+                b"not-a-number",
+                &AttributeValueType::Int
+            )
+            .is_none(),
+        );
+        assert!(
+            parse_literal_value(
+                "x-count",
+                "count",
+                b"not-a-number",
+                &AttributeValueType::Int
+            )
+            .is_none(),
+        );
+
+        // Non-numeric string for a Float attribute -> None.
+        assert!(
+            parse_any_value("x-ratio", "ratio", b"NaNsense", &AttributeValueType::Float).is_none(),
+        );
+        assert!(
+            parse_literal_value("x-ratio", "ratio", b"NaNsense", &AttributeValueType::Float)
+                .is_none(),
+        );
+
+        // Non-boolean string for a Bool attribute -> None.
+        assert!(parse_any_value("x-flag", "flag", b"maybe", &AttributeValueType::Bool).is_none(),);
+        assert!(
+            parse_literal_value("x-flag", "flag", b"maybe", &AttributeValueType::Bool).is_none(),
+        );
+
+        // Invalid UTF-8 for any typed attribute -> None (no panic).
+        let invalid_utf8 = [0xff, 0xfe, 0x00, 0x80];
+        assert!(
+            parse_any_value("x-name", "name", &invalid_utf8, &AttributeValueType::String).is_none(),
+        );
+        assert!(
+            parse_literal_value("x-name", "name", &invalid_utf8, &AttributeValueType::Int)
+                .is_none(),
+        );
+
+        // A well-formed value of the same type still parses -- the failure above
+        // is isolated to the bad value, not a blanket rejection.
+        assert!(matches!(
+            parse_any_value("x-count", "count", b"42", &AttributeValueType::Int),
+            Some(any_value::Value::IntValue(42)),
+        ));
+        assert!(matches!(
+            parse_literal_value("x-count", "count", b"42", &AttributeValueType::Int),
+            Some(LiteralValue::Int(42)),
+        ));
+    }
+
+    /// Scenario (security): an adversarial header value containing control
+    /// characters and a very large string is parsed as a `String` attribute.
+    /// Guarantees: the parser accepts it verbatim as a string value without
+    /// panicking or truncating -- string attributes are copied as-is (their size
+    /// is bounded by the same trust domain as the payload) -- while the number of
+    /// attributes remains driven solely by the configured extraction, not by the
+    /// content of the value.
+    #[test]
+    fn header_string_value_with_control_chars_is_accepted_verbatim() {
+        let adversarial = format!("tenant\r\n\t\x1b[31m-{}", "A".repeat(4096));
+        let parsed = parse_any_value(
+            "x-tenant-id",
+            "tenant.id",
+            adversarial.as_bytes(),
+            &AttributeValueType::String,
+        );
+        match parsed {
+            Some(any_value::Value::StringValue(s)) => {
+                assert_eq!(s, adversarial, "string value is copied verbatim");
+            }
+            other => panic!("expected a string value, got {other:?}"),
         }
     }
 }

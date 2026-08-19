@@ -190,9 +190,21 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| *None* | N/A | This node does not register a node-specific metric set. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | PData messages whose console export reached a terminal outcome. A successful outcome means formatting and the stdout write completed without an error. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal formatting and stdout write result, excluding Ack notification. |
+| `exporter.console.failures.messages` | `{message}` | `format`, `signal`, `error.type` | Failed console exports classified by selected output format and actionable error type. |
+
+`error.type` is one of `otlp_view_creation`, `otap_view_creation`,
+`unsupported_signal`, `formatting`, or `write`. The `format` attribute is fixed
+when the metric set is registered; `signal` and `error.type` are bounded
+per-measurement attributes.
+
+Console output remains best effort. The exporter ACKs a message after the
+attempt even when `outcome="failure"`, so `node.consumer.consumed.messages`
+describes pipeline completion while `exporter.exports.messages` describes
+the actual console export result.
 
 ### Events
 
@@ -200,8 +212,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- |
 | `console.logs_view.otlp_create_failed` | `error` | Failed to create an OTLP logs view for console output. |
 | `console.logs_view.otap_create_failed` | `error` | Failed to create an OTAP logs view for console output. |
-| `console.traces.not_implemented` | `error` | The exporter received traces, which are not currently rendered. |
-| `console.metrics.not_implemented` | `error` | The exporter received metrics, which are not currently rendered. |
+| `console.message.unsupported_signal` | `warn` | The exporter received an unsupported `metrics` or `traces` signal; use `processor:debug` followed by `exporter:noop` to inspect it. |
 | `console.format_failed` | `error` | Failed to format a payload for console output. |
 | `console.write_failed` | `error` | Failed to write rendered output to stdout. |
 
@@ -212,6 +223,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 - Formatting and writes are best effort. Payloads are ACKed after the export
   attempt, including when formatting or writing fails.
 - Traces and metrics are not currently rendered in either format.
+- To inspect traces or metrics, use `processor:debug` and terminate the pipeline
+  with `exporter:noop`.
 - OTAP views do not currently expose every scope field. In particular, scope
   name and version can be absent from `record_json` after conversion to OTAP,
   while scope attributes remain available.

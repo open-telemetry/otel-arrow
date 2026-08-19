@@ -59,6 +59,17 @@ use super::types::{
 };
 use crate::record_bundle::{ArrowPrimitive, SlotId};
 
+/// Trusted logical loss metadata represented by one finalized segment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SegmentLossSummary {
+    /// Number of bundles stored in the segment.
+    pub bundles: u64,
+    /// Number of logical telemetry items, or 0 when exact counts are unavailable.
+    pub items: u64,
+    /// Logical item totals grouped by each bundle's sorted slot IDs.
+    pub items_by_shape: Vec<(Vec<SlotId>, u64)>,
+}
+
 // -----------------------------------------------------------------------------
 // ReconstructedBundle
 // -----------------------------------------------------------------------------
@@ -323,6 +334,8 @@ pub struct SegmentReader {
     stream_by_id: HashMap<StreamId, usize>,
     /// Batch manifest (parsed on open).
     manifest: Vec<ManifestEntry>,
+    /// Whether the manifest persisted authoritative logical item counts.
+    manifest_has_item_count: bool,
     /// Cached stream decoders for efficient repeated reads.
     /// Lazily populated on first access to each stream.
     stream_decoders: RwLock<HashMap<StreamId, StreamDecoder>>,
@@ -342,6 +355,102 @@ impl std::fmt::Debug for SegmentReader {
 }
 
 impl SegmentReader {
+    /// Opens and validates a segment, then recovers its trusted logical loss metadata.
+    pub(crate) fn read_loss_summary(
+        path: impl AsRef<Path>,
+    ) -> Result<SegmentLossSummary, SegmentError> {
+        let reader = Self::open(path)?;
+        Self::loss_summary_from_reader(&reader)
+    }
+
+    /// Memory-maps and validates a segment, then recovers its trusted logical loss metadata.
+    #[cfg(feature = "mmap")]
+    pub(crate) fn read_loss_summary_mmap(
+        path: impl AsRef<Path>,
+    ) -> Result<SegmentLossSummary, SegmentError> {
+        let reader = Self::open_mmap(path)?;
+        Self::loss_summary_from_reader(&reader)
+    }
+
+    fn loss_summary_from_reader(reader: &Self) -> Result<SegmentLossSummary, SegmentError> {
+        if !reader.manifest_has_item_count {
+            return Ok(SegmentLossSummary {
+                bundles: reader.manifest().len() as u64,
+                ..Default::default()
+            });
+        }
+        Self::summarize_loss(&reader.streams, reader.manifest())
+    }
+
+    fn summarize_loss(
+        streams: &[StreamMetadata],
+        manifest: &[ManifestEntry],
+    ) -> Result<SegmentLossSummary, SegmentError> {
+        let streams_by_id = streams
+            .iter()
+            .map(|stream| (stream.id, stream))
+            .collect::<HashMap<_, _>>();
+        if streams_by_id.len() != streams.len() {
+            return Err(SegmentError::InvalidFormat {
+                message: "stream directory contains duplicate stream IDs".to_string(),
+            });
+        }
+
+        let mut items = 0u64;
+        let mut items_by_shape = HashMap::<Vec<SlotId>, u64>::new();
+        for (expected_index, entry) in manifest.iter().enumerate() {
+            if entry.bundle_index != expected_index as u32 {
+                return Err(SegmentError::InvalidFormat {
+                    message: "manifest bundle indices are not contiguous".to_string(),
+                });
+            }
+
+            let mut shape = Vec::with_capacity(entry.slot_count());
+            for (slot_id, chunk_ref) in entry.slots() {
+                let stream = streams_by_id.get(&chunk_ref.stream_id).ok_or_else(|| {
+                    SegmentError::InvalidFormat {
+                        message: "manifest references an unknown stream".to_string(),
+                    }
+                })?;
+                if stream.slot_id != slot_id || chunk_ref.chunk_index.raw() >= stream.chunk_count {
+                    return Err(SegmentError::InvalidFormat {
+                        message: "manifest slot reference does not match the stream directory"
+                            .to_string(),
+                    });
+                }
+                shape.push(slot_id);
+            }
+            shape.sort_unstable();
+
+            let item_count =
+                entry
+                    .exact_item_count()
+                    .ok_or_else(|| SegmentError::InvalidFormat {
+                        message: "segment manifest has no exact item counts".to_string(),
+                    })?;
+            items = items
+                .checked_add(item_count)
+                .ok_or_else(|| SegmentError::InvalidFormat {
+                    message: "segment item count overflow".to_string(),
+                })?;
+            let shape_items = items_by_shape.entry(shape).or_insert(0);
+            *shape_items =
+                shape_items
+                    .checked_add(item_count)
+                    .ok_or_else(|| SegmentError::InvalidFormat {
+                        message: "segment shape item count overflow".to_string(),
+                    })?;
+        }
+
+        let mut items_by_shape = items_by_shape.into_iter().collect::<Vec<_>>();
+        items_by_shape.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(SegmentLossSummary {
+            bundles: manifest.len() as u64,
+            items,
+            items_by_shape,
+        })
+    }
+
     /// Opens a segment file by reading it into memory.
     ///
     /// This allocates a buffer and reads the entire file.
@@ -514,7 +623,7 @@ impl SegmentReader {
             streams.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
 
         // 6. Read batch manifest
-        let manifest = Self::read_manifest(
+        let (manifest, manifest_has_item_count) = Self::read_manifest(
             &buffer,
             footer.manifest_offset as usize,
             footer.manifest_length as usize,
@@ -526,6 +635,7 @@ impl SegmentReader {
             streams,
             stream_by_id,
             manifest,
+            manifest_has_item_count,
             stream_decoders: RwLock::new(HashMap::new()),
         })
     }
@@ -900,7 +1010,7 @@ impl SegmentReader {
     /// Arrow IPC file with schema:
     ///
     /// - `bundle_index`: UInt32
-    /// - `item_count`: UInt64 (optional; defaults to 0 for legacy segments)
+    /// - `item_count`: nullable UInt64 (optional for legacy segments)
     /// - `slot_refs`: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
     ///
     /// Each row represents one [`ManifestEntry`] describing which stream chunks
@@ -911,7 +1021,7 @@ impl SegmentReader {
         buffer: &Buffer,
         offset: usize,
         length: usize,
-    ) -> Result<Vec<ManifestEntry>, SegmentError> {
+    ) -> Result<(Vec<ManifestEntry>, bool), SegmentError> {
         let ipc_buffer = buffer.slice_with_length(offset, length);
         let decoder = StreamDecoder::new(ipc_buffer)?;
 
@@ -932,8 +1042,21 @@ impl SegmentReader {
             Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
 
         // item_count is optional for backward compatibility with legacy segments.
-        let item_counts: Option<Vec<u64>> =
-            Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "item_count").ok();
+        // Null values preserve bundles replayed without an authoritative count.
+        let item_counts = batch
+            .column_by_name("item_count")
+            .and_then(|column| column.as_primitive_opt::<arrow_array::types::UInt64Type>())
+            .map(|array| {
+                (0..array.len())
+                    .map(|index| {
+                        if array.is_null(index) {
+                            None
+                        } else {
+                            Some(array.value(index))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            });
 
         // Get the slot_refs list column
         let slot_refs_col =
@@ -965,8 +1088,8 @@ impl SegmentReader {
 
         let mut entries = Vec::with_capacity(batch.num_rows());
         for (i, &bundle_index) in bundle_indices.iter().enumerate() {
-            let item_count = item_counts.as_ref().map(|counts| counts[i]).unwrap_or(0);
-            let mut entry = ManifestEntry::new(bundle_index, item_count);
+            let item_count = item_counts.as_ref().and_then(|counts| counts[i]);
+            let mut entry = ManifestEntry::new_with_item_count(bundle_index, item_count);
 
             // Get the struct array for this bundle's slot refs
             let slot_refs_for_bundle = slot_refs_list.value(i);
@@ -1022,7 +1145,10 @@ impl SegmentReader {
             entries.push(entry);
         }
 
-        Ok(entries)
+        let manifest_has_item_count = item_counts
+            .as_ref()
+            .is_some_and(|counts| counts.iter().all(Option::is_some));
+        Ok((entries, manifest_has_item_count))
     }
 
     /// Extracts a primitive column from a RecordBatch as a Vec.
@@ -1158,6 +1284,8 @@ mod tests {
         }
     }
 
+    /// Scenario: A segment written in the current format is opened normally.
+    /// Guarantees: The reader exposes the expected counts and current format version.
     #[tokio::test]
     async fn reader_opens_valid_segment() {
         let seg = TestSegment::new().await;
@@ -1441,6 +1569,40 @@ mod tests {
 
         let result = SegmentReader::open(&seg.path);
         assert!(matches!(result, Err(SegmentError::ChecksumMismatch { .. })));
+    }
+
+    /// Scenario: Segment manifest bytes are corrupt during startup loss recovery.
+    /// Guarantees: Whole-file validation rejects the summary instead of publishing partial loss.
+    #[tokio::test]
+    async fn loss_summary_rejects_corrupt_metadata() {
+        let seg = TestSegment::new().await;
+        let reader = SegmentReader::open(&seg.path).expect("open");
+        let manifest_offset = reader.footer.manifest_offset as usize;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::Permissions::from_mode(0o644);
+            std::fs::set_permissions(&seg.path, permissions).expect("set permissions");
+        }
+        #[cfg(not(unix))]
+        {
+            let mut permissions = std::fs::metadata(&seg.path)
+                .expect("metadata")
+                .permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            std::fs::set_permissions(&seg.path, permissions).expect("set permissions");
+        }
+
+        let mut bytes = std::fs::read(&seg.path).expect("read");
+        bytes[manifest_offset] ^= 0xFF;
+        std::fs::write(&seg.path, bytes).expect("write");
+
+        assert!(matches!(
+            SegmentReader::read_loss_summary(&seg.path),
+            Err(SegmentError::ChecksumMismatch { .. })
+        ));
     }
 
     #[tokio::test]

@@ -11,8 +11,8 @@
 //! - **Writer abstraction**
 //!   - [`ClickHouseWriter`] maintains a ClickHouse client, the target database name, and a
 //!     precomputed map from `ArrowPayloadType` to destination table name.
-//!   - `write_batches` accepts a set of per-payload `RecordBatch`es and dispatches inserts,
-//!     updating metrics inline.
+//!   - `write_batches` accepts a set of per-payload `RecordBatch`es, dispatches inserts, and
+//!     returns the successfully written row counts for metrics accounting by the caller.
 //!   - `write_batch` performs a single `INSERT ... FORMAT ArrowStream` over HTTP using the official
 //!     client's Arrow extension, surfacing any server-side errors on `end()`.
 //!
@@ -29,13 +29,11 @@ use arrow_array::RecordBatch;
 use clickhouse::Client;
 use clickhouse_ext_arrow::ArrowClientExt;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_telemetry::metrics::MetricSet;
 use secrecy::ExposeSecret;
 
 use crate::exporters::clickhouse_exporter::{
     config::Config,
     error::ClickhouseExporterError,
-    metrics::ClickhouseExporterMetrics,
     tables::{build_payload_destination_table_map, init_table, validate_identifier},
 };
 
@@ -47,7 +45,7 @@ pub struct ClickHouseWriter {
 impl ClickHouseWriter {
     pub async fn new(config: &Config) -> Result<Self, ClickhouseExporterError> {
         let payload_destination_tables = build_payload_destination_table_map(config);
-        otap_df_telemetry::otel_info!(
+        otel_info!(
             "clickhouse.exporter.tables.bound",
             message = "Destination tables bound",
             logs = payload_destination_tables.get(&ArrowPayloadType::Logs),
@@ -90,7 +88,7 @@ impl ClickHouseWriter {
             .map_err(|e| ClickhouseExporterError::InsertResponseError {
                 error: format!("{e}"),
             })?;
-        otap_df_telemetry::otel_debug!(
+        otel_debug!(
             "clickhouse.exporter.batch.written",
             message = "Record batch successfully written.",
             table = table_name,
@@ -103,16 +101,16 @@ impl ClickHouseWriter {
     pub async fn write_batches(
         &self,
         write_batches: &HashMap<ArrowPayloadType, RecordBatch>,
-        ch_metrics: &mut MetricSet<ClickhouseExporterMetrics>,
-    ) -> Result<(), ClickhouseExporterError> {
+    ) -> Result<Vec<(ArrowPayloadType, u64)>, ClickhouseExporterError> {
+        let mut written_rows = Vec::with_capacity(write_batches.len());
         for (payload_type, batch) in write_batches {
             let Some(table_name) = self.payload_destination_tables.get(payload_type) else {
                 continue;
             };
             self.write_batch(table_name, batch).await?;
-            ch_metrics.add(batch.num_rows() as u64, *payload_type);
+            written_rows.push((*payload_type, batch.num_rows() as u64));
         }
-        Ok(())
+        Ok(written_rows)
     }
 }
 
@@ -226,6 +224,8 @@ mod tests {
         }
     }
 
+    /// Scenario: a batch set contains mapped signal payloads and an unmapped attribute payload.
+    /// Guarantees: mapped batches are written once and their exact row counts are returned.
     #[tokio::test]
     async fn writes_all_mapped_payloads_and_reports_rows() {
         // Arrange: only signal tables have mappings (no attribute table mappings)
@@ -279,6 +279,8 @@ mod tests {
         assert!(!stat_map.contains_key(&ArrowPayloadType::ResourceAttrs));
     }
 
+    /// Scenario: a batch is supplied for a payload without a destination table mapping.
+    /// Guarantees: the unmapped batch is skipped and only mapped rows are reported as written.
     #[tokio::test]
     async fn skips_when_batch_present_but_no_table_mapping() {
         // Arrange: only Logs has a table mapping
@@ -309,6 +311,8 @@ mod tests {
         assert_eq!(stats[0].1, 1);
     }
 
+    /// Scenario: the writer receives an empty collection of transformed batches.
+    /// Guarantees: no inserts occur and no written-row metrics are returned.
     #[tokio::test]
     async fn empty_input_writes_nothing() {
         let writer = TestWriter::default();

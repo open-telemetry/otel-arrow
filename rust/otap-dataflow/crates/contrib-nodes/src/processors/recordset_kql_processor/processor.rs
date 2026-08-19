@@ -73,7 +73,7 @@ impl RecordsetKqlProcessor {
 
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
 
-        otap_df_telemetry::otel_info!("recordset_kql_processor.ready");
+        otel_info!("recordset_kql_processor.ready");
 
         Ok(Self {
             config,
@@ -118,7 +118,7 @@ impl RecordsetKqlProcessor {
                         RecordSetEngineDiagnosticLevel::Warn => otap_df_telemetry::Level::WARN,
                         RecordSetEngineDiagnosticLevel::Error => otap_df_telemetry::Level::ERROR,
                     };
-                    otap_df_telemetry::otel_event!(
+                    otel_event!(
                         level,
                         "recordset_kql_processor.query_output",
                         query_line_number,
@@ -144,10 +144,7 @@ impl RecordsetKqlProcessor {
         // Process based on signal type (timed).
         let result = effect_handler.timed(&self.compute_duration, || match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                otap_df_telemetry::otel_debug!(
-                    "recordset_kql_processor.processing_logs",
-                    input_items
-                );
+                otel_debug!("recordset_kql_processor.processing_logs", input_items);
                 self.process_logs(bytes, signal)
             }
             OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
@@ -166,7 +163,7 @@ impl RecordsetKqlProcessor {
                 // the engine could tell us.
                 let output_items = payload.num_items() as u64;
 
-                otap_df_telemetry::otel_debug!(
+                otel_debug!(
                     "recordset_kql_processor.success",
                     input_items,
                     output_items,
@@ -184,11 +181,7 @@ impl RecordsetKqlProcessor {
             }
             Err(e) => {
                 let message = e.to_string();
-                otap_df_telemetry::otel_error!(
-                    "recordset_kql_processor.failure",
-                    input_items,
-                    message,
-                );
+                otel_error!("recordset_kql_processor.failure", input_items, message,);
 
                 effect_handler
                     .notify_nack(NackMsg::new(
@@ -260,7 +253,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                 let parsed_bridge_options =
                                     match Self::parse_bridge_options(&new_config.bridge_options) {
                                         Err(e) => {
-                                            otap_df_telemetry::otel_warn!(
+                                            otel_warn!(
                                                 "recordset_kql_processor.reconfigure_error",
                                                 message = %e
                                             );
@@ -276,9 +269,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                     )),
                                 ) {
                                     Ok(pipeline) => {
-                                        otap_df_telemetry::otel_info!(
-                                            "recordset_kql_processor.reconfigured"
-                                        );
+                                        otel_info!("recordset_kql_processor.reconfigured");
 
                                         self.pipeline = pipeline;
                                         self.config = new_config;
@@ -286,7 +277,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                     Err(errors) => {
                                         let message =
                                             format!("Failed to parse updated query: {:?}", errors);
-                                        otap_df_telemetry::otel_error!(
+                                        otel_error!(
                                             "recordset_kql_processor.reconfigure_error",
                                             message,
                                         );

@@ -1610,7 +1610,6 @@ mod realistic_otap_tests {
         use clickhouse_ext_arrow::ArrowClientExt;
 
         use crate::exporters::clickhouse_exporter::config::Config;
-        use crate::exporters::clickhouse_exporter::metrics::ClickhouseExporterMetrics;
         use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
         use crate::exporters::clickhouse_exporter::writer::{ClickHouseWriter, build_client};
 
@@ -1643,12 +1642,6 @@ mod realistic_otap_tests {
                 .execute()
                 .await
                 .expect("drop pre-existing test database");
-        }
-
-        /// Register a throwaway metric set so we can call the real `write_batches` path.
-        fn fresh_metrics() -> otap_df_telemetry::metrics::MetricSet<ClickhouseExporterMetrics> {
-            let (pipeline_ctx, _registry) = otap_df_engine::testing::test_pipeline_ctx();
-            pipeline_ctx.register_metrics::<ClickhouseExporterMetrics>()
         }
 
         /// Return a copy of `batch` with the field named `from` renamed to `to` (arrays untouched).
@@ -1687,6 +1680,8 @@ mod realistic_otap_tests {
             span_id: String,
         }
 
+        /// Scenario: transformed OTAP logs are inserted into a live ClickHouse schema.
+        /// Guarantees: every fixture row and representative field round-trips without coercion loss.
         #[tokio::test]
         #[ignore = "requires a live ClickHouse; run with --ignored e2e"]
         async fn e2e_logs_insert_roundtrips_through_clickhouse_schema() {
@@ -1710,9 +1705,8 @@ mod realistic_otap_tests {
             let writer = ClickHouseWriter::new(&config)
                 .await
                 .expect("writer init creates db + tables");
-            let mut metrics = fresh_metrics();
             writer
-                .write_batches(&batches, &mut metrics)
+                .write_batches(&batches)
                 .await
                 .expect("insert logs batch over FORMAT ArrowStream");
 
@@ -1810,6 +1804,8 @@ mod realistic_otap_tests {
             link0_kind: String,
         }
 
+        /// Scenario: transformed OTAP spans with events and links are inserted into ClickHouse.
+        /// Guarantees: nested span data and attributes round-trip through the production schema.
         #[tokio::test]
         #[ignore = "requires a live ClickHouse; run with --ignored e2e"]
         async fn e2e_traces_insert_roundtrips_through_clickhouse_schema() {
@@ -1851,11 +1847,10 @@ mod realistic_otap_tests {
             let writer = ClickHouseWriter::new(&config)
                 .await
                 .expect("writer init creates db + tables");
-            let mut metrics = fresh_metrics();
             let mut write_batches = HashMap::new();
             _ = write_batches.insert(ArrowPayloadType::Spans, spans_batch.clone());
             writer
-                .write_batches(&write_batches, &mut metrics)
+                .write_batches(&write_batches)
                 .await
                 .expect("insert spans batch over FORMAT ArrowStream");
 

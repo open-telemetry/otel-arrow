@@ -7,6 +7,11 @@
 //! grant and exposes them to data-path nodes through the `BearerTokenProvider`
 //! capability. See `design.md` for the design.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = OAUTH2_CLIENT_AUTH_URN,
+    target = "otel.extension.oauth2_client_auth",
+);
+
 mod auth;
 pub mod config;
 pub mod error;
@@ -96,6 +101,7 @@ fn create(
 
 /// Factory registration for the OAuth 2.0 Client Auth extension.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Extension)]
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: OAUTH2_CLIENT_AUTH_URN,

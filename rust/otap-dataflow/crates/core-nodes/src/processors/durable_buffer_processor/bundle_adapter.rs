@@ -9,11 +9,9 @@
 //! # Slot ID Design
 //!
 //! Quiver's WAL uses a 64-bit bitmap for slot presence, so slot IDs must be < 64.
-//! Since each bundle contains only one signal type and ArrowPayloadType values
-//! go up to ~45, we use the ArrowPayloadType value directly as the slot ID.
-//!
-//! Slot IDs map directly to `ArrowPayloadType` enum values defined in
-//! `proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto`:
+//! WAL slot IDs are an internal storage namespace. They are mapped explicitly
+//! from `ArrowPayloadType` and are not protobuf wire numbers. Existing payloads
+//! retain their historical slot assignments for persisted-segment compatibility.
 //!
 //! | Signal  | Payload Types (slot IDs)                                    | Table Count |
 //! |---------|-------------------------------------------------------------|-------------|
@@ -64,6 +62,18 @@ use otap_df_otap::pdata::{Context, OtapPdata};
 // Slot ID Constants
 // -----------------------------------------------------------------------------
 
+/// Number of positions available in Quiver's WAL slot bitmap.
+const WAL_SLOT_COUNT: u16 = 64;
+
+/// Construct a WAL slot while enforcing the bitmap-width invariant.
+const fn wal_slot(raw: u16) -> SlotId {
+    assert!(
+        raw < WAL_SLOT_COUNT,
+        "WAL slot must fit in the 64-slot bitmap"
+    );
+    SlotId::new(raw)
+}
+
 /// OTLP opaque binary storage slots (for pass-through mode)
 /// These are in the 60-62 range to stay within the 64-slot WAL bitmap limit
 mod otlp_slots {
@@ -72,18 +82,91 @@ mod otlp_slots {
     pub const OTLP_METRICS: u16 = 62;
 }
 
-/// Convert payload type to a slot ID (direct mapping).
+#[derive(Clone, Copy)]
+enum PayloadSignal {
+    Shared,
+    Signal(SignalType),
+}
+
+macro_rules! payload_signal {
+    (Shared) => {
+        PayloadSignal::Shared
+    };
+    ($signal:ident) => {
+        PayloadSignal::Signal(SignalType::$signal)
+    };
+}
+
+/// Define the stable Arrow payload mapping in both WAL directions.
 ///
-/// Note: The slot ID is determined solely by the payload type, not the signal type.
-/// Signal type is passed for consistency with the API but is not used in the mapping.
-const fn to_slot_id(_signal_type: SignalType, payload_type: ArrowPayloadType) -> SlotId {
-    // ArrowPayloadType values are 0-45, which fits directly in the 64-slot limit
-    SlotId::new(payload_type as u16)
+/// The generated forward match is exhaustive, so adding a protocol payload
+/// requires adding its slot and signal classification to this table.
+macro_rules! define_arrow_wal_slots {
+    ($( $payload:ident => ($slot:literal, $signal:ident) ),+ $(,)?) => {
+        const fn to_slot_id(
+            _signal_type: SignalType,
+            payload_type: ArrowPayloadType,
+        ) -> SlotId {
+            let raw = match payload_type {
+                // Bundle descriptors only iterate signal-specific allowed payload types,
+                // which exclude Unknown. Reaching this arm is an internal invariant violation.
+                ArrowPayloadType::Unknown => {
+                    panic!("ArrowPayloadType::Unknown must not be persisted to WAL")
+                }
+                $(ArrowPayloadType::$payload => $slot,)+
+            };
+            wal_slot(raw)
+        }
+
+        const fn slot_to_payload_type(slot: SlotId) -> Option<ArrowPayloadType> {
+            match slot.raw() {
+                $($slot => Some(ArrowPayloadType::$payload),)+
+                _ => None,
+            }
+        }
+
+        const fn payload_signal_type(payload_type: ArrowPayloadType) -> Option<PayloadSignal> {
+            match payload_type {
+                ArrowPayloadType::Unknown => None,
+                $(ArrowPayloadType::$payload => Some(payload_signal!($signal)),)+
+            }
+        }
+    };
+}
+
+define_arrow_wal_slots! {
+    ResourceAttrs => (1, Shared),
+    ScopeAttrs => (2, Shared),
+    UnivariateMetrics => (10, Metrics),
+    NumberDataPoints => (11, Metrics),
+    SummaryDataPoints => (12, Metrics),
+    HistogramDataPoints => (13, Metrics),
+    ExpHistogramDataPoints => (14, Metrics),
+    NumberDpAttrs => (15, Metrics),
+    SummaryDpAttrs => (16, Metrics),
+    HistogramDpAttrs => (17, Metrics),
+    ExpHistogramDpAttrs => (18, Metrics),
+    NumberDpExemplars => (19, Metrics),
+    HistogramDpExemplars => (20, Metrics),
+    ExpHistogramDpExemplars => (21, Metrics),
+    NumberDpExemplarAttrs => (22, Metrics),
+    HistogramDpExemplarAttrs => (23, Metrics),
+    ExpHistogramDpExemplarAttrs => (24, Metrics),
+    MultivariateMetrics => (25, Metrics),
+    MetricAttrs => (26, Metrics),
+    Logs => (30, Logs),
+    LogAttrs => (31, Logs),
+    Spans => (40, Traces),
+    SpanAttrs => (41, Traces),
+    SpanEvents => (42, Traces),
+    SpanLinks => (43, Traces),
+    SpanEventAttrs => (44, Traces),
+    SpanLinkAttrs => (45, Traces),
 }
 
 /// Convert signal type to OTLP slot ID (for opaque binary storage)
 pub(crate) const fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
-    SlotId::new(match signal_type {
+    wal_slot(match signal_type {
         SignalType::Logs => otlp_slots::OTLP_LOGS,
         SignalType::Traces => otlp_slots::OTLP_TRACES,
         SignalType::Metrics => otlp_slots::OTLP_METRICS,
@@ -113,34 +196,24 @@ pub(crate) fn signal_type_from_slot_id(slot: SlotId) -> Option<SignalType> {
     from_slot_id(slot).map(|(st, _)| st)
 }
 
-/// Convert a slot ID back to payload type only (Arrow format only).
-///
-/// Returns the `ArrowPayloadType` for the given slot, or `None` if the slot
-/// is not a valid Arrow payload slot (e.g., OTLP opaque slots 60-62).
-fn slot_to_payload_type(slot: SlotId) -> Option<ArrowPayloadType> {
-    let raw = slot.raw();
-
-    // Check if it's an OTLP slot (60-62 range, not an ArrowPayloadType)
-    if raw >= otlp_slots::OTLP_LOGS {
-        return None;
-    }
-
-    ArrowPayloadType::try_from(raw as i32).ok()
-}
-
 /// Check if a slot ID represents a shared payload type (RESOURCE_ATTRS, SCOPE_ATTRS).
 ///
 /// These slots are used by ALL signal types, so their presence alone cannot
 /// determine the signal type of a bundle.
 const fn is_shared_slot(slot: SlotId) -> bool {
-    matches!(slot.raw(), 1 | 2) // RESOURCE_ATTRS (1), SCOPE_ATTRS (2)
+    match slot_to_payload_type(slot) {
+        Some(payload_type) => matches!(
+            payload_signal_type(payload_type),
+            Some(PayloadSignal::Shared)
+        ),
+        None => false,
+    }
 }
 
 /// Convert a slot ID back to signal type and payload type (Arrow format only).
 ///
-/// This reverse mapping is used during WAL recovery to reconstruct the signal type
-/// from persisted slot IDs. The ranges correspond to `ArrowPayloadType` values
-/// from `arrow_service.proto`.
+/// This reverse mapping is used during WAL recovery to reconstruct the signal
+/// type without relying on protobuf number ranges.
 ///
 /// # Returns
 /// - `Some((signal_type, payload_type))` for signal-specific slots
@@ -148,20 +221,9 @@ const fn is_shared_slot(slot: SlotId) -> bool {
 /// - `None` for OTLP opaque slots (60-62) or invalid slot IDs
 fn from_slot_id(slot: SlotId) -> Option<(SignalType, ArrowPayloadType)> {
     let payload_type = slot_to_payload_type(slot)?;
-    let raw = slot.raw();
-
-    // Determine signal type from the ArrowPayloadType value ranges.
-    // See arrow_service.proto for the enum definitions:
-    //   - Metrics: 10-26 (UNIVARIATE_METRICS through METRIC_ATTRS)
-    //   - Logs: 30-31 (LOGS, LOG_ATTRS)
-    //   - Traces: 40-45 (SPANS through SPAN_LINK_ATTRS)
-    //   - Shared: 1-2 (RESOURCE_ATTRS, SCOPE_ATTRS) - used by all signals, return None
-    let signal_type = match raw {
-        10..=26 => SignalType::Metrics, // UNIVARIATE_METRICS (10) through METRIC_ATTRS (26)
-        30..=31 => SignalType::Logs,    // LOGS (30), LOG_ATTRS (31)
-        40..=45 => SignalType::Traces,  // SPANS (40) through SPAN_LINK_ATTRS (45)
-        1..=2 => return None,           // Shared slots - cannot determine signal type
-        _ => return None,               // Unknown slots
+    let signal_type = match payload_signal_type(payload_type)? {
+        PayloadSignal::Shared => return None,
+        PayloadSignal::Signal(signal_type) => signal_type,
     };
 
     Some((signal_type, payload_type))
@@ -514,6 +576,37 @@ fn extract_otlp_bytes(
     Ok(OtlpProtoBytes::new_from_bytes(signal_type, bytes))
 }
 
+/// Recovers the logical item count from a decoded Quiver bundle.
+///
+/// This is used only for WAL entries that expire during startup, where the
+/// existing WAL format does not persist `RecordBundle::item_count()`.
+pub fn recover_item_count(bundle: &dyn RecordBundle) -> Option<u64> {
+    let payloads = bundle
+        .descriptor()
+        .slots
+        .iter()
+        .filter_map(|slot| {
+            bundle
+                .payload(slot.id)
+                .map(|payload| (slot.id, payload.batch.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+
+    if let Some((signal_type, batch)) = find_otlp_slot(&payloads) {
+        return extract_otlp_bytes(signal_type, batch)
+            .ok()
+            .map(|bytes| bytes.num_items() as u64);
+    }
+
+    let signal_type = determine_signal_type(&payloads).ok()?;
+    let records = match signal_type {
+        SignalType::Logs => create_records::<Logs>(&payloads).ok()?,
+        SignalType::Traces => create_records::<Traces>(&payloads).ok()?,
+        SignalType::Metrics => create_records::<Metrics>(&payloads).ok()?,
+    };
+    Some(records.num_items() as u64)
+}
+
 /// Convert a ReconstructedBundle back to OtapPdata.
 ///
 /// This reconstructs the original OTAP telemetry data from Quiver's storage format.
@@ -591,6 +684,105 @@ mod tests {
             .get(payload_type)
             .unwrap_or_else(|| panic!("Expected batch for {payload_type:?}"))
             .clone()
+    }
+
+    /// Scenario: Every assigned Arrow WAL slot is decoded and encoded again.
+    /// Guarantees: The explicit mapping is bijective for all 27 usable payload types.
+    #[test]
+    fn test_arrow_slot_mapping_is_bijective() {
+        let mut mapped_count = 0;
+
+        for raw in 0..WAL_SLOT_COUNT {
+            let slot = SlotId::new(raw);
+            if let Some(payload_type) = slot_to_payload_type(slot) {
+                mapped_count += 1;
+                assert_eq!(
+                    to_slot_id(SignalType::Logs, payload_type),
+                    slot,
+                    "payload {payload_type:?} must map back to slot {raw}"
+                );
+            }
+        }
+
+        assert_eq!(mapped_count, 27);
+    }
+
+    /// Scenario: An unknown Arrow payload type is presented for WAL persistence.
+    /// Guarantees: The payload is rejected before an unrecoverable slot can be written.
+    #[test]
+    #[should_panic(expected = "ArrowPayloadType::Unknown must not be persisted to WAL")]
+    fn test_unknown_arrow_payload_is_rejected() {
+        let _ = to_slot_id(SignalType::Logs, ArrowPayloadType::Unknown);
+    }
+
+    /// Scenario: Existing Arrow payloads are mapped after storage decoupling.
+    /// Guarantees: Every persisted WAL assignment remains byte-for-byte compatible.
+    #[test]
+    fn test_existing_arrow_slot_assignments_are_stable() {
+        let expected = [
+            (ArrowPayloadType::ResourceAttrs, 1),
+            (ArrowPayloadType::ScopeAttrs, 2),
+            (ArrowPayloadType::UnivariateMetrics, 10),
+            (ArrowPayloadType::NumberDataPoints, 11),
+            (ArrowPayloadType::SummaryDataPoints, 12),
+            (ArrowPayloadType::HistogramDataPoints, 13),
+            (ArrowPayloadType::ExpHistogramDataPoints, 14),
+            (ArrowPayloadType::NumberDpAttrs, 15),
+            (ArrowPayloadType::SummaryDpAttrs, 16),
+            (ArrowPayloadType::HistogramDpAttrs, 17),
+            (ArrowPayloadType::ExpHistogramDpAttrs, 18),
+            (ArrowPayloadType::NumberDpExemplars, 19),
+            (ArrowPayloadType::HistogramDpExemplars, 20),
+            (ArrowPayloadType::ExpHistogramDpExemplars, 21),
+            (ArrowPayloadType::NumberDpExemplarAttrs, 22),
+            (ArrowPayloadType::HistogramDpExemplarAttrs, 23),
+            (ArrowPayloadType::ExpHistogramDpExemplarAttrs, 24),
+            (ArrowPayloadType::MultivariateMetrics, 25),
+            (ArrowPayloadType::MetricAttrs, 26),
+            (ArrowPayloadType::Logs, 30),
+            (ArrowPayloadType::LogAttrs, 31),
+            (ArrowPayloadType::Spans, 40),
+            (ArrowPayloadType::SpanAttrs, 41),
+            (ArrowPayloadType::SpanEvents, 42),
+            (ArrowPayloadType::SpanLinks, 43),
+            (ArrowPayloadType::SpanEventAttrs, 44),
+            (ArrowPayloadType::SpanLinkAttrs, 45),
+        ];
+
+        for (payload_type, raw) in expected {
+            assert!(raw < WAL_SLOT_COUNT);
+            assert_eq!(to_slot_id(SignalType::Logs, payload_type).raw(), raw);
+            assert_eq!(slot_to_payload_type(SlotId::new(raw)), Some(payload_type));
+        }
+    }
+
+    /// Scenario: Arrow and opaque OTLP payloads share the WAL slot bitmap.
+    /// Guarantees: Current allocations are in range, unique, and never overlap.
+    #[test]
+    fn test_arrow_and_otlp_slot_allocations_do_not_collide() {
+        let mut occupied = [false; WAL_SLOT_COUNT as usize];
+
+        for raw in 0..WAL_SLOT_COUNT {
+            if slot_to_payload_type(SlotId::new(raw)).is_some() {
+                let index = raw as usize;
+                assert!(!occupied[index], "duplicate Arrow WAL slot {raw}");
+                occupied[index] = true;
+            }
+        }
+
+        for raw in [
+            otlp_slots::OTLP_LOGS,
+            otlp_slots::OTLP_TRACES,
+            otlp_slots::OTLP_METRICS,
+        ] {
+            assert!(raw < WAL_SLOT_COUNT);
+            let index = raw as usize;
+            assert!(
+                !occupied[index],
+                "opaque OTLP slot {raw} collides with Arrow"
+            );
+            occupied[index] = true;
+        }
     }
 
     #[test]
@@ -703,6 +895,30 @@ mod tests {
         let spans_slot = to_slot_id(SignalType::Traces, ArrowPayloadType::Spans);
         let payload = adapter.payload(spans_slot);
         assert!(payload.is_none());
+    }
+
+    /// Scenario: A decoded Arrow logs bundle is inspected during WAL expiry.
+    /// Guarantees: The counter reconstructs the original logical record count.
+    #[test]
+    fn recover_item_count_from_arrow_bundle() {
+        let records = OtapArrowRecords::Logs(logs!((Logs, ("id", UInt16, vec![1u16, 2, 3]))));
+        let adapter = OtapRecordBundleAdapter::new(records);
+
+        assert_eq!(recover_item_count(&adapter), Some(3));
+    }
+
+    /// Scenario: A decoded OTLP pass-through bundle is inspected during WAL expiry.
+    /// Guarantees: The counter uses the same protobuf item scan as live ingestion.
+    #[test]
+    fn recover_item_count_from_otlp_bundle() {
+        let otlp =
+            OtlpProtoBytes::new_from_bytes(SignalType::Logs, b"test OTLP protobuf data".to_vec());
+        let adapter = OtlpBytesAdapter::new(otlp).map_err(|(e, _)| e).unwrap();
+
+        assert_eq!(
+            recover_item_count(&adapter),
+            Some(adapter.cached_item_count())
+        );
     }
 
     #[test]

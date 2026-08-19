@@ -7,7 +7,7 @@ use crate::client::{AdminBackend, HttpAdminClientSettings};
 use crate::endpoint::{AdminAuth, AdminEndpoint, AdminScheme};
 use crate::{Error, config, engine, groups, operations, pipelines, telemetry};
 use async_trait::async_trait;
-use reqwest::{Certificate, ClientBuilder, Identity, Method, Url};
+use reqwest::{Certificate, ClientBuilder, Identity, Method, Url, header::HeaderValue};
 use serde::de::DeserializeOwned;
 use std::fs;
 use std::io;
@@ -621,6 +621,20 @@ fn build_http_client(settings: &HttpAdminClientSettings) -> Result<reqwest::Clie
         .connect_timeout(settings.connect_timeout)
         .tcp_nodelay(settings.tcp_nodelay);
 
+    if let Some(user_agent) = &settings.user_agent {
+        if user_agent.trim().is_empty() {
+            return Err(Error::ClientConfig {
+                details: "user_agent must be non-empty when set".to_string(),
+            });
+        }
+        if HeaderValue::from_bytes(user_agent.as_bytes()).is_err() {
+            return Err(Error::ClientConfig {
+                details: "user_agent contains characters that cannot be represented as an HTTP header value (must be visible ASCII)".to_string(),
+            });
+        }
+        client_builder = client_builder.user_agent(user_agent);
+    }
+
     if let Some(tcp_keepalive) = settings.tcp_keepalive {
         client_builder = client_builder.tcp_keepalive(tcp_keepalive);
     }
@@ -838,7 +852,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
-    use wiremock::matchers::{body_json, method, path, query_param};
+    use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(server: &MockServer) -> AdminClient {
@@ -944,6 +958,63 @@ mod tests {
             .await
             .expect("status should decode");
         assert_eq!(response.generated_at, "2026-01-01T00:00:00Z");
+    }
+
+    /// Scenario: an admin SDK caller configures a stable HTTP User-Agent.
+    /// Guarantees: every request sent by that client includes the configured identity.
+    #[tokio::test]
+    async fn configured_user_agent_is_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/status"))
+            .and(header("user-agent", "dfctl/test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(engine::Status {
+                generated_at: "2026-01-01T00:00:00Z".to_string(),
+                pipelines: Default::default(),
+            }))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let endpoint = AdminEndpoint::http("127.0.0.1", server.address().port());
+        let settings = HttpAdminClientSettings::new(endpoint).with_user_agent("dfctl/test");
+        let client = AdminClient::builder()
+            .http(settings)
+            .build()
+            .expect("client should build");
+
+        _ = client
+            .engine()
+            .status()
+            .await
+            .expect("status should decode");
+    }
+
+    /// Scenario: an admin SDK caller configures an invalid HTTP User-Agent.
+    /// Guarantees: client construction reports a targeted configuration error.
+    #[test]
+    fn invalid_user_agent_is_rejected() {
+        let endpoint = AdminEndpoint::http("127.0.0.1", 8080);
+        let cases = [
+            ("   ", "user_agent must be non-empty when set"),
+            (
+                "bad\nvalue",
+                "user_agent contains characters that cannot be represented as an HTTP header value (must be visible ASCII)",
+            ),
+        ];
+
+        for (user_agent, expected_details) in cases {
+            let settings =
+                HttpAdminClientSettings::new(endpoint.clone()).with_user_agent(user_agent);
+            let error = match AdminClient::builder().http(settings).build() {
+                Ok(_) => panic!("invalid User-Agent should fail client construction"),
+                Err(error) => error,
+            };
+
+            assert!(
+                matches!(error, Error::ClientConfig { details } if details == expected_details)
+            );
+        }
     }
 
     #[tokio::test]

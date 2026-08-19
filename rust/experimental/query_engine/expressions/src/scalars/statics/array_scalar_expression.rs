@@ -52,13 +52,13 @@ impl ArrayValue for ArrayScalarExpression {
         Ok(self.values.get(index).map(|v| v as &dyn AsStaticValue))
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
-            if !item_callback.next(index, value.to_value()) {
+            if !(item_callback)(index, value.to_value()) {
                 return false;
             }
         }
@@ -102,15 +102,12 @@ mod tests {
 
             let mut indices = Vec::new();
 
-            array.get_item_range(
-                range,
-                &mut IndexValueClosureCallback::new(|_, v| {
-                    if let Value::Integer(i) = v {
-                        indices.push(i.get_value());
-                    }
-                    true
-                }),
-            );
+            array.get_item_range(range, &mut |_, v| {
+                if let Value::Integer(i) = v {
+                    indices.push(i.get_value());
+                }
+                true
+            });
 
             assert_eq!(expected, indices);
         };

@@ -14,6 +14,11 @@
 
 // ToDo: Consider adding a jitter mechanism.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = RETRY_PROCESSOR_URN,
+    target = "otel.processor.retry",
+);
+
 use otap_df_otap::pdata::OtapPdata;
 
 use async_trait::async_trait;
