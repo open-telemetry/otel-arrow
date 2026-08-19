@@ -156,8 +156,9 @@
 //! reference-counted parser state.
 //!
 //! Capacity history controls initial reservations only; it never limits accepted rows or payload
-//! bytes. Builder projections are capped at a 16K-row equivalent. Resource and scope arenas discard
-//! backing storage above 64 KiB or 1,024 entries.
+//! bytes. Builder projections reserve at most 16K rows, 64 MiB of aggregate variable-width data,
+//! and 1,048,576 aggregate map entries. Resource and scope arenas discard backing storage above
+//! 64 KiB or 1,024 entries.
 //!
 //! Changes to conversion, column presence, or sorting must preserve logical parity with the
 //! legacy path; the tests below compare names, row order, null placement, and values.
@@ -190,8 +191,14 @@ const SERVICE_NAME_KEY: &[u8] = b"service.name";
 /// Maximum number of rows for which a new request speculatively reserves builder capacity.
 ///
 /// The output itself is not capped. Requests larger than this value continue growing their
-/// builders normally; only the projected row, string, and map capacity hints are bounded.
+/// builders normally; only the projected row capacity hint is bounded here.
 const MAX_PREALLOCATED_ROWS: usize = 16 * 1024;
+
+/// Maximum aggregate variable-width data bytes speculatively reserved for one output batch.
+const MAX_PREALLOCATED_DATA_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum aggregate entries speculatively reserved across the three map builders.
+const MAX_PREALLOCATED_MAP_ENTRIES: usize = MAX_PREALLOCATED_ROWS * 64;
 
 /// Maximum converted attribute bytes retained by one resource or scope arena between requests.
 const MAX_RETAINED_ATTRIBUTE_ARENA_BYTES: usize = 64 * 1024;
@@ -604,6 +611,8 @@ impl LogsBuilderCapacities {
             trace_id_bytes: scale_capacity(self.trace_id_bytes, numerator, denominator),
         }
         .with_max_rows(MAX_PREALLOCATED_ROWS)
+        .with_max_data_bytes(MAX_PREALLOCATED_DATA_BYTES)
+        .with_max_map_entries(MAX_PREALLOCATED_MAP_ENTRIES)
     }
 
     /// Bound every projected capacity to the same per-row ratio at `max_rows`.
@@ -633,6 +642,82 @@ impl LogsBuilderCapacities {
             trace_id_bytes: scale_capacity(self.trace_id_bytes, max_rows, projected_rows),
         }
     }
+
+    /// Bound aggregate variable-width data reservations while preserving their relative sizes.
+    fn with_max_data_bytes(mut self, max_bytes: usize) -> Self {
+        let aggregate = self.data_bytes();
+        if aggregate <= max_bytes as u128 {
+            return self;
+        }
+
+        bound_aggregate_capacities(
+            &mut [
+                &mut self.body_bytes,
+                &mut self.event_name_bytes,
+                &mut self.log_attributes.key_bytes,
+                &mut self.log_attributes.value_bytes,
+                &mut self.resource_attributes.key_bytes,
+                &mut self.resource_attributes.value_bytes,
+                &mut self.resource_schema_url_bytes,
+                &mut self.scope_attributes.key_bytes,
+                &mut self.scope_attributes.value_bytes,
+                &mut self.scope_name_bytes,
+                &mut self.scope_version_bytes,
+                &mut self.service_name_bytes,
+                &mut self.severity_text_bytes,
+                &mut self.span_id_bytes,
+                &mut self.trace_id_bytes,
+            ],
+            max_bytes,
+            aggregate,
+        );
+        self
+    }
+
+    /// Bound aggregate map-entry reservations while preserving their relative sizes.
+    fn with_max_map_entries(mut self, max_entries: usize) -> Self {
+        let aggregate = self.map_entries();
+        if aggregate <= max_entries as u128 {
+            return self;
+        }
+
+        bound_aggregate_capacities(
+            &mut [
+                &mut self.log_attributes.entries,
+                &mut self.resource_attributes.entries,
+                &mut self.scope_attributes.entries,
+            ],
+            max_entries,
+            aggregate,
+        );
+        self
+    }
+
+    /// Return aggregate variable-width data bytes without overflowing on adversarial history.
+    fn data_bytes(&self) -> u128 {
+        self.body_bytes as u128
+            + self.event_name_bytes as u128
+            + self.log_attributes.key_bytes as u128
+            + self.log_attributes.value_bytes as u128
+            + self.resource_attributes.key_bytes as u128
+            + self.resource_attributes.value_bytes as u128
+            + self.resource_schema_url_bytes as u128
+            + self.scope_attributes.key_bytes as u128
+            + self.scope_attributes.value_bytes as u128
+            + self.scope_name_bytes as u128
+            + self.scope_version_bytes as u128
+            + self.service_name_bytes as u128
+            + self.severity_text_bytes as u128
+            + self.span_id_bytes as u128
+            + self.trace_id_bytes as u128
+    }
+
+    /// Return aggregate entries across all map builders.
+    fn map_entries(&self) -> u128 {
+        self.log_attributes.entries as u128
+            + self.resource_attributes.entries as u128
+            + self.scope_attributes.entries as u128
+    }
 }
 
 /// Scale one observed capacity by the ratio between two encoded request sizes.
@@ -645,6 +730,25 @@ fn scale_capacity(value: usize, numerator: usize, denominator: usize) -> usize {
         .checked_div(denominator as u128)
         .unwrap_or_default();
     usize::try_from(scaled).unwrap_or(usize::MAX)
+}
+
+/// Scale one capacity against an aggregate that may exceed `usize`.
+fn scale_capacity_u128(value: usize, numerator: usize, denominator: u128) -> usize {
+    if denominator == 0 {
+        return 0;
+    }
+    let scaled = (value as u128)
+        .saturating_mul(numerator as u128)
+        .checked_div(denominator)
+        .unwrap_or_default();
+    usize::try_from(scaled).unwrap_or(usize::MAX)
+}
+
+/// Proportionally bound a set of capacity hints by their aggregate reservation.
+fn bound_aggregate_capacities(capacities: &mut [&mut usize], maximum: usize, aggregate: u128) {
+    for capacity in capacities {
+        **capacity = scale_capacity_u128(**capacity, maximum, aggregate);
+    }
 }
 
 /// Request-wide presence flags controlling which optional arrays enter the output batch.
@@ -1639,6 +1743,40 @@ mod tests {
             projected.log_attributes.value_bytes,
             5 * MAX_PREALLOCATED_ROWS
         );
+    }
+
+    /// Scenario: a low-row history contains oversized strings, map values, and map entry counts.
+    /// Guarantees: speculative reservations have absolute byte and entry bounds independent of rows.
+    #[test]
+    fn capacity_projection_has_absolute_allocation_bounds() {
+        let oversized_map = MapBuilderCapacities {
+            entries: usize::MAX,
+            key_bytes: usize::MAX,
+            value_bytes: usize::MAX,
+        };
+        let capacities = LogsBuilderCapacities {
+            rows: 1,
+            body_bytes: usize::MAX,
+            event_name_bytes: usize::MAX,
+            log_attributes: oversized_map.clone(),
+            resource_attributes: oversized_map.clone(),
+            resource_schema_url_bytes: usize::MAX,
+            scope_attributes: oversized_map,
+            scope_name_bytes: usize::MAX,
+            scope_version_bytes: usize::MAX,
+            service_name_bytes: usize::MAX,
+            severity_text_bytes: usize::MAX,
+            span_id_bytes: usize::MAX,
+            trace_id_bytes: usize::MAX,
+        };
+
+        let projected = capacities.scaled(1, 1);
+
+        assert_eq!(projected.rows, 1);
+        assert!(projected.body_bytes > 0);
+        assert!(projected.log_attributes.entries > 0);
+        assert!(projected.data_bytes() <= MAX_PREALLOCATED_DATA_BYTES as u128);
+        assert!(projected.map_entries() <= MAX_PREALLOCATED_MAP_ENTRIES as u128);
     }
 
     #[derive(clickhouse::Row, serde::Deserialize)]
