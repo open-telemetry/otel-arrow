@@ -32,8 +32,9 @@ use otel_arrow_dfe_pdata::schema::consts;
 use crate::error::{Error, Result};
 use crate::pipeline::Pipeline;
 use crate::pipeline::expr::ScopedExpr;
-use crate::pipeline::expr::eval::align_value_to_root;
+use crate::pipeline::expr::eval::{EvalContext, align_value_to_root};
 use crate::pipeline::expr::planner::ExprPlanner;
+use crate::pipeline::planner::RecordType;
 use crate::pipeline::project::anyval::is_any_value_data_type;
 
 /// Produces partitioned record batches by the results of some evaluated expression.
@@ -83,7 +84,10 @@ impl Partitioner {
         scalar_expr: ScalarExpression,
         functions: Vec<PipelineFunction>,
     ) -> Result<Self> {
-        let expr_planner = ExprPlanner::new();
+        let expr_planner = ExprPlanner::new(
+            false,
+            RecordType::Signal
+        );
         let planned_expr = expr_planner.plan_scalar(&scalar_expr, &functions)?;
 
         Ok(Self {
@@ -368,7 +372,7 @@ fn partition(
         return Ok(());
     }
 
-    let eval_result = match expr.execute_as_value(&otap_batch, session_ctx)? {
+    let eval_result = match expr.execute_as_value(&otap_batch, &EvalContext::new(session_ctx))? {
         Some(result) => {
             // align value to root so we can calculate partitions for the root record batch
             align_value_to_root(result, &otap_batch)?

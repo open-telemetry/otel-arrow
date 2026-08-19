@@ -24,7 +24,7 @@ use crate::pipeline::planner::PipelinePlanner;
 use crate::pipeline::state::ExecutionState;
 use crate::table::RecordBatchPartitionStream;
 
-mod apply_attrs;
+mod apply;
 mod assign;
 mod attributes;
 mod concat;
@@ -81,7 +81,7 @@ pub trait PipelineStage {
         _session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_options: &mut ExecutionState,
+        _exec_state: &mut ExecutionState,
     ) -> Result<RecordBatch> {
         return Err(Error::ExecutionError {
             cause: "Unexpected invocation of pipeline stage that does not support processing attributes".into()
@@ -95,6 +95,26 @@ pub trait PipelineStage {
     /// If a type chooses to implement this method and return true, it should also add an
     /// implementation for `execute_on_attributes`.
     fn supports_exec_on_attributes(&self) -> bool {
+        false
+    }
+
+    /// Execute this stage on the datapoints of the metric
+    // TODO finish the comment explaining what this thing does
+    async fn execute_on_metric_data_points(
+        &mut self,
+        _otap_batch: OtapArrowRecords,
+        _session_context: &SessionContext,
+        _config_options: &ConfigOptions,
+        _task_context: Arc<TaskContext>,
+        _exec_state: &mut ExecutionState
+    ) -> Result<OtapArrowRecords> {
+        return Err(Error::ExecutionError {
+            cause: "Unexpected invocation of pipeline stage that does not support execution on metric data points".into()
+         })
+    }
+
+    /// TODO add rustdoc comments for this method
+    fn supports_exec_on_metric_data_points(&self) -> bool {
         false
     }
 
@@ -391,14 +411,15 @@ mod test {
     use otel_arrow_dfe_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_otap_logs, to_otap_metrics, to_otap_traces,
     };
-    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
     use prost::Message;
 
     use crate::parser::default_parser_options;
 
     use super::*;
-    use otel_arrow_dfe_pdata::TryIntoWithOptions;
+
+    mod data_point;
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {

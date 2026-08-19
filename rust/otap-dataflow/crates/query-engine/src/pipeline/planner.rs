@@ -24,18 +24,48 @@ use otel_arrow_dfe_pdata::otlp::attributes::cbor::SerializedValuePathElement;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
 
-use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
+use crate::consts::{
+    ATTRIBUTES_FIELD_NAME, DATA_POINTS_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME,
+};
 use crate::error::{Error, Result};
-use crate::pipeline::apply_attrs::ApplyToAttributesPipelineStage;
+use crate::pipeline::apply::{ApplyPipelineStage, ApplySource};
 use crate::pipeline::assign::{AssignPipelineStage, Assignment};
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
 use crate::pipeline::expr::planner::ExprPlanner;
-use crate::pipeline::expr::{DataScope, ScopedExpr};
+use crate::pipeline::expr::{ChildRecordKind, DataScope, ScopedExpr};
 use crate::pipeline::filter::FilterPipelineStage;
 use crate::pipeline::fork::{ForkPipelineStage, ForkPipelineStageBranch};
 use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
+
+/// Context for planning pipelines and expressions.
+///
+/// Carries information such as the type of stream element that is being processed by what is
+/// being planned
+#[derive(Clone)]
+pub(crate) struct PlannerContext {
+    record_type: RecordType,
+}
+
+#[derive(Clone)]
+pub enum RecordType {
+    Signal,
+
+    Attributes,
+
+    Child(ChildRecordKind),
+}
+
+impl RecordType {
+    pub fn is_attribute(&self) -> bool {
+        matches!(self, Self::Attributes)
+    }
+
+    pub fn is_datapoint(&self) -> bool {
+        matches!(self, Self::Child(ChildRecordKind::DataPoint))
+    }
+}
 
 /// Converts an pipeline expression (AST) into a series of executable pipeline stages.
 ///
@@ -44,7 +74,9 @@ use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 /// - Which operations need custom stages (e.g., cross-table filters)
 /// - Optimizing by group operations into efficient stages
 pub struct PipelinePlanner {
-    plan_for_attributes: bool,
+    // TODO - do we really need a new context object here? or can record_type (it's one field
+    // just be a property of the planner?)
+    context: PlannerContext,
 
     /// Whether to consider  attribute keys case sensitive in filtering pipeline stages
     filter_attribute_keys_case_sensitive: bool,
@@ -53,15 +85,14 @@ pub struct PipelinePlanner {
 impl PipelinePlanner {
     /// creates a new instance of `PipelinePlanner`
     pub const fn new() -> Self {
-        Self {
-            plan_for_attributes: false,
-            filter_attribute_keys_case_sensitive: true,
-        }
+        Self::new_with_context(PlannerContext {
+            record_type: RecordType::Signal,
+        })
     }
 
-    pub const fn new_for_attributes() -> Self {
+    pub const fn new_with_context(context: PlannerContext) -> Self {
         Self {
-            plan_for_attributes: true,
+            context,
             filter_attribute_keys_case_sensitive: true,
         }
     }
@@ -119,13 +150,26 @@ impl PipelinePlanner {
             };
 
             // validate the pipeline stages are valid for attributes if planning pipeline to apply
-            // to attrs batches only
-            if self.plan_for_attributes {
-                for stage in &expr_results {
+            // to some child type
+            for stage in &expr_results {
+                // TODO - should we clean this up with some kind of trait method like `supports(record_type)`
+
+                if self.context.record_type.is_attribute() {
                     if !stage.supports_exec_on_attributes() {
                         return Err(Error::InvalidPipelineError {
                             cause: format!(
                                 "Data expression not supported on attributes stream: {data_expr:?}"
+                            ),
+                            query_location: Some(data_expr.get_query_location().clone()),
+                        });
+                    }
+                }
+
+                if self.context.record_type.is_datapoint() {
+                    if !stage.supports_exec_on_metric_data_points() {
+                        return Err(Error::InvalidPipelineError {
+                            cause: format!(
+                                "Data expression not supported on metric data points stream: {data_expr:?}"
                             ),
                             query_location: Some(data_expr.get_query_location().clone()),
                         });
@@ -271,14 +315,10 @@ impl PipelinePlanner {
                     // "conditional" pipeline stage, while treating non-terminal branch as invalid
                     // when a condition is missing and it's not the final branch.
 
-                    let expr_planner = if self.plan_for_attributes {
-                        ExprPlanner::for_attributes(self.filter_attribute_keys_case_sensitive)
-                    } else {
-                        ExprPlanner::with_attr_key_case_sensitive(
-                            self.filter_attribute_keys_case_sensitive,
-                        )
-                    };
-
+                    let expr_planner = ExprPlanner::new(
+                        self.filter_attribute_keys_case_sensitive,
+                        self.context.record_type.clone(),
+                    );
                     let mut default_branch = None;
                     let mut pipeline_branches = vec![];
                     for (i, branch) in branch_expr.get_branches().iter().enumerate() {
@@ -336,11 +376,10 @@ impl PipelinePlanner {
         _session_ctx: &SessionContext,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        let planner = if self.plan_for_attributes {
-            ExprPlanner::for_attributes(self.filter_attribute_keys_case_sensitive)
-        } else {
-            ExprPlanner::with_attr_key_case_sensitive(self.filter_attribute_keys_case_sensitive)
-        };
+        let planner = ExprPlanner::new(
+            self.filter_attribute_keys_case_sensitive,
+            self.context.record_type.clone(),
+        );
 
         let scoped_op = planner.plan_logical(logical_expr, functions)?;
         let filter_stage = FilterPipelineStage::new(scoped_op);
@@ -597,7 +636,10 @@ impl PipelinePlanner {
         // list of combined assignments for the next assignment pipeline stage.
         let mut assignments = Vec::new();
         let scoped_planner =
-            ExprPlanner::with_attr_key_case_sensitive(self.filter_attribute_keys_case_sensitive);
+            ExprPlanner::new(
+                self.filter_attribute_keys_case_sensitive,
+                self.context.record_type.clone(),
+            );
 
         // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
         // as it could be. The strategy currently employed is just to look at adjacent set
@@ -725,7 +767,7 @@ impl PipelinePlanner {
                         true
                     }
                     DataScope::StaticScalar => false,
-                    DataScope::Root | DataScope::RootParent(_) => {
+                    DataScope::Record(_) | DataScope::RootParent(_) => {
                         // walk the DataFusion Expr tree looking for column references
                         if let LeafEval::DatafusionExpr { logical_expr, .. } = eval {
                             let mut found = false;
@@ -840,7 +882,22 @@ impl PipelinePlanner {
                         inner_pipeline_data_exprs.push(data_expr);
                     }
 
-                    let planner = Self::new_for_attributes();
+                    let apply_source = source_expr_to_apply_source(dest).ok_or_else(|| {
+                        Error::InvalidPipelineError {
+                            cause: format!("Invalid source for apply pipeline {:?}", dest,),
+                            query_location: Some(dest.get_query_location().clone()),
+                        }
+                    })?;
+
+                    let nested_pipeline_record_type = match apply_source {
+                        ApplySource::Attributes(_) => RecordType::Attributes,
+                        ApplySource::DataPoints => RecordType::Child(ChildRecordKind::DataPoint),
+                    };
+
+                    let planner = Self::new_with_context(PlannerContext {
+                        record_type: nested_pipeline_record_type,
+                    });
+
                     let child_pipeline = planner.plan_data_exprs(
                         &inner_pipeline_data_exprs,
                         functions,
@@ -848,18 +905,10 @@ impl PipelinePlanner {
                         otap_batch,
                     )?;
 
-                    let attributes_id = Self::source_to_apply_attrs_id(dest).ok_or_else(|| {
-                        Error::InvalidPipelineError {
-                            cause: format!(
-                                "Invalid source for nested apply pipeline to attributes {:?}",
-                                dest,
-                            ),
-                            query_location: Some(dest.get_query_location().clone()),
-                        }
-                    })?;
+                    // TODO - we should maybe have tests that we plan/identify data_points as a source ...?
 
-                    results.push(Box::new(ApplyToAttributesPipelineStage::new(
-                        attributes_id,
+                    results.push(Box::new(ApplyPipelineStage::new(
+                        apply_source,
                         child_pipeline,
                     )));
 
@@ -901,44 +950,41 @@ impl PipelinePlanner {
 
         Ok(results)
     }
+}
 
-    /// when we receive an expression representing a nested pipeline, we currently assume it is
-    /// being applied to attributes. This attempts to determine to which set of attributes the
-    /// pipeline should be applied. Returns an error if the source does not identify a set of
-    /// attributes.
-    ///
-    /// Example valid inputs would include: attributes, resource/scope.attributes
-    ///
-    fn source_to_apply_attrs_id(
-        source_expr: &SourceScalarExpression,
-    ) -> Option<AttributesIdentifier> {
-        let values_accessor = source_expr.get_value_accessor();
-        let selectors = values_accessor.get_selectors();
-        match selectors.len() {
-            1 => match &selectors[0] {
-                ScalarExpression::Static(StaticScalarExpression::String(column)) => {
-                    (column.get_value() == ATTRIBUTES_FIELD_NAME)
-                        .then_some(AttributesIdentifier::Root)
-                }
-                _ => None,
-            },
-            2 => match (&selectors[0], &selectors[1]) {
-                (
-                    ScalarExpression::Static(StaticScalarExpression::String(column0)),
-                    ScalarExpression::Static(StaticScalarExpression::String(column1)),
-                ) => match (column0.get_value(), column1.get_value()) {
-                    (RESOURCES_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(
-                        AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
-                    ),
-                    (SCOPE_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => {
-                        Some(AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs))
+// TODO rustdocs for this funciton
+fn source_expr_to_apply_source(source_expr: &SourceScalarExpression) -> Option<ApplySource> {
+    let values_accessor = source_expr.get_value_accessor();
+    let selectors = values_accessor.get_selectors();
+    match selectors.len() {
+        1 => match &selectors[0] {
+            ScalarExpression::Static(StaticScalarExpression::String(column)) => {
+                match column.get_value() {
+                    ATTRIBUTES_FIELD_NAME => {
+                        Some(ApplySource::Attributes(AttributesIdentifier::Root))
                     }
+                    DATA_POINTS_FIELD_NAME => Some(ApplySource::DataPoints),
                     _ => None,
-                },
+                }
+            }
+            _ => None,
+        },
+        2 => match (&selectors[0], &selectors[1]) {
+            (
+                ScalarExpression::Static(StaticScalarExpression::String(column0)),
+                ScalarExpression::Static(StaticScalarExpression::String(column1)),
+            ) => match (column0.get_value(), column1.get_value()) {
+                (RESOURCES_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(ApplySource::Attributes(
+                    AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+                )),
+                (SCOPE_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(ApplySource::Attributes(
+                    AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs),
+                )),
                 _ => None,
             },
             _ => None,
-        }
+        },
+        _ => None,
     }
 }
 

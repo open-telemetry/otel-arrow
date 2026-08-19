@@ -21,8 +21,9 @@ use crate::error::Result;
 use crate::pipeline::concat::{
     concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_traces,
 };
-use crate::pipeline::expr::{DataScope, ScopedExpr};
-use crate::pipeline::filter::{align_selection_to_root, scoped_value_to_boolean_array};
+use crate::pipeline::expr::eval::EvalContext;
+use crate::pipeline::expr::{DataScope, RecordScope, ScopedExpr};
+use crate::pipeline::filter::{align_selection_to_record, scoped_value_to_boolean_array};
 use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
@@ -147,16 +148,15 @@ impl PipelineStage for ConditionalPipelineStage {
             // would have less rows which could make filter faster.
             let predicate_result = branch
                 .condition
-                .execute_as_value(&otap_batch, session_ctx)?;
+                .execute_as_value(&otap_batch, &EvalContext::new(session_ctx))?;
 
             let predicate_selection_vec = match predicate_result {
                 None => BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None),
                 Some(scoped_value) => {
-                    if scoped_value.scope != DataScope::Root
-                        && !(matches!(scoped_value.scope, DataScope::RootParent(_)))
+                    if !(matches!(scoped_value.scope, DataScope::Record(_) | DataScope::RootParent(_)))
                         && scoped_value.scope != DataScope::StaticScalar
                     {
-                        align_selection_to_root(Some(scoped_value), &otap_batch)?
+                        align_selection_to_record(Some(scoped_value), &otap_batch)?
                     } else {
                         // extract the BooleanArray from the ScopedValue
                         scoped_value_to_boolean_array(scoped_value.values, root_batch.num_rows())?
@@ -279,7 +279,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // evaluate the branch condition directly on the attributes record batch
             let predicate = branch
                 .condition
-                .evaluate_on_batch(session_ctx, &attrs_record_batch)?;
+                .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
             let predicate_selection_vec =
                 scoped_value_to_boolean_array(predicate, attrs_record_batch.num_rows())?;
 

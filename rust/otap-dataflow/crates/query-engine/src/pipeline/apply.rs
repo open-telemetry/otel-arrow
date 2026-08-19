@@ -7,6 +7,9 @@
 //! This allows us to treat attributes individually as members of a stream, as opposed to members
 //! properties on a stream of logs/traces/metrics.
 
+// TODO fix all the comments in this where it says stuff that it's like attribute specific or whatever
+// TODO we might want unit tests for applying to data points
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,46 +24,48 @@ use crate::pipeline::PipelineStage;
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
 
+pub enum ApplySource {
+    Attributes(AttributesIdentifier),
+
+    DataPoints,
+}
+
 /// Implementation of [`PipelineStage`] that performs transformations directly on a stream of
 /// attribute record batches. It contains a set of inner pipeline stages that have the capability
 /// to transform attributes record batches directly by calling `execute_on_attributes` method.
-pub struct ApplyToAttributesPipelineStage {
-    /// Identifier of which attributes record batch to apply the inner pipeline
-    attributes_id: AttributesIdentifier,
+pub struct ApplyPipelineStage {
+    // /// Identifier of which attributes record batch to apply the inner pipeline
+    // attributes_id: AttributesIdentifier,
+    source: ApplySource,
 
     /// Pipeline stages that will be applied to each attributes record batch
     pipeline_stages: Vec<Box<dyn PipelineStage>>,
 }
 
-impl ApplyToAttributesPipelineStage {
-    pub fn new(
-        attributes_id: AttributesIdentifier,
-        pipeline_stages: Vec<Box<dyn PipelineStage>>,
-    ) -> Self {
+impl ApplyPipelineStage {
+    pub fn new(source: ApplySource, pipeline_stages: Vec<Box<dyn PipelineStage>>) -> Self {
         Self {
-            attributes_id,
+            source,
             pipeline_stages,
         }
     }
-}
 
-#[async_trait(?Send)]
-impl PipelineStage for ApplyToAttributesPipelineStage {
-    async fn execute(
+    async fn apply_pipeline_to_attributes(
         &mut self,
+        attributes_id: AttributesIdentifier,
         mut otap_batch: OtapArrowRecords,
         session_context: &SessionContext,
         config_options: &ConfigOptions,
         task_context: Arc<TaskContext>,
-        exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
-        let attrs_payload_type = match &self.attributes_id {
+        let attrs_payload_type = match attributes_id {
             AttributesIdentifier::Root => match otap_batch.root_payload_type() {
                 ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
                 ArrowPayloadType::Spans => ArrowPayloadType::SpanAttrs,
                 _ => ArrowPayloadType::MetricAttrs,
             },
-            AttributesIdentifier::NonRoot(payload_type) => *payload_type,
+            AttributesIdentifier::NonRoot(payload_type) => payload_type,
         };
 
         let Some(mut curr_batch) = otap_batch.get(attrs_payload_type).cloned() else {
@@ -75,7 +80,7 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
                     session_context,
                     config_options,
                     Arc::clone(&task_context),
-                    exec_options,
+                    exec_state,
                 )
                 .await?;
         }
@@ -84,10 +89,69 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
         if curr_batch.num_rows() > 0 {
             otap_batch.set(attrs_payload_type, curr_batch)?;
         } else {
-            otap_batch.remove(attrs_payload_type);
+            _ =otap_batch.remove(attrs_payload_type);
         }
 
         Ok(otap_batch)
+    }
+
+    async fn apply_pipeline_to_metric_data_points(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        session_context: &SessionContext,
+        config_options: &ConfigOptions,
+        task_context: Arc<TaskContext>,
+        exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        for pipeline_stage in &mut self.pipeline_stages {
+            otap_batch = pipeline_stage
+                .execute_on_metric_data_points(
+                    otap_batch,
+                    session_context,
+                    config_options,
+                    Arc::clone(&task_context),
+                    exec_state,
+                )
+                .await?;
+        }
+
+        Ok(otap_batch)
+    }
+}
+
+#[async_trait(?Send)]
+impl PipelineStage for ApplyPipelineStage {
+    async fn execute(
+        &mut self,
+        otap_batch: OtapArrowRecords,
+        session_context: &SessionContext,
+        config_options: &ConfigOptions,
+        task_context: Arc<TaskContext>,
+        exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
+        match &self.source {
+            ApplySource::Attributes(attrs_id) => {
+                self.apply_pipeline_to_attributes(
+                    *attrs_id,
+                    otap_batch,
+                    session_context,
+                    config_options,
+                    task_context,
+                    exec_state,
+                )
+                .await
+            }
+            ApplySource::DataPoints => {
+                self.apply_pipeline_to_metric_data_points(
+                    otap_batch,
+                    session_context,
+                    config_options,
+                    task_context,
+                    exec_state,
+                )
+                .await
+            }
+        }
     }
 }
 
@@ -381,7 +445,7 @@ mod test {
                     let err_msg = err.to_string();
 
                     assert!(
-                        err_msg.contains("Invalid source for nested apply pipeline to attributes"),
+                        err_msg.contains("Invalid source for apply pipeline to attributes"),
                         "unexpected error: {}",
                         err_msg
                     );

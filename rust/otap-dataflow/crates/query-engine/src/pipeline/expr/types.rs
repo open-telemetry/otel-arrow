@@ -7,6 +7,7 @@ use crate::pipeline::expr::VALUE_COLUMN_NAME;
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::logical_expr::{Expr, cast};
 use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 /// Identifier of the logical type of some expression/column.
 ///
@@ -409,6 +410,68 @@ pub fn coerce_arithmetic(
         _ => None,
     }
 }
+
+/// identifier of metric datapoint type
+#[derive(Clone, Copy)]
+pub enum MetricDatapointType {
+    NumberDataPoint,
+    HistogramDataPoint,
+    ExponentialHistogramDataPoint,
+    SummaryDataPoint    
+}
+
+impl MetricDatapointType {
+    /// Get the OTAP payload type containing datapoints of this metric type 
+    pub fn payload_type(&self) -> ArrowPayloadType {
+        match self {
+            Self::SummaryDataPoint => ArrowPayloadType::SummaryDataPoints,
+            Self::ExponentialHistogramDataPoint => ArrowPayloadType::ExpHistogramDataPoints,
+            Self::HistogramDataPoint => ArrowPayloadType::HistogramDataPoints,
+            Self::NumberDataPoint => ArrowPayloadType::NumberDataPoints
+        }
+    }
+
+    // TODO comment
+    pub fn dp_attrs_payload_type(&self) -> ArrowPayloadType {
+        match self {
+            Self::SummaryDataPoint => ArrowPayloadType::SummaryDpAttrs,
+            Self::ExponentialHistogramDataPoint => ArrowPayloadType::ExpHistogramDpAttrs,
+            Self::HistogramDataPoint => ArrowPayloadType::HistogramDpAttrs,
+            Self::NumberDataPoint => ArrowPayloadType::NumberDpAttrs
+        }
+    }
+
+    // TODO comment
+    pub fn exemplar_payload_type(&self) -> Option<ArrowPayloadType> {
+        match self {
+            Self::ExponentialHistogramDataPoint => Some(ArrowPayloadType::ExpHistogramDpExemplars),
+            Self::HistogramDataPoint => Some(ArrowPayloadType::HistogramDpExemplars),
+            Self::NumberDataPoint => Some(ArrowPayloadType::NumberDpExemplars),
+            Self::SummaryDataPoint => None,
+        }
+    }
+
+    // TODO comments
+    pub fn exemplar_attr_payload_type(&self) -> Option<ArrowPayloadType> {
+        match self {
+            Self::ExponentialHistogramDataPoint => Some(ArrowPayloadType::ExpHistogramDpExemplarAttrs),
+            Self::HistogramDataPoint => Some(ArrowPayloadType::HistogramDpExemplarAttrs),
+            Self::NumberDataPoint => Some(ArrowPayloadType::NumberDpExemplarAttrs),
+            Self::SummaryDataPoint => None,
+        }
+    }
+
+    /// Returns an iterator of all the types of metric datapoints
+    pub fn all() -> impl Iterator<Item=Self> {
+        [
+            MetricDatapointType::NumberDataPoint,
+            MetricDatapointType::HistogramDataPoint,
+            MetricDatapointType::ExponentialHistogramDataPoint,
+            MetricDatapointType::SummaryDataPoint,
+        ].into_iter()
+    }
+}
+
 
 #[cfg(test)]
 mod test {

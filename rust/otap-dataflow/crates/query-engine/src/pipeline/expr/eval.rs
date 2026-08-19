@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// TODO comment outdated
 //! Implementation of `execute_as_value` for each `ScopedExpr` variant.
 //!
 //! This module contains the logic for evaluating a `ScopedExpr` tree and producing a
@@ -33,13 +34,15 @@ use otel_arrow_dfe_pdata::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_array,
 };
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::bitmap::combine_scope;
 use crate::pipeline::expr::join::{JoinInput, join, multi_join};
+use crate::pipeline::expr::types::MetricDatapointType;
 use crate::pipeline::expr::{
-    DataScope, LeafEval, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue, ShortCircuitStrategy,
+    ChildRecordKind, DataScope, LeafEval, RecordScope, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue, ShortCircuitStrategy,
     VALUE_COLUMN_NAME, arg_column_name,
 };
 use crate::pipeline::id_mask::IdMask;
@@ -50,6 +53,36 @@ use crate::pipeline::project::anyval::{
 use crate::pipeline::project::{Projection, ProjectionOptions};
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 
+/// Context for evaluating [`ScopedExpr`]
+pub(crate) struct EvalContext<'a> {
+    /// When evaluating a [`ScopedExpr`] and encountering a data scope identifying
+    /// the source as a metric datapoint, this will be used to determine which record batch
+    /// record batch is that which should be used.
+    datapoint_type: Option<MetricDatapointType>,
+
+    /// DataFusion Session context. Used for planning physical expression from logical exprs
+    session_context: &'a SessionContext,
+}
+
+impl<'a> EvalContext<'a> {
+    pub fn new(session_ctx: &'a SessionContext) -> Self {
+        Self {
+            datapoint_type: None,
+            session_context: session_ctx,
+        }
+    }
+
+    pub fn new_for_metrics_data_points(
+        datapoint_type: MetricDatapointType,
+        session_ctx: &'a SessionContext,
+    ) -> Self {
+        Self {
+            datapoint_type: Some(datapoint_type),
+            session_context: session_ctx,
+        }
+    }
+}
+
 impl ScopedExpr {
     /// Produce a full `ScopedValue` (array + scope + IDs).
     ///
@@ -58,37 +91,38 @@ impl ScopedExpr {
     ///
     /// Primarily used when the consumer needs actual values -- e.g., for assignment to a column,
     /// as input to arithmetic, or as an argument to a function call.
+    // TODO - comment is out of date wrt to null propagation?
     pub(crate) fn execute_as_value(
         &mut self,
         otap_batch: &OtapArrowRecords,
-        session_ctx: &SessionContext,
+        eval_ctx: &EvalContext<'_>,
     ) -> Result<Option<ScopedValue>> {
         match self {
             Self::Eval { scope, eval } => {
-                eval_datafusion_expr_value(scope, eval, otap_batch, session_ctx)
+                eval_datafusion_expr_value(scope, eval, otap_batch, eval_ctx)
             }
             Self::JoinAndEval {
                 children,
                 eval,
                 default_null_children,
-                align_children_to_root,
+                align_children_to_record,
                 short_circuit,
             } => join_and_eval_value(
                 children.as_mut_slice(),
                 eval,
                 *default_null_children,
-                *align_children_to_root,
+                *align_children_to_record,
                 short_circuit.as_ref(),
                 otap_batch,
-                session_ctx,
+                eval_ctx,
             ),
             Self::BitmapAnd(left, right) => {
-                execute_bitmap_and_as_value(left, right, otap_batch, session_ctx)
+                execute_bitmap_and_as_value(left, right, otap_batch, eval_ctx)
             }
             Self::BitmapOr(left, right) => {
-                execute_bitmap_or_as_value(left, right, otap_batch, session_ctx)
+                execute_bitmap_or_as_value(left, right, otap_batch, eval_ctx)
             }
-            Self::BitmapNot(child) => execute_bitmap_not_as_value(child, otap_batch, session_ctx),
+            Self::BitmapNot(child) => execute_bitmap_not_as_value(child, otap_batch, eval_ctx),
         }
     }
 
@@ -101,8 +135,8 @@ impl ScopedExpr {
     /// `BitmapOr`, `BitmapNot`) which recursively evaluate their children on the same batch.
     pub(crate) fn evaluate_on_batch(
         &mut self,
-        session_ctx: &SessionContext,
         record_batch: &RecordBatch,
+        eval_ctx: &EvalContext<'_>,
     ) -> Result<ColumnarValue> {
         match self {
             Self::Eval {
@@ -113,7 +147,7 @@ impl ScopedExpr {
                         ..
                     },
                 ..
-            } => evaluate_df_expr(logical_expr, physical_expr, session_ctx, record_batch),
+            } => evaluate_df_expr(logical_expr, physical_expr, eval_ctx, record_batch),
             _ => Err(Error::InvalidPipelineError {
                 cause: "only Eval(DatafusionExpr) can be evaluated on a provided batch".into(),
                 query_location: None,
@@ -127,7 +161,7 @@ pub(super) fn eval_datafusion_expr_value(
     scope: &DataScope,
     eval: &mut LeafEval,
     otap_batch: &OtapArrowRecords,
-    session_ctx: &SessionContext,
+    eval_ctx: &EvalContext<'_>,
 ) -> Result<Option<ScopedValue>> {
     match eval {
         LeafEval::DatafusionExpr {
@@ -141,8 +175,23 @@ pub(super) fn eval_datafusion_expr_value(
         } => {
             // resolve the source RecordBatch for this scope
             let source_rb = match scope {
-                DataScope::Root | DataScope::RootParent(_) => {
+                DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
                     otap_batch.root_record_batch().map(Cow::Borrowed)
+                }
+                DataScope::Record(RecordScope::Child(child)) => {
+                    match child {
+                        ChildRecordKind::DataPoint => {
+                            // TODO - this could probably be a helper method on eval_ctx
+                            match &eval_ctx.datapoint_type {
+                                Some(metric_datapoint_type) => otap_batch
+                                    .get(metric_datapoint_type.payload_type())
+                                    .map(Cow::Borrowed),
+                                None => {
+                                    todo!("return error - invalid context for planned expr")
+                                }
+                            }
+                        }
+                    }
                 }
                 DataScope::Attribute(attrs_id, key) => {
                     let attrs_payload_type = resolve_attrs_payload_type(attrs_id, otap_batch);
@@ -159,6 +208,8 @@ pub(super) fn eval_datafusion_expr_value(
                 }
                 DataScope::StaticScalar => Some(Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref())),
             };
+
+            println!("source rb in eval = {:?}", source_rb);
 
             let source_rb = match source_rb {
                 Some(rb) => rb,
@@ -202,13 +253,13 @@ pub(super) fn eval_datafusion_expr_value(
             let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
 
             let result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
-                evaluate_df_expr(logical_expr, physical_expr, session_ctx, &projected_rb)?
+                evaluate_df_expr(logical_expr, physical_expr, eval_ctx, &projected_rb)?
             } else {
                 evaluate_with_anyval_partitions(
                     logical_expr,
                     physical_expr,
                     projection_opts,
-                    session_ctx,
+                    eval_ctx,
                     &projected_rb,
                     &any_value_indices,
                 )?
@@ -227,7 +278,7 @@ pub(super) fn eval_datafusion_expr_value(
             let result = predicate.evaluate(otap_batch);
             Ok(Some(ScopedValue {
                 values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(result))),
-                scope: DataScope::Root,
+                scope: DataScope::StaticScalar,
                 ids: None,
                 parent_ids: None,
             }))
@@ -246,13 +297,13 @@ pub(super) fn join_and_eval_value(
     align_children_to_root: bool,
     short_circuit: Option<&ShortCircuitStrategy>,
     otap_batch: &OtapArrowRecords,
-    session_ctx: &SessionContext,
+    eval_ctx: &EvalContext<'_>,
 ) -> Result<Option<ScopedValue>> {
     // evaluate all children
     let num_children = children.len();
     let mut child_results = Vec::with_capacity(num_children);
     for i in 0..num_children {
-        let result = match children[i].execute_as_value(otap_batch, session_ctx)? {
+        let result = match children[i].execute_as_value(otap_batch, eval_ctx)? {
             Some(mut result) => {
                 // maybe align children to root if configured. We skip alignment for scalar results
                 // because it's handled by the join below
@@ -282,7 +333,7 @@ pub(super) fn join_and_eval_value(
                         let other = if let Some(sv) = child_results.into_iter().next() {
                             Some(sv)
                         } else {
-                            children[i + 1].execute_as_value(otap_batch, session_ctx)?
+                            children[i + 1].execute_as_value(otap_batch, eval_ctx)?
                         };
                         return resolve_or_with_absent_child(
                             other,
@@ -353,13 +404,13 @@ pub(super) fn join_and_eval_value(
     // handle AnyValue columns
     let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
     let result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
-        evaluate_df_expr(logical_expr, physical_expr, session_ctx, &projected_rb)?
+        evaluate_df_expr(logical_expr, physical_expr, eval_ctx, &projected_rb)?
     } else {
         evaluate_with_anyval_partitions(
             logical_expr,
             physical_expr,
             projection_opts,
-            session_ctx,
+            eval_ctx,
             &projected_rb,
             &any_value_indices,
         )?
@@ -438,6 +489,7 @@ fn invert_boolean_scoped_value(sv: ScopedValue) -> Result<ScopedValue> {
     })
 }
 
+// TODO comment on what this is doing ...
 fn coerce_nulls_for_predicate(
     result_vals: ColumnarValue,
     missing_data_passes: bool,
@@ -458,6 +510,7 @@ fn coerce_nulls_for_predicate(
         ColumnarValue::Scalar(ScalarValue::Boolean(None)) => {
             return ColumnarValue::Scalar(ScalarValue::Boolean(Some(missing_data_passes)));
         }
+        // TODO - unnecessary case below? We've handled all the options
         _ => {}
     }
 
@@ -473,17 +526,18 @@ fn execute_bitmap_and_as_value(
     left: &mut Box<ScopedExpr>,
     right: &mut Box<ScopedExpr>,
     otap_batch: &OtapArrowRecords,
-    session_ctx: &SessionContext,
+    eval_ctx: &EvalContext<'_>,
 ) -> Result<Option<ScopedValue>> {
     let mut pool = IdBitmapPool::new();
-    let left_result = left.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
+    let left_result = left.execute_as_id_mask(otap_batch, eval_ctx, &mut pool)?;
 
     // short-circuit: if left is all-false, skip right
+    // TODO - should we also be checking if it's weirdly IdMask::Some(x) where x.true_count() == 0 ? or w/e? (same for NotSome)
     if left_result.mask == IdMask::None {
         return materialize_id_mask_to_value(IdMask::None, None, otap_batch);
     }
 
-    let right_result = right.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
+    let right_result = right.execute_as_id_mask(otap_batch, eval_ctx, &mut pool)?;
     let combined_scope = combine_scope(left_result.scope, right_result.scope);
     let combined = left_result.mask.combine_and(right_result.mask, &mut pool);
     materialize_id_mask_to_value(combined, combined_scope, otap_batch)
@@ -496,17 +550,18 @@ fn execute_bitmap_or_as_value(
     left: &mut Box<ScopedExpr>,
     right: &mut Box<ScopedExpr>,
     otap_batch: &OtapArrowRecords,
-    session_ctx: &SessionContext,
+    eval_ctx: &EvalContext<'_>,
 ) -> Result<Option<ScopedValue>> {
     let mut pool = IdBitmapPool::new();
-    let left_result = left.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
+    let left_result = left.execute_as_id_mask(otap_batch, eval_ctx, &mut pool)?;
 
     // short-circuit: if left is all-true, skip right
+    // TODO - should we also be checking if it's weirdly IdMask::Some(x) where x.false() == 0 ? or w/e? (same for NotSome)
     if left_result.mask == IdMask::All {
         return materialize_id_mask_to_value(IdMask::All, None, otap_batch);
     }
 
-    let right_result = right.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
+    let right_result = right.execute_as_id_mask(otap_batch, eval_ctx, &mut pool)?;
     let combined_scope = combine_scope(left_result.scope, right_result.scope);
     let combined = left_result.mask.combine_or(right_result.mask, &mut pool);
     materialize_id_mask_to_value(combined, combined_scope, otap_batch)
@@ -516,10 +571,10 @@ fn execute_bitmap_or_as_value(
 fn execute_bitmap_not_as_value(
     child: &mut Box<ScopedExpr>,
     otap_batch: &OtapArrowRecords,
-    session_ctx: &SessionContext,
+    eval_ctx: &EvalContext<'_>,
 ) -> Result<Option<ScopedValue>> {
     let mut pool = IdBitmapPool::new();
-    let child_result = child.execute_as_id_mask(otap_batch, session_ctx, &mut pool)?;
+    let child_result = child.execute_as_id_mask(otap_batch, eval_ctx, &mut pool)?;
     let inverted = invert_id_mask(child_result.mask);
     materialize_id_mask_to_value(inverted, child_result.scope, otap_batch)
 }
@@ -528,12 +583,12 @@ fn execute_bitmap_not_as_value(
 fn evaluate_df_expr(
     logical_expr: &Expr,
     physical_expr: &mut Option<PhysicalExprRef>,
-    session_ctx: &SessionContext,
+    eval_ctx: &EvalContext<'_>,
     record_batch: &RecordBatch,
 ) -> Result<ColumnarValue> {
     if physical_expr.is_none() {
         // lazily plan the physical expression
-        let session_state = session_ctx.state();
+        let session_state = eval_ctx.session_context.state();
         let df_schema = DFSchema::try_from(record_batch.schema_ref().as_ref().clone())?;
         let expr = create_physical_expr(logical_expr, &df_schema, session_state.execution_props())?;
         *physical_expr = Some(expr);
@@ -555,7 +610,7 @@ fn evaluate_with_anyval_partitions(
     logical_expr: &Expr,
     physical_expr: &mut Option<PhysicalExprRef>,
     projection_opts: &ProjectionOptions,
-    session_ctx: &SessionContext,
+    eval_ctx: &EvalContext<'_>,
     projected_rb: &RecordBatch,
     any_value_indices: &[usize],
 ) -> Result<ColumnarValue> {
@@ -564,14 +619,14 @@ fn evaluate_with_anyval_partitions(
     if partitions.len() == 1 {
         let partition = partitions.into_iter().next().expect("non-empty");
         let batch = maybe_downcast_dicts(partition.batch, projection_opts)?;
-        evaluate_df_expr(logical_expr, physical_expr, session_ctx, &batch)
+        evaluate_df_expr(logical_expr, physical_expr, eval_ctx, &batch)
     } else {
         let total_rows = projected_rb.num_rows();
         let mut partition_results = Vec::with_capacity(partitions.len());
 
         for partition in partitions {
             let batch = maybe_downcast_dicts(partition.batch, projection_opts)?;
-            let result = evaluate_df_expr(logical_expr, physical_expr, session_ctx, &batch)?;
+            let result = evaluate_df_expr(logical_expr, physical_expr, eval_ctx, &batch)?;
             let result_arr = result.into_array(batch.num_rows())?;
             partition_results.push((result_arr, partition.original_row_ranges));
         }
@@ -604,7 +659,10 @@ pub(crate) fn scoped_value_to_join_input(
     sv: ScopedValue,
     otap_batch: &OtapArrowRecords,
 ) -> Result<JoinInput> {
-    let is_root = matches!(sv.scope, DataScope::Root | DataScope::RootParent(_));
+    let is_root = matches!(
+        sv.scope,
+        DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_)
+    );
 
     let mut result = JoinInput {
         values: sv.values,
@@ -708,6 +766,9 @@ fn materialize_id_mask_to_value(
                     let mut segment_val = false;
                     let mut segment_len = 0usize;
 
+                    // TODO - should we be like, checking if the row is !valid
+                    // if the IdMask variant was NotSome? e.g. is there a bug here?
+
                     for idx in 0..id_col.len() {
                         let row_val = if id_col.is_valid(idx) {
                             mask.contains(id_col.value(idx) as u32)
@@ -745,7 +806,8 @@ fn materialize_id_mask_to_value(
 
     Ok(Some(ScopedValue::new(
         ColumnarValue::Array(Arc::new(boolean_arr)),
-        DataScope::Root,
+        // TODO - need to put the actual RecordScope here
+        DataScope::Record(RecordScope::Signal),
         root_rb,
     )))
 }
@@ -834,6 +896,7 @@ fn build_case_insensitive_mask(key_col: &dyn Array, key_lower: &str) -> Result<B
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .expect("data type is Utf8, downcast to StringArray must succeed");
+            // TODO - we should use case insensitive eq kernel rather than converting to lower case
             Ok(BooleanArray::from_iter(key_arr.iter().map(|opt_val| {
                 opt_val.map(|v| v.to_lowercase() == *key_lower)
             })))
@@ -855,6 +918,8 @@ fn build_case_insensitive_mask(key_col: &dyn Array, key_lower: &str) -> Result<B
             Ok(BooleanArray::from_iter((0..dict_arr.len()).map(|i| {
                 if dict_arr.is_valid(i) {
                     let key_idx = keys.value(i) as usize;
+                    // TODO - we should use case insensitive eq kernel rather than converting to lower case
+                    // Also - this dereferences and compares the values multiple times - poor perf.
                     Some(values.value(key_idx).to_lowercase() == *key_lower)
                 } else {
                     Some(false)
@@ -951,7 +1016,8 @@ pub(crate) fn align_value_to_root(
 
     let left_input = JoinInput::new(
         ColumnarValue::Array(Arc::new(NullArray::new(root_batch.num_rows()))),
-        Rc::new(DataScope::Root),
+        // TODO - shouldn't be assuming this ...
+        Rc::new(DataScope::Record(RecordScope::Signal)),
         root_batch,
     );
 
@@ -967,7 +1033,12 @@ pub(crate) fn align_value_to_root(
             cause: format!("unexpected join result - expected column {result_col_name}"),
         })?
         .clone();
-    debug_assert!(matches!(result_scope.as_ref(), DataScope::Root));
+
+    // TODO - this will fail when executing on chilren
+    debug_assert!(matches!(
+        result_scope.as_ref(),
+        DataScope::Record(RecordScope::Signal)
+    ));
 
     Ok(ScopedValue::new(
         ColumnarValue::Array(col),
