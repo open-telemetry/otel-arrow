@@ -304,7 +304,7 @@ impl ConsoleExporter {
                 match RawMetricsData::try_new(metrics_bytes) {
                     Ok(metrics_view) => self.formatter.print_metrics_data(&metrics_view).await,
                     Err(e) => {
-                        otel_error!("console.metrics_view.otlp_create_failed", error = ?e, message = "Failed to create OTLP metrics view");
+                        otel_warn!("console.metrics_view.otlp_create_failed", error = ?e);
                         Err(ConsoleExportErrorType::OtlpViewCreation)
                     }
                 }
@@ -312,7 +312,7 @@ impl ConsoleExporter {
             OtapPayload::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
                 Ok(metrics_view) => self.formatter.print_metrics_data(&metrics_view).await,
                 Err(e) => {
-                    otel_error!("console.metrics_view.otap_create_failed", error = ?e, message = "Failed to create OTAP metrics view");
+                    otel_warn!("console.metrics_view.otap_create_failed", error = ?e);
                     Err(ConsoleExportErrorType::OtapViewCreation)
                 }
             },

@@ -242,8 +242,8 @@ the actual console export result.
 | --- | --- | --- |
 | `console.logs_view.otlp_create_failed` | `error` | Failed to create an OTLP logs view for console output. |
 | `console.logs_view.otap_create_failed` | `error` | Failed to create an OTAP logs view for console output. |
-| `console.metrics_view.otlp_create_failed` | `error` | Failed to create an OTLP metrics view for pretty console output. |
-| `console.metrics_view.otap_create_failed` | `error` | Failed to create an OTAP metrics view for pretty console output. |
+| `console.metrics_view.otlp_create_failed` | `warn` | Failed to create an OTLP metrics view for pretty console output. |
+| `console.metrics_view.otap_create_failed` | `warn` | Failed to create an OTAP metrics view for pretty console output. |
 | `console.message.unsupported_signal` | `warn` | The selected format does not support the signal. Traces are always unsupported; metrics are unsupported by `record_json`. |
 | `console.format_failed` | `error` | Failed to format a payload for console output. |
 | `console.write_failed` | `error` | Failed to write rendered output to stdout. |
