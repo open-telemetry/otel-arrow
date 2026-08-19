@@ -291,7 +291,7 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "7819998d4bd015b7ae7576b1e26aaa56314f03e6", default-features = false, features = ["tls-rustls"] }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "b4cbfda441075af8a6d1f2b7db7632febb3068ae", default-features = false, features = ["tls-rustls"] }
 # Pinned to a rev containing upstream resource detector work. Swap to a published version once
 # contrib cuts one.
 opentelemetry-resource-detectors = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "7819998d4bd015b7ae7576b1e26aaa56314f03e6" }
