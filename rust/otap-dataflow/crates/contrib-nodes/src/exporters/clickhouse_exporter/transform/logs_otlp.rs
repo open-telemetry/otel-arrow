@@ -244,7 +244,13 @@ impl OtlpLogsTransformer {
         result
     }
 
-    /// Transform one request while the reusable parent-attribute arenas contain active data.
+    /// Build one batch while resource and scope attribute arenas are reused during traversal.
+    ///
+    /// This worker is separate from [`Self::transform`] so the outer entry point can clear both
+    /// arenas after capturing the result, including when parsing or conversion fails. Consequently,
+    /// this method may return with active or partially collected arena contents and must only be
+    /// called through [`Self::transform`]. Capacity history is updated only after a non-empty batch
+    /// is built successfully.
     fn transform_request(
         &mut self,
         request: &[u8],
@@ -410,12 +416,17 @@ impl OtlpLogsTransformer {
 
 /// Reusable arena for one resource or scope's flattened string attributes.
 ///
-/// Keys and converted values share one backing string. Ranges remain valid until [`Self::clear`],
-/// which resets the logical contents while retaining allocations for the next parent message.
+/// Keys and converted values share one backing string, and each entry stores ranges into that
+/// string instead of allocating separate strings. Entry order and duplicate keys are preserved.
+/// Ranges remain valid until [`Self::clear`], which resets the logical contents and either retains
+/// or releases the backing allocations according to the configured retention bounds.
 #[derive(Default)]
 struct AttributeArena {
+    /// Concatenated UTF-8 keys and converted values referenced by `entries`.
     storage: String,
+    /// Ordered key/value ranges for the current resource or scope.
     entries: Vec<AttributeRanges>,
+    /// First captured `service.name` value, stored as a range into `storage`.
     service_name: Option<Range<usize>>,
 }
 
@@ -426,7 +437,11 @@ struct AttributeRanges {
 }
 
 impl AttributeArena {
-    /// Clear active ranges and release backing allocations above the retained-cap policy.
+    /// Prepare the arena for another resource or scope.
+    ///
+    /// All previously returned ranges become invalid. Normal-sized allocations are retained for
+    /// reuse, while storage above the byte or entry retention bounds is replaced so an outlier
+    /// parent does not determine the transformer's steady-state memory usage.
     fn clear(&mut self) {
         if self.storage.capacity() > MAX_RETAINED_ATTRIBUTE_ARENA_BYTES {
             self.storage = String::new();
@@ -441,6 +456,13 @@ impl AttributeArena {
         self.service_name = None;
     }
 
+    /// Convert and collect one parent message's attributes in input order.
+    ///
+    /// Values are converted to their ClickHouse string representation through `scratch`. When
+    /// `capture_service_name` is true, the first `service.name` value is also indexed for the
+    /// dedicated column. The caller must clear the arena before collecting a different parent.
+    /// An error may leave partially collected contents; [`OtlpLogsTransformer::transform`] still
+    /// clears them before returning.
     fn collect<I, A>(
         &mut self,
         attributes: I,
@@ -470,6 +492,10 @@ impl AttributeArena {
         Ok(())
     }
 
+    /// Append the collected entries as one non-null Arrow map value.
+    ///
+    /// An empty arena appends an empty map rather than a null. Request-wide presence tracking later
+    /// decides whether the entire column is included in the returned batch.
     fn append_to(
         &self,
         builder: &mut MapBuilder<StringBuilder, StringBuilder>,
@@ -486,16 +512,19 @@ impl AttributeArena {
         Ok(())
     }
 
+    /// Copy a string into shared storage and return its byte range until the next clear.
     fn append_string(&mut self, value: &str) -> Range<usize> {
         let start = self.storage.len();
         self.storage.push_str(value);
         start..self.storage.len()
     }
 
+    /// Return whether the current parent contributed no attributes.
     fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    /// Return the first captured `service.name`, or an empty string when none was collected.
     fn service_name(&self) -> &str {
         self.service_name
             .as_ref()
