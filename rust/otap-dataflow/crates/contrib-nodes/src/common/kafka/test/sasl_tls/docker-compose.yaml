@@ -1,0 +1,79 @@
+services:
+  certs:
+    image: apache/kafka:4.1.1
+    user: "0:0"
+    entrypoint:
+      - /bin/bash
+      - /workspace/generate-certs.sh
+    volumes:
+      - ./generate-certs.sh:/workspace/generate-certs.sh:ro
+      - ./generated:/out
+
+  broker:
+    image: apache/kafka:4.1.1
+    user: "0:0"
+    hostname: broker
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    ports:
+      - "${KAFKA_SASL_TLS_PORT:-39093}:9093"
+    environment:
+      KAFKA_SASL_TLS_PORT: "${KAFKA_SASL_TLS_PORT:-39093}"
+      KAFKA_SASL_TLS_HOST: "${KAFKA_SASL_TLS_HOST:-localhost}"
+    entrypoint:
+      - /bin/bash
+      - /workspace/start-kafka.sh
+    volumes:
+      - ./server.properties:/workspace/server.properties:ro
+      - ./start-kafka.sh:/workspace/start-kafka.sh:ro
+      - ./generated:/etc/kafka/secrets:ro
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/kafka/bin/kafka-topics.sh
+          --bootstrap-server broker:19093
+          --command-config /etc/kafka/secrets/plain-client.properties
+          --list >/dev/null 2>&1
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      start_period: 10s
+
+  receiver-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      KAFKA_SASL_TLS_BROKERS: "host.docker.internal:${KAFKA_SASL_TLS_PORT:-39093}"
+      KAFKA_SASL_TLS_CA_FILE: /workspace/rust/otap-dataflow/crates/contrib-nodes/src/common/kafka/test/sasl_tls/generated/ca.pem
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - type: bind
+        source: "${OTEL_ARROW_REPO_ROOT:?set by the fixture runner}"
+        target: /workspace
+      - cargo-registry:/usr/local/cargo/registry
+      - linux-target:/workspace/rust/otap-dataflow/target
+    command:
+      - /usr/local/cargo/bin/cargo
+      - test
+      - -p
+      - otap-df-contrib-nodes
+      - --features
+      - kafka-receiver
+      - sasl_tls_receiver_authenticates_and_commits_for_all_supported_mechanisms
+      - --
+      - --ignored
+      - --nocapture
+      - --test-threads=1
+
+volumes:
+  kafka-data:
+  cargo-registry:
+  linux-target:

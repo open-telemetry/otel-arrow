@@ -509,12 +509,9 @@ mod receiver_harness {
     }
 
     impl KafkaReceiverHarness {
-        /// Starts the receiver with an explicit `cfg` (its `bootstrap.servers`
-        /// must already point at `cluster`). An optional `capture_policy` is
-        /// installed on the effect handler before start. Spawns onto the
-        /// current `LocalSet`.
-        pub(crate) fn start_with_capture(
-            _cluster: &KafkaTestCluster,
+        /// Starts the receiver with an explicit `cfg` and optional capture
+        /// policy. Spawns onto the current `LocalSet`.
+        pub(crate) fn start_with_config_and_capture(
             cfg: KafkaReceiverConfig,
             capture_policy: Option<HeaderCapturePolicy>,
         ) -> Self {
@@ -559,6 +556,18 @@ mod receiver_harness {
                 join,
                 _keep_alive: keep_alive,
             }
+        }
+
+        /// Starts the receiver with an explicit `cfg` (its `bootstrap.servers`
+        /// must already point at `cluster`). An optional `capture_policy` is
+        /// installed on the effect handler before start. Spawns onto the
+        /// current `LocalSet`.
+        pub(crate) fn start_with_capture(
+            _cluster: &KafkaTestCluster,
+            cfg: KafkaReceiverConfig,
+            capture_policy: Option<HeaderCapturePolicy>,
+        ) -> Self {
+            Self::start_with_config_and_capture(cfg, capture_policy)
         }
 
         /// Starts the receiver with an explicit `cfg` and no capture policy.

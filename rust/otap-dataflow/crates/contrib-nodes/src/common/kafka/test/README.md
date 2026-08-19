@@ -389,8 +389,9 @@ can assert failures. `TestError` variants: `ClusterSetup`, `Produce`, `Consume`,
 ## Limitations
 
 - No TLS or SASL handshake: `MockCluster` does not perform real TLS termination
-  or SASL authentication, so auth/TLS matrices need a real broker (out of scope
-  for this suite).
+  or SASL authentication. Run the real-broker
+  [`sasl_tls`](sasl_tls/README.md) fixture to validate the receiver with
+  SASL/PLAIN, SCRAM-SHA-256, and SCRAM-SHA-512 over TLS.
 - No CreateTopics admin API: create topics via the builder or `create_topic`.
 - `broker_down`/`broker_up` do not trigger leader election (see the fault-injection
   note above).

@@ -1619,11 +1619,12 @@ mod tests {
     };
 
     use crate::common::kafka::MessageFormat;
+    use crate::common::kafka::auth::SaslMechanism;
     use crate::common::kafka::node_harness::KafkaReceiverHarness;
     use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
     use crate::common::kafka::test::cluster::KafkaTestCluster;
     use crate::common::kafka::test::consumer::{RebalanceTrigger, committed_offset};
-    use crate::common::kafka::test::producer::SendRecord;
+    use crate::common::kafka::test::producer::{SendRecord, TestProducerBuilder};
     use crate::common::kafka::test::wait::poll_until;
     use crate::common::kafka::test::with_cluster;
     use otap_df_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
@@ -1646,7 +1647,7 @@ mod tests {
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message;
     use rdkafka::ClientConfig;
-    use rdkafka::consumer::{Consumer, StreamConsumer};
+    use rdkafka::consumer::{BaseConsumer, Consumer, StreamConsumer};
     use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
     use rdkafka::types::RDKafkaRespErr;
     use std::collections::HashMap;
@@ -1657,7 +1658,184 @@ mod tests {
     /// Records produced to each partition in the rebalance integration tests.
     const REBALANCE_RECORDS_PER_PARTITION: i32 = 5;
 
+    struct SaslTlsCredential {
+        mechanism: SaslMechanism,
+        username: &'static str,
+        password: &'static str,
+        suffix: &'static str,
+    }
+
     // ---- Shared test helpers ----
+
+    fn sasl_tls_client_config(
+        brokers: &str,
+        ca_file: &str,
+        credential: &SaslTlsCredential,
+    ) -> ClientConfig {
+        let mut config = ClientConfig::new();
+        let _ = config
+            .set("bootstrap.servers", brokers)
+            .set("security.protocol", "SASL_SSL")
+            .set("sasl.mechanism", credential.mechanism.as_rdkafka_str())
+            .set("sasl.username", credential.username)
+            .set("sasl.password", credential.password)
+            .set("ssl.ca.location", ca_file);
+        config
+    }
+
+    fn sasl_tls_committed_offset(
+        brokers: &str,
+        ca_file: &str,
+        credential: &SaslTlsCredential,
+        group: &str,
+        topic: &str,
+    ) -> Option<i64> {
+        let mut config = sasl_tls_client_config(brokers, ca_file, credential);
+        let _ = config
+            .set("group.id", group)
+            .set("enable.auto.commit", "false");
+        let consumer: BaseConsumer = config
+            .create()
+            .expect("create SASL/TLS committed-offset probe");
+        let mut partitions = TopicPartitionList::new();
+        let _ = partitions.add_partition(topic, 0);
+        let committed = consumer
+            .committed_offsets(partitions, Duration::from_secs(10))
+            .expect("read SASL/TLS committed offset");
+        committed
+            .find_partition(topic, 0)
+            .and_then(|partition| match partition.offset() {
+                Offset::Offset(offset) => Some(offset),
+                _ => None,
+            })
+    }
+
+    /// Scenario: a real Kafka broker exposes a TLS listener that enables
+    /// SASL/PLAIN, SCRAM-SHA-256, and SCRAM-SHA-512, and the receiver uses a
+    /// distinct consumer group for each mechanism.
+    /// Guarantees: every mechanism authenticates over TLS, delivers and decodes
+    /// an OTLP traces request, and commits offset 1 after the request is
+    /// acknowledged.
+    #[tokio::test]
+    #[ignore = "requires the Kafka SASL/TLS Docker fixture; run sasl_tls/run.ps1 or run.sh"]
+    async fn sasl_tls_receiver_authenticates_and_commits_for_all_supported_mechanisms() {
+        let brokers = std::env::var("KAFKA_SASL_TLS_BROKERS")
+            .expect("KAFKA_SASL_TLS_BROKERS must point to the Docker fixture");
+        let ca_file = std::env::var("KAFKA_SASL_TLS_CA_FILE")
+            .expect("KAFKA_SASL_TLS_CA_FILE must point to the generated CA PEM");
+        let credentials = [
+            SaslTlsCredential {
+                mechanism: SaslMechanism::Plain,
+                username: "plain",
+                password: "plain-secret",
+                suffix: "plain",
+            },
+            SaslTlsCredential {
+                mechanism: SaslMechanism::ScramSha256,
+                username: "scram256",
+                password: "scram256-secret",
+                suffix: "scram256",
+            },
+            SaslTlsCredential {
+                mechanism: SaslMechanism::ScramSha512,
+                username: "scram512",
+                password: "scram512-secret",
+                suffix: "scram512",
+            },
+        ];
+
+        tokio::task::LocalSet::new()
+            .run_until(async move {
+                for credential in credentials {
+                    let topic = format!("receiver-sasl-tls-{}", credential.suffix);
+                    let group = format!("receiver-sasl-tls-{}-group", credential.suffix);
+                    let client_id = format!("receiver-sasl-tls-{}", credential.suffix);
+                    let config_json = serde_json::json!({
+                        "brokers": brokers,
+                        "group_id": group,
+                        "client_id": client_id,
+                        "traces": {
+                            "topics": [topic],
+                            "encoding": "otlp_proto"
+                        },
+                        "auto_offset_reset": "earliest",
+                        "commit": {
+                            "mode": "manual",
+                            "interval_ms": 200
+                        },
+                        "tls": {
+                            "ca_file": ca_file
+                        },
+                        "auth": {
+                            "sasl": {
+                                "mechanism": credential.mechanism.as_rdkafka_str(),
+                                "username": credential.username,
+                                "password": credential.password
+                            }
+                        }
+                    });
+                    let config: KafkaReceiverConfig = serde_json::from_value(config_json)
+                        .expect("deserialize SASL/TLS receiver config");
+                    let client_config = config.build_client_config();
+                    assert_eq!(client_config.get("security.protocol"), Some("SASL_SSL"));
+                    assert_eq!(
+                        client_config.get("sasl.mechanism"),
+                        Some(credential.mechanism.as_rdkafka_str())
+                    );
+                    assert_eq!(client_config.get("group.id"), Some(group.as_str()));
+
+                    let producer = TestProducerBuilder::new(&brokers)
+                        .client_id(&format!("producer-{}", credential.suffix))
+                        .set("security.protocol", "SASL_SSL")
+                        .set("sasl.mechanism", credential.mechanism.as_rdkafka_str())
+                        .set("sasl.username", credential.username)
+                        .set("sasl.password", credential.password)
+                        .set("ssl.ca.location", &ca_file)
+                        .build();
+                    let payload = create_traces_with_spans().encode_to_vec();
+                    producer
+                        .send(&topic, &payload)
+                        .await
+                        .expect("produce OTLP traces request over SASL/TLS");
+
+                    let mut receiver =
+                        KafkaReceiverHarness::start_with_config_and_capture(config, None);
+                    let mut pdata = receiver.recv_pdata().await;
+                    let decoded: OtlpProtoBytes = pdata
+                        .take_payload()
+                        .try_into_with_default()
+                        .expect("decode receiver output as OTLP protobuf");
+                    assert_eq!(decoded.as_bytes(), payload.as_slice());
+                    receiver.ack(pdata);
+
+                    let committed =
+                        poll_until(Duration::from_secs(15), Duration::from_millis(250), || {
+                            sasl_tls_committed_offset(
+                                &brokers,
+                                &ca_file,
+                                &credential,
+                                &group,
+                                &topic,
+                            )
+                            .is_some_and(|offset| offset >= 1)
+                        })
+                        .await;
+                    assert!(
+                        committed,
+                        "{} consumer group did not commit offset 1",
+                        credential.mechanism.as_rdkafka_str()
+                    );
+
+                    receiver.shutdown(Duration::from_secs(5));
+                    receiver.await_stopped().await;
+                    eprintln!(
+                        "validated {} over TLS with consumer group {group}",
+                        credential.mechanism.as_rdkafka_str()
+                    );
+                }
+            })
+            .await;
+    }
 
     fn create_logs_service_request() -> ExportLogsServiceRequest {
         ExportLogsServiceRequest {
