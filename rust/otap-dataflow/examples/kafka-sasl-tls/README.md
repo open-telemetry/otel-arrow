@@ -169,46 +169,104 @@ the otel-arrow exporter and receiver.
 First validate the six-pipeline configuration:
 
 ```powershell
-cargo run --features "kafka-receiver,otap-df-contrib-nodes/kafka-exporter" -- --config $DataflowConfig --validate-and-exit
+cargo run `
+  --features "kafka-receiver,otap-df-contrib-nodes/kafka-exporter" `
+  -- `
+  --config $DataflowConfig `
+  --validate-and-exit
 ```
 
 Then start the dataflow and capture its console output:
 
 ```powershell
-cargo run --features "kafka-receiver,otap-df-contrib-nodes/kafka-exporter" -- --config $DataflowConfig --num-cores 1 2>&1 | Tee-Object -FilePath kafka-sasl-tls.log
+Remove-Item kafka-sasl-tls.log -ErrorAction SilentlyContinue
+
+cargo run `
+  --features "kafka-receiver,otap-df-contrib-nodes/kafka-exporter" `
+  -- `
+  --config $DataflowConfig `
+  --num-cores 1 2>&1 | `
+  Tee-Object -FilePath kafka-sasl-tls.log
 ```
 
 Each traffic generator publishes OTLP logs through its Kafka exporter. The
 matching Kafka receiver consumes and decodes the logs, then sends them to a
-console exporter.
+console exporter. Keep this terminal running during the checks below.
 
 ## Verify End-to-End Delivery
 
-While the dataflow is running, open another PowerShell terminal from
-`rust/otap-dataflow` and inspect all three consumer groups:
+Open another PowerShell terminal from `rust/otap-dataflow`. First verify that
+all three receivers acquired their topic partitions and that the console
+exporters emitted decoded telemetry:
+
+```powershell
+$LogFile = "kafka-sasl-tls.log"
+$ReceiverPipelines = @(
+  "plain-consumer"
+  "scram-256-consumer"
+  "scram-512-consumer"
+)
+
+$ReceiverPipelines | ForEach-Object {
+  $Pattern = "partitions_assigned.*pipeline.id=$([regex]::Escape($_))"
+  if (-not (Select-String -Path $LogFile -Pattern $Pattern -Quiet)) {
+    throw "No Kafka partition assignment found for $_."
+  }
+  Write-Host "PASS: $_ acquired its Kafka partition"
+}
+
+if (-not (Select-String -Path $LogFile -Pattern "RESOURCE" -Quiet) -or
+  -not (Select-String -Path $LogFile -Pattern "SCOPE" -Quiet)) {
+  throw "No decoded telemetry found in $LogFile."
+}
+Write-Host "PASS: console exporters emitted decoded telemetry"
+```
+
+Console output from concurrent pipelines is interleaved and does not label
+each decoded batch with its source pipeline. The partition-assignment checks
+identify all three receivers; the next check proves that each receiver consumed
+through the end of its topic.
+
+Inspect all three consumer groups:
 
 ```powershell
 $ComposeFile = "examples/kafka-sasl-tls/compose.yaml"
 $ConsumerGroups = @(
-    "otap-plain-consumer"
-    "otap-scram-256-consumer"
-    "otap-scram-512-consumer"
+  @{ Group = "otap-plain-consumer"; Topic = "otlp-logs-plain" }
+  @{ Group = "otap-scram-256-consumer"; Topic = "otlp-logs-scram-256" }
+  @{ Group = "otap-scram-512-consumer"; Topic = "otlp-logs-scram-512" }
 )
 
 $ConsumerGroups | ForEach-Object {
-    docker compose -f $ComposeFile exec -T kafka `
+  $Output = docker compose -f $ComposeFile exec -T kafka `
         kafka-consumer-groups --bootstrap-server kafka:29092 `
-        --describe --group $_
+    --describe --group $_.Group
+  $Output | Write-Host
+
+  $GroupPattern = "^$([regex]::Escape($_.Group))\s+$([regex]::Escape($_.Topic))\s+"
+  $Row = $Output | Where-Object { $_ -match $GroupPattern } |
+    Select-Object -Last 1
+  if (-not $Row) {
+    throw "No offset row found for $($_.Group)."
+  }
+
+  $Columns = $Row -split "\s+"
+  if ($Columns[3] -ne $Columns[4] -or $Columns[5] -ne "0") {
+    throw "$($_.Group) has not consumed through its topic end."
+  }
+  Write-Host "PASS: $($_.Group) reached offset $($Columns[3]) with zero lag"
 }
 ```
 
 The validation succeeds when:
 
-- The dataflow console shows decoded log batches from all three receivers.
-- Every consumer group reports `LAG` as `0`.
-- The log contains no authentication, TLS, decoding, or connection failures.
+- All four log checks print `PASS`.
+- All three consumer-group checks print `PASS`.
 
-Stop the dataflow with `Ctrl-C` after verification.
+If the dataflow is stopped before checking the groups, Kafka may report that a
+group has no active members. This is expected; committed offsets and zero lag
+remain valid delivery evidence. Stop the dataflow with `Ctrl-C` after
+verification.
 
 ## Troubleshooting
 
