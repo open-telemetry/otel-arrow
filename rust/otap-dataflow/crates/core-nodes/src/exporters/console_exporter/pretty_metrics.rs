@@ -3,7 +3,7 @@
 
 //! Human-readable metrics formatting for the console exporter.
 
-use super::HierarchicalFormatter;
+use super::{HierarchicalFormatter, pretty_writer::PrettyWriter};
 use otap_df_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
 use otap_df_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, DataType, DataView, ExemplarView,
@@ -12,15 +12,17 @@ use otap_df_pdata_views::views::metrics::{
     ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
 };
 use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::self_tracing::{AnsiCode, LOG_BUFFER_SIZE, StyledBufWriter};
+use otap_df_telemetry::self_tracing::AnsiCode;
 use std::io::{self, Write};
+
+type MetricsWriter<'a> = PrettyWriter<'a, dyn Write + 'a>;
 
 impl HierarchicalFormatter {
     /// Format metrics from a generic metrics view.
-    pub(super) fn format_metrics_data_to<M: MetricsView>(
+    pub(super) fn format_metrics_data_to<M: MetricsView, W: Write>(
         &self,
         metrics_data: &M,
-        output: &mut Vec<u8>,
+        output: &mut W,
     ) -> io::Result<()> {
         for resource_metrics in metrics_data.resources() {
             self.format_resource_metrics(&resource_metrics, output)?;
@@ -31,7 +33,7 @@ impl HierarchicalFormatter {
     fn format_resource_metrics<R: ResourceMetricsView>(
         &self,
         resource_metrics: &R,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         let schema_url = resource_metrics.schema_url();
         self.format_attribute_line(
@@ -54,7 +56,7 @@ impl HierarchicalFormatter {
     fn format_scope_metrics<S: ScopeMetricsView>(
         &self,
         scope_metrics: &S,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         let scope = scope_metrics.scope();
         let name = scope.as_ref().and_then(|scope| scope.name());
@@ -78,7 +80,7 @@ impl HierarchicalFormatter {
         Ok(())
     }
 
-    fn format_metric<M: MetricView>(&self, metric: &M, output: &mut Vec<u8>) -> io::Result<()> {
+    fn format_metric<M: MetricView>(&self, metric: &M, output: &mut dyn Write) -> io::Result<()> {
         self.format_attribute_line(2, "METRIC", metric.metadata(), output, |w| {
             write_bytes_field(w, "name", metric.name())?;
             write_optional_bytes(w, "description", non_empty(metric.description()))?;
@@ -120,7 +122,7 @@ impl HierarchicalFormatter {
         Ok(())
     }
 
-    fn format_gauge<G: GaugeView>(&self, gauge: &G, output: &mut Vec<u8>) -> io::Result<()> {
+    fn format_gauge<G: GaugeView>(&self, gauge: &G, output: &mut dyn Write) -> io::Result<()> {
         self.format_plain_line(3, "GAUGE", output, |_| Ok(()))?;
         for point in gauge.data_points() {
             self.format_number_data_point(&point, output)?;
@@ -128,7 +130,7 @@ impl HierarchicalFormatter {
         Ok(())
     }
 
-    fn format_sum<S: SumView>(&self, sum: &S, output: &mut Vec<u8>) -> io::Result<()> {
+    fn format_sum<S: SumView>(&self, sum: &S, output: &mut dyn Write) -> io::Result<()> {
         self.format_plain_line(3, "SUM", output, |w| {
             write_temporality(w, sum.aggregation_temporality())?;
             write!(w, " monotonic={}", sum.is_monotonic())
@@ -142,7 +144,7 @@ impl HierarchicalFormatter {
     fn format_number_data_point<P: NumberDataPointView>(
         &self,
         point: &P,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         self.format_attribute_line(4, "DATA_POINT", point.attributes(), output, |w| {
             write_times(w, point.start_time_unix_nano(), point.time_unix_nano())?;
@@ -158,7 +160,7 @@ impl HierarchicalFormatter {
     fn format_histogram<H: HistogramView>(
         &self,
         histogram: &H,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         self.format_plain_line(3, "HISTOGRAM", output, |w| {
             write_temporality(w, histogram.aggregation_temporality())
@@ -172,7 +174,7 @@ impl HierarchicalFormatter {
     fn format_histogram_data_point<P: HistogramDataPointView>(
         &self,
         point: &P,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         self.format_attribute_line(4, "DATA_POINT", point.attributes(), output, |w| {
             write_times(w, point.start_time_unix_nano(), point.time_unix_nano())?;
@@ -201,7 +203,7 @@ impl HierarchicalFormatter {
     fn format_exponential_histogram<H: ExponentialHistogramView>(
         &self,
         histogram: &H,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         self.format_plain_line(3, "EXPONENTIAL_HISTOGRAM", output, |w| {
             write_temporality(w, histogram.aggregation_temporality())
@@ -215,7 +217,7 @@ impl HierarchicalFormatter {
     fn format_exponential_histogram_data_point<P: ExponentialHistogramDataPointView>(
         &self,
         point: &P,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         self.format_attribute_line(4, "DATA_POINT", point.attributes(), output, |w| {
             write_times(w, point.start_time_unix_nano(), point.time_unix_nano())?;
@@ -248,7 +250,7 @@ impl HierarchicalFormatter {
         &self,
         label: &str,
         buckets: &B,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         let offset = buckets.offset();
         for (index, count) in buckets.bucket_counts().enumerate() {
@@ -263,7 +265,11 @@ impl HierarchicalFormatter {
         Ok(())
     }
 
-    fn format_summary<S: SummaryView>(&self, summary: &S, output: &mut Vec<u8>) -> io::Result<()> {
+    fn format_summary<S: SummaryView>(
+        &self,
+        summary: &S,
+        output: &mut dyn Write,
+    ) -> io::Result<()> {
         self.format_plain_line(3, "SUMMARY", output, |_| Ok(()))?;
         for point in summary.data_points() {
             self.format_summary_data_point(&point, output)?;
@@ -274,7 +280,7 @@ impl HierarchicalFormatter {
     fn format_summary_data_point<P: SummaryDataPointView>(
         &self,
         point: &P,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         self.format_attribute_line(4, "DATA_POINT", point.attributes(), output, |w| {
             write_times(w, point.start_time_unix_nano(), point.time_unix_nano())?;
@@ -290,7 +296,7 @@ impl HierarchicalFormatter {
     fn format_quantile<Q: ValueAtQuantileView>(
         &self,
         quantile: &Q,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         self.format_plain_line(5, "QUANTILE", output, |w| {
             write!(
@@ -305,7 +311,7 @@ impl HierarchicalFormatter {
     fn format_exemplar<E: ExemplarView>(
         &self,
         exemplar: &E,
-        output: &mut Vec<u8>,
+        output: &mut dyn Write,
     ) -> io::Result<()> {
         self.format_attribute_line(5, "EXEMPLAR", exemplar.filtered_attributes(), output, |w| {
             write!(w, " time_unix_nano={}", exemplar.time_unix_nano())?;
@@ -324,19 +330,14 @@ impl HierarchicalFormatter {
         &self,
         depth: usize,
         label: &str,
-        output: &mut Vec<u8>,
-        fields: impl FnOnce(&mut StyledBufWriter<'_>) -> io::Result<()>,
+        output: &mut dyn Write,
+        fields: impl FnOnce(&mut MetricsWriter<'_>) -> io::Result<()>,
     ) -> io::Result<()> {
         self.format_metrics_line(output, |w| {
             self.write_prefix(w, depth)?;
-            let mut label_result = Ok(());
-            w.write_styled(AnsiCode::Green, |w| {
-                label_result = w.write_all(label.as_bytes());
-            });
-            label_result?;
+            w.write_styled(AnsiCode::Green, |w| w.write_all(label.as_bytes()))?;
             fields(w)?;
-            w.finish_line();
-            Ok(())
+            w.finish_line()
         })
     }
 
@@ -345,43 +346,27 @@ impl HierarchicalFormatter {
         depth: usize,
         label: &str,
         attrs: impl Iterator<Item = A>,
-        output: &mut Vec<u8>,
-        fields: impl FnOnce(&mut StyledBufWriter<'_>) -> io::Result<()>,
+        output: &mut dyn Write,
+        fields: impl FnOnce(&mut MetricsWriter<'_>) -> io::Result<()>,
     ) -> io::Result<()> {
         self.format_metrics_line(output, |w| {
             self.write_prefix(w, depth)?;
-            let mut label_result = Ok(());
-            w.write_styled(AnsiCode::Green, |w| {
-                label_result = w.write_all(label.as_bytes());
-            });
-            label_result?;
+            w.write_styled(AnsiCode::Green, |w| w.write_all(label.as_bytes()))?;
             fields(w)?;
-            w.write_attrs(attrs);
-            w.finish_line();
-            Ok(())
+            w.write_attrs(attrs)?;
+            w.finish_line()
         })
     }
 
     fn format_metrics_line(
         &self,
-        output: &mut Vec<u8>,
-        format: impl FnOnce(&mut StyledBufWriter<'_>) -> io::Result<()>,
+        output: &mut dyn Write,
+        format: impl FnOnce(&mut MetricsWriter<'_>) -> io::Result<()>,
     ) -> io::Result<()> {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = StyledBufWriter::new(&mut buf, self.color);
-        format(&mut w)?;
-        if w.overflowed() {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "pretty metrics line exceeds the console buffer",
-            ));
-        }
-        let len = w.position();
-        output.extend_from_slice(&buf[..len]);
-        Ok(())
+        format(&mut PrettyWriter::new(output, self.color))
     }
 
-    fn write_prefix(&self, w: &mut StyledBufWriter<'_>, depth: usize) -> io::Result<()> {
+    fn write_prefix(&self, w: &mut MetricsWriter<'_>, depth: usize) -> io::Result<()> {
         for _ in 0..depth {
             w.write_all(self.tree.vertical.as_bytes())?;
             w.write_all(b" ")?;
@@ -399,7 +384,7 @@ fn non_empty(value: &[u8]) -> Option<&[u8]> {
 }
 
 fn write_optional_bytes(
-    w: &mut StyledBufWriter<'_>,
+    w: &mut MetricsWriter<'_>,
     name: &str,
     value: Option<&[u8]>,
 ) -> io::Result<()> {
@@ -409,19 +394,19 @@ fn write_optional_bytes(
     Ok(())
 }
 
-fn write_bytes_field(w: &mut StyledBufWriter<'_>, name: &str, value: &[u8]) -> io::Result<()> {
+fn write_bytes_field(w: &mut MetricsWriter<'_>, name: &str, value: &[u8]) -> io::Result<()> {
     write!(w, " {name}=")?;
     w.write_all(value)
 }
 
-fn write_times(w: &mut StyledBufWriter<'_>, start_time: u64, time: u64) -> io::Result<()> {
+fn write_times(w: &mut MetricsWriter<'_>, start_time: u64, time: u64) -> io::Result<()> {
     write!(
         w,
         " start_time_unix_nano={start_time} time_unix_nano={time}"
     )
 }
 
-fn write_value(w: &mut StyledBufWriter<'_>, value: Option<Value>) -> io::Result<()> {
+fn write_value(w: &mut MetricsWriter<'_>, value: Option<Value>) -> io::Result<()> {
     match value {
         Some(Value::Double(value)) => write!(w, " value_double={value}"),
         Some(Value::Integer(value)) => write!(w, " value_int={value}"),
@@ -429,18 +414,14 @@ fn write_value(w: &mut StyledBufWriter<'_>, value: Option<Value>) -> io::Result<
     }
 }
 
-fn write_flags(w: &mut StyledBufWriter<'_>, flags: u32) -> io::Result<()> {
+fn write_flags(w: &mut MetricsWriter<'_>, flags: u32) -> io::Result<()> {
     if flags != 0 {
         write!(w, " flags={flags}")?;
     }
     Ok(())
 }
 
-fn write_optional_f64(
-    w: &mut StyledBufWriter<'_>,
-    name: &str,
-    value: Option<f64>,
-) -> io::Result<()> {
+fn write_optional_f64(w: &mut MetricsWriter<'_>, name: &str, value: Option<f64>) -> io::Result<()> {
     if let Some(value) = value {
         write!(w, " {name}={value}")?;
     }
@@ -448,7 +429,7 @@ fn write_optional_f64(
 }
 
 fn write_temporality(
-    w: &mut StyledBufWriter<'_>,
+    w: &mut MetricsWriter<'_>,
     temporality: AggregationTemporality,
 ) -> io::Result<()> {
     let value = match temporality {

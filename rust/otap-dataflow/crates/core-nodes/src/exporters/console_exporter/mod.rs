@@ -5,6 +5,7 @@
 
 mod metrics;
 mod pretty_metrics;
+mod pretty_writer;
 otap_df_telemetry::otel_component_scope!(
     urn = CONSOLE_EXPORTER_URN,
     target = "otel.exporter.console",
@@ -958,24 +959,59 @@ mod tests {
         assert_eq!(otap_text, otlp_text);
     }
 
-    /// Scenario: A metrics field makes one pretty output line exceed the fixed console buffer.
-    /// Guarantees: Formatting returns WriteZero and does not append a silently truncated metric line.
+    /// Scenario: A metrics field exceeds the fixed line capacity used by internal telemetry.
+    /// Guarantees: Data-plane pretty output preserves the complete field without truncation.
     #[test]
-    fn pretty_metrics_reject_line_overflow() {
+    fn pretty_metrics_preserve_long_lines() {
         let mut metrics_data = metrics_with_all_data_types();
-        metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].name =
-            "x".repeat(LOG_BUFFER_SIZE);
+        let long_name = "x".repeat(LOG_BUFFER_SIZE * 2);
+        metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].name = long_name.clone();
+
+        let bytes = metrics_data.encode_to_vec();
+        let metrics_view = RawMetricsData::try_new(&bytes).expect("metrics");
+        let formatter = HierarchicalFormatter::new(true, false);
+        let mut output = Vec::new();
+        formatter
+            .format_metrics_data_to(&metrics_view, &mut output)
+            .expect("format long metrics line");
+        let text = String::from_utf8(output).expect("UTF-8");
+        let metric_line = text
+            .lines()
+            .find(|line| line.contains(&long_name))
+            .expect("metric line");
+
+        assert!(metric_line.len() > LOG_BUFFER_SIZE);
+        assert!(metric_line.contains("\x1b[32mMETRIC\x1b[0m"));
+        assert!(metric_line.contains(&format!("name={long_name}")));
+        assert!(metric_line.ends_with("[metadata.attr=value]"));
+    }
+
+    /// Scenario: The destination writer rejects pretty metrics output.
+    /// Guarantees: The formatter returns the destination error instead of reporting success.
+    #[test]
+    fn pretty_metrics_propagate_output_errors() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let metrics_data = metrics_with_all_data_types();
         let bytes = metrics_data.encode_to_vec();
         let metrics_view = RawMetricsData::try_new(&bytes).expect("metrics");
         let formatter = HierarchicalFormatter::new(false, false);
-        let mut output = Vec::new();
 
         let err = formatter
-            .format_metrics_data_to(&metrics_view, &mut output)
-            .expect_err("oversized metric line must fail");
+            .format_metrics_data_to(&metrics_view, &mut FailingWriter)
+            .expect_err("writer failure must propagate");
 
-        assert_eq!(err.kind(), std::io::ErrorKind::WriteZero);
-        assert!(!String::from_utf8(output).expect("UTF-8").contains("METRIC"));
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
     }
 
     /// Scenario: console configuration selects pretty output and every record JSON override.

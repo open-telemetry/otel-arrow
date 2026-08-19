@@ -64,7 +64,6 @@ pub struct StyledBufWriter<'a> {
     /// The byte at `cap` is reserved for the trailing newline.
     cap: usize,
     color_mode: ColorMode,
-    overflowed: bool,
 }
 
 impl<'a> StyledBufWriter<'a> {
@@ -79,7 +78,6 @@ impl<'a> StyledBufWriter<'a> {
             buf: Cursor::new(buf),
             cap,
             color_mode,
-            overflowed: false,
         }
     }
 
@@ -107,13 +105,6 @@ impl<'a> StyledBufWriter<'a> {
         self.buf.position() as usize >= self.cap
     }
 
-    /// Return whether a write exceeded the content capacity.
-    #[inline]
-    #[must_use]
-    pub const fn overflowed(&self) -> bool {
-        self.overflowed
-    }
-
     /// Finish the current line by writing the trailing newline.
     ///
     /// The reserved last byte guarantees that `\n` always fits -- even when
@@ -129,9 +120,6 @@ impl Write for StyledBufWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let pos = self.buf.position() as usize;
         let remaining = self.cap.saturating_sub(pos);
-        if buf.len() > remaining {
-            self.overflowed = true;
-        }
         let n = buf.len().min(remaining);
         self.buf.write(&buf[..n])
     }
