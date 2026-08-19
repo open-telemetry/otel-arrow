@@ -5,19 +5,28 @@
 
 //! Minimal Oracle OCI connectivity and query smoke test.
 
-use oracle::Connection;
+use oracle::{Connection, Connector, Privilege};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const DEFAULT_QUERY: &str = "SELECT SYSDATE AS CURRENT_TIME FROM DUAL";
 const DEFAULT_MAX_ROWS: usize = 10;
+const DEFAULT_LOCAL_CONNECT_STRING: &str = "//localhost:1521/FREEPDB1";
+const DEFAULT_LOCAL_USERNAME: &str = "PDBADMIN";
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+enum CredentialSource {
+    Files {
+        username_file: PathBuf,
+        password_file: PathBuf,
+    },
+    Environment,
+}
 
 struct Config {
     connect_string: String,
-    username_file: PathBuf,
-    password_file: PathBuf,
+    credentials: CredentialSource,
     query: String,
     max_rows: usize,
 }
@@ -25,7 +34,27 @@ struct Config {
 impl Config {
     fn from_args() -> Result<Self, String> {
         let mut args = std::env::args().skip(1);
-        let connect_string = args.next().ok_or_else(usage)?;
+        let first = args.next().ok_or_else(usage)?;
+        if first == "--local-free" {
+            let query = args.next().unwrap_or_else(|| DEFAULT_QUERY.to_owned());
+            let max_rows = args
+                .next()
+                .map(|value| parse_max_rows(&value))
+                .transpose()?
+                .unwrap_or(DEFAULT_MAX_ROWS);
+            if args.next().is_some() {
+                return Err(usage());
+            }
+            return Ok(Self {
+                connect_string: std::env::var("ORACLE_CONNECT_STRING")
+                    .unwrap_or_else(|_| DEFAULT_LOCAL_CONNECT_STRING.to_owned()),
+                credentials: CredentialSource::Environment,
+                query,
+                max_rows,
+            });
+        }
+
+        let connect_string = first;
         let username_file = args.next().map(PathBuf::from).ok_or_else(usage)?;
         let password_file = args.next().map(PathBuf::from).ok_or_else(usage)?;
         let query = args.next().unwrap_or_else(|| DEFAULT_QUERY.to_owned());
@@ -39,8 +68,10 @@ impl Config {
         }
         Ok(Self {
             connect_string,
-            username_file,
-            password_file,
+            credentials: CredentialSource::Files {
+                username_file,
+                password_file,
+            },
             query,
             max_rows,
         })
@@ -64,11 +95,10 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     let config = Config::from_args()
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-    let username = read_secret(&config.username_file)?;
-    let password = read_secret(&config.password_file)?;
+    let (username, password) = load_credentials(&config.credentials)?;
 
     println!("Connecting to Oracle at {}...", config.connect_string);
-    let connection = Connection::connect(&username, &password, &config.connect_string)?;
+    let connection = connect(&username, &password, &config.connect_string)?;
     connection.set_call_timeout(Some(CALL_TIMEOUT))?;
     connection.ping()?;
     println!("Connection succeeded.");
@@ -77,6 +107,41 @@ fn run() -> Result<(), Box<dyn Error>> {
     println!("Query succeeded. Read {row_count} row(s).");
     connection.close()?;
     Ok(())
+}
+
+fn load_credentials(source: &CredentialSource) -> Result<(String, String), Box<dyn Error>> {
+    match source {
+        CredentialSource::Files {
+            username_file,
+            password_file,
+        } => Ok((read_secret(username_file)?, read_secret(password_file)?)),
+        CredentialSource::Environment => {
+            let username =
+                std::env::var("ORACLE_USERNAME").unwrap_or_else(|_| DEFAULT_LOCAL_USERNAME.into());
+            let password = std::env::var("ORACLE_PWD").map_err(|_| {
+                "ORACLE_PWD must be set when using --local-free; use run-local.ps1 to be prompted"
+            })?;
+            if password.is_empty() {
+                return Err("ORACLE_PWD must not be empty".into());
+            }
+            Ok((username, password))
+        }
+    }
+}
+
+fn connect(username: &str, password: &str, connect_string: &str) -> oracle::Result<Connection> {
+    if is_sysdba_username(username) {
+        println!("Using SYSDBA administrative privilege.");
+        let mut connector = Connector::new("SYS", password, connect_string);
+        _ = connector.privilege(Privilege::Sysdba);
+        connector.connect()
+    } else {
+        Connection::connect(username, password, connect_string)
+    }
+}
+
+fn is_sysdba_username(username: &str) -> bool {
+    username.eq_ignore_ascii_case("SYS") || username.eq_ignore_ascii_case("SYS AS SYSDBA")
 }
 
 fn read_rows(
@@ -143,8 +208,14 @@ fn parse_max_rows(value: &str) -> Result<usize, String> {
 
 fn usage() -> String {
     format!(
-        "usage: otap-df-oracle-oci-smoke <connect-string> <username-file> \
-         <password-file> [query] [max-rows]\n\
+        "usage:\n\
+         \x20 otap-df-oracle-oci-smoke --local-free [query] [max-rows]\n\
+         \x20 otap-df-oracle-oci-smoke <connect-string> <username-file> \
+         <password-file> [query] [max-rows]\n\n\
+         --local-free reads ORACLE_PWD and optionally ORACLE_USERNAME and \
+         ORACLE_CONNECT_STRING from the environment\n\
+         local defaults: username={DEFAULT_LOCAL_USERNAME}, \
+         connect-string={DEFAULT_LOCAL_CONNECT_STRING}\n\
          default query: {DEFAULT_QUERY:?}\n\
          Oracle Instant Client must be installed and available to the process"
     )
@@ -179,5 +250,14 @@ mod tests {
         let result = read_secret(&path).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(result, "reader");
+    }
+
+    /// Scenario: the credential file identifies Oracle's SYS administrative account.
+    /// Guarantees: both common SYS forms select the required SYSDBA authentication mode.
+    #[test]
+    fn recognizes_sysdba_username() {
+        assert!(is_sysdba_username("SYS"));
+        assert!(is_sysdba_username("sys as sysdba"));
+        assert!(!is_sysdba_username("SYSTEM"));
     }
 }
