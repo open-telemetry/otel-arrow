@@ -104,8 +104,9 @@ differentiated. I may wish to:
 - Assign dedicated CPU and memory resources to shared groups of tenants
 - Pass through and/or rename a specific list of HTTP headers
 - Pass through a wildcarded list of HTTP headers
-- Configure routing/batching/storage/limits grouped by context entry vaules
-- Configure routing/batching/storage/limits with a set of conditions over context entry values
+- Configure routing/batching/storage/limits grouped by context entry values
+- Configure routing/batching/storage/limits with a set of conditions
+  over context entry values
 
 ### User L(oad-balance) and P(artition)
 
@@ -366,7 +367,7 @@ new contexts. Receivers use the context arrival source binding with
 source address, the HTTP headers, and the `AuthorizedData` value
 passed to the binding. Processors will use the context projector
 source binding to transform contexts, or they will use context
-predicate bindings. Exporters typically use 
+predicate bindings. Exporters typically use
 
 ```rust
 /// Part of PipelineContext, used at construction time.
