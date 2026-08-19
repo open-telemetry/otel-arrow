@@ -179,10 +179,6 @@ fn spawn_producer_retirement(
 /// - If `deadline` is reached first, the retirement continues to completion on
 ///   its own blocking thread and finishes independently of shutdown; a warning
 ///   is emitted and the caller returns, so shutdown stays deadline-bounded.
-///
-/// This does not enforce the "at most one retiring producer" bound -- that is
-/// guaranteed by reconfigure chaining (see [`spawn_producer_retirement`]), not
-/// here. This function is only called on the shutdown path.
 async fn await_pending_retirement(
     retiring_producer: &mut Option<tokio::task::JoinHandle<()>>,
     deadline: Duration,
