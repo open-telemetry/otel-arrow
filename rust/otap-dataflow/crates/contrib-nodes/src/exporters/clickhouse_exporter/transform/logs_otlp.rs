@@ -131,18 +131,34 @@
 //! OTLP timestamp becomes zero. `ResourceAttributes` and `ServiceName` are emitted together when
 //! at least one resource attribute exists; an absent `service.name` becomes an empty string.
 //!
-//! # Reused state and allocation bounds
+//! # Allocation strategy and bounds
 //!
-//! [`OtlpLogsTransformer`] is owned by one exporter task and is reused sequentially. It retains:
+//! The exporter processes many requests with similar shapes. Rebuilding all allocation state from
+//! scratch for every request adds allocator work without changing the output. This transformer
+//! therefore follows three principles:
 //!
-//! - the previous request's observed row and payload sizes, projected from the next request's
-//!   encoded size and capped at a 16K-row equivalent to prevent persistent over-allocation
-//! - reusable resource and scope attribute arenas that keep normal-sized backing allocations but
-//!   release converted data above 64 KiB or metadata above 1,024 entries after each request
-//! - a scratch byte buffer used for `AnyValue` text/JSON conversion and ID encoding
-//! - a one-entry schema cache keyed by the sorted output column names and Arrow data types
+//! - reuse temporary storage and metadata that remain owned by the transformer
+//! - right-size output builders that must be recreated for each returned batch
+//! - bound retained capacity so an unusually large request does not determine steady-state memory
 //!
-//! The Arrow builders themselves are request-local and are finalized into the returned batch.
+//! ## Implementation details
+//!
+//! Arrow builders cannot be reused because finishing them transfers their column buffers into the
+//! returned [`RecordBatch`]. The transformer instead records the previous non-empty request's
+//! logical row, string-byte, and map sizes, then scales those observations by the ratio of encoded
+//! request sizes to preallocate the next request's builders.
+//!
+//! Temporary conversion state does not escape the call, so one transformer instance reuses it
+//! sequentially. Resource and scope keys and values share contiguous attribute arenas indexed by
+//! byte ranges, and a separate byte buffer handles `AnyValue`, base64, JSON, and ID conversion. A
+//! one-entry cache reuses the [`Schema`] when the sorted column names and data types are unchanged.
+//! The raw protobuf views likewise share their parse cursor and discovered field ranges through one
+//! reference-counted parser state.
+//!
+//! Capacity history controls initial reservations only; it never limits accepted rows or payload
+//! bytes. Builder projections are capped at a 16K-row equivalent. Resource and scope arenas discard
+//! backing storage above 64 KiB or 1,024 entries.
+//!
 //! Changes to conversion, column presence, or sorting must preserve logical parity with the
 //! legacy path; the tests below compare names, row order, null placement, and values.
 
