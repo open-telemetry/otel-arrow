@@ -285,7 +285,10 @@ impl OtapPayload {
         }
     }
 
-    /// Returns the number of encoded bytes, if known.
+    /// Returns the logical byte size of the current payload representation.
+    ///
+    /// OTLP reports its protobuf service-request byte length. OTAP reports
+    /// Arrow's logical slice-memory estimate.
     #[must_use]
     pub fn num_bytes(&self) -> Option<usize> {
         self.data.num_bytes()
@@ -330,7 +333,7 @@ pub trait OtapPayloadHelpers: Into<OtapPayload> {
     /// Number of items.
     fn num_items(&self) -> usize;
 
-    /// Number of bytes, if known.
+    /// Logical byte size of the current representation, if measurable.
     fn num_bytes(&self) -> Option<usize>;
 
     /// Best available retained-memory byte estimate.
@@ -353,7 +356,7 @@ impl OtapPayloadHelpers for OtapArrowRecords {
     }
 
     fn num_bytes(&self) -> Option<usize> {
-        None
+        self.logical_arrow_bytes().ok()
     }
 
     fn retained_memory_bytes(&self) -> usize {
