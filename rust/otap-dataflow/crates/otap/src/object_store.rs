@@ -695,6 +695,37 @@ mod test {
         assert!(from_storage_type(&storage).is_ok());
     }
 
+    /// Scenario: Each supported storage backend is asked whether it needs a bearer token capability.
+    /// Guarantees: Only Azure demands the binding, so file and S3 pipelines start without one.
+    #[test]
+    fn only_azure_requires_a_bearer_token_provider() {
+        let file = StorageType::File {
+            base_uri: "/tmp/otap".to_string(),
+        };
+        assert!(!file.requires_bearer_token_provider());
+
+        #[cfg(feature = "azure")]
+        {
+            let azure = StorageType::Azure {
+                base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
+            };
+            assert!(azure.requires_bearer_token_provider());
+        }
+
+        #[cfg(feature = "aws")]
+        {
+            let s3 = StorageType::S3 {
+                base_uri: "s3://my-bucket/telemetry".to_string(),
+                region: None,
+                endpoint: None,
+                allow_http: None,
+                virtual_hosted_style_request: None,
+                auth: cloud_auth::aws::AuthMethod::Default,
+            };
+            assert!(!s3.requires_bearer_token_provider());
+        }
+    }
+
     /// Scenario: Azure storage is constructed without a bearer token capability.
     /// Guarantees: Construction fails before any unauthenticated storage client is returned.
     #[test]

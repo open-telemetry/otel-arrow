@@ -75,9 +75,86 @@ impl CredentialProvider for AzureTokenCredentialProvider {
 #[cfg(test)]
 mod test {
     use super::*;
-    use otap_df_engine::capability::CapabilityError;
     use otap_df_engine::capability::auth::BearerToken;
     use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
+    use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
+
+    /// Scenario: The bound capability cannot produce a token.
+    /// Guarantees: The failure is reported to object_store instead of surfacing an unauthenticated request.
+    #[tokio::test]
+    async fn get_credential_reports_a_provider_failure() {
+        let provider = setup_provider(vec![]);
+
+        let error = provider
+            .get_credential()
+            .await
+            .expect_err("a provider failure must fail credential acquisition");
+
+        assert!(matches!(
+            error,
+            object_store::Error::Generic { store: "Azure", .. }
+        ));
+    }
+
+    /// Scenario: The capability fails after a credential was already cached.
+    /// Guarantees: The stale cached credential is not replayed once the provider stops issuing tokens.
+    #[tokio::test]
+    async fn cached_credential_is_not_replayed_after_a_provider_failure() {
+        let provider = setup_provider(vec!["token1".to_string()]);
+        let _ = provider
+            .get_credential()
+            .await
+            .expect("first acquisition succeeds");
+
+        assert!(provider.get_credential().await.is_err());
+    }
+
+    /// Scenario: The credential provider is rendered in diagnostics output.
+    /// Guarantees: Rendering never discloses the bearer token it holds.
+    #[test]
+    fn debug_rendering_withholds_token_material() {
+        let provider = setup_provider(vec!["super-secret-token".to_string()]);
+
+        let rendered = format!("{provider:?}");
+
+        assert!(rendered.contains("AzureTokenCredentialProvider"));
+        assert!(!rendered.contains("super-secret-token"));
+    }
+
+    /// Scenario: Azure storage is built with a bound bearer token capability, with and without retry.
+    /// Guarantees: The capability-backed credential path constructs a usable store in both cases.
+    #[test]
+    fn azure_storage_builds_when_a_token_provider_is_supplied() {
+        crate::crypto::ensure_crypto_provider();
+        let storage = crate::object_store::StorageType::Azure {
+            base_uri: "https://mystorageaccount.blob.core.windows.net/container/telemetry"
+                .to_string(),
+        };
+
+        let store = crate::object_store::from_storage_type_with_retry_and_token_provider(
+            &storage,
+            None,
+            Some(Box::new(TestTokenProvider::new(vec!["token1".to_string()]))),
+        );
+        assert!(store.is_ok(), "expected a store, got {store:?}");
+
+        let retry = crate::object_store::RetryOptions {
+            max_retries: 3,
+            init_backoff: std::time::Duration::from_millis(100),
+            max_backoff: std::time::Duration::from_secs(5),
+            backoff_base: 2.0,
+            retry_timeout: std::time::Duration::from_secs(30),
+        };
+        let store_with_retry = crate::object_store::from_storage_type_with_retry_and_token_provider(
+            &storage,
+            Some(&retry),
+            Some(Box::new(TestTokenProvider::new(vec!["token1".to_string()]))),
+        );
+        assert!(
+            store_with_retry.is_ok(),
+            "expected a store, got {store_with_retry:?}"
+        );
+    }
 
     /// Scenario: The capability returns repeated and refreshed token values.
     /// Guarantees: The bridge reuses credentials for equal tokens and replaces them on refresh.
@@ -147,8 +224,13 @@ mod test {
     #[async_trait::async_trait]
     impl BearerTokenProvider for TestTokenProvider {
         async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
-            let token = self.tokens.lock().await.pop().unwrap();
-            Ok(BearerToken::without_expiry(token))
+            match self.tokens.lock().await.pop() {
+                Some(token) => Ok(BearerToken::without_expiry(token)),
+                None => Err(CapabilityErrorSource::<
+                    otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider,
+                >::new("test_extension".into())
+                .error("no token available")),
+            }
         }
 
         fn token_stream(&self) -> TokenStream {

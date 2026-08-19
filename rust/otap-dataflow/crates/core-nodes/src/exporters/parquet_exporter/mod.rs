@@ -1458,6 +1458,121 @@ mod test {
             });
     }
 
+    /// Scenario: The factory builds an exporter whose storage needs no bearer token capability.
+    /// Guarantees: File-backed pipelines start without any capability binding declared on the node.
+    #[test]
+    fn factory_creates_file_storage_exporter_without_a_bound_capability() {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_engine::testing::test_node;
+        use serde_json::json;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let pipeline_ctx = controller_ctx
+            .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
+            .with_node_context(
+                "parquet_exporter".into(),
+                PARQUET_EXPORTER_URN.into(),
+                otap_df_config::node::NodeKind::Exporter,
+                std::collections::HashMap::new(),
+            );
+
+        let mut node_config = NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN);
+        node_config.config = json!({ "storage": { "file": { "base_uri": base_dir } } });
+
+        let created = (PARQUET_EXPORTER.create)(
+            pipeline_ctx,
+            test_node("parquet_exporter"),
+            Arc::new(node_config),
+            &ExporterConfig::new("parquet_exporter"),
+            &otap_df_engine::capability::registry::Capabilities::empty(),
+        );
+
+        assert!(
+            created.is_ok(),
+            "file storage must not require a capability binding"
+        );
+    }
+
+    /// Scenario: The factory is given a config it cannot deserialize.
+    /// Guarantees: The node fails at wiring time rather than starting with an unusable storage config.
+    #[test]
+    fn factory_rejects_an_invalid_storage_config() {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_engine::testing::test_node;
+        use serde_json::json;
+
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let pipeline_ctx = controller_ctx
+            .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
+            .with_node_context(
+                "parquet_exporter".into(),
+                PARQUET_EXPORTER_URN.into(),
+                otap_df_config::node::NodeKind::Exporter,
+                std::collections::HashMap::new(),
+            );
+
+        let mut node_config = NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN);
+        node_config.config = json!({ "storage": { "file": { "unexpected_key": "x" } } });
+
+        let created = (PARQUET_EXPORTER.create)(
+            pipeline_ctx,
+            test_node("parquet_exporter"),
+            Arc::new(node_config),
+            &ExporterConfig::new("parquet_exporter"),
+            &otap_df_engine::capability::registry::Capabilities::empty(),
+        );
+
+        assert!(created.is_err(), "invalid storage config must be rejected");
+    }
+
+    /// Scenario: The factory builds an Azure-backed exporter with no capability bound to the node.
+    /// Guarantees: Wiring fails up front instead of starting an exporter that cannot authenticate.
+    #[test]
+    #[cfg(feature = "azure")]
+    fn factory_rejects_azure_storage_without_a_bound_capability() {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_engine::testing::test_node;
+        use serde_json::json;
+
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let pipeline_ctx = controller_ctx
+            .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
+            .with_node_context(
+                "parquet_exporter".into(),
+                PARQUET_EXPORTER_URN.into(),
+                otap_df_config::node::NodeKind::Exporter,
+                std::collections::HashMap::new(),
+            );
+
+        let mut node_config = NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN);
+        node_config.config = json!({
+            "storage": {
+                "azure": {
+                    "base_uri": "https://mystorageaccount.blob.core.windows.net/container"
+                }
+            }
+        });
+
+        let created = (PARQUET_EXPORTER.create)(
+            pipeline_ctx,
+            test_node("parquet_exporter"),
+            Arc::new(node_config),
+            &ExporterConfig::new("parquet_exporter"),
+            &otap_df_engine::capability::registry::Capabilities::empty(),
+        );
+
+        assert!(
+            created.is_err(),
+            "azure storage must require a bound bearer_token_provider"
+        );
+    }
+
     /// Scenario: The Parquet exporter successfully writes a PData message.
     /// Guarantees: The shared terminal export metric set is reported.
     #[test]
