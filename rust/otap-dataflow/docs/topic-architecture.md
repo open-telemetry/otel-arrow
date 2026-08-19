@@ -180,6 +180,9 @@ sequenceDiagram
 - Broadcast `ack_mode: all` snapshots eligible subscribers at publish time and
   resolves Ack only after all of them Ack. Any required Nack, or a required
   subscriber disappearing before Acking, resolves Nack.
+- An empty eligible-subscriber snapshot resolves immediately as Nack. This
+  prevents successful completion before receivers subscribe during startup or
+  live reconfiguration; recovery requires upstream retry or durable buffering.
 
 ### Ack Boundary Options
 
@@ -213,7 +216,9 @@ upstream Nack reports that the overall replication requirement was not met.
 - Topic wiring across pipelines must remain acyclic. Startup rejects both
   same-pipeline feedback through topics and multi-pipeline topic loops.
 - `ack_mode: all` is supported only for broadcast-only topics and requires
-  `on_lag: disconnect`.
+  `ack_propagation.mode: auto` and `on_lag: disconnect`.
+- `ack_mode: all` Nacks publishes with no eligible subscribers instead of
+  treating an empty consensus as successful delivery.
 - `all + drop_oldest` is rejected because its Nack is not safely recoverable.
   Lag cleanup advances the subscriber cursor and Nacks outstanding required
   deliveries below the new cursor. Those deliveries may include messages that

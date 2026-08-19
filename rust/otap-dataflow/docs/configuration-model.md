@@ -807,7 +807,7 @@ Supported `broadcast.ack_mode` values:
 
 - `first` (default): the first subscriber Ack/Nack resolves upstream
 - `all`: all subscribers eligible at publish time must Ack; requires
-  `on_lag: disconnect`
+  `on_lag: disconnect` and `ack_propagation.mode: auto`
 
 Supported `ack_propagation` fields:
 
@@ -838,8 +838,14 @@ With `ack_propagation.mode: auto`, `broadcast.ack_mode: all` resolves upstream
 as Ack only after every subscriber eligible at publish time Acks. Any required
 Nack, or a required subscriber disappearing before Acking, resolves upstream
 as Nack. Subscribers added after publish are not required. `all` requires
-`on_lag: disconnect` and a broadcast-only inferred topic mode; startup rejects
-other combinations.
+`on_lag: disconnect`, `ack_propagation.mode: auto`, and a broadcast-only
+inferred topic mode; startup rejects other combinations.
+
+If no subscribers are eligible at publish time, the empty consensus resolves
+immediately as Nack. This prevents a producer from reporting successful
+delivery before topic receivers subscribe during startup or live
+reconfiguration. The upstream source must retry or durably buffer Nacked
+messages for recovery.
 
 Choose the branch topology based on the required Ack boundary:
 

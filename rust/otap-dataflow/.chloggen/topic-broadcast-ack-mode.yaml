@@ -19,5 +19,5 @@ issues: [2252]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Set `broadcast.ack_mode: all` with `on_lag: disconnect` on a broadcast-only topic.
-  Upstream Ack waits for every eligible subscriber; any required Nack or disappearance Nacks upstream.
+  Set `broadcast.ack_mode: all` with `on_lag: disconnect` and `ack_propagation.mode: auto` on a broadcast-only topic.
+  Upstream Ack waits for every eligible subscriber; zero subscribers, a required Nack, or disappearance Nacks upstream.

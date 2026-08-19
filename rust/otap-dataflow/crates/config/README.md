@@ -241,7 +241,8 @@ declaration with explicit errors.
   - `disconnect`
 - `policies.broadcast.ack_mode`:
   - `first` (default)
-  - `all` (broadcast-only and requires `on_lag: disconnect`)
+  - `all` (broadcast-only and requires `on_lag: disconnect` and
+    `ack_propagation.mode: auto`)
 - `policies.ack_propagation.mode`:
   - `disabled` (default)
   - `auto`
@@ -258,7 +259,12 @@ Ack/Nack propagation is enabled.
 With `ack_propagation.mode: auto`, `broadcast.ack_mode: all` waits for every
 broadcast subscriber eligible at publish time. Any required Nack, or a required
 subscriber disappearing before Acking, resolves upstream as Nack. Subscribers
-added after publish are not required. Startup rejects `all` with `drop_oldest`,
+added after publish are not required. An empty subscriber snapshot resolves
+immediately as Nack, so a producer cannot report successful delivery before any
+topic receiver subscribes during startup or live reconfiguration. Recovery
+still requires the upstream source to retry or durably buffer Nacked messages.
+
+Startup rejects `all` with disabled Ack propagation, `drop_oldest`,
 balanced-only topics, and mixed topics.
 
 `all + drop_oldest` has ambiguous recovery semantics. Advancing a lagging

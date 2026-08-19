@@ -108,8 +108,14 @@ Mapping from YAML to runtime behavior:
 behavior. Set it to `all` on a broadcast-only topic to Ack upstream only after
 every subscriber eligible at publish time Acks. Any required Nack, or a
 required subscriber disappearing before Acking, resolves upstream as Nack.
-`all` requires `broadcast.on_lag: disconnect`; startup rejects mixed and
-balanced-only topics.
+An empty eligible-subscriber snapshot resolves immediately as Nack, so a
+producer cannot report successful delivery before any topic receiver subscribes
+during startup or live reconfiguration. Recovery still requires the upstream
+source to retry or durably buffer Nacked messages.
+
+`all` requires `ack_propagation.mode: auto` and
+`broadcast.on_lag: disconnect`; startup rejects disabled Ack propagation,
+mixed topics, and balanced-only topics.
 
 Choose the component after each topic receiver based on the required Ack
 boundary:

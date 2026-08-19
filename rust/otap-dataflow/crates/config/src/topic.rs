@@ -263,6 +263,13 @@ impl TopicPolicies {
                 "{path_prefix}.broadcast.ack_mode=all requires broadcast.on_lag=disconnect"
             ));
         }
+        if self.broadcast.ack_mode == TopicBroadcastAckMode::All
+            && self.ack_propagation.mode == TopicAckPropagationMode::Disabled
+        {
+            errors.push(format!(
+                "{path_prefix}.broadcast.ack_mode=all requires ack_propagation.mode=auto"
+            ));
+        }
         if self.ack_propagation.max_in_flight == 0 {
             errors.push(format!(
                 "{path_prefix}.ack_propagation.max_in_flight must be greater than 0"
@@ -529,6 +536,7 @@ policies:
     fn rejects_all_ack_mode_with_drop_oldest() {
         let mut topic = TopicSpec::default();
         topic.policies.broadcast.ack_mode = TopicBroadcastAckMode::All;
+        topic.policies.ack_propagation.mode = TopicAckPropagationMode::Auto;
 
         let errors = topic.validation_errors("topics.raw");
 
@@ -546,8 +554,26 @@ policies:
         let mut topic = TopicSpec::default();
         topic.policies.broadcast.ack_mode = TopicBroadcastAckMode::All;
         topic.policies.broadcast.on_lag = TopicBroadcastOnLagPolicy::Disconnect;
+        topic.policies.ack_propagation.mode = TopicAckPropagationMode::Auto;
 
         assert!(topic.validation_errors("topics.raw").is_empty());
+    }
+
+    /// Scenario: all-subscriber Ack consensus is configured while Ack propagation is disabled.
+    /// Guarantees: validation rejects an Ack mode that cannot affect the topic boundary.
+    #[test]
+    fn rejects_all_ack_mode_with_ack_propagation_disabled() {
+        let mut topic = TopicSpec::default();
+        topic.policies.broadcast.ack_mode = TopicBroadcastAckMode::All;
+        topic.policies.broadcast.on_lag = TopicBroadcastOnLagPolicy::Disconnect;
+
+        let errors = topic.validation_errors("topics.raw");
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0],
+            "topics.raw.policies.broadcast.ack_mode=all requires ack_propagation.mode=auto"
+        );
     }
 
     #[test]
