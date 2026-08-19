@@ -39,14 +39,13 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
                 .map(|dimension| dimension.name.clone())
                 .collect(),
         };
-        let metadata_is_new = !metadata_table.contains(&metadata);
-        let metadata_index = metadata_table.intern(metadata);
+        let (metadata_index, metadata_is_new) = metadata_table.intern(metadata)?;
         if metadata_is_new {
             let metadata = &metadata_table.values()[metadata_index as usize];
-            let _ = string_table.intern(metadata.namespace.clone());
-            let _ = string_table.intern(metadata.name.clone());
+            let _ = string_table.intern(metadata.namespace.clone())?;
+            let _ = string_table.intern(metadata.name.clone())?;
             for dimension_name in &metadata.dimension_names {
-                let _ = string_table.intern(dimension_name.clone());
+                let _ = string_table.intern(dimension_name.clone())?;
             }
         }
         writer.write_unsigned_base128(metadata_index as u64);
@@ -64,7 +63,7 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
             .iter()
             .filter(|dimension| !dimension.name.is_empty())
         {
-            let string_index = string_table.intern(dimension.value.clone());
+            let (string_index, _) = string_table.intern(dimension.value.clone())?;
             writer.write_unsigned_base128(string_index as u64);
         }
 
@@ -77,13 +76,13 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
     writer.write_unsigned_base128(metadata_table.len() as u64);
 
     for metadata in metadata_table.values() {
-        let namespace_index = string_table.intern(metadata.namespace.clone());
-        let name_index = string_table.intern(metadata.name.clone());
+        let (namespace_index, _) = string_table.intern(metadata.namespace.clone())?;
+        let (name_index, _) = string_table.intern(metadata.name.clone())?;
         writer.write_unsigned_base128(namespace_index as u64);
         writer.write_unsigned_base128(name_index as u64);
         writer.write_unsigned_base128(metadata.dimension_names.len() as u64);
         for dimension_name in &metadata.dimension_names {
-            let dimension_index = string_table.intern(dimension_name.clone());
+            let (dimension_index, _) = string_table.intern(dimension_name.clone())?;
             writer.write_unsigned_base128(dimension_index as u64);
         }
     }
@@ -177,13 +176,27 @@ fn write_count_and_histogram<T>(
 ) -> Result<(), EncodeError> {
     if sampling_type & HIGH_RESOLUTION_TIMESTAMP != 0 {
         writer.write_unsigned_base128(1);
-        writer.write_unsigned_base128(required(
+        let milliseconds = required(
             values.milliseconds,
             HIGH_RESOLUTION_TIMESTAMP,
             "milliseconds",
-        )? as u64);
+        )?;
+        if milliseconds > 999 {
+            return Err(EncodeError::ValueOverflow {
+                field: "milliseconds",
+                value: u64::from(milliseconds),
+                maximum: 999,
+            });
+        }
+        writer.write_unsigned_base128(u64::from(milliseconds));
     } else if sampling_type & COUNT != 0 {
-        writer.write_unsigned_base128(required(values.count, COUNT, "count")? as u64);
+        let count = required(values.count, COUNT, "count")?;
+        let count = u32::try_from(count).map_err(|_| EncodeError::ValueOverflow {
+            field: "count",
+            value: count,
+            maximum: u64::from(u32::MAX),
+        })?;
+        writer.write_unsigned_base128(u64::from(count));
     }
 
     if sampling_type & HISTOGRAM != 0 {
@@ -222,18 +235,15 @@ impl<T> OrderedInterner<T>
 where
     T: Clone + Eq + std::hash::Hash,
 {
-    fn intern(&mut self, value: T) -> u32 {
+    fn intern(&mut self, value: T) -> Result<(u32, bool), EncodeError> {
         if let Some(index) = self.indexes.get(&value) {
-            return *index;
+            return Ok((*index, false));
         }
-        let index = self.values.len() as u32;
+        let index = u32::try_from(self.values.len())
+            .map_err(|_| EncodeError::DictionaryCountOverflow(self.values.len()))?;
         self.values.push(value.clone());
         let _ = self.indexes.insert(value, index);
-        index
-    }
-
-    fn contains(&self, value: &T) -> bool {
-        self.indexes.contains_key(value)
+        Ok((index, true))
     }
 
     fn len(&self) -> usize {
@@ -445,6 +455,24 @@ mod tests {
         );
     }
 
+    /// Scenario: A delta non-monotonic sum uses Geneva's delta up-down-counter metric type.
+    /// Guarantees: The encoder preserves the ME metric-type bits instead of dropping or rewriting them.
+    #[test]
+    fn preserves_delta_up_down_counter_type() {
+        let metric = standard_metric(
+            unsigned_values(1, 1),
+            SUM | COUNT | METRIC_TYPE_DELTA_UP_DOWN_COUNTER,
+        );
+        let mut writer = Writer::default();
+
+        write_metric(&mut writer, &metric).expect("metric should encode");
+
+        assert_eq!(
+            read_unsigned_base128(writer.bytes()),
+            u64::from(SUM | COUNT | METRIC_TYPE_DELTA_UP_DOWN_COUNTER)
+        );
+    }
+
     /// Scenario: A sampling flag selects a scalar value that is absent.
     /// Guarantees: Encoding fails explicitly instead of producing a malformed packet.
     #[test]
@@ -474,6 +502,55 @@ mod tests {
             Err(EncodeError::MissingValue {
                 flag: SUM,
                 field: "sum"
+            })
+        );
+    }
+
+    /// Scenario: An OTLP-sized sample count exceeds Geneva's unsigned 32-bit count field.
+    /// Guarantees: Encoding reports the exact protocol limit instead of truncating the count.
+    #[test]
+    fn rejects_unrepresentable_count() {
+        let count = u64::from(u32::MAX) + 1;
+        let packet = Packet {
+            current_time_bucket: DEFAULT_TIME_BUCKET,
+            metrics: vec![standard_metric(unsigned_values(1, count), SUM | COUNT)],
+        };
+
+        assert_eq!(
+            encode(&packet),
+            Err(EncodeError::ValueOverflow {
+                field: "count",
+                value: count,
+                maximum: u64::from(u32::MAX),
+            })
+        );
+    }
+
+    /// Scenario: A high-resolution metric supplies a millisecond component outside one second.
+    /// Guarantees: Encoding rejects the invalid component rather than publishing an ambiguous timestamp.
+    #[test]
+    fn rejects_invalid_millisecond_component() {
+        let packet = Packet {
+            current_time_bucket: DEFAULT_TIME_BUCKET,
+            metrics: vec![standard_metric(
+                MetricValues::Unsigned(NumericValues {
+                    min: None,
+                    max: None,
+                    sum: Some(1),
+                    count: Some(1),
+                    milliseconds: Some(1_000),
+                    histogram: None,
+                }),
+                SUM | COUNT | HIGH_RESOLUTION_TIMESTAMP,
+            )],
+        };
+
+        assert_eq!(
+            encode(&packet),
+            Err(EncodeError::ValueOverflow {
+                field: "milliseconds",
+                value: 1_000,
+                maximum: 999,
             })
         );
     }

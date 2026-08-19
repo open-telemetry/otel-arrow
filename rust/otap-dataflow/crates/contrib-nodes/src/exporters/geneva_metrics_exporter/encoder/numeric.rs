@@ -27,7 +27,7 @@ pub(super) fn can_store_double_values_as_long(
 pub(super) fn serializable_as_i64(value: f64) -> bool {
     value.is_finite()
         && value.fract() == 0.0
-        && value >= i64::MIN as f64
+        && value > i64::MIN as f64
         && value < -(i64::MIN as f64)
 }
 
@@ -50,7 +50,14 @@ mod tests {
     /// Guarantees: Only finite integral doubles use the compact signed base-128 representation.
     #[test]
     fn selects_compact_storage_only_for_integral_doubles() {
-        for (value, stored_as_long) in [(42.0, true), (42.5, false), (f64::INFINITY, false)] {
+        for (value, stored_as_long) in [
+            (-42.0, true),
+            (42.0, true),
+            (42.5, false),
+            (f64::NAN, false),
+            (f64::INFINITY, false),
+            (f64::NEG_INFINITY, false),
+        ] {
             let metric = standard_metric(double_values(value, 1), SUM | COUNT);
             let mut writer = Writer::default();
             write_metric(&mut writer, &metric).expect("metric should encode");
@@ -63,5 +70,47 @@ mod tests {
                 "value {value}"
             );
         }
+    }
+
+    /// Scenario: Integral doubles sit at and immediately inside the signed 64-bit conversion boundaries.
+    /// Guarantees: The compact range matches ME by excluding both 2^63 endpoints while accepting adjacent representable values.
+    #[test]
+    fn matches_me_compact_integer_boundaries() {
+        const I64_MIN_AS_F64: f64 = -9_223_372_036_854_775_808.0;
+        const NEXT_AFTER_I64_MIN: f64 = -9_223_372_036_854_774_784.0;
+        const PREVIOUS_BEFORE_I64_MAX: f64 = 9_223_372_036_854_774_784.0;
+        const TWO_TO_THE_63: f64 = 9_223_372_036_854_775_808.0;
+
+        assert!(!serializable_as_i64(I64_MIN_AS_F64));
+        assert!(serializable_as_i64(NEXT_AFTER_I64_MIN));
+        assert!(serializable_as_i64(PREVIOUS_BEFORE_I64_MAX));
+        assert!(!serializable_as_i64(TWO_TO_THE_63));
+    }
+
+    /// Scenario: A double metric selects min, max, and sum values and may also carry a histogram.
+    /// Guarantees: Compact storage requires every selected scalar to be integral and is disabled for histogram metrics.
+    #[test]
+    fn requires_integral_selected_scalars_without_histogram() {
+        let mut values = NumericValues {
+            min: Some(1.0),
+            max: Some(2.0),
+            sum: Some(3.0),
+            count: Some(3),
+            milliseconds: None,
+            histogram: None,
+        };
+        let sampling_type = MIN | MAX | SUM | COUNT;
+
+        assert!(can_store_double_values_as_long(sampling_type, &values));
+
+        values.max = Some(2.5);
+        assert!(!can_store_double_values_as_long(sampling_type, &values));
+
+        values.max = Some(2.0);
+        values.histogram = Some(MetricHistogram::Explicit(vec![(2.0, 3)]));
+        assert!(!can_store_double_values_as_long(
+            sampling_type | HISTOGRAM,
+            &values
+        ));
     }
 }

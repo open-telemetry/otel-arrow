@@ -36,6 +36,8 @@ pub const METRIC_TYPE_MASK: u32 = 0x07c0_0000;
 pub const METRIC_TYPE_GAUGE: u32 = 0x0040_0000;
 /// Cumulative up-down counter metric type.
 pub const METRIC_TYPE_CUMULATIVE_UP_DOWN_COUNTER: u32 = 0x0240_0000;
+/// Delta up-down counter metric type.
+pub const METRIC_TYPE_DELTA_UP_DOWN_COUNTER: u32 = 0x0340_0000;
 /// Cumulative counter metric type.
 pub const METRIC_TYPE_CUMULATIVE_COUNTER: u32 = 0x00c0_0000;
 /// Delta counter metric type.
@@ -121,8 +123,8 @@ pub struct NumericValues<T> {
     pub max: Option<T>,
     /// Sum value.
     pub sum: Option<T>,
-    /// Sample count.
-    pub count: Option<u32>,
+    /// Sample count, checked against the Geneva Metrics `u32` wire limit during encoding.
+    pub count: Option<u64>,
     /// Millisecond component used with high-resolution timestamps.
     pub milliseconds: Option<u32>,
     /// Optional histogram body.
@@ -197,6 +199,19 @@ pub enum EncodeError {
     /// Packet offsets cannot be represented by the protocol.
     #[error("packet offset {0} exceeds protocol maximum")]
     OffsetOverflow(usize),
+    /// A dictionary index cannot be represented by the protocol.
+    #[error("dictionary entry count {0} exceeds protocol maximum")]
+    DictionaryCountOverflow(usize),
+    /// A numeric value cannot be represented by its protocol field.
+    #[error("{field} value {value} exceeds protocol maximum {maximum}")]
+    ValueOverflow {
+        /// Protocol field name.
+        field: &'static str,
+        /// Supplied value.
+        value: u64,
+        /// Maximum representable value.
+        maximum: u64,
+    },
     /// The packet-to-metric timestamp difference cannot be encoded.
     #[error(
         "time difference between packet bucket {current_time_bucket} and metric bucket {metric_time_bucket} exceeds signed 64-bit range"

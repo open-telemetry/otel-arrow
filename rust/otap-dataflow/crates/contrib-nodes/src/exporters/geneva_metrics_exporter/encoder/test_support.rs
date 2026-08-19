@@ -14,7 +14,7 @@ pub(super) fn dimension(name: &str, value: &str) -> Dimension {
     }
 }
 
-pub(super) fn unsigned_values(sum: u64, count: u32) -> MetricValues {
+pub(super) fn unsigned_values(sum: u64, count: u64) -> MetricValues {
     MetricValues::Unsigned(NumericValues {
         min: None,
         max: None,
@@ -25,7 +25,7 @@ pub(super) fn unsigned_values(sum: u64, count: u32) -> MetricValues {
     })
 }
 
-pub(super) fn double_values(sum: f64, count: u32) -> MetricValues {
+pub(super) fn double_values(sum: f64, count: u64) -> MetricValues {
     MetricValues::Double(NumericValues {
         min: None,
         max: None,

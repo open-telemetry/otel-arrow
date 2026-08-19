@@ -152,7 +152,91 @@ fn finish_histogram_prefix(
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use super::super::*;
+    use super::super::writer::Writer;
+    use super::*;
+
+    /// Scenario: A legacy raw histogram contains multiple ordered buckets with increasing and decreasing counts.
+    /// Guarantees: The first bucket is absolute and subsequent keys and counts use the Geneva delta representation.
+    #[test]
+    fn encodes_raw_histogram_bucket_deltas() {
+        let mut writer = Writer::default();
+
+        write_histogram(
+            &mut writer,
+            &MetricHistogram::Raw(vec![(10, 5), (15, 2), (142, 130)]),
+            0,
+        )
+        .expect("raw histogram should encode");
+
+        assert_eq!(
+            writer.finish(),
+            vec![
+                0x08, 0x00, 0x00, 0x00, // Format and body length.
+                0x03, // Bucket count.
+                0x0a, 0x05, // First key and count.
+                0x05, 0x43, // Key delta 5 and count delta -3.
+                0x7f, 0x80, 0x02, // Key delta 127 and count delta 128.
+            ]
+        );
+    }
+
+    /// Scenario: A cumulative explicit histogram contains multiple double boundaries and a decreasing count.
+    /// Guarantees: The prefix carries double and cumulative flags while later counts use signed deltas.
+    #[test]
+    fn encodes_cumulative_explicit_histogram() {
+        let mut writer = Writer::default();
+
+        write_histogram(
+            &mut writer,
+            &MetricHistogram::Explicit(vec![(1.5, 10), (2.5, 7)]),
+            METRIC_TYPE_CUMULATIVE_HISTOGRAM,
+        )
+        .expect("explicit histogram should encode");
+
+        let mut expected = vec![
+            0x13, 0x00, 0x00, 0xa0, // Double, cumulative, and body length.
+            0x02, // Bucket count.
+        ];
+        expected.extend_from_slice(&1.5_f64.to_le_bytes());
+        expected.push(0x0a);
+        expected.extend_from_slice(&2.5_f64.to_le_bytes());
+        expected.push(0x43); // Count delta -3.
+        assert_eq!(writer.finish(), expected);
+    }
+
+    /// Scenario: A cumulative exponential histogram has zero, negative, positive, and empty sparse buckets.
+    /// Guarantees: Distribution flags and counts exclude empty buckets, negative exponents reverse, and both ranges delta encode.
+    #[test]
+    fn encodes_all_exponential_histogram_ranges() {
+        let mut writer = Writer::default();
+
+        write_histogram(
+            &mut writer,
+            &MetricHistogram::Exponential(ExponentialHistogram {
+                scale: -2,
+                zero_count: 4,
+                negative: vec![(-5, 2), (-4, 0), (-2, 5)],
+                positive: vec![(1, 3), (2, 0), (4, 8)],
+            }),
+            METRIC_TYPE_CUMULATIVE_EXPONENTIAL_HISTOGRAM,
+        )
+        .expect("exponential histogram should encode");
+
+        assert_eq!(
+            writer.finish(),
+            vec![
+                0x0d, 0x00, 0x00, 0xc0, // Exponential, cumulative, and body length.
+                0xfe, // Scale -2.
+                0x19, // Positive, zero, and negative ranges.
+                0x04, // Zero count.
+                0x02, 0x02, // Non-zero negative and positive bucket counts.
+                0x42, 0x05, // First negative exponent -2 and count 5.
+                0x43, 0x43, // Negative exponent and count deltas -3.
+                0x01, 0x03, // First positive exponent 1 and count 3.
+                0x03, 0x05, // Positive exponent delta 3 and count delta 5.
+            ]
+        );
+    }
 
     /// Scenario: A delta explicit histogram contains one double boundary and one count.
     /// Guarantees: Scalar values, histogram prefix, boundary encoding, dictionaries, and CRC match the C++ packet.
