@@ -17,6 +17,8 @@ this development environment.
 - The Rust toolchain specified by this repository
 - LLVM with `libclang.dll` on Windows. The Kafka dependency enables Zstandard,
   whose native build uses bindgen.
+- vcpkg with the `openssl:x64-windows-static-md` package on Windows. The native
+  Kafka build uses OpenSSL through CMake.
 
 Run the following commands in PowerShell from the repository root:
 
@@ -40,6 +42,26 @@ Test-Path "$Env:LIBCLANG_PATH\libclang.dll"
 ```
 
 The last command must print `True`.
+
+Install OpenSSL with vcpkg and set both the Cargo and CMake environment
+variables in every PowerShell session used to build the dataflow:
+
+```powershell
+$Env:VCPKG_INSTALLATION_ROOT = "$HOME\.vcpkg"
+$Env:PATH = "$Env:VCPKG_INSTALLATION_ROOT;$Env:PATH"
+& "$Env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install openssl:x64-windows-static-md
+
+$Env:OPENSSL_DIR = "$Env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
+$Env:OPENSSL_ROOT_DIR = $Env:OPENSSL_DIR
+$Env:OPENSSL_USE_STATIC_LIBS = "TRUE"
+
+Test-Path "$Env:OPENSSL_DIR\include\openssl\ssl.h"
+Test-Path "$Env:OPENSSL_DIR\lib\libssl.lib"
+Test-Path "$Env:OPENSSL_DIR\lib\libcrypto.lib"
+```
+
+All three checks must print `True`. `OPENSSL_DIR` is used by Cargo dependencies,
+while the native Kafka CMake build requires `OPENSSL_ROOT_DIR`.
 
 ## Check Docker
 
@@ -139,6 +161,11 @@ Select-String -Path kafka-sasl-tls.log -Pattern "authentication|SSL|SASL|decode|
 ```
 
 ## Troubleshooting
+
+On Windows, `Unable to find libclang` means `LIBCLANG_PATH` does not contain
+`libclang.dll`. `Could NOT find OpenSSL` means `OPENSSL_ROOT_DIR` does not point
+to the vcpkg OpenSSL installation. Repeat the prerequisite checks in the same
+PowerShell session used to run Cargo.
 
 Inspect the broker and certificate generator logs:
 
