@@ -131,7 +131,7 @@ use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements, ProcessorFactory,
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
 };
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+use otap_df_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
 #[cfg(test)]
 use otap_df_telemetry::common_attributes::SignalAttributes;
 
@@ -990,8 +990,8 @@ impl DurableBuffer {
         // Ingest based on payload type and configuration.
         // Adapters preserve the original payload via into_inner() for NACK on failure.
         // Returns (Result, item_count) - item count tracks individual items for all formats.
-        let (ingest_result, item_count): (Result<(), _>, u64) = match payload {
-            OtapPayload::OtlpBytes(otlp_bytes) => {
+        let (ingest_result, item_count): (Result<(), _>, u64) = match payload.into_data() {
+            PayloadData::OtlpBytes(otlp_bytes) => {
                 // OTLP bytes: check configuration for handling mode
                 match self.config.otlp_handling {
                     OtlpHandling::PassThrough => {
@@ -1003,9 +1003,7 @@ impl DurableBuffer {
                                 let num_items = adapter.cached_item_count();
                                 let result = match engine.ingest(&adapter).await {
                                     Ok(()) => Ok(()),
-                                    Err(e) => {
-                                        Err((e, OtapPayload::OtlpBytes(adapter.into_inner())))
-                                    }
+                                    Err(e) => Err((e, OtapPayload::from(adapter.into_inner()))),
                                 };
                                 (result, num_items)
                             }
@@ -1018,7 +1016,7 @@ impl DurableBuffer {
                                 otel_error!("durable_buffer.otlp.adapter_failed", error = %e);
 
                                 let nack_pdata =
-                                    OtapPdata::new(context, OtapPayload::OtlpBytes(original_bytes));
+                                    OtapPdata::new(context, OtapPayload::from(original_bytes));
                                 effect_handler
                                     .notify_nack(NackMsg::new(
                                         format!("OTLP adapter creation failed: {}", e),
@@ -1034,7 +1032,7 @@ impl DurableBuffer {
                         // Clone bytes for NACK on conversion failure (conversion consumes the input).
                         let bytes_for_nack = otlp_bytes.clone();
                         let conversion_result: Result<OtapArrowRecords, _> =
-                            OtapPayload::OtlpBytes(otlp_bytes).try_into_with_default();
+                            OtapPayload::from(otlp_bytes).try_into_with_default();
                         match conversion_result {
                             Ok(records) => {
                                 // Count items from Arrow data (cheap - just num_rows)
@@ -1043,10 +1041,7 @@ impl DurableBuffer {
                                 let result = match engine.ingest(&adapter).await {
                                     Ok(()) => Ok(()),
                                     // Ingest failed: NACK with the Arrow records we tried to store
-                                    Err(e) => Err((
-                                        e,
-                                        OtapPayload::OtapArrowRecords(adapter.into_inner()),
-                                    )),
+                                    Err(e) => Err((e, OtapPayload::from(adapter.into_inner()))),
                                 };
                                 (result, num_items)
                             }
@@ -1059,7 +1054,7 @@ impl DurableBuffer {
                                 otel_error!("durable_buffer.otlp.conversion_failed", error = %e);
 
                                 let nack_pdata =
-                                    OtapPdata::new(context, OtapPayload::OtlpBytes(bytes_for_nack));
+                                    OtapPdata::new(context, OtapPayload::from(bytes_for_nack));
                                 effect_handler
                                     .notify_nack(NackMsg::new(
                                         format!("OTLP to Arrow conversion failed: {}", e),
@@ -1072,13 +1067,13 @@ impl DurableBuffer {
                     }
                 }
             }
-            OtapPayload::OtapArrowRecords(records) => {
+            PayloadData::OtapArrowRecords(records) => {
                 // Native Arrow data: count items (cheap) and store directly.
                 let num_items = records.num_items() as u64;
                 let adapter = OtapRecordBundleAdapter::new(records);
                 let result = match engine.ingest(&adapter).await {
                     Ok(()) => Ok(()),
-                    Err(e) => Err((e, OtapPayload::OtapArrowRecords(adapter.into_inner()))),
+                    Err(e) => Err((e, OtapPayload::from(adapter.into_inner()))),
                 };
                 (result, num_items)
             }

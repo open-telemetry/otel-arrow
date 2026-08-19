@@ -56,7 +56,7 @@ use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
-    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes,
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData,
     error::Error as PDataError,
     otap::batching::make_item_batches,
     otlp::batching::{BytesBatches, make_bytes_batches_owned},
@@ -802,8 +802,8 @@ impl BatchProcessor {
 
         let (ctx, payload) = request.into_parts();
 
-        match payload {
-            OtapPayload::OtapArrowRecords(otap) => {
+        match payload.into_data() {
+            PayloadData::OtapArrowRecords(otap) => {
                 if let Some(mut otap_format) = self.otap_format() {
                     otap_format
                         .for_signal(signal)
@@ -819,7 +819,7 @@ impl BatchProcessor {
                     return Err(Self::no_active_format_error());
                 }
             }
-            OtapPayload::OtlpBytes(otlp) => {
+            PayloadData::OtlpBytes(otlp) => {
                 if let Some(mut otlp_format) = self.otlp_format() {
                     otlp_format
                         .for_signal(signal)

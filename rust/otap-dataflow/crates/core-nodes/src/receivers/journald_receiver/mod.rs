@@ -897,7 +897,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             }
                             let mut pdata = OtapPdata::new(
                                 Context::default(),
-                                OtapPayload::OtapArrowRecords(batch.records),
+                                OtapPayload::from(batch.records),
                             );
                             let mut calldata = CallData::new();
                             calldata.push(Context8u8::from(batch.id));
