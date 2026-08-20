@@ -65,8 +65,7 @@ impl<T: FieldRanges> Clone for ProtoBytesParser<'_, T> {
     fn clone(&self) -> Self {
         Self {
             buf: self.buf,
-            pos: self.pos.clone(),
-            field_ranges: self.field_ranges.clone(),
+            state: self.state.clone(),
         }
     }
 }
@@ -146,11 +145,13 @@ pub struct ProtoBytesParser<'a, T: FieldRanges> {
     /// buffer containing the serialized proto message being parsed
     buf: &'a [u8],
 
-    /// offset within the buffer
-    pos: Rc<Cell<usize>>,
+    /// Shared parsing position and field ranges.
+    state: Rc<ParserState<T>>,
+}
 
-    /// offsets within the buffer of fields that have been encountered as the buffer is parsed
-    field_ranges: Rc<T>,
+struct ParserState<T> {
+    pos: Cell<usize>,
+    field_ranges: T,
 }
 
 impl<'a, T> ProtoBytesParser<'a, T>
@@ -162,8 +163,10 @@ where
     pub fn new(buf: &'a [u8]) -> Self {
         Self {
             buf,
-            pos: Rc::new(Cell::new(0)),
-            field_ranges: Rc::new(T::new()),
+            state: Rc::new(ParserState {
+                pos: Cell::new(0),
+                field_ranges: T::new(),
+            }),
         }
     }
 
@@ -173,7 +176,7 @@ where
     #[must_use]
     pub fn advance_to_find_field(&self, field_num: u64) -> Option<&'a [u8]> {
         // Check if the field offset is already cached before entering the parsing loop
-        if let Some((start, end)) = self.field_ranges.get_field_range(field_num) {
+        if let Some((start, end)) = self.state.field_ranges.get_field_range(field_num) {
             return Some(&self.buf[start..end]);
         }
 
@@ -181,7 +184,7 @@ where
         // This loop advances parsing by one field each iteration until either the field is found
         // or the end of the buffer is reached.
         loop {
-            let pos = self.pos.get();
+            let pos = self.state.pos.get();
             if pos >= self.buf.len() {
                 // end of buffer reached, field not found
                 break;
@@ -193,10 +196,11 @@ where
             let wire_type = tag & 7;
 
             let (start, end) = field_value_range(self.buf, wire_type, next_pos)?;
-            self.pos.set(end);
+            self.state.pos.set(end);
 
             // save the offset of the field we've encountered
-            self.field_ranges
+            self.state
+                .field_ranges
                 .set_field_range(field, wire_type, start, end);
 
             // Check if this is the field we're looking for
@@ -265,11 +269,8 @@ pub struct RepeatedFieldProtoBytesParser<'a, T: FieldRanges> {
     /// buffer containing the serialized proto message being parsed
     buf: &'a [u8],
 
-    // `pos` is a shared offset representing how far parsing has progressed in the buffer
-    pos: Rc<Cell<usize>>,
-
-    /// ranges within the buffer of fields that have been encountered as the buffer is parsed
-    field_ranges: Rc<T>,
+    /// Shared parsing position and field ranges.
+    state: Rc<ParserState<T>>,
 
     field_num: u64,
     expected_wire_type: u64,
@@ -295,8 +296,7 @@ where
     ) -> Self {
         Self {
             buf: other.buf,
-            pos: other.pos.clone(),
-            field_ranges: other.field_ranges.clone(),
+            state: other.state.clone(),
             field_num,
             expected_wire_type,
             next_range: None,
@@ -319,13 +319,13 @@ where
         // initialize first range
         while self.next_range.is_none() {
             // try to get the field offset if it is known
-            let range = self.field_ranges.get_field_range(self.field_num);
+            let range = self.state.field_ranges.get_field_range(self.field_num);
 
             match range {
                 Some(range) => self.next_range = Some(range),
                 None => {
                     // advance
-                    let pos = self.pos.get();
+                    let pos = self.state.pos.get();
                     if pos >= self.buf.len() {
                         // end of buffer, field not found
                         return None;
@@ -338,10 +338,11 @@ where
                     let (start, end) = field_value_range(self.buf, wire_type, next_pos)?;
 
                     // save the offset of the field we've encountered
-                    self.field_ranges
+                    self.state
+                        .field_ranges
                         .set_field_range(field, wire_type, start, end);
 
-                    self.pos.set(end)
+                    self.state.pos.set(end)
                 }
             }
         }
@@ -371,12 +372,13 @@ where
             }
 
             // save the offset of the field we've encountered
-            self.field_ranges
+            self.state
+                .field_ranges
                 .set_field_range(field, wire_type, range.0, range.1);
         }
 
         // update pointers for continued parsing
-        self.pos.set(range.1);
+        self.state.pos.set(range.1);
         self.next_range = Some(range);
 
         Some(slice)
@@ -525,8 +527,7 @@ pub trait RepeatedFieldEncodings: FieldRanges {
 pub struct RepeatedPrimitiveIter<'a, T: RepeatedFieldEncodings, V, P> {
     buf: &'a [u8],
     field_num: u64,
-    pos: Rc<Cell<usize>>,
-    field_ranges: Rc<T>,
+    state: Rc<ParserState<T>>,
 
     // expected wire type for the repeated field .. e.g. if the field is type `repeated double`
     // this would be wire_types::FIXED64
@@ -560,8 +561,7 @@ where
         Self {
             buf: other.buf,
             field_num,
-            pos: other.pos.clone(),
-            field_ranges: other.field_ranges.clone(),
+            state: other.state.clone(),
             repeated_wire_type,
             _pd: PhantomData,
 
@@ -583,14 +583,13 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         // initialize the inner iterator
         while self.field_iter.is_none() {
-            let range = self.field_ranges.get_field_range(self.field_num);
+            let range = self.state.field_ranges.get_field_range(self.field_num);
             match range {
                 Some(range) => {
-                    self.packed = self.field_ranges.is_packed(self.field_num);
+                    self.packed = self.state.field_ranges.is_packed(self.field_num);
                     self.field_iter = Some(RepeatedFieldProtoBytesParser {
                         buf: self.buf,
-                        pos: self.pos.clone(),
-                        field_ranges: self.field_ranges.clone(),
+                        state: self.state.clone(),
                         field_num: self.field_num,
                         next_range: Some(range),
                         values_exhausted: false,
@@ -603,7 +602,7 @@ where
                 }
                 None => {
                     // advance
-                    let pos = self.pos.get();
+                    let pos = self.state.pos.get();
                     if pos >= self.buf.len() {
                         // end of buffer, field not found
                         return None;
@@ -616,10 +615,11 @@ where
                     let (start, end) = field_value_range(self.buf, wire_type, next_pos)?;
 
                     // save the offset of the field we've encountered
-                    self.field_ranges
+                    self.state
+                        .field_ranges
                         .set_field_range(field, wire_type, start, end);
 
-                    self.pos.set(end)
+                    self.state.pos.set(end)
                 }
             }
         }

@@ -1321,7 +1321,7 @@ mod tests {
     const TEST_UPSTREAM_NODE_ID: usize = 12345;
 
     fn make_pdata() -> OtapPdata {
-        let payload = OtapPayload::OtlpBytes(OtlpProtoBytes::empty(SignalType::Logs));
+        let payload = OtapPayload::from(OtlpProtoBytes::empty(SignalType::Logs));
         // Simulate an upstream subscriber (e.g., receiver) so acks/nacks route correctly.
         OtapPdata::new(Context::default(), payload).test_subscribe_to(
             Interests::ACKS | Interests::NACKS,

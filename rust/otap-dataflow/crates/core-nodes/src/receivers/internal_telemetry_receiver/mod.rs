@@ -565,7 +565,7 @@ mod tests {
     use otap_df_engine::local::receiver::Receiver as _;
     use otap_df_engine::message::{Receiver as EngineReceiver, Sender as EngineSender};
     use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
-    use otap_df_pdata::OtapPayload;
+    use otap_df_pdata::PayloadData;
     use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
@@ -588,7 +588,8 @@ mod tests {
     }
 
     fn decode_metric_value(pdata: OtapPdata) -> i64 {
-        let OtapPayload::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) = pdata.payload()
+        let PayloadData::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) =
+            pdata.payload().into_data()
         else {
             panic!("internal telemetry receiver emitted a non-metrics payload")
         };

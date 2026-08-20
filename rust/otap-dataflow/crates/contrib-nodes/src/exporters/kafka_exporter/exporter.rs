@@ -3692,7 +3692,7 @@ pub mod test_support {
                 // purge the in-flight delivery, cancelling its future.
                 exporter.shutdown(Duration::from_millis(300)).await;
 
-                let nack = exporter
+                let mut nack = exporter
                     .recv_nack(Duration::from_secs(10))
                     .await
                     .expect("a purged in-flight delivery must unwind a nack");
@@ -3897,7 +3897,7 @@ pub mod test_support {
                     .await
                     .expect("send pdata");
 
-                let nack = exporter
+                let mut nack = exporter
                     .recv_nack(Duration::from_secs(10))
                     .await
                     .expect("send failure must unwind a nack to the subscriber");
