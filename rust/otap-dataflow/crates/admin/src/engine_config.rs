@@ -113,8 +113,12 @@ mod tests {
     fn redact_admin_typed_config(config: &mut Value) -> Result<(), RedactionError> {
         redact_typed_config_in_place::<AdminTypedConfig>(
             config,
-            &[SecretField::required("password")],
+            &[SecretField::required("password", admin_password)],
         )
+    }
+
+    fn admin_password(config: &AdminTypedConfig) -> Option<&RedactedString> {
+        Some(&config.password)
     }
 
     #[allow(unsafe_code)]

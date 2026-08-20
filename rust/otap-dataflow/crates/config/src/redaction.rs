@@ -16,17 +16,12 @@ use std::sync::OnceLock;
 /// Placeholder emitted for type-owned secrets in config snapshots.
 pub const REDACTED_VALUE: &str = "[REDACTED]";
 
-const PRIVATE_MARKER_A: &str = "\u{001e}otap-secret-marker-a\u{001f}";
-const PRIVATE_MARKER_B: &str = "\u{001e}otap-secret-marker-b\u{001f}";
-
 thread_local! {
     static TRACKED_SECRET_COUNT: Cell<Option<usize>> = const { Cell::new(None) };
-    static SERIALIZED_SECRET_MARKER: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
-/// A string value that remains cleartext in memory but never serializes its
-/// cleartext. Normal serialization emits the redaction marker; internal
-/// declaration validation emits only an opaque per-instance token.
+/// A string value that remains cleartext in memory but always serializes as the
+/// redaction marker.
 ///
 /// This wrapper is for config values, not map keys. Component owners declare
 /// the corresponding raw fields in their exact [`ConfigRedactor`]
@@ -88,10 +83,7 @@ impl Serialize for RedactedString {
     where
         S: Serializer,
     {
-        match SERIALIZED_SECRET_MARKER.with(Cell::get) {
-            Some(prefix) => serializer.serialize_str(&format!("{prefix}{self:p}")),
-            None => serializer.serialize_str(REDACTED_VALUE),
-        }
+        serializer.serialize_str(REDACTED_VALUE)
     }
 }
 
@@ -101,9 +93,6 @@ pub enum RedactionError {
     /// The raw config no longer deserializes into its registered type.
     #[error("registered config could not be deserialized for snapshot redaction")]
     Deserialization,
-    /// The typed config could not be inspected deterministically.
-    #[error("registered config could not be serialized for snapshot redaction")]
-    Serialization,
     /// Typed secret declarations do not match the final typed value.
     #[error("registered config did not declare every deserialized secret")]
     SecretCountMismatch,
@@ -138,29 +127,35 @@ impl RedactionError {
     }
 }
 
+/// Accessor binding a raw field declaration to its typed secret.
+pub type SecretAccessor<T> = for<'a> fn(&'a T) -> Option<&'a RedactedString>;
+
 /// A top-level raw config field owned by a typed component.
 #[derive(Clone, Copy)]
-pub struct SecretField {
+pub struct SecretField<T> {
     name: &'static str,
     required: bool,
+    accessor: SecretAccessor<T>,
 }
 
-impl SecretField {
+impl<T> SecretField<T> {
     /// Declares a required top-level secret field.
     #[must_use]
-    pub const fn required(name: &'static str) -> Self {
+    pub const fn required(name: &'static str, accessor: SecretAccessor<T>) -> Self {
         Self {
             name,
             required: true,
+            accessor,
         }
     }
 
     /// Declares an optional top-level secret field.
     #[must_use]
-    pub const fn optional(name: &'static str) -> Self {
+    pub const fn optional(name: &'static str, accessor: SecretAccessor<T>) -> Self {
         Self {
             name,
             required: false,
+            accessor,
         }
     }
 }
@@ -244,10 +239,10 @@ fn build_redactor_index(registrations: &[ConfigRedactor]) -> HashMap<&'static st
 /// Returns a redacted copy of a typed component config.
 pub fn redact_typed_config<T>(
     config: &Value,
-    secret_fields: &[SecretField],
+    secret_fields: &[SecretField<T>],
 ) -> Result<Value, RedactionError>
 where
-    T: DeserializeOwned + Serialize,
+    T: DeserializeOwned,
 {
     let mut redacted = config.clone();
     redact_typed_config_in_place::<T>(&mut redacted, secret_fields)?;
@@ -257,18 +252,14 @@ where
 /// Redacts declared top-level `RedactedString` fields in place.
 pub fn redact_typed_config_in_place<T>(
     config: &mut Value,
-    secret_fields: &[SecretField],
+    secret_fields: &[SecretField<T>],
 ) -> Result<(), RedactionError>
 where
-    T: DeserializeOwned + Serialize,
+    T: DeserializeOwned,
 {
     let (typed, deserialized_secrets) = track_deserialized_secrets(|| {
         T::deserialize(&*config).map_err(|_| RedactionError::Deserialization)
     })?;
-    let first = serialize_with_marker(&typed, PRIVATE_MARKER_A)?;
-    let second = serialize_with_marker(&typed, PRIVATE_MARKER_B)?;
-    let first = first.as_object().ok_or(RedactionError::ShapeMismatch)?;
-    let second = second.as_object().ok_or(RedactionError::ShapeMismatch)?;
     let object = config.as_object().ok_or(RedactionError::ShapeMismatch)?;
     let mut active_fields = Vec::with_capacity(secret_fields.len());
     let mut declared_names = HashSet::with_capacity(secret_fields.len());
@@ -278,21 +269,16 @@ where
             return Err(RedactionError::ShapeMismatch);
         }
         match object.get(field.name) {
-            Some(Value::String(_)) => {
-                let first_token = first
-                    .get(field.name)
-                    .and_then(Value::as_str)
-                    .and_then(|value| value.strip_prefix(PRIVATE_MARKER_A));
-                let second_token = second
-                    .get(field.name)
-                    .and_then(Value::as_str)
-                    .and_then(|value| value.strip_prefix(PRIVATE_MARKER_B));
-                if first_token.is_none() || first_token != second_token {
+            Some(Value::String(raw)) => {
+                let Some(secret) = (field.accessor)(&typed) else {
+                    return Err(RedactionError::ShapeMismatch);
+                };
+                if secret.expose() != raw {
                     return Err(RedactionError::ShapeMismatch);
                 }
                 active_fields.push(field.name);
             }
-            Some(Value::Null) | None if !field.required => {}
+            Some(Value::Null) | None if !field.required && (field.accessor)(&typed).is_none() => {}
             _ => return Err(RedactionError::ShapeMismatch),
         }
     }
@@ -309,25 +295,6 @@ where
         *value = Value::String(REDACTED_VALUE.to_owned());
     }
     Ok(())
-}
-
-fn serialize_with_marker<T>(value: &T, marker: &'static str) -> Result<Value, RedactionError>
-where
-    T: Serialize,
-{
-    struct MarkerGuard(Option<&'static str>);
-
-    impl Drop for MarkerGuard {
-        fn drop(&mut self) {
-            SERIALIZED_SECRET_MARKER.with(|current| current.set(self.0));
-        }
-    }
-
-    let previous = SERIALIZED_SECRET_MARKER.with(|current| current.replace(Some(marker)));
-    let guard = MarkerGuard(previous);
-    let serialized = serde_json::to_value(value).map_err(|_| RedactionError::Serialization);
-    drop(guard);
-    serialized
 }
 
 fn track_deserialized_secrets<T>(
@@ -361,9 +328,17 @@ mod tests {
         label: String,
     }
 
-    const TEST_SECRET_FIELDS: &[SecretField] = &[
-        SecretField::required("password"),
-        SecretField::optional("optional_token"),
+    fn test_password(config: &TestConfig) -> Option<&RedactedString> {
+        Some(&config.password)
+    }
+
+    fn test_optional_token(config: &TestConfig) -> Option<&RedactedString> {
+        config.optional_token.as_ref()
+    }
+
+    const TEST_SECRET_FIELDS: &[SecretField<TestConfig>] = &[
+        SecretField::required("password", test_password),
+        SecretField::optional("optional_token", test_optional_token),
     ];
 
     /// Scenario: a cleartext value is loaded into a `RedactedString`.
@@ -461,8 +436,11 @@ mod tests {
             "label": "visible"
         });
 
-        let error = redact_typed_config::<TestConfig>(&raw, &[SecretField::required("label")])
-            .expect_err("public field declaration must fail closed");
+        let error = redact_typed_config::<TestConfig>(
+            &raw,
+            &[SecretField::required("label", test_password)],
+        )
+        .expect_err("public field declaration must fail closed");
 
         assert_eq!(error, RedactionError::ShapeMismatch);
         assert_eq!(raw["password"], "required-secret");
@@ -483,8 +461,8 @@ mod tests {
         let error = redact_typed_config::<TestConfig>(
             &raw,
             &[
-                SecretField::required("password"),
-                SecretField::required("password"),
+                SecretField::required("password", test_password),
+                SecretField::required("password", test_password),
             ],
         )
         .expect_err("duplicate declarations must fail closed");
@@ -565,8 +543,15 @@ mod tests {
         secret: RedactedString,
     }
 
+    fn registered_secret(config: &RegisteredConfig) -> Option<&RedactedString> {
+        Some(&config.secret)
+    }
+
     fn redact_registered_test_config(config: &mut Value) -> Result<(), RedactionError> {
-        redact_typed_config_in_place::<RegisteredConfig>(config, &[SecretField::required("secret")])
+        redact_typed_config_in_place::<RegisteredConfig>(
+            config,
+            &[SecretField::required("secret", registered_secret)],
+        )
     }
 
     #[allow(unsafe_code)]

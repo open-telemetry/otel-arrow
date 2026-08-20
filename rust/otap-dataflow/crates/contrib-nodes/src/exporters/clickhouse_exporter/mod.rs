@@ -37,7 +37,8 @@ use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::redaction::{
-    CONFIG_REDACTORS, ConfigRedactor, RedactionError, SecretField, redact_typed_config_in_place,
+    CONFIG_REDACTORS, ConfigRedactor, RedactedString, RedactionError, SecretField,
+    redact_typed_config_in_place,
 };
 use otap_df_config::validation::validate_typed_config;
 use otap_df_config::{SignalFormat, SignalType};
@@ -242,7 +243,14 @@ pub static CLICKHOUSE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 };
 
 fn redact_clickhouse_config(config: &mut serde_json::Value) -> Result<(), RedactionError> {
-    redact_typed_config_in_place::<ConfigPatch>(config, &[SecretField::required("password")])
+    redact_typed_config_in_place::<ConfigPatch>(
+        config,
+        &[SecretField::required("password", clickhouse_password)],
+    )
+}
+
+fn clickhouse_password(config: &ConfigPatch) -> Option<&RedactedString> {
+    Some(&config.password)
 }
 
 #[allow(unsafe_code)]

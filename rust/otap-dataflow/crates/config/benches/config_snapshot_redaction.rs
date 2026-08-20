@@ -36,8 +36,12 @@ struct TypedBenchmarkConfig {
 fn redact_typed_benchmark_config(config: &mut Value) -> Result<(), RedactionError> {
     redact_typed_config_in_place::<TypedBenchmarkConfig>(
         config,
-        &[SecretField::required("password")],
+        &[SecretField::required("password", benchmark_password)],
     )
+}
+
+fn benchmark_password(config: &TypedBenchmarkConfig) -> Option<&RedactedString> {
+    Some(&config.password)
 }
 
 #[allow(unsafe_code)]
