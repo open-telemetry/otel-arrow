@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787207371205,
+  "lastUpdate": 1787247292239,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -19252,6 +19252,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 114.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.79,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "5efefd8e26d74daab70901e8a88e8d165c45a0c5",
+          "message": "feat(pdata): Add logical Arrow byte measurement for OTAP payloads (#3825)\n\n# Change summary\n\nAdd a representation-native logical byte measurement for OTAP Arrow\nrecords and use it to complete the `num_bytes()` contract discussed in\n#3819 and #2884.\n\n### Context\n\nOTLP payloads already expose their protobuf service-request byte length.\nOTAP payloads are held as Arrow arrays, where retained allocation\ncapacity and encoded OTAP wire size answer different questions.\n\n### Approach\n\nUse Arrow's existing `ArrayData::get_slice_memory_size()`:\n\n- count active array ranges rather than excess allocation capacity\n- include offsets, values, validity buffers, and child arrays according\nto Arrow's layout\n- count shared buffers once per logical array reference\n- propagate an error if Arrow cannot measure a structure\n\nDefine `num_bytes()` as logical bytes in the payload's current\nrepresentation:\n\n```text\nOTLP -> protobuf service-request byte length\nOTAP -> logical Arrow byte size\n```\n\n### Observed sizes in tests\n\nEquivalent logs payloads produced these representation-native sizes:\n\n| Payload | OTLP logical | OTLP retained estimate | OTAP logical | OTAP\nretained |\n| --- | ---: | ---: | ---: | ---: |\n| Small representative payload | 302 bytes | 302 bytes | 372 bytes |\n110,188 bytes |\n| 1,000 repetitive records | 99,065 bytes | 99,065 bytes | 35,155 bytes\n| 87,072 bytes |\n\nFor a small payload, protobuf has less representation overhead. For a\nlarger repetitive payload, Arrow's columnar and dictionary\nrepresentations are substantially smaller. OTAP retained memory remains\ndistinct from logical size because Arrow buffers can retain excess\ncapacity. The OTLP retained estimate equals its logical size because\n`Bytes` exposes its visible length but not the capacity of its shared\nbacking allocation.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #3819\n\n## Validation\n\nUnit tests\n\n## User-facing changes\n\nNone yet, only internal API. Follow-up PR will expose on same\nmeasurement cache added in #3724",
+          "timestamp": "2026-08-20T15:34:22Z",
+          "tree_id": "99fcc0137769c55c4642714b3026045c7483a7cc",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5efefd8e26d74daab70901e8a88e8d165c45a0c5"
+        },
+        "date": 1787247277737,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 3.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 2.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 2.9,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 69.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.41,
             "unit": "MB"
           },
           {
