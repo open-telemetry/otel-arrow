@@ -581,22 +581,6 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Send an Ack to the runtime control manager for context unwinding.
-    pub async fn route_ack(&self, ack: AckMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_ack(ack).await
-    }
-
-    /// Send a Nack to the runtime control manager for context unwinding.
-    pub async fn route_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>
-    where
-        PData: crate::Unwindable,
-    {
-        self.core.route_nack(nack).await
-    }
-
     /// Requeue retained pdata onto this node later.
     pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.core.requeue_later(when, data)
@@ -715,6 +699,7 @@ impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for Effect
 mod tests {
     #![allow(missing_docs)]
     use super::*;
+    use crate::_private::AckNackRouting;
     use crate::completion_emission_metrics::make_completion_emission_metrics;
     use crate::context::ControllerContext;
     use crate::control::{

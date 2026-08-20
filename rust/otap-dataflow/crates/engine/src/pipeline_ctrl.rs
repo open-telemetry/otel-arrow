@@ -363,7 +363,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
     ///
     /// The loop has three important responsibilities:
     ///
-    /// - schedule and fire timers / delayed-data wakeups
+    /// - schedule and fire runtime and telemetry timers
     /// - orchestrate receiver-first shutdown by sending `DrainIngress` before
     ///   downstream `Shutdown`
     /// - keep the single-threaded runtime live by buffering control sends that
@@ -4599,8 +4599,8 @@ mod tests {
             .await;
     }
 
-    // Timer ticks, telemetry ticks, and delayed-data resumptions should all be
-    // reflected in runtime-control counters when they become due.
+    // Timer ticks and telemetry ticks should both be reflected in
+    // runtime-control counters when they become due.
     #[tokio::test]
     async fn test_runtime_control_metrics_track_due_work_dispatch() {
         let local = LocalSet::new();
