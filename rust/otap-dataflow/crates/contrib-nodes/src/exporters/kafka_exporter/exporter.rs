@@ -3213,6 +3213,181 @@ pub mod test_support {
             .await;
         }
 
+        /// Scenario (shutdown and live reconfiguration): with `max_in_flight = 2`,
+        /// put two batches in flight on the old producer, stall the old producer's
+        /// broker so neither delivery can flush, then live-reconfigure onto a
+        /// SECOND, healthy cluster while lowering `max_in_flight` to `1`, and send
+        /// a third batch.
+        /// Guarantees: the batch enqueued after the cutover is delivered
+        /// end-to-end to the new cluster's topic WHILE the retiring producer is
+        /// still stalled (within the stall window, far below the old config's
+        /// `timeout_ms`), so a healthy new generation is not held hostage by an
+        /// unflushable retiring one.
+        ///
+        /// KNOWN GAP: this test currently FAILS. The in-flight set (`InFlightSends`)
+        /// is shared across generations, so the two stuck old-generation deliveries
+        /// keep occupying it after the cutover. The event loop's admission gate
+        /// (`accepting_pdata = !in_flight.is_full()`) therefore stays closed and the
+        /// new-generation batch cannot be dequeued/delivered until an old delivery
+        /// drains -- i.e. only after the stall releases. Lowering `max_in_flight`
+        /// from 2 to 1 makes this strictly worse, but the starvation also occurs
+        /// when the bound is unchanged (2 stuck deliveries fill a bound of 2). It is
+        /// left failing (unfixed) to document the gap.
+        ///
+        /// Two independent mock clusters isolate the producers: the harness and
+        /// consumers are wired purely from each config's `bootstrap.servers`, so
+        /// the old producer's broker can be stalled (unflushable) while the new
+        /// producer's broker stays healthy. A per-request round-trip delay is used
+        /// rather than a hard `broker_down`, because taking a broker down raises a
+        /// process-wide `AllBrokersDown` transient that the strict test consumer on
+        /// the healthy cluster would treat as fatal.
+        #[tokio::test]
+        #[ignore = "documents a known gap (unfixed): a stalled, unflushable retiring \
+                    generation whose stuck in-flight deliveries fill the shared in-flight \
+                    set starves new-generation delivery; run explicitly with `-- --ignored`"]
+        async fn reconfigure_lowered_max_in_flight_new_producer_delivers_while_retiring_producer_cannot_flush()
+         {
+            let original_topic = "it-reconfig-mif-stall-old";
+            let new_topic = "it-reconfig-mif-stall-new";
+            with_cluster(
+                KafkaTestCluster::builder().topic(original_topic),
+                |cluster_a| async move {
+                    // Second, healthy cluster for the new generation. Built inline
+                    // on the same LocalSet thread so its !Send mock broker lives
+                    // for the closure's duration. Producers are isolated because
+                    // the exporter/consumers bind only to a bootstrap string.
+                    let cluster_b = KafkaTestCluster::builder().topic(new_topic).build();
+
+                    let original_consumer = cluster_a.consumer().subscribe(&[original_topic]);
+                    let new_consumer = cluster_b.consumer().subscribe(&[new_topic]);
+
+                    // Start on cluster A with max_in_flight = 2 (so two batches can
+                    // be outstanding at once) and a large flush bound so a stalled
+                    // retirement would block for an unmistakable window.
+                    const FLUSH_TIMEOUT_MS: u64 = 30_000;
+                    let cfg = KafkaExporterConfigBuilder::new(cluster_a.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(
+                            original_topic.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        .with_max_in_flight(2)
+                        .with_timeout_ms(FLUSH_TIMEOUT_MS)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster_a, cfg);
+
+                    // Byte-distinct payloads so each message can be traced to the
+                    // correct producer/topic: seq-1 and seq-2 belong to the old
+                    // producer (cluster A), seq-3 to the new producer (cluster B).
+                    let p_old_1 = logs_request_bytes_seq(1);
+                    let p_old_2 = logs_request_bytes_seq(2);
+                    let p_new = logs_request_bytes_seq(3);
+
+                    // Put both old-generation batches in flight on the old
+                    // producer. The brief settle gives the event loop time to
+                    // dequeue and enqueue both (bound = 2 admits both) before the
+                    // stall is applied, so they are deterministically in flight --
+                    // not merely buffered -- at cutover time.
+                    exporter
+                        .send_pdata(logs_pdata(p_old_1.clone(), None))
+                        .await
+                        .expect("send old-gen pdata 1 before reconfigure");
+                    exporter
+                        .send_pdata(logs_pdata(p_old_2.clone(), None))
+                        .await
+                        .expect("send old-gen pdata 2 before reconfigure");
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                    // Stall cluster A's broker so neither in-flight delivery can
+                    // flush during the core assertion window below: a per-request
+                    // round-trip delay holds the retiring producer's flush pending
+                    // (it cannot complete until the delay elapses) without a hard
+                    // disconnect. The stall is comfortably longer than a healthy
+                    // new-generation delivery, so a correct implementation would
+                    // deliver the new batch well within it while the retiring
+                    // producer still cannot flush; it stays well under `timeout_ms`
+                    // so it releases on its own afterward and the old-generation
+                    // batches still deliver to the old topic.
+                    const STALL: Duration = Duration::from_secs(2);
+                    cluster_a.faults().round_trip_time(1, STALL);
+
+                    // Reconfigure onto the healthy cluster B and lower
+                    // max_in_flight to 1. The two stuck old-generation deliveries
+                    // remain tracked in the in-flight set, so the lowered bound is
+                    // already exceeded (is_full() is true) when the new generation
+                    // begins.
+                    exporter
+                        .send_config(logs_reconfig_json_mif(
+                            cluster_b.bootstrap_servers(),
+                            new_topic,
+                            1,
+                        ))
+                        .await;
+
+                    // A batch enqueued after the cutover must be delivered by the
+                    // new producer to cluster B, even though the retiring
+                    // generation cannot flush.
+                    exporter
+                        .send_pdata(logs_pdata(p_new.clone(), None))
+                        .await
+                        .expect("send new-gen pdata after reconfigure");
+
+                    // Core assertion: the new-generation batch must land on the new
+                    // cluster's topic WHILE the retiring producer is still stalled
+                    // (within STALL, far below the old config's `timeout_ms`), so a
+                    // new, healthy generation is not held hostage by an unflushable
+                    // retiring one.
+                    //
+                    // This currently FAILS and documents a gap: the in-flight set is
+                    // shared across generations, so the two stuck old-generation
+                    // deliveries keep it full and the admission gate stays closed;
+                    // the new-generation batch is starved until an old delivery
+                    // drains (i.e. only after the stall releases). A correct
+                    // implementation would let the new generation deliver
+                    // independently of the retiring generation's stuck deliveries.
+                    let delivered = new_consumer.try_recv(STALL).await.expect(
+                        "new-generation batch must be delivered while the retiring producer is \
+                         still stalled, not starved behind its stuck in-flight deliveries under \
+                         the lowered max_in_flight bound",
+                    );
+                    let _ = delivered.assert_topic(new_topic).assert_payload(&p_new);
+
+                    // The new topic must never receive an old-generation payload.
+                    new_consumer
+                        .assert_no_more_messages(Duration::from_millis(500))
+                        .await;
+
+                    // The stall releases on its own (STALL < `timeout_ms`), so the
+                    // retiring producer's off-loop flush finally delivers the two
+                    // old-generation batches. Routing verification: cluster A's old
+                    // topic must eventually receive both old-generation payloads
+                    // (delivered, not dropped or misrouted) and never the
+                    // new-generation payload.
+                    let mut old_delivered: std::collections::HashSet<Vec<u8>> =
+                        std::collections::HashSet::new();
+                    for m in original_consumer
+                        .collect_until_idle(Duration::from_secs(10))
+                        .await
+                    {
+                        let _ = old_delivered.insert(m.payload.clone().expect("payload"));
+                    }
+                    assert!(
+                        old_delivered.contains(&p_old_1) && old_delivered.contains(&p_old_2),
+                        "both old-generation batches must be delivered to the old topic after \
+                         the stall releases, not dropped or misrouted"
+                    );
+                    assert!(
+                        !old_delivered.contains(&p_new),
+                        "the new-generation batch must never land on the old topic"
+                    );
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
         /// Scenario (shutdown and live reconfiguration): stall the broker so a
         /// batch stays in flight on the old generation, reconfigure to a new
         /// topic (retiring the old generation's producer), then let the stall
