@@ -1,0 +1,1142 @@
+file_format: definition/2
+events:
+- name: admission.binding.summary
+  brief: Emitted by OTAP Dataflow as `admission.binding.summary`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bound_nodes
+    requirement_level: required
+  - ref: explicitly_opted_out_nodes
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: admission.binding.summary
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - info
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: admission.metrics.reporting.fail
+  brief: Emitted by OTAP Dataflow as `admission.metrics.reporting.fail`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: admission.metrics.reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: channel.metrics.partial_wrap_skip
+  brief: The channel.metrics.partial_wrap_skip internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: receiver_was_inner
+    requirement_level: required
+  - ref: sender_was_inner
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.channel
+    - otap.extension.channel
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: channel.metrics.partial_wrap_skip
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/channel_mode.rs
+        availability: []
+- name: channel.metrics.reporting.fail
+  brief: The channel.metrics.reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.channel
+    - otap.extension.channel
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: channel.metrics.reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: exporter.create.complete
+  brief: The exporter.create.complete internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: node_id
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: exporter.create.complete
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: exporter.create.start
+  brief: The exporter.create.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: node_id
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: exporter.create.start
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: extension.builder.build
+  brief: The extension.builder.build internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: lifecycle
+    requirement_level: required
+  - ref: name
+    requirement_level: required
+  - ref: variant
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.builder.build
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/extension/builder.rs
+        availability: []
+- name: extension.collect_telemetry.try_send_failed
+  brief: The extension.collect_telemetry.try_send_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: extension
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.collect_telemetry.try_send_failed
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/extension_monitor.rs
+        availability: []
+- name: extension.lifecycle.metrics.final_reporting.fail
+  brief: The extension.lifecycle.metrics.final_reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.lifecycle.metrics.final_reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/runtime_pipeline.rs
+        availability: []
+- name: extension.lifecycle.metrics.reporting.fail
+  brief: The extension.lifecycle.metrics.reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: extension
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.lifecycle.metrics.reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/extension_monitor.rs
+        availability: []
+- name: extension.metrics.flush.fail
+  brief: The extension.metrics.flush.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: extension
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.metrics.flush.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/extension_lifecycle.rs
+        availability: []
+- name: extension.readiness.timeout_override
+  brief: The extension.readiness.timeout_override internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: default_ms
+    requirement_level: required
+  - ref: extension
+    requirement_level: required
+  - ref: timeout_ms
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.readiness.timeout_override
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - info
+        sources:
+        - crates/engine/src/extension/builder.rs
+        availability: []
+- name: extension.shutdown.receiver_dropped
+  brief: The extension.shutdown.receiver_dropped internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: extension
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.shutdown.receiver_dropped
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/extension_lifecycle.rs
+        availability: []
+- name: extension.shutdown.task.error
+  brief: The extension.shutdown.task.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.shutdown.task.error
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/extension_lifecycle.rs
+        availability: []
+- name: extension.shutdown.task.join_error
+  brief: The extension.shutdown.task.join_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: is_canceled
+    requirement_level: required
+  - ref: is_panic
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.shutdown.task.join_error
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/extension_lifecycle.rs
+        availability: []
+- name: extension.shutdown.timeout
+  brief: The extension.shutdown.timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: grace_secs
+    requirement_level: required
+  - ref: remaining
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.shutdown.timeout
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/extension_lifecycle.rs
+        availability: []
+- name: extension.start.local
+  brief: The extension.start.local internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: name
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.start.local
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/extension/wrapper.rs
+        availability: []
+- name: extension.start.shared
+  brief: The extension.start.shared internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: name
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.start.shared
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/extension/wrapper.rs
+        availability: []
+- name: extension.task.error
+  brief: The extension.task.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: extension
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.task.error
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/extension_lifecycle.rs
+        availability: []
+- name: extension.task.join_error.unknown_task
+  brief: The extension.task.join_error.unknown_task internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: is_canceled
+    requirement_level: required
+  - ref: is_panic
+    requirement_level: required
+  - ref: task_id
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.task.join_error.unknown_task
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/extension_lifecycle.rs
+        availability: []
+- name: extension.unbound
+  brief: The extension.unbound internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: extension
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.unbound
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: extension.unconsumed
+  brief: The extension.unconsumed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: extension
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: extension.unconsumed
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: metrics.collection.flush.fail
+  brief: The metrics.collection.flush.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: phase
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: metrics.collection.flush.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/runtime_pipeline.rs
+        availability: []
+- name: metrics.terminal.reporting.deferred
+  brief: The metrics.terminal.reporting.deferred internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: phase
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: metrics.terminal.reporting.deferred
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/runtime_pipeline.rs
+        availability: []
+- name: metrics.terminal.reporting.fail
+  brief: The metrics.terminal.reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: phase
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: metrics.terminal.reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/runtime_pipeline.rs
+        availability: []
+- name: node.metrics.reporting.fail
+  brief: The node.metrics.reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: node.metrics.reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: pdata.receiver.set
+  brief: The pdata.receiver.set internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: node_id
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pdata.receiver.set
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: pdata.sender.set
+  brief: The pdata.sender.set internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: node_id
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: port
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pdata.sender.set
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: pipeline.build.unconnected_node.removed
+  brief: The pipeline.build.unconnected_node.removed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: node_id
+    requirement_level: required
+  - ref: node_kind
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.build.unconnected_node.removed
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - info
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: pipeline.build.unconnected_nodes
+  brief: The pipeline.build.unconnected_nodes internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: removed_count
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.build.unconnected_nodes
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: pipeline.completion.metrics.final_reporting.fail
+  brief: The pipeline.completion.metrics.final_reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.completion.metrics.final_reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: pipeline.completion.metrics.reporting.fail
+  brief: The pipeline.completion.metrics.reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.completion.metrics.reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: pipeline.ctrl.pending_sends.high
+  brief: The pipeline.ctrl.pending_sends.high internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: count
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.ctrl.pending_sends.high
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: pipeline.metrics.final_collection.flush.fail
+  brief: The pipeline.metrics.final_collection.flush.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.metrics.final_collection.flush.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: pipeline.metrics.final_reporting.fail
+  brief: The pipeline.metrics.final_reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.metrics.final_reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: pipeline.metrics.reporting.fail
+  brief: The pipeline.metrics.reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.metrics.reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: pipeline.return.pending_sends.high
+  brief: The pipeline.return.pending_sends.high internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: count
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.return.pending_sends.high
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: pipeline.runtime_control.metrics.final_reporting.fail
+  brief: The pipeline.runtime_control.metrics.final_reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.runtime_control.metrics.final_reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: pipeline.runtime_control.metrics.reporting.fail
+  brief: The pipeline.runtime_control.metrics.reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.runtime_control.metrics.reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: processor.create.complete
+  brief: The processor.create.complete internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: node_id
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: processor.create.complete
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: processor.create.start
+  brief: The processor.create.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: node_id
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: processor.create.start
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: processor.flow_metrics.final_reporting.fail
+  brief: The processor.flow_metrics.final_reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: processor.flow_metrics.final_reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/processor.rs
+        availability: []
+- name: processor.metrics.final_reporting.fail
+  brief: The processor.metrics.final_reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: processor.metrics.final_reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/processor.rs
+        availability: []
+- name: receiver.create.complete
+  brief: The receiver.create.complete internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: node_id
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: receiver.create.complete
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: receiver.create.start
+  brief: The receiver.create.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: node_id
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: receiver.create.start
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/lib.rs
+        availability: []
+- name: tokio.metrics.final_reporting.fail
+  brief: The tokio.metrics.final_reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tokio.metrics.final_reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: tokio.metrics.reporting.fail
+  brief: The tokio.metrics.reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tokio.metrics.reporting.fail
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: topic.tracked_publish.duplicate_message_id
+  brief: The topic.tracked_publish.duplicate_message_id internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: message_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: topic.tracked_publish.duplicate_message_id
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - warn
+        sources:
+        - crates/engine/src/topic/types.rs
+        availability: []

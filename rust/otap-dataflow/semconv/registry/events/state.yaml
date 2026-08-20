@@ -1,0 +1,104 @@
+file_format: definition/2
+events:
+- name: state.mutex_poisoned
+  brief: The state.mutex_poisoned internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: action
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: state.mutex_poisoned
+        scope_names:
+        - otap-df-state
+        severity_levels:
+        - error
+        sources:
+        - crates/state/src/store.rs
+        availability: []
+- name: state.observed_error
+  brief: The state.observed_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  - ref: error_kind
+    requirement_level: required
+  - ref: event_type
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: node_kind
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  - ref: source
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: state.observed_error
+        scope_names:
+        - otap-df-state
+        severity_levels:
+        - error
+        sources:
+        - crates/state/src/store.rs
+        availability: []
+- name: state.observed_event
+  brief: The state.observed_event internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core_id
+    requirement_level: required
+  - ref: event_type
+    requirement_level: required
+  - ref: pipeline_group_id
+    requirement_level: required
+  - ref: pipeline_id
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: state.observed_event
+        scope_names:
+        - otap-df-state
+        severity_levels:
+        - info
+        sources:
+        - crates/state/src/store.rs
+        availability: []
+- name: state.report_failed
+  brief: The state.report_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: state.report_failed
+        scope_names:
+        - otap-df-state
+        severity_levels:
+        - error
+        sources:
+        - crates/state/src/store.rs
+        availability: []

@@ -1,0 +1,2275 @@
+file_format: definition/2
+events:
+- name: azure_monitor_exporter.auth.invalid_bearer_token
+  brief: Emitted by OTAP Dataflow as `azure_monitor_exporter.auth.invalid_bearer_token`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.auth.invalid_bearer_token
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.auth.token_stream_closed
+  brief: Emitted by OTAP Dataflow as `azure_monitor_exporter.auth.token_stream_closed`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.auth.token_stream_closed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.client.error
+  brief: The azure_monitor_exporter.client.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: status
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.client.error
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.export.failed
+  brief: The azure_monitor_exporter.export.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_id
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.export.failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.export.retrying
+  brief: The azure_monitor_exporter.export.retrying internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: attempt
+    requirement_level: required
+  - ref: delay_ms
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.export.retrying
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.export.success
+  brief: The azure_monitor_exporter.export.success internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_id
+    requirement_level: required
+  - ref: duration_ms
+    requirement_level: required
+  - ref: row_count
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.export.success
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.exporter.shutdown
+  brief: The azure_monitor_exporter.exporter.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.exporter.shutdown
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.message.batch_push_failed
+  brief: The azure_monitor_exporter.message.batch_push_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: msg_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.message.batch_push_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.message.log_entry_too_large
+  brief: The azure_monitor_exporter.message.log_entry_too_large internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: msg_id
+    requirement_level: required
+  - ref: size_bytes
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.message.log_entry_too_large
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.message.no_valid_entries
+  brief: The azure_monitor_exporter.message.no_valid_entries internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: msg_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.message.no_valid_entries
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.message.unsupported_signal
+  brief: The azure_monitor_exporter.message.unsupported_signal internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: format
+    requirement_level: required
+  - ref: signal
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.message.unsupported_signal
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.shutdown.orphaned_message
+  brief: The azure_monitor_exporter.shutdown.orphaned_message internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: msg_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.shutdown.orphaned_message
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.start
+  brief: The azure_monitor_exporter.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: dcr
+    requirement_level: required
+  - ref: endpoint
+    requirement_level: required
+  - ref: gzip_compression_level
+    requirement_level: required
+  - ref: stream
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.start
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: clickhouse.exporter.batch.written
+  brief: The clickhouse.exporter.batch.written internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: columns
+    requirement_level: required
+  - ref: rows
+    requirement_level: required
+  - ref: table
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: clickhouse.exporter.batch.written
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/clickhouse_exporter/writer.rs
+        availability:
+        - feature = "clickhouse-exporter"
+- name: clickhouse.exporter.convert.error
+  brief: The clickhouse.exporter.convert.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal_type
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: clickhouse.exporter.convert.error
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/clickhouse_exporter/mod.rs
+        availability:
+        - feature = "clickhouse-exporter"
+- name: clickhouse.exporter.otlp.invalid_protobuf
+  brief: Emitted by OTAP Dataflow as `clickhouse.exporter.otlp.invalid_protobuf`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: clickhouse.exporter.otlp.invalid_protobuf
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/clickhouse_exporter/mod.rs
+        availability:
+        - feature = "clickhouse-exporter"
+- name: clickhouse.exporter.otlp.transform.fallback
+  brief: Emitted by OTAP Dataflow as `clickhouse.exporter.otlp.transform.fallback`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: clickhouse.exporter.otlp.transform.fallback
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/clickhouse_exporter/mod.rs
+        availability:
+        - feature = "clickhouse-exporter"
+- name: clickhouse.exporter.shutdown
+  brief: The clickhouse.exporter.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: clickhouse.exporter.shutdown
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/clickhouse_exporter/mod.rs
+        availability:
+        - feature = "clickhouse-exporter"
+- name: clickhouse.exporter.shutdown.deadline_exceeded
+  brief: Emitted by OTAP Dataflow as `clickhouse.exporter.shutdown.deadline_exceeded`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: abandoned_writes
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: clickhouse.exporter.shutdown.deadline_exceeded
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/clickhouse_exporter/mod.rs
+        availability:
+        - feature = "clickhouse-exporter"
+- name: clickhouse.exporter.start
+  brief: The clickhouse.exporter.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: database
+    requirement_level: required
+  - ref: endpoint
+    requirement_level: required
+  - ref: max_in_flight
+    requirement_level: required
+  - ref: username
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: clickhouse.exporter.start
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/clickhouse_exporter/mod.rs
+        availability:
+        - feature = "clickhouse-exporter"
+- name: clickhouse.exporter.tables.bound
+  brief: The clickhouse.exporter.tables.bound internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: logs
+    requirement_level: required
+  - ref: spans
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: clickhouse.exporter.tables.bound
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/clickhouse_exporter/writer.rs
+        availability:
+        - feature = "clickhouse-exporter"
+- name: clickhouse.exporter.transform.error
+  brief: The clickhouse.exporter.transform.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: signal_type
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: clickhouse.exporter.transform.error
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/clickhouse_exporter/mod.rs
+        availability:
+        - feature = "clickhouse-exporter"
+- name: clickhouse.exporter.write.error
+  brief: The clickhouse.exporter.write.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal_type
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: clickhouse.exporter.write.error
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/clickhouse_exporter/mod.rs
+        availability:
+        - feature = "clickhouse-exporter"
+- name: condense_attributes_processor.destination_key_replaced
+  brief: The condense_attributes_processor.destination_key_replaced internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: dropped_existing_destination_items
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: condense_attributes_processor.destination_key_replaced
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/processors/condense_attributes_processor/mod.rs
+        availability:
+        - feature = "condense-attributes-processor"
+- name: condense_attributes_processor.failure
+  brief: The condense_attributes_processor.failure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: input_items
+    requirement_level: required
+  - ref: signal
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: condense_attributes_processor.failure
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/processors/condense_attributes_processor/mod.rs
+        availability:
+        - feature = "condense-attributes-processor"
+- name: condense_attributes_processor.no_condensing_needed
+  brief: The condense_attributes_processor.no_condensing_needed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: num_rows
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: condense_attributes_processor.no_condensing_needed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/processors/condense_attributes_processor/mod.rs
+        availability:
+        - feature = "condense-attributes-processor"
+- name: condense_attributes_processor.no_log_attrs_payload
+  brief: The condense_attributes_processor.no_log_attrs_payload internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: condense_attributes_processor.no_log_attrs_payload
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/processors/condense_attributes_processor/mod.rs
+        availability:
+        - feature = "condense-attributes-processor"
+- name: condense_attributes_processor.processing
+  brief: The condense_attributes_processor.processing internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: input_items
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: condense_attributes_processor.processing
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/processors/condense_attributes_processor/mod.rs
+        availability:
+        - feature = "condense-attributes-processor"
+- name: condense_attributes_processor.ready
+  brief: The condense_attributes_processor.ready internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: condense_attributes_processor.ready
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/processors/condense_attributes_processor/mod.rs
+        availability:
+        - feature = "condense-attributes-processor"
+- name: condense_attributes_processor.reconfigure_error
+  brief: The condense_attributes_processor.reconfigure_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: condense_attributes_processor.reconfigure_error
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/processors/condense_attributes_processor/mod.rs
+        availability:
+        - feature = "condense-attributes-processor"
+- name: condense_attributes_processor.reconfigured
+  brief: The condense_attributes_processor.reconfigured internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: condense_attributes_processor.reconfigured
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/processors/condense_attributes_processor/mod.rs
+        availability:
+        - feature = "condense-attributes-processor"
+- name: condense_attributes_processor.success
+  brief: The condense_attributes_processor.success internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: condensed_items
+    requirement_level: required
+  - ref: input_items
+    requirement_level: required
+  - ref: output_items
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: condense_attributes_processor.success
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/processors/condense_attributes_processor/mod.rs
+        availability:
+        - feature = "condense-attributes-processor"
+- name: etw.event.channel_closed
+  brief: The etw.event.channel_closed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: core
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw.event.channel_closed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/session.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: etw.parse_until.failed
+  brief: The etw.parse_until.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: session_name
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw.parse_until.failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/session.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: etw.query_stats.failed
+  brief: The etw.query_stats.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: handle
+    requirement_level: required
+  - ref: session_name
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw.query_stats.failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/session.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: etw.query_stats.recovered
+  brief: The etw.query_stats.recovered internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: handle
+    requirement_level: required
+  - ref: session_name
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw.query_stats.recovered
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/session.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: etw_receiver.forward_failed
+  brief: The etw_receiver.forward_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: dropped_events
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw_receiver.forward_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/mod.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: etw_receiver.provider_name_hashed
+  brief: Emitted by OTAP Dataflow as `etw_receiver.provider_name_hashed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: provider_name
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw_receiver.provider_name_hashed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/session.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: etw_receiver.provider_name_hashed_after_enumeration_error
+  brief: Emitted by OTAP Dataflow as `etw_receiver.provider_name_hashed_after_enumeration_error`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: provider_name
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw_receiver.provider_name_hashed_after_enumeration_error
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/session.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: etw_receiver.provider_name_resolved
+  brief: Emitted by OTAP Dataflow as `etw_receiver.provider_name_resolved`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: provider_name
+    requirement_level: required
+  - ref: schema_source
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw_receiver.provider_name_resolved
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/session.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: etw_receiver.start
+  brief: The etw_receiver.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_max_duration_ms
+    requirement_level: required
+  - ref: batch_max_size
+    requirement_level: required
+  - ref: provider_count
+    requirement_level: required
+  - ref: session_name
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw_receiver.start
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/mod.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: geneva_exporter.agent_fed.credential_unavailable
+  brief: Emitted by OTAP Dataflow as `geneva_exporter.agent_fed.credential_unavailable`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: consecutive_failures
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: geneva_exporter.agent_fed.credential_unavailable
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/geneva_exporter/agent_fed_source.rs
+        availability:
+        - feature = "geneva-exporter"
+- name: geneva_exporter.agent_fed.invalid_credential
+  brief: Emitted by OTAP Dataflow as `geneva_exporter.agent_fed.invalid_credential`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: consecutive_failures
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: geneva_exporter.agent_fed.invalid_credential
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/geneva_exporter/agent_fed_source.rs
+        availability:
+        - feature = "geneva-exporter"
+- name: geneva_exporter.convert
+  brief: The geneva_exporter.convert internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: geneva_exporter.convert
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/geneva_exporter/mod.rs
+        availability:
+        - feature = "geneva-exporter"
+- name: geneva_exporter.error
+  brief: The geneva_exporter.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: geneva_exporter.error
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/geneva_exporter/mod.rs
+        availability:
+        - feature = "geneva-exporter"
+- name: geneva_exporter.obo.unmatched_event
+  brief: Emitted by OTAP Dataflow as `geneva_exporter.obo.unmatched_event`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: event_name
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: geneva_exporter.obo.unmatched_event
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/geneva_exporter/mod.rs
+        availability:
+        - feature = "geneva-exporter"
+- name: geneva_exporter.shutdown
+  brief: The geneva_exporter.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: geneva_exporter.shutdown
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/geneva_exporter/mod.rs
+        availability:
+        - feature = "geneva-exporter"
+- name: geneva_exporter.skip
+  brief: The geneva_exporter.skip internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: geneva_exporter.skip
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/geneva_exporter/mod.rs
+        availability:
+        - feature = "geneva-exporter"
+- name: geneva_exporter.start
+  brief: The geneva_exporter.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: account
+    requirement_level: required
+  - ref: endpoint
+    requirement_level: recommended
+  - ref: endpoint_source
+    requirement_level: recommended
+  - ref: namespace
+    requirement_level: required
+  - ref: role_instance
+    requirement_level: required
+  - ref: role_name
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: geneva_exporter.start
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/geneva_exporter/mod.rs
+        availability:
+        - feature = "geneva-exporter"
+- name: geneva_exporter.upload
+  brief: The geneva_exporter.upload internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: count
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: geneva_exporter.upload
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/geneva_exporter/mod.rs
+        availability:
+        - feature = "geneva-exporter"
+- name: kafka.assignment.became_empty
+  brief: Emitted by OTAP Dataflow as `kafka.assignment.became_empty`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.assignment.became_empty
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/rebalance.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.assignment.became_non_empty
+  brief: Emitted by OTAP Dataflow as `kafka.assignment.became_non_empty`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.assignment.became_non_empty
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/rebalance.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.capture_policy.limits_exceeded
+  brief: The kafka.capture_policy.limits_exceeded internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: stats
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.capture_policy.limits_exceeded
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.commit.async_failed
+  brief: The kafka.commit.async_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.commit.async_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/rebalance.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.commit.failed
+  brief: The kafka.commit.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.commit.failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.exporter.encode.failed
+  brief: The kafka.exporter.encode.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: signal_type
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.encode.failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.producer.awaiting_poll_thread
+  brief: The kafka.exporter.producer.awaiting_poll_thread internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.producer.awaiting_poll_thread
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/producer.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.producer.destroyed
+  brief: The kafka.exporter.producer.destroyed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.producer.destroyed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/producer.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.producer.destroying
+  brief: The kafka.exporter.producer.destroying internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.producer.destroying
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/producer.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.producer.poll_stopped
+  brief: The kafka.exporter.producer.poll_stopped internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.producer.poll_stopped
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/producer.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.producer.poll_thread_join_failed
+  brief: The kafka.exporter.producer.poll_thread_join_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.producer.poll_thread_join_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/producer.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.producer.poll_thread_started
+  brief: The kafka.exporter.producer.poll_thread_started internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.producer.poll_thread_started
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/producer.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.producer.poll_thread_terminated
+  brief: The kafka.exporter.producer.poll_thread_terminated internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.producer.poll_thread_terminated
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/producer.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.producer.stopping_poll
+  brief: The kafka.exporter.producer.stopping_poll internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.producer.stopping_poll
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/producer.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.producer_config.overridden_key
+  brief: The kafka.exporter.producer_config.overridden_key internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: key
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.producer_config.overridden_key
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.reconfigure.flush_failed
+  brief: Emitted by OTAP Dataflow as `kafka.exporter.reconfigure.flush_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.reconfigure.flush_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.reconfigure_error
+  brief: Emitted by OTAP Dataflow as `kafka.exporter.reconfigure_error`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.reconfigure_error
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.reconfigured
+  brief: Emitted by OTAP Dataflow as `kafka.exporter.reconfigured`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: brokers
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.reconfigured
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.send.failed
+  brief: The kafka.exporter.send.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: permanent
+    requirement_level: required
+  - ref: signal_type
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.send.failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.shutdown.flush_failed
+  brief: The kafka.exporter.shutdown.flush_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.shutdown.flush_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.signal.unconfigured
+  brief: The kafka.exporter.signal.unconfigured internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: signal_type
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.signal.unconfigured
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.topic.disallowed_header
+  brief: Emitted by OTAP Dataflow as `kafka.exporter.topic.disallowed_header`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: header_topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.topic.disallowed_header
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/error.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.exporter.topic.invalid_header
+  brief: The kafka.exporter.topic.invalid_header internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: header_topic
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.exporter.topic.invalid_header
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/kafka_exporter/error.rs
+        availability:
+        - feature = "kafka-exporter"
+- name: kafka.header.attribute.invalid_utf8
+  brief: The kafka.header.attribute.invalid_utf8 internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: attribute_key
+    requirement_level: required
+  - ref: header_key
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.header.attribute.invalid_utf8
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/headers.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.header.attribute.parse_bool_failed
+  brief: The kafka.header.attribute.parse_bool_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: attribute_key
+    requirement_level: required
+  - ref: header_key
+    requirement_level: required
+  - ref: raw_value
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.header.attribute.parse_bool_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/headers.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.header.attribute.parse_float_failed
+  brief: The kafka.header.attribute.parse_float_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: attribute_key
+    requirement_level: required
+  - ref: header_key
+    requirement_level: required
+  - ref: raw_value
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.header.attribute.parse_float_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/headers.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.header.attribute.parse_int_failed
+  brief: The kafka.header.attribute.parse_int_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: attribute_key
+    requirement_level: required
+  - ref: header_key
+    requirement_level: required
+  - ref: raw_value
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.header.attribute.parse_int_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/headers.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.lag.assignment_failed
+  brief: Emitted by OTAP Dataflow as `kafka.lag.assignment_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.lag.assignment_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.lag.committed_offsets_failed
+  brief: Emitted by OTAP Dataflow as `kafka.lag.committed_offsets_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.lag.committed_offsets_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.lag.fetch_watermarks_failed
+  brief: Emitted by OTAP Dataflow as `kafka.lag.fetch_watermarks_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: partition
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.lag.fetch_watermarks_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.lag.refresh_incomplete
+  brief: Emitted by OTAP Dataflow as `kafka.lag.refresh_incomplete`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: partition
+    requirement_level: recommended
+  - ref: reason
+    requirement_level: required
+  - ref: topic
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.lag.refresh_incomplete
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.rebalance.assignment_query_failed
+  brief: The kafka.rebalance.assignment_query_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.rebalance.assignment_query_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/rebalance.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.rebalance.commit_failed
+  brief: The kafka.rebalance.commit_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.rebalance.commit_failed
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/rebalance.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.rebalance.error
+  brief: The kafka.rebalance.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.rebalance.error
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/rebalance.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.rebalance.partitions_assigned
+  brief: Emitted by OTAP Dataflow as `kafka.rebalance.partitions_assigned`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: count
+    requirement_level: required
+  - ref: listed_count
+    requirement_level: required
+  - ref: partitions
+    requirement_level: required
+  - ref: truncated
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.rebalance.partitions_assigned
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/rebalance.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.rebalance.partitions_revoked
+  brief: Emitted by OTAP Dataflow as `kafka.rebalance.partitions_revoked`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: count
+    requirement_level: required
+  - ref: listed_count
+    requirement_level: required
+  - ref: partitions
+    requirement_level: required
+  - ref: truncated
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.rebalance.partitions_revoked
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/rebalance.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.receiver.consumer_config.override
+  brief: The kafka.receiver.consumer_config.override internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: key
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.receiver.consumer_config.override
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: recordset_kql_processor.failure
+  brief: The recordset_kql_processor.failure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: input_items
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: recordset_kql_processor.failure
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/processors/recordset_kql_processor/processor.rs
+        availability:
+        - feature = "recordset-kql-processor"
+- name: recordset_kql_processor.processing_logs
+  brief: The recordset_kql_processor.processing_logs internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: input_items
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: recordset_kql_processor.processing_logs
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/processors/recordset_kql_processor/processor.rs
+        availability:
+        - feature = "recordset-kql-processor"
+- name: recordset_kql_processor.query_output
+  brief: The recordset_kql_processor.query_output internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: query_column_number
+    requirement_level: required
+  - ref: query_line_number
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: recordset_kql_processor.query_output
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - dynamic
+        sources:
+        - crates/contrib-nodes/src/processors/recordset_kql_processor/processor.rs
+        availability:
+        - feature = "recordset-kql-processor"
+- name: recordset_kql_processor.ready
+  brief: The recordset_kql_processor.ready internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: recordset_kql_processor.ready
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/processors/recordset_kql_processor/processor.rs
+        availability:
+        - feature = "recordset-kql-processor"
+- name: recordset_kql_processor.reconfigure_error
+  brief: The recordset_kql_processor.reconfigure_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: recordset_kql_processor.reconfigure_error
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - error
+        - warn
+        sources:
+        - crates/contrib-nodes/src/processors/recordset_kql_processor/processor.rs
+        availability:
+        - feature = "recordset-kql-processor"
+- name: recordset_kql_processor.reconfigured
+  brief: The recordset_kql_processor.reconfigured internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: recordset_kql_processor.reconfigured
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/processors/recordset_kql_processor/processor.rs
+        availability:
+        - feature = "recordset-kql-processor"
+- name: recordset_kql_processor.success
+  brief: The recordset_kql_processor.success internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: dropped_items
+    requirement_level: required
+  - ref: input_items
+    requirement_level: required
+  - ref: output_items
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: recordset_kql_processor.success
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-nodes/src/processors/recordset_kql_processor/processor.rs
+        availability:
+        - feature = "recordset-kql-processor"
+- name: resource_validator_processor.validation.fail
+  brief: The resource_validator_processor.validation.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: failure_reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: resource_validator_processor.validation.fail
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/processors/resource_validator_processor/mod.rs
+        availability:
+        - feature = "resource-validator-processor"
+- name: user_events_receiver.start
+  brief: The user_events_receiver.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: node
+    requirement_level: required
+  - ref: pipeline_core
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: user_events_receiver.start
+        scope_names:
+        - otap-df-contrib-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/user_events_receiver/mod.rs
+        availability:
+        - all (feature = "user_events-receiver" , target_os = "linux")

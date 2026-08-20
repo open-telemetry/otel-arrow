@@ -1,0 +1,21 @@
+file_format: definition/2
+events:
+- name: validation.missing.source
+  brief: The validation.missing.source internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: validation.missing.source
+        scope_names:
+        - otap-df-validation
+        severity_levels:
+        - error
+        sources:
+        - crates/validation/src/validation_exporter.rs
+        availability: []

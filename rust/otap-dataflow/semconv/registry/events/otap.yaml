@@ -1,0 +1,1615 @@
+file_format: definition/2
+events:
+- name: flow_metrics.overlap
+  brief: The flow_metrics.overlap internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: flow_metrics.overlap
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/pdata.rs
+        availability: []
+- name: grpc.client.static_header_collision
+  brief: The grpc.client.static_header_collision internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: header_name
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: grpc.client.static_header_collision
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otap_grpc/client_settings.rs
+        availability: []
+- name: grpc.client.static_header_skip
+  brief: The grpc.client.static_header_skip internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: header_name
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: grpc.client.static_header_skip
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otap_grpc/client_settings.rs
+        availability: []
+- name: otap.batch.decode_failed
+  brief: The otap.batch.decode_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap.batch.decode_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otap_grpc.rs
+        availability: []
+- name: otap.batch.validation_failed
+  brief: The otap.batch.validation_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap.batch.validation_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otap_grpc.rs
+        availability: []
+- name: otap.mutex.poisoned
+  brief: The otap.mutex.poisoned internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap.mutex.poisoned
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otap_grpc.rs
+        availability: []
+- name: otap.pipeline.send_failed
+  brief: The otap.pipeline.send_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap.pipeline.send_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otap_grpc.rs
+        availability: []
+- name: otap.request.concurrency_limit
+  brief: The otap.request.concurrency_limit internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap.request.concurrency_limit
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otap_grpc.rs
+        availability: []
+- name: otap.request.memory_pressure
+  brief: The otap.request.memory_pressure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap.request.memory_pressure
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otap_grpc.rs
+        availability: []
+- name: otap.response.channel_closed
+  brief: The otap.response.channel_closed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap.response.channel_closed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otap_grpc.rs
+        availability: []
+- name: otap.response.send_failed
+  brief: The otap.response.send_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap.response.send_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otap_grpc.rs
+        availability: []
+- name: otap.socket.keepalive_retries_ignored
+  brief: The Socket.KeepaliveRetriesIgnored internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: platform
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: Socket.KeepaliveRetriesIgnored
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/socket_options.rs
+        availability: []
+- name: otap.stream.memory_pressure
+  brief: The otap.stream.memory_pressure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap.stream.memory_pressure
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otap_grpc.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.bypass
+  brief: The otap_grpc_exporter.proxy.bypass internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: host
+    requirement_level: required
+  - ref: port
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.bypass
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.configured
+  brief: The otap_grpc_exporter.proxy.configured internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: endpoint
+    requirement_level: required
+  - ref: proxy
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.configured
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - info
+        sources:
+        - crates/otap/src/otap_grpc/client_settings.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.connect_failed
+  brief: The otap_grpc_exporter.proxy.connect_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error_kind
+    requirement_level: required
+  - ref: host
+    requirement_level: required
+  - ref: port
+    requirement_level: required
+  - ref: raw_os_error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.connect_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.connect_request
+  brief: The otap_grpc_exporter.proxy.connect_request internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: has_auth
+    requirement_level: required
+  - ref: target
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.connect_request
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.connect_response
+  brief: The otap_grpc_exporter.proxy.connect_response internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: status_line
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.connect_response
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.connected
+  brief: The otap_grpc_exporter.proxy.connected internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: host
+    requirement_level: required
+  - ref: port
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.connected
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.connecting
+  brief: The otap_grpc_exporter.proxy.connecting internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: host
+    requirement_level: required
+  - ref: port
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.connecting
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.invalid_cidr
+  brief: The otap_grpc_exporter.proxy.invalid_cidr internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: pattern
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.invalid_cidr
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.none
+  brief: The otap_grpc_exporter.proxy.none internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: target
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.none
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.tls.native_cert.add_error
+  brief: The otap_grpc_exporter.proxy.tls.native_cert.add_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.tls.native_cert.add_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.tls.native_cert.load_error
+  brief: The otap_grpc_exporter.proxy.tls.native_cert.load_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.tls.native_cert.load_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.tls.provider.install
+  brief: The otap_grpc_exporter.proxy.tls.provider.install internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.tls.provider.install
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otap_grpc_exporter.proxy.using
+  brief: The otap_grpc_exporter.proxy.using internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: proxy
+    requirement_level: required
+  - ref: target
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otap_grpc_exporter.proxy.using
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otap_grpc/proxy.rs
+        availability: []
+- name: otlp_http_receiver.body_collection_failed
+  brief: The otlp_http_receiver.body_collection_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otlp_http_receiver.body_collection_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otlp_http.rs
+        availability: []
+- name: otlp_http_receiver.pipeline_send_failed
+  brief: The otlp_http_receiver.pipeline_send_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: path
+    requirement_level: required
+  - ref: signal
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otlp_http_receiver.pipeline_send_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otlp_http.rs
+        availability: []
+- name: otlp_http_receiver.request_nacked
+  brief: The otlp_http_receiver.request_nacked internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: required
+  - ref: signal
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otlp_http_receiver.request_nacked
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otlp_http.rs
+        availability: []
+- name: otlp_http_receiver.request_rejected
+  brief: The otlp_http_receiver.request_rejected internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: encoding
+    requirement_level: recommended
+  - ref: error
+    requirement_level: recommended
+  - ref: max_concurrent
+    requirement_level: recommended
+  - ref: max_len
+    requirement_level: recommended
+  - ref: path
+    requirement_level: recommended
+  - ref: reason
+    requirement_level: required
+  - ref: size_hint
+    requirement_level: recommended
+  - ref: timeout_ms
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otlp_http_receiver.request_rejected
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        - warn
+        sources:
+        - crates/otap/src/otlp_http.rs
+        availability: []
+- name: otlp_http_receiver.request_timeout
+  brief: The otlp_http_receiver.request_timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: path
+    requirement_level: required
+  - ref: signal
+    requirement_level: required
+  - ref: timeout_ms
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otlp_http_receiver.request_timeout
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otlp_http.rs
+        availability: []
+- name: otlp_http_receiver.semaphore_closed
+  brief: The otlp_http_receiver.semaphore_closed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: kind
+    requirement_level: required
+  - ref: path
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otlp_http_receiver.semaphore_closed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otlp_http.rs
+        availability: []
+- name: otlp_http_receiver.shutdown_timeout
+  brief: The otlp_http_receiver.shutdown_timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: timeout_ms
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otlp_http_receiver.shutdown_timeout
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otlp_http.rs
+        availability: []
+- name: tls.ca.initial_load
+  brief: The tls.ca.initial_load internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: size_bytes
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.ca.initial_load
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.ca.reloaded
+  brief: The tls.ca.reloaded internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: size_bytes
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.ca.reloaded
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.ca.verifier_built
+  brief: The tls.ca.verifier_built internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: count
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.ca.verifier_built
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.ca_file.read_error
+  brief: The tls.ca_file.read_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: ca_file
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.ca_file.read_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otlp_http/client_settings.rs
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.cert.mtime_check_failed
+  brief: The tls.cert.mtime_check_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.cert.mtime_check_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.cert_file.read_error
+  brief: The tls.cert_file.read_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: cert_file
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.cert_file.read_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otlp_http/client_settings.rs
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.cert_reload_failed
+  brief: The tls.cert_reload_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.cert_reload_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.cert_reloaded
+  brief: The tls.cert_reloaded internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: cert
+    requirement_level: required
+  - ref: key
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.cert_reloaded
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - info
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.client_cert_file.read_error
+  brief: The tls.client_cert_file.read_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: cert_path
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.client_cert_file.read_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.client_key_file.read_error
+  brief: The tls.client_key_file.read_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: key_path
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.client_key_file.read_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.debounce
+  brief: The tls.file_watcher.debounce internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.debounce
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.error
+  brief: The tls.file_watcher.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.event
+  brief: The tls.file_watcher.event internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: event
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.event
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.identity_changed
+  brief: The tls.file_watcher.identity_changed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: current_identity
+    requirement_level: required
+  - ref: prev_identity
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.identity_changed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.identity_error
+  brief: The tls.file_watcher.identity_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.identity_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.identity_unchanged
+  brief: The tls.file_watcher.identity_unchanged internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.identity_unchanged
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.match
+  brief: The tls.file_watcher.match internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.match
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.no_match
+  brief: The tls.file_watcher.no_match internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: event_paths
+    requirement_level: required
+  - ref: watched_path
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.no_match
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.reload_failed
+  brief: The tls.file_watcher.reload_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.reload_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.reload_in_progress
+  brief: The tls.file_watcher.reload_in_progress internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.reload_in_progress
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.reload_start
+  brief: The tls.file_watcher.reload_start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: path
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.reload_start
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - info
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.reload_success
+  brief: The tls.file_watcher.reload_success internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.reload_success
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - info
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.file_watcher.setup
+  brief: The tls.file_watcher.setup internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: ca_file
+    requirement_level: required
+  - ref: watching_parent
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.file_watcher.setup
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - info
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.handshake.failed
+  brief: A TLS handshake failed before a usable session was established.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.handshake.failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.handshake.timeout
+  brief: The tls.handshake.timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.handshake.timeout
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.key.mtime_check_failed
+  brief: The tls.key.mtime_check_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.key.mtime_check_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.key_file.read_error
+  brief: The tls.key_file.read_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: key_file
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.key_file.read_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/otlp_http/client_settings.rs
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.mtls.configure_static_pem
+  brief: The tls.mtls.configure_static_pem internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.mtls.configure_static_pem
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - info
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.mtls.configure_system_cas
+  brief: The tls.mtls.configure_system_cas internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.mtls.configure_system_cas
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - info
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.mtls.disabled
+  brief: The tls.mtls.disabled internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.mtls.disabled
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.native_cert.add_error
+  brief: The tls.native_cert.add_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.native_cert.add_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.native_cert.load_error
+  brief: The tls.native_cert.load_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.native_cert.load_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.native_cert.load_errors
+  brief: The tls.native_cert.load_errors internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: count
+    requirement_level: required
+  - ref: first
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.native_cert.load_errors
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.native_cert.loaded
+  brief: The tls.native_cert.loaded internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: added
+    requirement_level: required
+  - ref: ignored
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.native_cert.loaded
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.poll_watcher.error
+  brief: The tls.poll_watcher.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.poll_watcher.error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.poll_watcher.event
+  brief: The tls.poll_watcher.event internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: ca_path
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.poll_watcher.event
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - info
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.poll_watcher.reload_failed
+  brief: The tls.poll_watcher.reload_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.poll_watcher.reload_failed
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - error
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.poll_watcher.reload_success
+  brief: The tls.poll_watcher.reload_success internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.poll_watcher.reload_success
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - info
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
+- name: tls.poll_watcher.setup
+  brief: The tls.poll_watcher.setup internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: ca_file
+    requirement_level: required
+  - ref: interval
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: tls.poll_watcher.setup
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - info
+        sources:
+        - crates/otap/src/tls_utils.rs
+        availability: []
