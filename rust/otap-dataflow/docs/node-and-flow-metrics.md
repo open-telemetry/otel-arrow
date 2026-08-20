@@ -11,10 +11,11 @@ receiver --> processor A --> processor B --> exporter
                 `-- flow metrics (processors only)
 ```
 
-Use **node metrics** to see the signal items a specific receiver, processor, or
-exporter consumes and produces. Use **flow metrics** to measure a selected,
-contiguous processor range as one operation: how many items entered and left,
-how long processing took, and which decision nodes removed items.
+Use **node metrics** to see the messages, signal items, and logical payload size
+a specific receiver, processor, or exporter consumes and produces. Use **flow
+metrics** to measure a selected, contiguous processor range as one operation:
+how many items entered and left, how long processing took, and which decision
+nodes removed items.
 
 Both metric layers are emitted through the engine's internal observability
 pipeline. Configure an `engine.observability.pipeline` to export them, or use
@@ -37,12 +38,13 @@ With `policies.telemetry.runtime_metrics: normal` or `detailed`, every node
 emits message outcome counters on its existing `node.consumer` and
 `node.producer` metric sets:
 
-### Messages and Items
+### Messages, Items, and Size
 
 A message is the PData batch that moves between nodes. An item is an individual
 log record, metric data point, or span in that batch. One message can contain
 multiple items, so message counts measure batch traffic while item counts
-measure the volume of telemetry data inside those batches.
+measure the number of telemetry records inside those batches. Size measures the
+logical byte size of the current payload representation.
 
 | Metric | Meaning | Emitted by | Availability |
 | --- | --- | --- | --- |
@@ -50,25 +52,27 @@ measure the volume of telemetry data inside those batches.
 | `produced.messages` | Messages emitted by a node | `node.producer` | `normal` or `detailed` |
 | `consumed.items` | Items a node receives | `node.consumer` | `detailed`, or `normal` plus item-count opt-in |
 | `produced.items` | Items a node emits | `node.producer` | `detailed`, or `normal` plus item-count opt-in |
+| `consumed.size` | Logical payload bytes a node receives | `node.consumer` | `detailed`, or `normal` plus size opt-in |
+| `produced.size` | Logical payload bytes a node emits | `node.producer` | `detailed`, or `normal` plus size opt-in |
 
-Both message and item counters have bounded `signal` and `outcome` data-point
+Message, item, and size counters have bounded `signal` and `outcome` data-point
 attributes. `signal` is one of `logs`, `metrics`, or `traces`; `outcome` is
 `success`, `failure`, or `refused`, recorded during terminal ACK/NACK
 unwinding. The metric-set entity attributes identify the pipeline and node, so
 group by those attributes when comparing nodes.
 
-### Enable Item Counts
+### Enable Item Counts and Size
 
-Item counting is disabled by default because examining OTLP payloads can be
-expensive. It requires `policies.telemetry.runtime_metrics: detailed` or
-`normal` with a per-node opt in; `normal` alone does not enable item counts.
+Item counting and logical payload sizing are disabled at the normal level
+because they can require payload inspection. They require
+`policies.telemetry.runtime_metrics: detailed` or `normal` with a per-node opt
+in.
 
 > [!WARNING]
-> Item counting adds work to the data path. Its cost depends on the signal
-> representation and batch size; in particular, OTLP-encoded payloads must be
-> inspected to count their items. Measure the impact on a representative
-> workload before enabling it broadly. Prefer per-node opt-in when only a
-> specific stage needs signal-level accounting.
+> Item counting and sizing add work to the data path. Their cost depends on the
+> payload representation and structure. Measure the impact on a representative
+> workload before enabling them broadly. Prefer per-node opt-in when only a
+> specific stage needs these measurements.
 
 To enable it for every node in a pipeline, use `detailed`:
 
@@ -91,12 +95,13 @@ nodes:
     policies:
       telemetry:
         item_counts: true
+        size: true
     config: {}
 ```
 
 This narrower configuration is appropriate when only a small part of a
-pipeline needs signal-level accounting. `detailed` enables item counts for
-every node without a node-level `item_counts` setting.
+pipeline needs payload measurements. `detailed` enables item counts and size
+for every node without node-level settings.
 
 ### Interpret Node Counts
 
@@ -109,7 +114,7 @@ topology behavior being investigated.
 Node metrics are the right choice when operators need to locate where a signal
 count changes, including receiver admission, processors, and exporter output.
 Use the runnable
-[`trafficgen-per-signal-metrics-demo.yaml`](../configs/trafficgen-per-signal-metrics-demo.yaml)
+[`trafficgen-universal-produced-consumed-metrics.yaml`](../configs/trafficgen-universal-produced-consumed-metrics.yaml)
 example to inspect the metrics on every node or on an individually opted-in
 processor.
 

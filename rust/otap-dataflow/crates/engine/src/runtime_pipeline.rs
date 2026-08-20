@@ -7,8 +7,8 @@ use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::Unwindable;
 use crate::channel_metrics::{
-    ChannelMetricsHandle, ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics,
-    ProducedMetrics,
+    ChannelMetricsHandle, ConsumedItemMetrics, ConsumedMetrics, ConsumedSizeMetrics,
+    ProducedItemMetrics, ProducedMetrics, ProducedSizeMetrics,
 };
 use crate::completion_emission_metrics::{
     CompletionEmissionMetricsHandle, make_completion_emission_metrics,
@@ -101,17 +101,40 @@ fn make_produced_item_metrics(
         .unwrap_or_default()
 }
 
+/// Build optional produced-size metric sets indexed by sorted output port name.
+fn make_produced_size_metrics(
+    telemetry_handle: &Option<NodeTelemetryHandle>,
+    pipeline_context: &PipelineContext,
+) -> Vec<MeasurementMetricSet<ProducedSizeMetrics>> {
+    telemetry_handle
+        .as_ref()
+        .map(|h| {
+            let mut keys = h.output_channel_keys();
+            keys.sort_by(|a, b| a.0.cmp(&b.0));
+            keys.iter()
+                .map(|(_, key)| {
+                    ProducedSizeMetrics::register(
+                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Build per-node metric handles for the runtime control manager.
 ///
 /// - `has_input`: whether to register consumed-request metrics (false for receivers).
 /// - `has_outputs`: whether to register produced-request metrics (false for exporters).
 /// - `item_counts_enabled`: whether to register the optional item metric sets.
+/// - `size_enabled`: whether to register the optional size metric sets.
 fn make_node_metric_handles(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
     has_input: bool,
     has_outputs: bool,
     item_counts_enabled: bool,
+    size_enabled: bool,
     completion_emission: Option<CompletionEmissionMetricsHandle>,
 ) -> NodeMetricHandles {
     let consumed = if has_input {
@@ -120,6 +143,18 @@ fn make_node_metric_handles(
             .and_then(|h| h.input_channel_key())
             .map(|key| {
                 ConsumedMetrics::register(&pipeline_context.metric_set_registrar_for_entity(key))
+            })
+    } else {
+        None
+    };
+    let consumed_size = if size_enabled && has_input {
+        telemetry_handle
+            .as_ref()
+            .and_then(|h| h.input_channel_key())
+            .map(|key| {
+                ConsumedSizeMetrics::register(
+                    &pipeline_context.metric_set_registrar_for_entity(key),
+                )
             })
     } else {
         None
@@ -146,12 +181,19 @@ fn make_node_metric_handles(
     } else {
         Vec::new()
     };
+    let produced_size = if size_enabled && has_outputs {
+        make_produced_size_metrics(telemetry_handle, pipeline_context)
+    } else {
+        Vec::new()
+    };
     NodeMetricHandles {
         registry: pipeline_context.metrics_registry(),
         input: consumed,
         input_items: consumed_items,
+        input_size: consumed_size,
         outputs: produced,
         output_items: produced_items,
+        output_size: produced_size,
         completion_emission,
     }
 }
@@ -393,8 +435,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
 
         let metric_level = telemetry_policy.runtime_metrics;
         let base_node_interests = Interests::from_metric_level(metric_level);
-        // Nodes opting in via `node.policies.telemetry.item_counts`
-        // get the counts without requiring the `detailed` metric level.
+        // Per-node measurement opt-ins enable the corresponding detailed-level
+        // measurement without enabling every detailed runtime metric.
         let item_count_optin: HashSet<&str> = pipeline_config
             .node_iter()
             .filter(|(_, cfg)| {
@@ -402,6 +444,16 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     .as_ref()
                     .and_then(|policies| policies.telemetry.as_ref())
                     .is_some_and(|telemetry| telemetry.item_counts)
+            })
+            .map(|(node_id, _)| node_id.as_ref())
+            .collect();
+        let size_optin: HashSet<&str> = pipeline_config
+            .node_iter()
+            .filter(|(_, cfg)| {
+                cfg.policies
+                    .as_ref()
+                    .and_then(|policies| policies.telemetry.as_ref())
+                    .is_some_and(|telemetry| telemetry.size)
             })
             .map(|(node_id, _)| node_id.as_ref())
             .collect();
@@ -520,11 +572,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for exporter in exporters {
             let mut exporter = exporter;
             let node_id = exporter.node_id();
-            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
-                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
-            } else {
-                base_node_interests
-            };
+            let mut node_interests = base_node_interests;
+            if item_count_optin.contains(node_id.name.as_ref()) {
+                node_interests |= Interests::PRODUCED_CONSUMED_ITEM_COUNTS;
+            }
+            if size_optin.contains(node_id.name.as_ref()) {
+                node_interests |= Interests::PRODUCED_CONSUMED_SIZE;
+            }
             control_senders.register(
                 node_id.clone(),
                 NodeType::Exporter,
@@ -545,6 +599,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     true,
                     false,
                     node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -600,11 +655,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for processor in processors {
             let mut processor = processor;
             let node_id = processor.node_id();
-            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
-                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
-            } else {
-                base_node_interests
-            };
+            let mut node_interests = base_node_interests;
+            if item_count_optin.contains(node_id.name.as_ref()) {
+                node_interests |= Interests::PRODUCED_CONSUMED_ITEM_COUNTS;
+            }
+            if size_optin.contains(node_id.name.as_ref()) {
+                node_interests |= Interests::PRODUCED_CONSUMED_SIZE;
+            }
             control_senders.register(
                 node_id.clone(),
                 NodeType::Processor,
@@ -625,6 +682,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     true,
                     true,
                     node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -713,11 +771,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for receiver in receivers {
             let mut receiver = receiver;
             let node_id = receiver.node_id();
-            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
-                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
-            } else {
-                base_node_interests
-            };
+            let mut node_interests = base_node_interests;
+            if item_count_optin.contains(node_id.name.as_ref()) {
+                node_interests |= Interests::PRODUCED_CONSUMED_ITEM_COUNTS;
+            }
+            if size_optin.contains(node_id.name.as_ref()) {
+                node_interests |= Interests::PRODUCED_CONSUMED_SIZE;
+            }
             control_senders.register(
                 node_id.clone(),
                 NodeType::Receiver,
@@ -736,6 +796,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     false,
                     true,
                     node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
                     None,
                 ),
             ));
