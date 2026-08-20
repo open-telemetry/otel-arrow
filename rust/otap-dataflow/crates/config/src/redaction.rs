@@ -170,6 +170,26 @@ impl<T> SecretField<T> {
     }
 }
 
+/// Declares a required top-level `RedactedString` from one Rust field token.
+#[macro_export]
+macro_rules! required_secret_field {
+    ($config_type:ty, $field:ident) => {
+        $crate::redaction::SecretField::required(stringify!($field), |config: &$config_type| {
+            Some(&config.$field)
+        })
+    };
+}
+
+/// Declares an optional top-level `RedactedString` from one Rust field token.
+#[macro_export]
+macro_rules! optional_secret_field {
+    ($config_type:ty, $field:ident) => {
+        $crate::redaction::SecretField::optional(stringify!($field), |config: &$config_type| {
+            config.$field.as_ref()
+        })
+    };
+}
+
 /// Function pointer registered by a component that owns a typed config.
 pub type ConfigRedactorFn = fn(&mut Value) -> Result<(), RedactionError>;
 
@@ -348,18 +368,14 @@ mod tests {
         label: String,
     }
 
+    const TEST_SECRET_FIELDS: &[SecretField<TestConfig>] = &[
+        crate::required_secret_field!(TestConfig, password),
+        crate::optional_secret_field!(TestConfig, optional_token),
+    ];
+
     fn test_password(config: &TestConfig) -> Option<&RedactedString> {
         Some(&config.password)
     }
-
-    fn test_optional_token(config: &TestConfig) -> Option<&RedactedString> {
-        config.optional_token.as_ref()
-    }
-
-    const TEST_SECRET_FIELDS: &[SecretField<TestConfig>] = &[
-        SecretField::required("password", test_password),
-        SecretField::optional("optional_token", test_optional_token),
-    ];
 
     /// Scenario: a cleartext value is loaded into a `RedactedString`.
     /// Guarantees: explicit access returns cleartext while Debug and JSON
@@ -481,8 +497,8 @@ mod tests {
         let error = redact_typed_config::<TestConfig>(
             &raw,
             &[
-                SecretField::required("password", test_password),
-                SecretField::required("password", test_password),
+                crate::required_secret_field!(TestConfig, password),
+                crate::required_secret_field!(TestConfig, password),
             ],
         )
         .expect_err("duplicate declarations must fail closed");
@@ -563,14 +579,10 @@ mod tests {
         secret: RedactedString,
     }
 
-    fn registered_secret(config: &RegisteredConfig) -> Option<&RedactedString> {
-        Some(&config.secret)
-    }
-
     fn redact_registered_test_config(config: &mut Value) -> Result<(), RedactionError> {
         redact_typed_config_in_place::<RegisteredConfig>(
             config,
-            &[SecretField::required("secret", registered_secret)],
+            &[crate::required_secret_field!(RegisteredConfig, secret)],
         )
     }
 

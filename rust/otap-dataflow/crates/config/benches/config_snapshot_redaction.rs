@@ -7,8 +7,7 @@
 
 use otap_df_config::node::{NodeUserConfig, REDACTED_HEADER_VALUE};
 use otap_df_config::redaction::{
-    CONFIG_REDACTORS, ConfigRedactor, RedactedString, RedactionError, SecretField,
-    redact_typed_config_in_place,
+    CONFIG_REDACTORS, ConfigRedactor, RedactedString, RedactionError, redact_typed_config_in_place,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -36,12 +35,11 @@ struct TypedBenchmarkConfig {
 fn redact_typed_benchmark_config(config: &mut Value) -> Result<(), RedactionError> {
     redact_typed_config_in_place::<TypedBenchmarkConfig>(
         config,
-        &[SecretField::required("password", benchmark_password)],
+        &[otap_df_config::required_secret_field!(
+            TypedBenchmarkConfig,
+            password
+        )],
     )
-}
-
-fn benchmark_password(config: &TypedBenchmarkConfig) -> Option<&RedactedString> {
-    Some(&config.password)
 }
 
 #[allow(unsafe_code)]
