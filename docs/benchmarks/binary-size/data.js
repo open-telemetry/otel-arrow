@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787265758663,
+  "lastUpdate": 1787268521579,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -19977,6 +19977,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 101.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aaec856cedf47fe227bfacb759764050e65782f8",
+          "message": "chore: Remove global delayed-data runtime plumbing (#3828)\n\nSupersedes #2472, which GitHub could not reopen after the branch history\nwas refreshed against current `main`.\n\n# Change Summary\n\nRemove the obsolete runtime-managed delayed-data path now that\nnode-local wakeups and node-local delayed resume are in place.\n\nPreviously, a processor could send `RuntimeControlMsg::DelayData` to the\nshared runtime-control manager. The manager retained the payload in a\nglobal priority queue, waited for its deadline, and sent it back to the\noriginating processor as `NodeControlMsg::DelayedData`. This required\nthe central runtime to understand and retain pipeline data, and added\nspecial handling for scheduling, shutdown, telemetry, tests, and the\nadmin UI.\n\nProcessors can now retain their own data using `requeue_later(...)`. The\npayload is stored in that processor’s bounded local scheduler and\nreturned through its inbox when due. Consequently, this PR removes the\nglobal queue, `RuntimeControlMsg::DelayData`, the old effect-handler\nAPI, and the associated runtime-control metrics and shutdown logic.\n\nThe remaining node-control message is renamed to `ResumeData` because it\nrepresents retained data resuming within the same processor, rather than\ndata being returned through the global runtime.\n\nThis is the cleanup step in the redesign tracked in #2465. It simplifies\nthe runtime manager, reduces global contention, and removes\ndelayed-data-specific scheduling, shutdown, metrics, and control-plane\nspecial cases.\n\n## Adaptation to current `main`\n\n- Updated the cleanup for the current control-message and pdata APIs.\n- Adapted processor-local scheduling and inbox integration.\n- Updated the current batch, retry, durable-buffer, partition,\nlog-sampling, and temporal-reaggregation processors.\n- Removed obsolete control-plane metrics and admin UI data.\n- Updated engine tests, benchmarks, documentation, and test-support\ncode.\n\n## Relationship to #3747\n\nThis cleanup should merge before #3747, following the ordering described\nin the review on that PR.\n\nRemoving the runtime-global path allows #3747 to model delayed resume as\nexplicitly local: `ResumeData` can carry a required `LocalResumeId`, the\nglobal `resume_id: None` cases disappear, and the global\ndelayed-delivery changes in `pipeline_ctrl.rs` are no longer needed.\n\n## Testing\n\n- `cargo xtask check`\n\n## User-facing changes\n\nNone. This is an internal runtime cleanup.\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-08-20T22:31:27Z",
+          "tree_id": "ae9d32d6014905acf13fbb5a8f81f9f8a4729d00",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/aaec856cedf47fe227bfacb759764050e65782f8"
+        },
+        "date": 1787268506884,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.91,
             "unit": "MB"
           }
         ]
