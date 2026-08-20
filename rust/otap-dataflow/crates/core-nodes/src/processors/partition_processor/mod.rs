@@ -218,7 +218,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 NodeControlMsg::Config { .. }
                 | NodeControlMsg::TimerTick { .. }
                 | NodeControlMsg::Wakeup { .. }
-                | NodeControlMsg::DelayedData { .. }
+                | NodeControlMsg::ResumeData { .. }
                 | NodeControlMsg::MemoryPressureChanged { .. }
                 | NodeControlMsg::DrainIngress { .. }
                 | NodeControlMsg::Shutdown { .. } => {
