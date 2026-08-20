@@ -73,7 +73,7 @@ only.
 - The Rust toolchain specified by this repository
 - Visual Studio 2022 or Build Tools with the **Desktop development with C++**
   workload
-- LLVM with `libclang.dll`
+- Python with the `libclang` package
 - vcpkg with `openssl:x64-windows-static-md`
 
 Run all commands below from **Developer PowerShell for Visual Studio**. Start
@@ -87,12 +87,38 @@ $DataflowConfig = "examples/kafka-sasl-tls/kafka-sasl-tls.yaml"
 
 ### Prepare the Windows Build Environment
 
-Install LLVM from an elevated PowerShell terminal if it is not already
-installed:
+Install the Python `libclang` package into the repository virtual environment
+if it is not already available:
 
 ```powershell
-choco install llvm -y
+$RepoPython = Resolve-Path "..\..\.venv\Scripts\python.exe" `
+  -ErrorAction SilentlyContinue
+$Python = if ($RepoPython) {
+  $RepoPython.Path
+} else {
+  (Get-Command python -ErrorAction Stop).Source
+}
+& $Python -m pip install libclang
 ```
+
+Resolve `libclang.dll` from that environment and configure bindgen:
+
+```powershell
+$LibClangDll = & $Python -c @"
+import pathlib
+import clang
+print(next(pathlib.Path(clang.__file__).parent.rglob("libclang.dll")))
+"@
+
+$Env:LIBCLANG_PATH = Split-Path -Parent $LibClangDll
+if (-not (Test-Path "$Env:LIBCLANG_PATH\libclang.dll")) {
+  throw "libclang.dll was not found in the repository virtual environment."
+}
+Write-Host "LIBCLANG_PATH=$Env:LIBCLANG_PATH"
+```
+
+When the repository virtual environment is present, this resolves to
+`<repository>\.venv\Lib\site-packages\clang\native`.
 
 Bootstrap a user-local vcpkg installation if `vcpkg.exe` is not available:
 
@@ -112,7 +138,7 @@ Install OpenSSL and configure the current Developer PowerShell session:
 ```powershell
 & "$VcpkgRoot\vcpkg.exe" install openssl:x64-windows-static-md
 
-$Env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+$Env:VCPKG_ROOT = $VcpkgRoot
 $Env:VCPKG_INSTALLATION_ROOT = $VcpkgRoot
 $Env:OPENSSL_DIR = "$VcpkgRoot\installed\x64-windows-static-md"
 $Env:OPENSSL_ROOT_DIR = $Env:OPENSSL_DIR
@@ -129,16 +155,37 @@ using a new Developer PowerShell session.
 
 ## Start Kafka
 
-Start Docker Desktop if necessary, validate the Compose file, and start the
-broker:
+Start Docker Desktop and wait until it reports that the engine is running.
+Then validate the Compose file and start the broker:
 
 ```powershell
-Start-Process "$Env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
 docker version
+if ($LASTEXITCODE -ne 0) {
+  throw "Docker Desktop is not ready."
+}
+
 docker compose -f $ComposeFile config --quiet
+if ($LASTEXITCODE -ne 0) {
+  throw "Compose validation failed."
+}
+
 docker compose -f $ComposeFile up -d --wait kafka
+if ($LASTEXITCODE -ne 0) {
+  throw "Kafka startup failed."
+}
+
 docker compose -f $ComposeFile run --rm kafka-init
+if ($LASTEXITCODE -ne 0) {
+  throw "Kafka initialization failed."
+}
+
 docker compose -f $ComposeFile ps
+$RunningServices = @(
+  docker compose -f $ComposeFile ps --status running --services
+)
+if ($LASTEXITCODE -ne 0 -or $RunningServices -notcontains "kafka") {
+  throw "Kafka is not running."
+}
 ```
 
 The startup generates a local CA and broker certificate, creates the SCRAM
@@ -165,6 +212,26 @@ This is a broker-only check using Kafka's client tools. The next steps validate
 the otel-arrow exporter and receiver.
 
 ## Run the Dataflow
+
+The native build variables are scoped to the current PowerShell process. If
+this is a new Developer PowerShell session, repeat the environment-variable
+setup under **Prepare the Windows Build Environment**. Verify the required
+files immediately before running Cargo:
+
+```powershell
+$RequiredBuildFiles = @(
+  "$Env:LIBCLANG_PATH\libclang.dll"
+  "$Env:OPENSSL_DIR\include\openssl\ssl.h"
+  "$Env:OPENSSL_DIR\lib\libssl.lib"
+  "$Env:OPENSSL_DIR\lib\libcrypto.lib"
+)
+
+$RequiredBuildFiles | ForEach-Object {
+  if (-not (Test-Path $_)) {
+    throw "Required build file not found: $_"
+  }
+}
+```
 
 First validate the six-pipeline configuration:
 
@@ -239,7 +306,7 @@ $ConsumerGroups = @(
 
 $ConsumerGroups | ForEach-Object {
   $Output = docker compose -f $ComposeFile exec -T kafka `
-        kafka-consumer-groups --bootstrap-server kafka:29092 `
+    kafka-consumer-groups --bootstrap-server kafka:29092 `
     --describe --group $_.Group
   $Output | Write-Host
 
