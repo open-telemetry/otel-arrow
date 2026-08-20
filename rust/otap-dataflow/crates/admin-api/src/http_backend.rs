@@ -627,7 +627,9 @@ fn build_http_client(settings: &HttpAdminClientSettings) -> Result<reqwest::Clie
                 details: "user_agent must be non-empty when set".to_string(),
             });
         }
-        if HeaderValue::from_bytes(user_agent.as_bytes()).is_err() {
+        if !user_agent.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+            || HeaderValue::from_bytes(user_agent.as_bytes()).is_err()
+        {
             return Err(Error::ClientConfig {
                 details: "user_agent contains characters that cannot be represented as an HTTP header value (must be visible ASCII)".to_string(),
             });
@@ -999,6 +1001,10 @@ mod tests {
             ("   ", "user_agent must be non-empty when set"),
             (
                 "bad\nvalue",
+                "user_agent contains characters that cannot be represented as an HTTP header value (must be visible ASCII)",
+            ),
+            (
+                "dfctl/\u{e9}",
                 "user_agent contains characters that cannot be represented as an HTTP header value (must be visible ASCII)",
             ),
         ];
