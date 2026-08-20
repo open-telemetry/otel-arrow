@@ -39,8 +39,8 @@ use crate::error::{Error, Result};
 use crate::pipeline::expr::bitmap::combine_scope;
 use crate::pipeline::expr::join::{JoinInput, join, multi_join};
 use crate::pipeline::expr::{
-    DataScope, LeafEval, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue, VALUE_COLUMN_NAME,
-    arg_column_name,
+    DataScope, LeafEval, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue, ShortCircuitStrategy,
+    VALUE_COLUMN_NAME, arg_column_name,
 };
 use crate::pipeline::id_mask::IdMask;
 use crate::pipeline::planner::AttributesIdentifier;
@@ -72,11 +72,13 @@ impl ScopedExpr {
                 eval,
                 default_null_children,
                 align_children_to_root,
+                short_circuit,
             } => join_and_eval_value(
                 children.as_mut_slice(),
                 eval,
                 *default_null_children,
                 *align_children_to_root,
+                short_circuit.as_ref(),
                 otap_batch,
                 session_ctx,
             ),
@@ -242,6 +244,7 @@ pub(super) fn join_and_eval_value(
     eval: &mut LeafEval,
     default_null_children: bool,
     align_children_to_root: bool,
+    short_circuit: Option<&ShortCircuitStrategy>,
     otap_batch: &OtapArrowRecords,
     session_ctx: &SessionContext,
 ) -> Result<Option<ScopedValue>> {
@@ -265,6 +268,14 @@ pub(super) fn join_and_eval_value(
                 }
             }
         };
+
+        // Check for short-circuit: skip remaining children and the join when the
+        // outcome is already determined by this child's result.
+        if let Some(strategy) = short_circuit {
+            if should_short_circuit(&result.values, strategy) {
+                return Ok(Some(short_circuit_value(strategy)));
+            }
+        }
 
         child_results.push(result)
     }
@@ -357,6 +368,60 @@ fn coerce_nulls_for_predicate(
     }
 
     result_vals
+}
+
+/// Check whether a child result allows the parent `JoinAndEval` to short-circuit.
+///
+/// For `And`: returns `true` when the value is definitively all-false (or all-null),
+/// meaning the AND result will be all-false regardless of remaining children.
+///
+/// For `Or`: returns `true` when the value is definitively all-true, meaning the OR
+/// result will be all-true regardless of remaining children.
+fn should_short_circuit(values: &ColumnarValue, strategy: &ShortCircuitStrategy) -> bool {
+    match strategy {
+        ShortCircuitStrategy::And => is_all_false_or_null(values),
+        ShortCircuitStrategy::Or => is_all_true(values),
+    }
+}
+
+/// Returns `true` when the columnar value is a boolean that is entirely false or null.
+fn is_all_false_or_null(values: &ColumnarValue) -> bool {
+    match values {
+        ColumnarValue::Scalar(ScalarValue::Boolean(Some(false)))
+        | ColumnarValue::Scalar(ScalarValue::Boolean(None))
+        | ColumnarValue::Scalar(ScalarValue::Null) => true,
+        ColumnarValue::Array(arr) => {
+            if let Some(boolean_arr) = arr.as_boolean_opt() {
+                boolean_arr.true_count() == 0
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Returns `true` when the columnar value is a boolean that is entirely true.
+fn is_all_true(values: &ColumnarValue) -> bool {
+    match values {
+        ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => true,
+        ColumnarValue::Array(arr) => {
+            if let Some(boolean_arr) = arr.as_boolean_opt() {
+                boolean_arr.true_count() == boolean_arr.len()
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Produce the short-circuit result value for a given strategy.
+fn short_circuit_value(strategy: &ShortCircuitStrategy) -> ScopedValue {
+    match strategy {
+        ShortCircuitStrategy::And => ScopedValue::new_scalar(ScalarValue::Boolean(Some(false))),
+        ShortCircuitStrategy::Or => ScopedValue::new_scalar(ScalarValue::Boolean(Some(true))),
+    }
 }
 
 /// Execute a `BitmapAnd` node as a value.

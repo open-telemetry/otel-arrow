@@ -170,6 +170,22 @@ impl From<&ColumnAccessor> for DataScope {
     }
 }
 
+/// Short-circuit strategy for logical binary expressions within
+/// [`ScopedExpr::JoinAndEval`].
+///
+/// When a `JoinAndEval` node carries a short-circuit strategy, child evaluation
+/// may terminate early when an intermediate result already determines the final
+/// outcome -- avoiding the join and subsequent DataFusion evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShortCircuitStrategy {
+    /// AND semantics: short-circuit to all-false when any child evaluates to
+    /// all-false (or all-null).
+    And,
+    /// OR semantics: short-circuit to all-true when any child evaluates to
+    /// all-true.
+    Or,
+}
+
 /// An execution tree node for evaluating expressions on OTAP data.
 ///
 /// Every node supports two execution methods:
@@ -186,6 +202,8 @@ impl From<&ColumnAccessor> for DataScope {
 /// materializing intermediate arrays.
 #[derive(Debug)]
 pub(crate) enum ScopedExpr {
+    // NOTE: when adding new fields to any variant below, check all match sites in this file,
+    // eval.rs, bitmap.rs, planner.rs, assign.rs, and pipeline/planner.rs.
     /// Leaf: evaluate an expression on a specific data scope (RecordBatch).
     ///
     /// For `LeafEval::DatafusionExpr`, this reads from the scope's RecordBatch and evaluates a
@@ -218,6 +236,14 @@ pub(crate) enum ScopedExpr {
         /// flag overrides the dynamic join choice and forces root alignment when combining the
         /// child results.
         align_children_to_root: bool,
+
+        /// Optional short-circuit strategy for logical binary expressions.
+        ///
+        /// When set, evaluation will check each child's result as it is computed and may skip
+        /// remaining children and the join when the outcome is already determined:
+        /// - `And`: short-circuits to all-false when any child is all-false/null.
+        /// - `Or`: short-circuits to all-true when any child is all-true.
+        short_circuit: Option<ShortCircuitStrategy>,
     },
 
     /// Combine two boolean-producing children via IdMask bitmap intersection (AND).
@@ -429,7 +455,9 @@ mod test {
 
     use crate::pipeline::Pipeline;
     use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
-    use crate::pipeline::expr::{LeafEval, ScopedExpr, ScopedValue, SignalTypePredicate};
+    use crate::pipeline::expr::{
+        LeafEval, ScopedExpr, ScopedValue, ShortCircuitStrategy, SignalTypePredicate,
+    };
     use crate::pipeline::id_mask::IdMask;
     use crate::pipeline::planner::AttributesIdentifier;
 
@@ -675,6 +703,7 @@ mod test {
             children: vec![left_child, right_child],
             default_null_children: false,
             align_children_to_root: false,
+            short_circuit: None,
             eval: LeafEval::new_df_expr(
                 Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr::new(
                     Box::new(col(arg_column_name(0))),
@@ -873,5 +902,124 @@ mod test {
             }
             other => panic!("expected IdMask::Some, got {other:?}"),
         }
+    }
+
+    /// Scenario: JoinAndEval with And short-circuit skips the right child and join
+    /// when the left child evaluates to all-false.
+    /// Guarantees: when the left child of a cross-scope AND produces no true values,
+    /// the result is all-false without evaluating the right child or performing the join.
+    #[test]
+    fn test_join_and_eval_and_short_circuit() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+
+        // Left child: severity_text == "NONEXISTENT" -> all false for all 3 rows
+        let left_child = root_eval(col(consts::SEVERITY_TEXT).eq(lit("NONEXISTENT")));
+
+        // Right child: attributes["code.namespace"] == "main"
+        let right_child = attrs_eval_dict_downcast(
+            AttributesIdentifier::Root,
+            "code.namespace",
+            col(VALUE_COLUMN_NAME).eq(lit("main")),
+        );
+
+        let mut op = ScopedExpr::JoinAndEval {
+            children: vec![left_child, right_child],
+            default_null_children: false,
+            align_children_to_root: false,
+            short_circuit: Some(ShortCircuitStrategy::And),
+            eval: LeafEval::new_df_expr(
+                col(arg_column_name(0)).and(col(arg_column_name(1))),
+                false,
+            )
+            .unwrap(),
+        };
+
+        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+
+        // Short-circuit should produce a scalar false
+        match &result.values {
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(false))) => {}
+            other => panic!("expected scalar false from AND short-circuit, got {other:?}"),
+        }
+    }
+
+    /// Scenario: JoinAndEval with Or short-circuit skips the right child and join
+    /// when the left child evaluates to all-true.
+    /// Guarantees: when the left child of a cross-scope OR produces all-true values,
+    /// the result is all-true without evaluating the right child or performing the join.
+    #[test]
+    fn test_join_and_eval_or_short_circuit() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+
+        // Left child: severity_number > 0 -> all true for all 3 rows
+        let left_child = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(0)));
+
+        // Right child: attributes["code.namespace"] == "main"
+        let right_child = attrs_eval_dict_downcast(
+            AttributesIdentifier::Root,
+            "code.namespace",
+            col(VALUE_COLUMN_NAME).eq(lit("main")),
+        );
+
+        let mut op = ScopedExpr::JoinAndEval {
+            children: vec![left_child, right_child],
+            default_null_children: false,
+            align_children_to_root: false,
+            short_circuit: Some(ShortCircuitStrategy::Or),
+            eval: LeafEval::new_df_expr(col(arg_column_name(0)).or(col(arg_column_name(1))), false)
+                .unwrap(),
+        };
+
+        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+
+        // Short-circuit should produce a scalar true
+        match &result.values {
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {}
+            other => panic!("expected scalar true from OR short-circuit, got {other:?}"),
+        }
+    }
+
+    /// Scenario: JoinAndEval with And short-circuit does not fire when the left
+    /// child has mixed true/false values.
+    /// Guarantees: when the left child has at least one true value, normal
+    /// join-and-eval executes and the combined result reflects both children.
+    #[test]
+    fn test_join_and_eval_no_short_circuit_on_mixed_values() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+
+        // Left child: severity_text == "WARN" -> rows 0,2 true, row 1 false (mixed)
+        let left_child = root_eval(col(consts::SEVERITY_TEXT).eq(lit("WARN")));
+
+        // Right child: attributes["code.namespace"] == "main" -> rows 0,2 true, row 1 false
+        let right_child = attrs_eval_dict_downcast(
+            AttributesIdentifier::Root,
+            "code.namespace",
+            col(VALUE_COLUMN_NAME).eq(lit("main")),
+        );
+
+        let mut op = ScopedExpr::JoinAndEval {
+            children: vec![left_child, right_child],
+            default_null_children: false,
+            align_children_to_root: false,
+            short_circuit: Some(ShortCircuitStrategy::And),
+            eval: LeafEval::new_df_expr(
+                col(arg_column_name(0)).and(col(arg_column_name(1))),
+                false,
+            )
+            .unwrap(),
+        };
+
+        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+
+        // Should NOT short-circuit -- should produce a full array result
+        let bool_arr = as_bool_arr(&result);
+        assert_eq!(bool_arr.len(), 3);
+        // rows 0 and 2 have severity_text="WARN" AND code.namespace="main"
+        assert!(bool_arr.value(0));
+        assert!(!bool_arr.value(1));
+        assert!(bool_arr.value(2));
     }
 }

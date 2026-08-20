@@ -51,7 +51,9 @@ use crate::pipeline::expr::types::{
     ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
 use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
-use crate::pipeline::expr::{LeafEval, RootParentStruct, ScopedExpr, SignalTypePredicate};
+use crate::pipeline::expr::{
+    LeafEval, RootParentStruct, ScopedExpr, ShortCircuitStrategy, SignalTypePredicate,
+};
 use crate::pipeline::functions::compare::CompareFunc;
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::functions::is_type::IsTypeFunc;
@@ -418,6 +420,7 @@ impl ExprPlanner {
                         )?,
                         align_children_to_root,
                         default_null_children: false,
+                        short_circuit: Some(ShortCircuitStrategy::And),
                     })
                 }
             }
@@ -493,6 +496,7 @@ impl ExprPlanner {
                         )?,
                         align_children_to_root,
                         default_null_children: false,
+                        short_circuit: Some(ShortCircuitStrategy::Or),
                     })
                 }
             }
@@ -558,6 +562,7 @@ impl ExprPlanner {
                         eval,
                         default_null_children,
                         align_children_to_root,
+                        short_circuit,
                     } if !is_attrs_all_scope => match eval {
                         LeafEval::DatafusionExpr {
                             logical_expr,
@@ -571,6 +576,7 @@ impl ExprPlanner {
                             children,
                             default_null_children,
                             align_children_to_root,
+                            short_circuit,
                             eval: LeafEval::DatafusionExpr {
                                 logical_expr: not(logical_expr),
                                 physical_expr: None,
@@ -586,6 +592,7 @@ impl ExprPlanner {
                             eval,
                             default_null_children,
                             align_children_to_root,
+                            short_circuit,
                         })),
                     },
                     _ => ScopedExpr::BitmapNot(Box::new(inner)),
@@ -1167,6 +1174,7 @@ impl ExprPlanner {
                 children,
                 default_null_children: true,
                 align_children_to_root: op == Operator::Eq,
+                short_circuit: None,
                 eval: transform_leaf(eval),
             },
             other => other,
@@ -1408,6 +1416,7 @@ impl ExprPlanner {
                 children: vec![haystack.expr, needle.expr],
                 default_null_children: false,
                 align_children_to_root: false,
+                short_circuit: None,
                 eval: LeafEval::new_df_expr(
                     contains(col(arg_column_name(0)), col(arg_column_name(1))),
                     true,
@@ -1789,6 +1798,7 @@ impl ExprPlanner {
                 children: vec![left.expr, right.expr],
                 default_null_children: false,
                 align_children_to_root: false,
+                short_circuit: None,
                 eval: LeafEval::new_df_expr(
                     Expr::BinaryExpr(BinaryExpr::new(
                         Box::new(col(arg_column_name(0))),
@@ -1822,6 +1832,7 @@ impl ExprPlanner {
                 children,
                 default_null_children: false,
                 align_children_to_root: false,
+                short_circuit: None,
                 eval: LeafEval::new_df_expr(expr, dict_downcast)?,
             }),
         }
@@ -2312,7 +2323,7 @@ mod test {
     use otap_df_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
 
     use crate::pipeline::Pipeline;
-    use crate::pipeline::expr::{DataScope, ScopedExpr};
+    use crate::pipeline::expr::{DataScope, ScopedExpr, ShortCircuitStrategy};
     use crate::pipeline::id_mask::IdMask;
     use crate::pipeline::planner::AttributesIdentifier;
 
@@ -2946,6 +2957,117 @@ mod test {
             }
             IdMask::All => {} // Also acceptable
             other => panic!("expected Some or All, got {other:?}"),
+        }
+    }
+
+    /// Scenario: cross-scope AND (root field AND attribute predicate) produces
+    /// a JoinAndEval with ShortCircuitStrategy::And.
+    /// Guarantees: the planner assigns And short-circuit strategy to cross-scope
+    /// AND expressions so the evaluator can skip the right child and join when
+    /// the left child is all-false.
+    #[test]
+    fn test_plan_cross_scope_and_has_short_circuit_strategy() {
+        let planner = ExprPlanner::new();
+
+        // severity_text == "WARN" AND attributes["x"] == "a"
+        // Root scope vs Attribute scope -> cross-scope -> JoinAndEval
+        let left_eq = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+            ql(),
+            make_column_expr("severity_text"),
+            make_string_literal("WARN"),
+            false,
+        ));
+        let right_eq = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+            ql(),
+            make_attr_expr("x"),
+            make_string_literal("a"),
+            false,
+        ));
+
+        let and_expr = data_engine_expressions::AndLogicalExpression::new(ql(), left_eq, right_eq);
+        let logical = LogicalExpression::And(and_expr);
+        let op = planner.plan_logical(&logical, &[]).unwrap();
+
+        match &op {
+            ScopedExpr::JoinAndEval { short_circuit, .. } => {
+                assert_eq!(
+                    *short_circuit,
+                    Some(ShortCircuitStrategy::And),
+                    "cross-scope AND should have And short-circuit strategy"
+                );
+            }
+            other => panic!("expected JoinAndEval, got {other:?}"),
+        }
+    }
+
+    /// Scenario: cross-scope OR (root field OR attribute predicate) produces
+    /// a JoinAndEval with ShortCircuitStrategy::Or.
+    /// Guarantees: the planner assigns Or short-circuit strategy to cross-scope
+    /// OR expressions so the evaluator can skip the right child and join when
+    /// the left child is all-true.
+    #[test]
+    fn test_plan_cross_scope_or_has_short_circuit_strategy() {
+        let planner = ExprPlanner::new();
+
+        // severity_text == "WARN" OR attributes["x"] == "a"
+        // Root scope vs Attribute scope -> cross-scope -> JoinAndEval
+        let left_eq = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+            ql(),
+            make_column_expr("severity_text"),
+            make_string_literal("WARN"),
+            false,
+        ));
+        let right_eq = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+            ql(),
+            make_attr_expr("x"),
+            make_string_literal("a"),
+            false,
+        ));
+
+        let or_expr = data_engine_expressions::OrLogicalExpression::new(ql(), left_eq, right_eq);
+        let logical = LogicalExpression::Or(or_expr);
+        let op = planner.plan_logical(&logical, &[]).unwrap();
+
+        match &op {
+            ScopedExpr::JoinAndEval { short_circuit, .. } => {
+                assert_eq!(
+                    *short_circuit,
+                    Some(ShortCircuitStrategy::Or),
+                    "cross-scope OR should have Or short-circuit strategy"
+                );
+            }
+            other => panic!("expected JoinAndEval, got {other:?}"),
+        }
+    }
+
+    /// Scenario: cross-scope arithmetic (root + attribute) produces a JoinAndEval
+    /// with no short-circuit strategy.
+    /// Guarantees: non-logical cross-scope expressions do not receive a short-circuit
+    /// strategy, preventing incorrect early termination of arithmetic evaluation.
+    #[test]
+    fn test_plan_cross_scope_arithmetic_no_short_circuit_strategy() {
+        use data_engine_expressions::{BinaryMathematicalScalarExpression, MathScalarExpression};
+
+        let planner = ExprPlanner::new();
+
+        // severity_number + attributes["x"]
+        let binary = BinaryMathematicalScalarExpression::new(
+            ql(),
+            make_column_expr("severity_number"),
+            make_attr_expr("x"),
+        );
+        let math_expr = ScalarExpression::Math(MathScalarExpression::Add(binary));
+
+        let planned = planner.plan_scalar(&math_expr, &[]).unwrap();
+
+        match &planned.expr {
+            ScopedExpr::JoinAndEval { short_circuit, .. } => {
+                assert_eq!(
+                    *short_circuit, None,
+                    "cross-scope arithmetic should have no short-circuit strategy"
+                );
+            }
+            other => panic!("expected JoinAndEval, got {other:?}"),
         }
     }
 }
