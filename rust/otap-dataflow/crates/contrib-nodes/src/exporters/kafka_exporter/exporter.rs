@@ -304,12 +304,18 @@ struct SendMeta {
 /// the delivery future was cancelled because the producer was dropped or purged
 /// (treated as a transient failure, matching the purge-on-shutdown semantics).
 ///
-/// The set is constructed with the configured `max_in_flight` bound and owns
-/// it: [`Self::push`] enforces the bound directly (draining one outstanding
-/// delivery when the set is already full), so the number of concurrently
-/// outstanding deliveries never exceeds the bound (see [`KafkaExporter`] module
-/// docs). Callers still use [`Self::is_full`] to gate upstream admission, but
-/// they no longer need to pre-drain to keep `push` correct.
+/// The set is constructed with the configured `max_in_flight` bound. The bound
+/// is enforced by the event loop's admission gate: the loop computes
+/// `accepting_pdata = !`[`Self::is_full`] and passes it to
+/// `ExporterInbox::recv_when`, so while the set is full no new pdata is dequeued
+/// and only control messages and delivery completions are processed. [`Self::push`]
+/// is therefore a non-blocking append: it never awaits a drain, so a stalled
+/// delivery (e.g. an unavailable broker) can never block the event loop and
+/// starve control-message handling (`Config`/`Shutdown`). The only path that can
+/// reach `push` while the set is full is the engine's shutdown force-drain of
+/// buffered pdata, which admits past the gate; that transient overshoot is
+/// bounded and finalized by the deadline-bounded [`KafkaExporter::drain_in_flight_until`],
+/// so it does not need `push` to self-enforce the bound.
 struct InFlightSends {
     #[allow(clippy::type_complexity)]
     futures: FuturesUnordered<
@@ -386,35 +392,31 @@ impl InFlightSends {
         self.futures.len() >= self.max_in_flight
     }
 
-    /// Track an in-flight delivery, enforcing the `max_in_flight` bound.
+    /// Track an in-flight delivery by appending it to the set.
     ///
-    /// When the set is already [`Self::is_full`], this first awaits one
-    /// outstanding delivery and returns its completion (which the caller must
-    /// finalize) before storing the new delivery. This guarantees the number of
-    /// concurrently outstanding deliveries never exceeds `max_in_flight` without
-    /// the caller having to pre-drain. The stored delivery's future is then
-    /// polled by [`Self::next_completion`] until it resolves, at which point
-    /// `meta` is paired with the delivery outcome.
-    async fn push(
-        &mut self,
-        delivery: ExporterDeliveryFuture,
-        meta: SendMeta,
-    ) -> Option<(SendMeta, Result<OwnedDeliveryResult, Canceled>)> {
-        // At capacity: drain exactly one completion to make room. The set is
-        // non-empty here (is_full implies len >= max_in_flight >= 1), so
-        // `next()` yields `Some`.
-        let completed = if self.is_full() {
-            self.futures.next().await
-        } else {
-            None
-        };
+    /// This is a non-blocking append: it never awaits a drain. The
+    /// `max_in_flight` bound is enforced by the event loop's admission gate
+    /// (`accepting_pdata = !`[`Self::is_full`], fed to
+    /// `ExporterInbox::recv_when`), so in steady state `push` is reached only
+    /// when the set has spare capacity. Draining a stalled delivery here would
+    /// block the event loop and starve control-message handling
+    /// (`Config`/`Shutdown`) whenever every in-flight delivery is stuck (e.g. an
+    /// unavailable broker), so the drain must stay in the loop's `select`
+    /// (via [`Self::next_completion`]), never in `push`.
+    ///
+    /// The only path that reaches `push` while the set is already full is the
+    /// engine's shutdown force-drain of buffered pdata, which admits past the
+    /// gate. That transient overshoot is acceptable: it is finalized by the
+    /// deadline-bounded [`KafkaExporter::drain_in_flight_until`] on shutdown.
+    /// The stored delivery's future is polled by [`Self::next_completion`] until
+    /// it resolves, at which point `meta` is paired with the delivery outcome.
+    fn push(&mut self, delivery: ExporterDeliveryFuture, meta: SendMeta) {
         // Box the delivery future paired with its `meta` so the resolved
         // completion yields both for finalization.
         self.futures.push(Box::pin(async move {
             let result = delivery.await;
             (meta, result)
         }));
-        completed
     }
 
     /// Await the next resolved delivery, returning its metadata and outcome.
@@ -1326,25 +1328,21 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // / `Err(_)`) was already reported, so there is nothing to
                     // track.
                     //
-                    // `push` enforces the `max_in_flight` bound itself: if the
-                    // set is already full (which can happen when shutdown
-                    // draining force-drains buffered pdata past the admission
-                    // gate), it drains one completion and returns it so we can
-                    // finalize its ack/nack here.
+                    // `push` is a non-blocking append. The `max_in_flight` bound
+                    // is enforced by the `accepting_pdata` admission gate above,
+                    // so in steady state this is reached only with spare
+                    // capacity. Draining a completion here (as a full set would
+                    // require) is deliberately avoided: with every in-flight
+                    // delivery stalled (e.g. an unavailable broker) it would
+                    // block the loop and starve `Config`/`Shutdown`. Completions
+                    // are drained only by the `select_biased!` arms above; a
+                    // shutdown force-drain that admits past the gate is bounded
+                    // by `drain_in_flight_until`.
                     if let Ok(Some((delivery, meta))) = self
                         .enqueue_pdata(pdata, &ack_nack_reporter, Some(&effect_handler))
                         .await
                     {
-                        if let Some((done_meta, done_result)) = in_flight.push(delivery, meta).await
-                        {
-                            self.finalize_send_completion(
-                                done_meta,
-                                done_result,
-                                &ack_nack_reporter,
-                                Some(&effect_handler),
-                            )
-                            .await;
-                        }
+                        in_flight.push(delivery, meta);
                     }
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -2222,11 +2220,17 @@ pub mod test_support {
 
         /// Builds a single-signal-logs reconfiguration JSON payload (the shape
         /// carried by `NodeControlMsg::Config`) targeting `topic` on `brokers`.
+        ///
+        /// Pins `max_in_flight` to `1` so the post-Config (new) generation runs
+        /// with serialized delivery. This exercises the reconfiguration cutover
+        /// at the tightest concurrency bound, where at most one delivery is
+        /// outstanding at a time, rather than the serde default of `10`.
         fn logs_reconfig_json(brokers: &str, topic: &str) -> serde_json::Value {
             serde_json::json!({
                 "brokers": brokers,
                 "client_id": "it-client",
                 "logs": { "topic": topic, "encoding": "otlp_proto" },
+                "max_in_flight": 1,
             })
         }
 
@@ -2784,9 +2788,10 @@ pub mod test_support {
                     .topic(new_topic),
                 |cluster| async move {
                     let consumer = cluster.consumer().subscribe(&[new_topic]);
-                    let cfg = logs_config(
+                    let cfg = logs_config_mif(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(original_topic.into(), MessageFormat::OtlpProto),
+                        1,
                     );
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
@@ -2836,9 +2841,10 @@ pub mod test_support {
                 |cluster| async move {
                     let original_consumer = cluster.consumer().subscribe(&[original_topic]);
                     let new_consumer = cluster.consumer().subscribe(&[new_topic]);
-                    let cfg = logs_config(
+                    let cfg = logs_config_mif(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(original_topic.into(), MessageFormat::OtlpProto),
+                        1,
                     );
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
@@ -2934,6 +2940,9 @@ pub mod test_support {
                             original_topic.into(),
                             MessageFormat::OtlpProto,
                         ))
+                        // Serialized delivery (bound 1) on both the initial and
+                        // (via logs_reconfig_json) the post-Config generation.
+                        .with_max_in_flight(1)
                         // Generous per-message bound so the stalled delivery still
                         // succeeds (release) rather than timing out.
                         .with_timeout_ms(5000)
@@ -3031,6 +3040,7 @@ pub mod test_support {
                             original_topic.into(),
                             MessageFormat::OtlpProto,
                         ))
+                        .with_max_in_flight(1)
                         .with_timeout_ms(FLUSH_TIMEOUT_MS)
                         .try_into()
                         .expect("config should be valid");
@@ -3204,6 +3214,7 @@ pub mod test_support {
                     const FLUSH_TIMEOUT_MS: u64 = 30_000;
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(t0.into(), MessageFormat::OtlpProto))
+                        .with_max_in_flight(1)
                         .with_timeout_ms(FLUSH_TIMEOUT_MS)
                         .try_into()
                         .expect("config should be valid");
@@ -3277,6 +3288,7 @@ pub mod test_support {
                     const FLUSH_TIMEOUT_MS: u64 = 30_000;
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(t0.into(), MessageFormat::OtlpProto))
+                        .with_max_in_flight(1)
                         .with_timeout_ms(FLUSH_TIMEOUT_MS)
                         .try_into()
                         .expect("config should be valid");
@@ -3518,6 +3530,7 @@ pub mod test_support {
                     const FLUSH_TIMEOUT_MS: u64 = 30_000;
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(t0.into(), MessageFormat::OtlpProto))
+                        .with_max_in_flight(1)
                         .with_timeout_ms(FLUSH_TIMEOUT_MS)
                         .try_into()
                         .expect("config should be valid");
@@ -3608,6 +3621,7 @@ pub mod test_support {
                     // rather than time out and purge.
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(topic_a.into(), MessageFormat::OtlpProto))
+                        .with_max_in_flight(1)
                         .with_timeout_ms(30_000)
                         .try_into()
                         .expect("config should be valid");
@@ -3734,6 +3748,7 @@ pub mod test_support {
                     // batches release (deliver) rather than time out and purge.
                     let cfg = KafkaExporterConfigBuilder::new(cluster_a.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(topic_a.into(), MessageFormat::OtlpProto))
+                        .with_max_in_flight(1)
                         .with_timeout_ms(30_000)
                         .try_into()
                         .expect("config should be valid");
@@ -3850,6 +3865,7 @@ pub mod test_support {
                             old_topic.into(),
                             MessageFormat::OtlpProto,
                         ))
+                        .with_max_in_flight(1)
                         // Generous bound so the stalled delivery releases rather
                         // than timing out.
                         .with_timeout_ms(10_000)
@@ -3921,6 +3937,7 @@ pub mod test_support {
                             old_topic.into(),
                             MessageFormat::OtlpProto,
                         ))
+                        .with_max_in_flight(1)
                         // Short bound so the retiring flush fails fast and purges.
                         .with_timeout_ms(800)
                         .try_into()
@@ -3983,9 +4000,10 @@ pub mod test_support {
                 KafkaTestCluster::builder().topic(topic),
                 |cluster| async move {
                     let consumer = cluster.consumer().subscribe(&[topic]);
-                    let cfg = logs_config(
+                    let cfg = logs_config_mif(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                        1,
                     );
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
@@ -4121,48 +4139,47 @@ pub mod test_support {
             (delivery, meta)
         }
 
-        /// Scenario (backpressure): with `max_in_flight = 1`, a second `push` is issued while one
-        /// delivery is already outstanding.
-        /// Guarantees: `InFlightSends::push` enforces the bound itself -- the
-        /// over-limit push first drains and returns the prior completion, and the
-        /// set never holds more than `max_in_flight` outstanding deliveries.
+        /// Scenario (backpressure): with `max_in_flight = 1`, `push` is called and
+        /// then the set is inspected and drained via `next_completion`.
+        /// Guarantees: `push` is a non-blocking append that never drains -- it
+        /// stores the delivery and returns immediately, `is_full` reports the
+        /// bound so the event loop's admission gate (not `push`) enforces it, and
+        /// completions are drained only via `next_completion`. This is the
+        /// property that keeps the loop responsive to control messages even when
+        /// a delivery is stalled: `push` cannot block.
         #[tokio::test]
-        async fn in_flight_push_enforces_bound_by_draining() {
+        async fn in_flight_push_is_non_blocking_append() {
             let mut in_flight = InFlightSends::new(1);
             assert!(in_flight.is_empty());
             assert!(!in_flight.is_full());
 
-            // First push fits under the bound: nothing is drained.
+            // First push fits under the bound and returns immediately.
             let (d1, m1) = ready_send("t1");
-            let drained = in_flight.push(d1, m1).await;
-            assert!(
-                drained.is_none(),
-                "push below the bound must not drain a completion"
-            );
+            in_flight.push(d1, m1);
             assert!(in_flight.is_full(), "one outstanding delivery hits max=1");
 
-            // Second push is at capacity: push must drain and return exactly one
-            // completion (the first delivery) so the caller can finalize it,
-            // while the set still holds a single outstanding delivery.
+            // A second push while already full still returns immediately without
+            // draining (the loop's admission gate normally prevents this; the
+            // shutdown force-drain is the only path that admits past it). The set
+            // now transiently holds two deliveries.
             let (d2, m2) = ready_send("t2");
-            let drained = in_flight
-                .push(d2, m2)
-                .await
-                .expect("at-capacity push must drain one completion");
+            in_flight.push(d2, m2);
             assert_eq!(
-                drained.0.topic, "t1",
-                "drained completion is the first send"
-            );
-            assert!(matches!(drained.1, Ok(Ok(_))), "first delivery succeeded");
-            assert!(
-                in_flight.is_full(),
-                "still exactly one outstanding delivery after the swap"
+                in_flight.len(),
+                2,
+                "push appends without draining, so an over-gate admission overshoots the bound"
             );
 
-            // Draining the remaining completion empties the set.
-            let (final_meta, final_result) = in_flight.next_completion().await;
-            assert_eq!(final_meta.topic, "t2");
-            assert!(matches!(final_result, Ok(Ok(_))));
+            // Both completions are drained only via next_completion.
+            let first = in_flight.next_completion().await;
+            assert!(matches!(first.1, Ok(Ok(_))), "first delivery succeeded");
+            let second = in_flight.next_completion().await;
+            assert!(matches!(second.1, Ok(Ok(_))), "second delivery succeeded");
+            let topics = [first.0.topic, second.0.topic];
+            assert!(
+                topics.contains(&"t1".to_string()) && topics.contains(&"t2".to_string()),
+                "both sends are finalized"
+            );
             assert!(
                 in_flight.is_empty(),
                 "set is empty after draining both sends"
@@ -4191,8 +4208,7 @@ pub mod test_support {
                 topic: "old".to_string(),
                 pdata: sample_pdata(SignalType::Logs),
             };
-            let drained = in_flight.push(stuck_delivery, stuck_meta).await;
-            assert!(drained.is_none());
+            in_flight.push(stuck_delivery, stuck_meta);
             assert!(in_flight.is_full(), "the live set is at capacity (max=1)");
 
             // Cutover: retire the live generation's deliveries into the (empty)
@@ -4213,7 +4229,7 @@ pub mod test_support {
             // The live set admits and completes a fresh (current-generation)
             // delivery independently of the stuck retiring one.
             let (d_new, m_new) = ready_send("new");
-            assert!(in_flight.push(d_new, m_new).await.is_none());
+            in_flight.push(d_new, m_new);
             let (new_meta, new_result) = in_flight.next_completion().await;
             assert_eq!(new_meta.topic, "new");
             assert!(matches!(new_result, Ok(Ok(_))));
@@ -4737,10 +4753,11 @@ pub mod test_support {
                 KafkaTestCluster::builder().topic(topic),
                 |cluster| async move {
                     let consumer = cluster.consumer().subscribe(&[topic]);
-                    // Start serial (default max_in_flight = 1).
-                    let cfg = logs_config(
+                    // Start serial (max_in_flight = 1).
+                    let cfg = logs_config_mif(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                        1,
                     );
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
