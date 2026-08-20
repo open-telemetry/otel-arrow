@@ -83,8 +83,8 @@ At runtime the exporter does the following:
    generic transform pipeline as a fallback and for other inputs
 6. Returns only signal batches (`Logs`, `Spans`) from the transformer
 7. Inserts those batches into the destination tables
-8. Emits an ACK after a successful insert, or a NACK if conversion,
-   transformation, or insertion fails
+8. Emits an ACK after a successful insert, a permanent NACK for unsupported or
+   invalid data, or a retryable NACK if insertion fails
 
 ## Supported Payloads
 
