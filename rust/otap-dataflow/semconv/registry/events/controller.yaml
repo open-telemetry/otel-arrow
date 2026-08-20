@@ -14,7 +14,7 @@ events:
       wire:
         event_name: controller.extension_factory.duplicate_registration
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -36,7 +36,7 @@ events:
       wire:
         event_name: controller.extension_runtime_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - error
         sources:
@@ -58,7 +58,7 @@ events:
       wire:
         event_name: controller.extension_runtime_shutdown_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -78,7 +78,7 @@ events:
       wire:
         event_name: controller.extension_startup_engine_metrics_shutdown_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -98,7 +98,7 @@ events:
       wire:
         event_name: controller.extension_startup_memory_limiter_shutdown_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -115,7 +115,7 @@ events:
       wire:
         event_name: controller.extension_startup_pipeline_shutdown_timeout
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -135,7 +135,7 @@ events:
       wire:
         event_name: controller.extension_startup_shutdown_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -155,7 +155,7 @@ events:
       wire:
         event_name: controller.global_shutdown.async_phase_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -181,7 +181,7 @@ events:
       wire:
         event_name: controller.listener_group.addr_skipped
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -211,7 +211,7 @@ events:
       wire:
         event_name: controller.monitor.snapshot
         scope_names:
-        - otap-df-controller
+        - otel.extension.controller_monitor
         severity_levels:
         - info
         sources:
@@ -231,7 +231,7 @@ events:
       wire:
         event_name: controller.monitor.unregister_failed
         scope_names:
-        - otap-df-controller
+        - otel.extension.controller_monitor
         severity_levels:
         - warn
         sources:
@@ -255,7 +255,7 @@ events:
       wire:
         event_name: controller.numa_topology.detected
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - info
         sources:
@@ -281,7 +281,7 @@ events:
       wire:
         event_name: controller.pipeline_build_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - error
         sources:
@@ -303,7 +303,7 @@ events:
       wire:
         event_name: controller.pipeline_runtime_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - error
         sources:
@@ -320,7 +320,7 @@ events:
       wire:
         event_name: controller.pipeline_shutdown_timeout
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -350,7 +350,7 @@ events:
       wire:
         event_name: controller.rollout_panic_cleanup_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - error
         sources:
@@ -372,7 +372,7 @@ events:
       wire:
         event_name: controller.start
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - info
         sources:
@@ -408,7 +408,7 @@ events:
       wire:
         event_name: controller.topic_mode_inferred
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - info
         sources:
@@ -438,7 +438,7 @@ events:
       wire:
         event_name: controller.worker_panic
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - error
         sources:
@@ -459,7 +459,47 @@ events:
       wire:
         event_name: core_affinity.set_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: engine.metrics.final_reporting.fail
+  brief: The engine.metrics.final_reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: engine.metrics.final_reporting.fail
+        scope_names:
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: engine.metrics.reporting.fail
+  brief: The engine.metrics.reporting.fail internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.engine
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: engine.metrics.reporting.fail
+        scope_names:
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -480,7 +520,7 @@ events:
       wire:
         event_name: internal_pipeline.started
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - info
         sources:
@@ -504,7 +544,7 @@ events:
       wire:
         event_name: opamp.controller.message.ignored_config
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - debug
         sources:
@@ -521,7 +561,7 @@ events:
       wire:
         event_name: opamp.controller_extension.connection_settings.update
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - warn
         sources:
@@ -543,7 +583,7 @@ events:
       wire:
         event_name: opamp.controller_extension.decode.error
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - error
         sources:
@@ -563,7 +603,7 @@ events:
       wire:
         event_name: opamp.controller_extension.effective_config.error
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - error
         sources:
@@ -583,7 +623,7 @@ events:
       wire:
         event_name: opamp.controller_extension.message.command
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - info
         sources:
@@ -603,7 +643,7 @@ events:
       wire:
         event_name: opamp.controller_extension.message.command_ignored
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - warn
         sources:
@@ -627,7 +667,7 @@ events:
       wire:
         event_name: opamp.controller_extension.message.error
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - error
         sources:
@@ -649,7 +689,7 @@ events:
       wire:
         event_name: opamp.controller_extension.message.ignored
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - warn
         sources:
@@ -666,7 +706,7 @@ events:
       wire:
         event_name: opamp.controller_extension.message.ignored_connection_setting
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - debug
         sources:
@@ -686,7 +726,7 @@ events:
       wire:
         event_name: opamp.controller_extension.message.invalid_config
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - error
         sources:
@@ -706,7 +746,7 @@ events:
       wire:
         event_name: opamp.controller_extension.message.missing_config_key
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - warn
         sources:
@@ -723,7 +763,7 @@ events:
       wire:
         event_name: opamp.controller_extension.message.skip_update_config
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - debug
         sources:
@@ -745,9 +785,46 @@ events:
       wire:
         event_name: opamp.controller_extension.new_instance_id.invalid
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.receive_message.error
+  brief: The opamp.controller_extension.receive_message.error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: opamp.controller_extension.receive_message.error
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - error
+        sources:
+        - crates/controller/src/extension/opamp/mod.rs
+        availability: []
+- name: opamp.controller_extension.receive_message.server_disconnected
+  brief: The opamp.controller_extension.receive_message.server_disconnected internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: opamp.controller_extension.receive_message.server_disconnected
+        scope_names:
+        - otel.extension.opamp
+        severity_levels:
+        - info
         sources:
         - crates/controller/src/extension/opamp/mod.rs
         availability: []
@@ -762,7 +839,7 @@ events:
       wire:
         event_name: opamp.controller_extension.remote_config.accepted
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - debug
         sources:
@@ -779,7 +856,7 @@ events:
       wire:
         event_name: opamp.controller_extension.remote_config.empty
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - debug
         sources:
@@ -796,7 +873,7 @@ events:
       wire:
         event_name: opamp.controller_extension.remote_config.missing
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - debug
         sources:
@@ -820,7 +897,7 @@ events:
       wire:
         event_name: opamp.controller_extension.remote_config.reconcile_failed
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - error
         sources:
@@ -840,7 +917,7 @@ events:
       wire:
         event_name: opamp.controller_extension.remote_config.reconcile_start
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - info
         sources:
@@ -860,7 +937,7 @@ events:
       wire:
         event_name: opamp.controller_extension.remote_config.reconcile_succeeded
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - info
         sources:
@@ -877,7 +954,7 @@ events:
       wire:
         event_name: opamp.controller_extension.retry.invalid_state
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - warn
         sources:
@@ -897,7 +974,7 @@ events:
       wire:
         event_name: opamp.controller_extension.send_message.error
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - error
         sources:
@@ -917,7 +994,7 @@ events:
       wire:
         event_name: opamp.controller_extension.shutdown_close_ws.error
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - error
         sources:
@@ -934,7 +1011,7 @@ events:
       wire:
         event_name: opamp.controller_extension.shutdown_close_ws.timeout
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - warn
         sources:
@@ -954,7 +1031,7 @@ events:
       wire:
         event_name: opamp.controller_extension.shutdown_message.error
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - error
         sources:
@@ -971,7 +1048,7 @@ events:
       wire:
         event_name: opamp.controller_extension.shutdown_message.timeout
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - warn
         sources:
@@ -991,7 +1068,7 @@ events:
       wire:
         event_name: opamp.controller_extension.status.generate_failed
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - warn
         sources:
@@ -1013,7 +1090,7 @@ events:
       wire:
         event_name: opamp.controller_extension.ws_connect.error
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - warn
         sources:
@@ -1030,7 +1107,7 @@ events:
       wire:
         event_name: opamp.controller_extension.ws_connect.success
         scope_names:
-        - otap-df-controller
+        - otel.extension.opamp
         severity_levels:
         - info
         sources:
@@ -1066,7 +1143,7 @@ events:
       wire:
         event_name: otelcol.pipeline.recovery.abort
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - error
         sources:
@@ -1100,7 +1177,7 @@ events:
       wire:
         event_name: otelcol.pipeline.recovery.complete
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - info
         sources:
@@ -1140,7 +1217,7 @@ events:
       wire:
         event_name: otelcol.pipeline.recovery.retry
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -1170,7 +1247,7 @@ events:
       wire:
         event_name: pipeline.core_allocation
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - info
         sources:
@@ -1194,7 +1271,7 @@ events:
       wire:
         event_name: process_memory_limiter.observe_only_ignored_setting
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -1226,7 +1303,7 @@ events:
       wire:
         event_name: process_memory_limiter.purge
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - info
         sources:
@@ -1256,7 +1333,7 @@ events:
       wire:
         event_name: process_memory_limiter.purge_failed
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -1280,7 +1357,31 @@ events:
       wire:
         event_name: process_memory_limiter.purge_unavailable
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
+        severity_levels:
+        - warn
+        sources:
+        - crates/controller/src/lib.rs
+        availability: []
+- name: process_memory_limiter.sample_failed
+  brief: The process_memory_limiter.sample_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.engine
+    - otap.pipeline
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: process_memory_limiter.sample_failed
+        scope_names:
+        - otel.controller.main
         severity_levels:
         - warn
         sources:
@@ -1314,7 +1415,7 @@ events:
       wire:
         event_name: process_memory_limiter.transition
         scope_names:
-        - otap-df-controller
+        - otel.controller.main
         severity_levels:
         - info
         - warn

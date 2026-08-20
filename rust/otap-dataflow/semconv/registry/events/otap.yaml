@@ -601,6 +601,28 @@ events:
         sources:
         - crates/otap/src/otlp_http.rs
         availability: []
+- name: otlp_http_receiver.connection_error
+  brief: The otlp_http_receiver.connection_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otlp_http_receiver.connection_error
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/otap/src/otlp_http.rs
+        availability: []
 - name: otlp_http_receiver.pipeline_send_failed
   brief: The otlp_http_receiver.pipeline_send_failed internal telemetry event occurred.
   stability: development
@@ -751,6 +773,30 @@ events:
     otap_dataflow:
       wire:
         event_name: otlp_http_receiver.shutdown_timeout
+        scope_names:
+        - otap-df-otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/otap/src/otlp_http.rs
+        availability: []
+- name: otlp_http_receiver.socket_options_failed
+  brief: The otlp_http_receiver.socket_options_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: peer
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otlp_http_receiver.socket_options_failed
         scope_names:
         - otap-df-otap
         severity_levels:

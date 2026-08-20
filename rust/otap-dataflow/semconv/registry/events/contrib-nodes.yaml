@@ -16,7 +16,7 @@ events:
       wire:
         event_name: azure_monitor_exporter.auth.invalid_bearer_token
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - warn
         sources:
@@ -36,7 +36,7 @@ events:
       wire:
         event_name: azure_monitor_exporter.auth.token_stream_closed
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - warn
         sources:
@@ -59,7 +59,7 @@ events:
       wire:
         event_name: azure_monitor_exporter.client.error
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - debug
         sources:
@@ -84,9 +84,29 @@ events:
       wire:
         event_name: azure_monitor_exporter.export.failed
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.export.periodic_flush
+  brief: The azure_monitor_exporter.export.periodic_flush internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.export.periodic_flush
+        scope_names:
+        - microsoft.exporter.azure_monitor
+        severity_levels:
+        - debug
         sources:
         - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
         availability:
@@ -111,7 +131,7 @@ events:
       wire:
         event_name: azure_monitor_exporter.export.retrying
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - debug
         sources:
@@ -138,7 +158,7 @@ events:
       wire:
         event_name: azure_monitor_exporter.export.success
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - debug
         sources:
@@ -158,9 +178,52 @@ events:
       wire:
         event_name: azure_monitor_exporter.exporter.shutdown
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - info
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.heartbeat.send_failed
+  brief: The azure_monitor_exporter.heartbeat.send_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.heartbeat.send_failed
+        scope_names:
+        - microsoft.exporter.azure_monitor
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.heartbeat.sent
+  brief: The azure_monitor_exporter.heartbeat.sent internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.heartbeat.sent
+        scope_names:
+        - microsoft.exporter.azure_monitor
+        severity_levels:
+        - debug
         sources:
         - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
         availability:
@@ -183,7 +246,7 @@ events:
       wire:
         event_name: azure_monitor_exporter.message.batch_push_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - error
         sources:
@@ -208,7 +271,7 @@ events:
       wire:
         event_name: azure_monitor_exporter.message.log_entry_too_large
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - warn
         sources:
@@ -231,7 +294,7 @@ events:
       wire:
         event_name: azure_monitor_exporter.message.no_valid_entries
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - debug
         sources:
@@ -256,9 +319,60 @@ events:
       wire:
         event_name: azure_monitor_exporter.message.unsupported_signal
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - warn
+        sources:
+        - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
+        availability:
+        - feature = "azure-monitor-exporter"
+- name: azure_monitor_exporter.metrics.collect
+  brief: The azure_monitor_exporter.metrics.collect internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_size_avg_bytes
+    requirement_level: required
+  - ref: batch_size_count
+    requirement_level: required
+  - ref: batch_size_max_bytes
+    requirement_level: required
+  - ref: batch_size_min_bytes
+    requirement_level: required
+  - ref: client_success_latency_avg_ms
+    requirement_level: required
+  - ref: client_success_latency_count
+    requirement_level: required
+  - ref: client_success_latency_max_ms
+    requirement_level: required
+  - ref: client_success_latency_min_ms
+    requirement_level: required
+  - ref: failed_batches
+    requirement_level: required
+  - ref: failed_items
+    requirement_level: required
+  - ref: failed_messages
+    requirement_level: required
+  - ref: in_flight
+    requirement_level: required
+  - ref: successful_batches
+    requirement_level: required
+  - ref: successful_items
+    requirement_level: required
+  - ref: successful_messages
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: azure_monitor_exporter.metrics.collect
+        scope_names:
+        - microsoft.exporter.azure_monitor
+        severity_levels:
+        - debug
         sources:
         - crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs
         availability:
@@ -279,7 +393,7 @@ events:
       wire:
         event_name: azure_monitor_exporter.shutdown.orphaned_message
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - warn
         sources:
@@ -308,7 +422,7 @@ events:
       wire:
         event_name: azure_monitor_exporter.start
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.azure_monitor
         severity_levels:
         - info
         sources:
@@ -335,7 +449,7 @@ events:
       wire:
         event_name: clickhouse.exporter.batch.written
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.clickhouse
         severity_levels:
         - debug
         sources:
@@ -358,7 +472,7 @@ events:
       wire:
         event_name: clickhouse.exporter.convert.error
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.clickhouse
         severity_levels:
         - warn
         sources:
@@ -381,7 +495,7 @@ events:
       wire:
         event_name: clickhouse.exporter.otlp.invalid_protobuf
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.clickhouse
         severity_levels:
         - warn
         sources:
@@ -404,7 +518,7 @@ events:
       wire:
         event_name: clickhouse.exporter.otlp.transform.fallback
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.clickhouse
         severity_levels:
         - debug
         sources:
@@ -424,7 +538,7 @@ events:
       wire:
         event_name: clickhouse.exporter.shutdown
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.clickhouse
         severity_levels:
         - info
         sources:
@@ -447,7 +561,7 @@ events:
       wire:
         event_name: clickhouse.exporter.shutdown.deadline_exceeded
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.clickhouse
         severity_levels:
         - warn
         sources:
@@ -476,7 +590,7 @@ events:
       wire:
         event_name: clickhouse.exporter.start
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.clickhouse
         severity_levels:
         - info
         sources:
@@ -501,7 +615,7 @@ events:
       wire:
         event_name: clickhouse.exporter.tables.bound
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.clickhouse
         severity_levels:
         - info
         sources:
@@ -526,7 +640,7 @@ events:
       wire:
         event_name: clickhouse.exporter.transform.error
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.clickhouse
         severity_levels:
         - warn
         sources:
@@ -549,7 +663,7 @@ events:
       wire:
         event_name: clickhouse.exporter.write.error
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.clickhouse
         severity_levels:
         - warn
         sources:
@@ -572,7 +686,7 @@ events:
       wire:
         event_name: condense_attributes_processor.destination_key_replaced
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.processor.condense_attributes
         severity_levels:
         - debug
         sources:
@@ -597,7 +711,7 @@ events:
       wire:
         event_name: condense_attributes_processor.failure
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.processor.condense_attributes
         severity_levels:
         - error
         sources:
@@ -620,7 +734,7 @@ events:
       wire:
         event_name: condense_attributes_processor.no_condensing_needed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.processor.condense_attributes
         severity_levels:
         - debug
         sources:
@@ -640,7 +754,7 @@ events:
       wire:
         event_name: condense_attributes_processor.no_log_attrs_payload
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.processor.condense_attributes
         severity_levels:
         - debug
         sources:
@@ -663,7 +777,7 @@ events:
       wire:
         event_name: condense_attributes_processor.processing
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.processor.condense_attributes
         severity_levels:
         - debug
         sources:
@@ -683,7 +797,7 @@ events:
       wire:
         event_name: condense_attributes_processor.ready
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.processor.condense_attributes
         severity_levels:
         - info
         sources:
@@ -703,7 +817,7 @@ events:
       wire:
         event_name: condense_attributes_processor.reconfigure_error
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.processor.condense_attributes
         severity_levels:
         - warn
         sources:
@@ -723,7 +837,7 @@ events:
       wire:
         event_name: condense_attributes_processor.reconfigured
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.processor.condense_attributes
         severity_levels:
         - info
         sources:
@@ -750,7 +864,7 @@ events:
       wire:
         event_name: condense_attributes_processor.success
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.processor.condense_attributes
         severity_levels:
         - debug
         sources:
@@ -773,7 +887,7 @@ events:
       wire:
         event_name: etw.event.channel_closed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.etw
         severity_levels:
         - info
         sources:
@@ -798,7 +912,7 @@ events:
       wire:
         event_name: etw.parse_until.failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.etw
         severity_levels:
         - error
         sources:
@@ -825,7 +939,7 @@ events:
       wire:
         event_name: etw.query_stats.failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.etw
         severity_levels:
         - warn
         sources:
@@ -850,7 +964,7 @@ events:
       wire:
         event_name: etw.query_stats.recovered
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.etw
         severity_levels:
         - info
         sources:
@@ -875,7 +989,7 @@ events:
       wire:
         event_name: etw_receiver.forward_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.etw
         severity_levels:
         - warn
         sources:
@@ -898,7 +1012,7 @@ events:
       wire:
         event_name: etw_receiver.provider_name_hashed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.etw
         severity_levels:
         - info
         sources:
@@ -923,7 +1037,7 @@ events:
       wire:
         event_name: etw_receiver.provider_name_hashed_after_enumeration_error
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.etw
         severity_levels:
         - warn
         sources:
@@ -948,11 +1062,51 @@ events:
       wire:
         event_name: etw_receiver.provider_name_resolved
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.etw
         severity_levels:
         - info
         sources:
         - crates/contrib-nodes/src/receivers/etw_receiver/session.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: etw_receiver.session_ended
+  brief: The etw_receiver.session_ended internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw_receiver.session_ended
+        scope_names:
+        - otel.receiver.etw
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/mod.rs
+        availability:
+        - all (feature = "etw-receiver" , target_os = "windows")
+- name: etw_receiver.shutdown
+  brief: The etw_receiver.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: etw_receiver.shutdown
+        scope_names:
+        - otel.receiver.etw
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/etw_receiver/mod.rs
         availability:
         - all (feature = "etw-receiver" , target_os = "windows")
 - name: etw_receiver.start
@@ -977,7 +1131,7 @@ events:
       wire:
         event_name: etw_receiver.start
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.etw
         severity_levels:
         - info
         sources:
@@ -1002,7 +1156,7 @@ events:
       wire:
         event_name: geneva_exporter.agent_fed.credential_unavailable
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.geneva
         severity_levels:
         - warn
         sources:
@@ -1027,7 +1181,7 @@ events:
       wire:
         event_name: geneva_exporter.agent_fed.invalid_credential
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.geneva
         severity_levels:
         - warn
         sources:
@@ -1047,7 +1201,7 @@ events:
       wire:
         event_name: geneva_exporter.convert
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.geneva
         severity_levels:
         - info
         sources:
@@ -1070,7 +1224,7 @@ events:
       wire:
         event_name: geneva_exporter.error
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.geneva
         severity_levels:
         - info
         sources:
@@ -1093,7 +1247,7 @@ events:
       wire:
         event_name: geneva_exporter.obo.unmatched_event
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.geneva
         severity_levels:
         - warn
         sources:
@@ -1113,7 +1267,7 @@ events:
       wire:
         event_name: geneva_exporter.shutdown
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.geneva
         severity_levels:
         - info
         sources:
@@ -1133,7 +1287,7 @@ events:
       wire:
         event_name: geneva_exporter.skip
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.geneva
         severity_levels:
         - info
         sources:
@@ -1166,7 +1320,7 @@ events:
       wire:
         event_name: geneva_exporter.start
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.geneva
         severity_levels:
         - info
         sources:
@@ -1189,7 +1343,7 @@ events:
       wire:
         event_name: geneva_exporter.upload
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.exporter.geneva
         severity_levels:
         - info
         sources:
@@ -1209,7 +1363,7 @@ events:
       wire:
         event_name: kafka.assignment.became_empty
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - info
         sources:
@@ -1229,7 +1383,7 @@ events:
       wire:
         event_name: kafka.assignment.became_non_empty
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - info
         sources:
@@ -1252,7 +1406,7 @@ events:
       wire:
         event_name: kafka.capture_policy.limits_exceeded
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1275,7 +1429,7 @@ events:
       wire:
         event_name: kafka.commit.async_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1298,7 +1452,30 @@ events:
       wire:
         event_name: kafka.commit.failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.drain.commit_failed
+  brief: The kafka.drain.commit_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.drain.commit_failed
+        scope_names:
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1323,7 +1500,7 @@ events:
       wire:
         event_name: kafka.exporter.encode.failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - error
         sources:
@@ -1343,7 +1520,7 @@ events:
       wire:
         event_name: kafka.exporter.producer.awaiting_poll_thread
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - debug
         sources:
@@ -1363,7 +1540,7 @@ events:
       wire:
         event_name: kafka.exporter.producer.destroyed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - debug
         sources:
@@ -1383,7 +1560,7 @@ events:
       wire:
         event_name: kafka.exporter.producer.destroying
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - debug
         sources:
@@ -1403,7 +1580,7 @@ events:
       wire:
         event_name: kafka.exporter.producer.poll_stopped
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - debug
         sources:
@@ -1426,7 +1603,7 @@ events:
       wire:
         event_name: kafka.exporter.producer.poll_thread_join_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - warn
         sources:
@@ -1446,7 +1623,7 @@ events:
       wire:
         event_name: kafka.exporter.producer.poll_thread_started
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - debug
         sources:
@@ -1466,7 +1643,7 @@ events:
       wire:
         event_name: kafka.exporter.producer.poll_thread_terminated
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - debug
         sources:
@@ -1486,7 +1663,7 @@ events:
       wire:
         event_name: kafka.exporter.producer.stopping_poll
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - debug
         sources:
@@ -1509,7 +1686,7 @@ events:
       wire:
         event_name: kafka.exporter.producer_config.overridden_key
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - warn
         sources:
@@ -1532,7 +1709,7 @@ events:
       wire:
         event_name: kafka.exporter.reconfigure.flush_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - warn
         sources:
@@ -1555,7 +1732,7 @@ events:
       wire:
         event_name: kafka.exporter.reconfigure_error
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - warn
         sources:
@@ -1578,7 +1755,7 @@ events:
       wire:
         event_name: kafka.exporter.reconfigured
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - info
         sources:
@@ -1608,6 +1785,7 @@ events:
         event_name: kafka.exporter.send.failed
         scope_names:
         - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - warn
         sources:
@@ -1630,7 +1808,7 @@ events:
       wire:
         event_name: kafka.exporter.shutdown.flush_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - warn
         sources:
@@ -1655,7 +1833,7 @@ events:
       wire:
         event_name: kafka.exporter.signal.unconfigured
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - warn
         sources:
@@ -1678,7 +1856,7 @@ events:
       wire:
         event_name: kafka.exporter.topic.disallowed_header
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - warn
         sources:
@@ -1703,7 +1881,7 @@ events:
       wire:
         event_name: kafka.exporter.topic.invalid_header
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.exporter.kafka
         severity_levels:
         - warn
         sources:
@@ -1728,7 +1906,7 @@ events:
       wire:
         event_name: kafka.header.attribute.invalid_utf8
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1755,7 +1933,7 @@ events:
       wire:
         event_name: kafka.header.attribute.parse_bool_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1782,7 +1960,7 @@ events:
       wire:
         event_name: kafka.header.attribute.parse_float_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1809,7 +1987,7 @@ events:
       wire:
         event_name: kafka.header.attribute.parse_int_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1832,7 +2010,7 @@ events:
       wire:
         event_name: kafka.lag.assignment_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1855,7 +2033,7 @@ events:
       wire:
         event_name: kafka.lag.committed_offsets_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1882,7 +2060,7 @@ events:
       wire:
         event_name: kafka.lag.fetch_watermarks_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1909,9 +2087,173 @@ events:
       wire:
         event_name: kafka.lag.refresh_incomplete
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - warn
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.lag.refresh_task_failed
+  brief: The kafka.lag.refresh_task_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.lag.refresh_task_failed
+        scope_names:
+        - otel.receiver.kafka
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.message.decode_failed
+  brief: The kafka.message.decode_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: offset
+    requirement_level: required
+  - ref: partition
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.message.decode_failed
+        scope_names:
+        - otel.receiver.kafka
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.message.empty_payload
+  brief: The kafka.message.empty_payload internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: offset
+    requirement_level: required
+  - ref: partition
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.message.empty_payload
+        scope_names:
+        - otel.receiver.kafka
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.message.unknown_topic
+  brief: The kafka.message.unknown_topic internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: offset
+    requirement_level: required
+  - ref: partition
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.message.unknown_topic
+        scope_names:
+        - otel.receiver.kafka
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.message.unmarshal_failed
+  brief: The kafka.message.unmarshal_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: offset
+    requirement_level: required
+  - ref: partition
+    requirement_level: required
+  - ref: signal
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.message.unmarshal_failed
+        scope_names:
+        - otel.receiver.kafka
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.partition_eof
+  brief: The kafka.partition_eof internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.partition_eof
+        scope_names:
+        - otel.receiver.kafka
+        severity_levels:
+        - info
         sources:
         - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
         availability:
@@ -1932,7 +2274,7 @@ events:
       wire:
         event_name: kafka.rebalance.assignment_query_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - warn
         sources:
@@ -1955,7 +2297,7 @@ events:
       wire:
         event_name: kafka.rebalance.commit_failed
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - error
         sources:
@@ -1978,7 +2320,7 @@ events:
       wire:
         event_name: kafka.rebalance.error
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - warn
         sources:
@@ -2007,7 +2349,7 @@ events:
       wire:
         event_name: kafka.rebalance.partitions_assigned
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - info
         sources:
@@ -2036,7 +2378,7 @@ events:
       wire:
         event_name: kafka.rebalance.partitions_revoked
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - info
         sources:
@@ -2059,9 +2401,102 @@ events:
       wire:
         event_name: kafka.receiver.consumer_config.override
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.kafka
         severity_levels:
         - warn
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.receiver.drain_ingress
+  brief: The kafka.receiver.drain_ingress internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.receiver.drain_ingress
+        scope_names:
+        - otel.receiver.kafka
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.shutdown.commit_failed
+  brief: The kafka.shutdown.commit_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.shutdown.commit_failed
+        scope_names:
+        - otel.receiver.kafka
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.topic_id.exhausted
+  brief: The kafka.topic_id.exhausted internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: offset
+    requirement_level: required
+  - ref: partition
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.topic_id.exhausted
+        scope_names:
+        - otel.receiver.kafka
+        severity_levels:
+        - error
+        sources:
+        - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
+        availability:
+        - feature = "kafka-receiver"
+- name: kafka.transport_error
+  brief: The kafka.transport_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: kafka.transport_error
+        scope_names:
+        - otel.receiver.kafka
+        severity_levels:
+        - error
         sources:
         - crates/contrib-nodes/src/receivers/kafka_receiver/receiver.rs
         availability:
@@ -2082,7 +2517,7 @@ events:
       wire:
         event_name: recordset_kql_processor.failure
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.processor.recordset_kql
         severity_levels:
         - error
         sources:
@@ -2105,7 +2540,7 @@ events:
       wire:
         event_name: recordset_kql_processor.processing_logs
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.processor.recordset_kql
         severity_levels:
         - debug
         sources:
@@ -2130,7 +2565,7 @@ events:
       wire:
         event_name: recordset_kql_processor.query_output
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.processor.recordset_kql
         severity_levels:
         - dynamic
         sources:
@@ -2150,7 +2585,7 @@ events:
       wire:
         event_name: recordset_kql_processor.ready
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.processor.recordset_kql
         severity_levels:
         - info
         sources:
@@ -2170,7 +2605,7 @@ events:
       wire:
         event_name: recordset_kql_processor.reconfigure_error
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.processor.recordset_kql
         severity_levels:
         - error
         - warn
@@ -2191,7 +2626,7 @@ events:
       wire:
         event_name: recordset_kql_processor.reconfigured
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.processor.recordset_kql
         severity_levels:
         - info
         sources:
@@ -2218,7 +2653,7 @@ events:
       wire:
         event_name: recordset_kql_processor.success
         scope_names:
-        - otap-df-contrib-nodes
+        - microsoft.processor.recordset_kql
         severity_levels:
         - debug
         sources:
@@ -2241,13 +2676,38 @@ events:
       wire:
         event_name: resource_validator_processor.validation.fail
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.processor.resource_validator
         severity_levels:
         - warn
         sources:
         - crates/contrib-nodes/src/processors/resource_validator_processor/mod.rs
         availability:
         - feature = "resource-validator-processor"
+- name: user_events_receiver.session_opened
+  brief: The user_events_receiver.session_opened internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: node
+    requirement_level: required
+  - ref: subscriptions
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: user_events_receiver.session_opened
+        scope_names:
+        - otel.receiver.user_events
+        severity_levels:
+        - info
+        sources:
+        - crates/contrib-nodes/src/receivers/user_events_receiver/mod.rs
+        availability:
+        - all (feature = "user_events-receiver" , target_os = "linux")
 - name: user_events_receiver.start
   brief: The user_events_receiver.start internal telemetry event occurred.
   stability: development
@@ -2266,9 +2726,34 @@ events:
       wire:
         event_name: user_events_receiver.start
         scope_names:
-        - otap-df-contrib-nodes
+        - otel.receiver.user_events
         severity_levels:
         - info
+        sources:
+        - crates/contrib-nodes/src/receivers/user_events_receiver/mod.rs
+        availability:
+        - all (feature = "user_events-receiver" , target_os = "linux")
+- name: user_events_receiver.tracepoint_pending
+  brief: The user_events_receiver.tracepoint_pending internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: node
+    requirement_level: required
+  - ref: tracepoint
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: user_events_receiver.tracepoint_pending
+        scope_names:
+        - otel.receiver.user_events
+        severity_levels:
+        - warn
         sources:
         - crates/contrib-nodes/src/receivers/user_events_receiver/mod.rs
         availability:

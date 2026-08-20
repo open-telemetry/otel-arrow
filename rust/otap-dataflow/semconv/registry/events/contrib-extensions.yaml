@@ -14,7 +14,7 @@ events:
       wire:
         event_name: azure_identity_auth.token_refresh_failed
         scope_names:
-        - otap-df-contrib-extensions
+        - microsoft.extension.azure_identity_auth
         severity_levels:
         - warn
         sources:
@@ -303,7 +303,7 @@ events:
       wire:
         event_name: oauth2_client_auth.insecure_token_url
         scope_names:
-        - otap-df-contrib-extensions
+        - otel.extension.oauth2_client_auth
         severity_levels:
         - warn
         sources:
@@ -324,7 +324,7 @@ events:
       wire:
         event_name: oauth2_client_auth.token_refresh_failed
         scope_names:
-        - otap-df-contrib-extensions
+        - otel.extension.oauth2_client_auth
         severity_levels:
         - warn
         sources:

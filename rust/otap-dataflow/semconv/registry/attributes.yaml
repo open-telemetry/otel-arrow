@@ -32,6 +32,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: action
+- key: active_tasks
+  type: any
+  stability: development
+  brief: The active_tasks value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: active_tasks
 - key: actual_len
   type: any
   stability: development
@@ -96,6 +104,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: audiences
+- key: backoff
+  type: string
+  stability: development
+  brief: The backoff value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: backoff
 - key: backoff_ms
   type: any
   stability: development
@@ -136,6 +152,38 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: batch_max_size
+- key: batch_size_avg_bytes
+  type: any
+  stability: development
+  brief: The batch_size_avg_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: batch_size_avg_bytes
+- key: batch_size_count
+  type: any
+  stability: development
+  brief: The batch_size_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: batch_size_count
+- key: batch_size_max_bytes
+  type: any
+  stability: development
+  brief: The batch_size_max_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: batch_size_max_bytes
+- key: batch_size_min_bytes
+  type: any
+  stability: development
+  brief: The batch_size_min_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: batch_size_min_bytes
 - key: bind_address
   type: any
   stability: development
@@ -312,6 +360,38 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: channel.type
+- key: client_success_latency_avg_ms
+  type: any
+  stability: development
+  brief: The client_success_latency_avg_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: client_success_latency_avg_ms
+- key: client_success_latency_count
+  type: any
+  stability: development
+  brief: The client_success_latency_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: client_success_latency_count
+- key: client_success_latency_max_ms
+  type: any
+  stability: development
+  brief: The client_success_latency_max_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: client_success_latency_max_ms
+- key: client_success_latency_min_ms
+  type: any
+  stability: development
+  brief: The client_success_latency_min_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: client_success_latency_min_ms
 - key: code
   type: string
   stability: development
@@ -472,6 +552,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: current_identity
+- key: cursor
+  type: any
+  stability: development
+  brief: The cursor value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: cursor
 - key: cursor_position
   type: any
   stability: development
@@ -864,6 +952,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: extension_type
+- key: failed_batches
+  type: any
+  stability: development
+  brief: The failed_batches value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: failed_batches
 - key: failed_generation
   type: any
   stability: development
@@ -872,6 +968,22 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: failed_generation
+- key: failed_items
+  type: any
+  stability: development
+  brief: The failed_items value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: failed_items
+- key: failed_messages
+  type: any
+  stability: development
+  brief: The failed_messages value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: failed_messages
 - key: failure
   type: any
   stability: development
@@ -928,6 +1040,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: first
+- key: first_cursor
+  type: any
+  stability: development
+  brief: The first_cursor value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: first_cursor
 - key: flow.id
   type: string
   stability: development
@@ -1249,6 +1369,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: language
+- key: last_cursor
+  type: any
+  stability: development
+  brief: The last_cursor value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: last_cursor
 - key: lifecycle
   type: any
   stability: development
@@ -1417,6 +1545,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: min_header_size
+- key: missed
+  type: any
+  stability: development
+  brief: The missed value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: missed
 - key: msg_id
   type: any
   stability: development
@@ -1586,6 +1722,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: observed_pipelines
+- key: offset
+  type: any
+  stability: development
+  brief: The offset value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: offset
 - key: open_mode
   type: any
   stability: development
@@ -1683,13 +1827,21 @@ attributes:
       wire:
         attribute_key: payload_len
 - key: peer
-  type: string
+  type: any
   stability: development
   brief: The peer value recorded by OTAP Dataflow internal telemetry.
   annotations:
     otap_dataflow:
       wire:
         attribute_key: peer
+- key: pending_batches
+  type: any
+  stability: development
+  brief: The pending_batches value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: pending_batches
 - key: pending_deletes_cleared
   type: any
   stability: development
@@ -1978,6 +2130,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: receiver_was_inner
+- key: records
+  type: any
+  stability: development
+  brief: The records value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: records
 - key: recovered_bytes
   type: any
   stability: development
@@ -2002,6 +2162,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: remaining
+- key: remaining_items
+  type: any
+  stability: development
+  brief: The remaining_items value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: remaining_items
 - key: remaining_rotated_files
   type: any
   stability: development
@@ -2418,6 +2586,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: status
+- key: status_code
+  type: any
+  stability: development
+  brief: The status_code value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: status_code
 - key: status_line
   type: any
   stability: development
@@ -2426,6 +2602,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: status_line
+- key: status_message
+  type: any
+  stability: development
+  brief: The status_message value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: status_message
 - key: stopped_at_corruption
   type: any
   stability: development
@@ -2466,6 +2650,38 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: subscription
+- key: subscriptions
+  type: any
+  stability: development
+  brief: The subscriptions value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: subscriptions
+- key: successful_batches
+  type: any
+  stability: development
+  brief: The successful_batches value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: successful_batches
+- key: successful_items
+  type: any
+  stability: development
+  brief: The successful_items value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: successful_items
+- key: successful_messages
+  type: any
+  stability: development
+  brief: The successful_messages value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: successful_messages
 - key: table
   type: any
   stability: development
@@ -2610,6 +2826,14 @@ attributes:
     otap_dataflow:
       wire:
         attribute_key: total_values
+- key: tracepoint
+  type: any
+  stability: development
+  brief: The tracepoint value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: tracepoint
 - key: traces_endpoint
   type: any
   stability: development

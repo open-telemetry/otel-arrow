@@ -790,6 +790,46 @@ events:
         sources:
         - crates/engine/src/pipeline_ctrl.rs
         availability: []
+- name: pipeline.draining.ignored_start_telemetry_timer
+  brief: The pipeline.draining.ignored_start_telemetry_timer internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: node_id
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.draining.ignored_start_telemetry_timer
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
+- name: pipeline.draining.ignored_start_timer
+  brief: The pipeline.draining.ignored_start_timer internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: node_id
+    requirement_level: required
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: pipeline.draining.ignored_start_timer
+        scope_names:
+        - otap-df-engine
+        severity_levels:
+        - debug
+        sources:
+        - crates/engine/src/pipeline_ctrl.rs
+        availability: []
 - name: pipeline.metrics.final_collection.flush.fail
   brief: The pipeline.metrics.final_collection.flush.fail internal telemetry event occurred.
   stability: development
