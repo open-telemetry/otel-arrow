@@ -20,6 +20,8 @@ Enable at least one OTLP protocol. For gRPC only:
 
 ```yaml
 type: receiver:otlp
+capabilities:
+  bearer_token_authorizer: k8s_authz
 config:
   protocols:
     grpc:
@@ -44,6 +46,12 @@ config:
       wait_for_result: true
       timeout: 30s
 ```
+
+When `bearer_token_authorizer` is bound, the receiver requires a bearer token
+for every OTLP/gRPC and OTLP/HTTP request. The authorizer validates the token
+before the receiver reads or forwards the request payload. Authentication
+failures return `UNAUTHENTICATED`/HTTP 401, policy denials return
+`PERMISSION_DENIED`/HTTP 403, and unavailable authorizers fail closed.
 
 Common gRPC protocol fields include:
 

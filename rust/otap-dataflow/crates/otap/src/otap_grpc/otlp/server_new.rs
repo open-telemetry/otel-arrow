@@ -12,6 +12,7 @@
 
 use std::convert::Infallible;
 use std::fmt::Display;
+use std::mem;
 use std::sync::Arc;
 use std::task::Poll;
 
@@ -27,7 +28,9 @@ use http::{Request, Response};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
+use otel_arrow_dfe_engine::capability::auth::{AuthzDecision, BearerToken, DenyReason};
 use otel_arrow_dfe_engine::control::{CallData, NackMsg};
+use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
 use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
 use otel_arrow_dfe_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
@@ -49,8 +52,13 @@ use tonic::body::Body;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
 use tonic::{Code, Status};
+use tower::{Layer, Service};
 
 use crate::otap_grpc::common::peer_addr_from_extensions;
+
+const UNAUTHENTICATED_MESSAGE: &str = "unauthenticated";
+const PERMISSION_DENIED_MESSAGE: &str = "permission denied";
+const AUTHORIZATION_UNAVAILABLE_MESSAGE: &str = "authorization unavailable";
 
 /// Tracks outstanding request subscriptions for a single signal so ACK/NACK responses can be routed
 /// back to the waiting caller. When `wait_for_result` is disabled the receiver skips creating this
@@ -561,6 +569,133 @@ fn unimplemented_resp() -> Response<Body> {
     response
 }
 
+async fn authorize_request(
+    authorizer: &dyn BearerTokenAuthorizer,
+    metrics: &Arc<Mutex<OtlpReceiverMetrics>>,
+    headers: &http::HeaderMap,
+) -> Result<(), Response<Body>> {
+    let Some(header) = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+    else {
+        metrics.lock().record_rejection(
+            OtlpProtocol::Grpc,
+            ReceiverRejectionErrorType::Authorization,
+        );
+        return Err(Status::unauthenticated(UNAUTHENTICATED_MESSAGE).into_http());
+    };
+
+    let Some(credential) = BearerToken::from_header_value(header) else {
+        metrics.lock().record_rejection(
+            OtlpProtocol::Grpc,
+            ReceiverRejectionErrorType::Authorization,
+        );
+        return Err(Status::unauthenticated(UNAUTHENTICATED_MESSAGE).into_http());
+    };
+    let status = match authorizer.authorize(&credential).await {
+        Ok(AuthzDecision::Allow { .. }) => return Ok(()),
+        Ok(AuthzDecision::Deny {
+            reason: DenyReason::MissingCredential | DenyReason::InvalidCredential,
+            ..
+        }) => Status::unauthenticated(UNAUTHENTICATED_MESSAGE),
+        Ok(AuthzDecision::Deny {
+            reason: DenyReason::NotPermitted,
+            ..
+        }) => Status::permission_denied(PERMISSION_DENIED_MESSAGE),
+        Ok(AuthzDecision::Deny { reason, .. }) => {
+            otel_arrow_dfe_telemetry::otel_warn!("receiver.authz.unknown_deny_reason", reason = ?reason);
+            Status::unavailable(AUTHORIZATION_UNAVAILABLE_MESSAGE)
+        }
+        Err(error) => {
+            otel_arrow_dfe_telemetry::otel_warn!(
+                "receiver.authz.undetermined",
+                error = error.to_string()
+            );
+            Status::unavailable(AUTHORIZATION_UNAVAILABLE_MESSAGE)
+        }
+    };
+
+    metrics.lock().record_rejection(
+        OtlpProtocol::Grpc,
+        ReceiverRejectionErrorType::Authorization,
+    );
+    Err(status.into_http())
+}
+
+/// Applies bearer authorization before a gRPC request reaches an OTLP service.
+#[derive(Clone)]
+pub struct AuthorizationLayer {
+    authorizer: Arc<dyn BearerTokenAuthorizer>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+}
+
+impl AuthorizationLayer {
+    /// Creates an authorization layer from a bound authorizer capability.
+    #[must_use]
+    pub fn new(
+        authorizer: Arc<dyn BearerTokenAuthorizer>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    ) -> Self {
+        Self {
+            authorizer,
+            metrics,
+        }
+    }
+}
+
+impl<S> Layer<S> for AuthorizationLayer {
+    type Service = AuthorizationService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        AuthorizationService {
+            inner,
+            authorizer: self.authorizer.clone(),
+            metrics: self.metrics.clone(),
+        }
+    }
+}
+
+/// gRPC service wrapped with a guaranteed bearer authorizer.
+#[derive(Clone)]
+pub struct AuthorizationService<S> {
+    inner: S,
+    authorizer: Arc<dyn BearerTokenAuthorizer>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+}
+
+impl<S> Service<Request<Body>> for AuthorizationService<S>
+where
+    S: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = Response<Body>;
+    type Error = Infallible;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        let clone = self.inner.clone();
+        let mut inner = mem::replace(&mut self.inner, clone);
+        let authorizer = self.authorizer.clone();
+        let metrics = self.metrics.clone();
+
+        Box::pin(async move {
+            if let Err(response) =
+                authorize_request(authorizer.as_ref(), &metrics, req.headers()).await
+            {
+                return Ok(response);
+            }
+            inner.call(req).await
+        })
+    }
+}
+
 /// common server functionality
 #[derive(Clone)]
 pub struct ServerCommon {
@@ -639,7 +774,7 @@ impl LogsServiceServer {
     }
 }
 
-impl tower_service::Service<Request<Body>> for LogsServiceServer {
+impl Service<Request<Body>> for LogsServiceServer {
     type Response = Response<Body>;
     type Error = Infallible;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
@@ -701,7 +836,7 @@ impl MetricsServiceServer {
     }
 }
 
-impl tower_service::Service<Request<Body>> for MetricsServiceServer {
+impl Service<Request<Body>> for MetricsServiceServer {
     type Response = Response<Body>;
     type Error = Infallible;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
@@ -760,7 +895,7 @@ impl TraceServiceServer {
     }
 }
 
-impl tower_service::Service<Request<Body>> for TraceServiceServer {
+impl Service<Request<Body>> for TraceServiceServer {
     type Response = Response<Body>;
     type Error = Infallible;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
@@ -799,6 +934,7 @@ impl NamedService for TraceServiceServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otel_arrow_dfe_engine::capability::CapabilityError;
     use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
     use otel_arrow_dfe_engine::shared::message::SharedSender;
     use otel_arrow_dfe_engine::testing::test_node;
@@ -809,12 +945,81 @@ mod tests {
     use tokio::sync::mpsc as tokio_mpsc;
     use tonic::Code;
 
+    struct TestAuthorizer;
+
+    #[async_trait::async_trait]
+    impl BearerTokenAuthorizer for TestAuthorizer {
+        async fn authorize(
+            &self,
+            credential: &BearerToken,
+        ) -> Result<AuthzDecision, CapabilityError> {
+            Ok(match credential.expose_token() {
+                "allowed" => AuthzDecision::allow_anonymous(),
+                "invalid" => AuthzDecision::deny(DenyReason::InvalidCredential),
+                _ => AuthzDecision::deny(DenyReason::NotPermitted),
+            })
+        }
+    }
+
     fn new_test_metrics() -> Arc<Mutex<OtlpReceiverMetrics>> {
         let registry = TelemetryRegistryHandle::new();
         let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)))
+    }
+
+    /// Scenario: gRPC authorization receives missing, non-bearer, allowed,
+    /// invalid, and policy-denied credentials.
+    /// Guarantees: Requests are admitted only on allow; authentication and
+    /// policy failures map to the expected gRPC status codes.
+    #[tokio::test]
+    async fn maps_authorization_outcomes() {
+        let authorizer = TestAuthorizer;
+        let metrics = new_test_metrics();
+        let mut headers = http::HeaderMap::new();
+
+        let response = authorize_request(&authorizer, &metrics, &headers)
+            .await
+            .expect_err("missing credential must be rejected");
+        assert_eq!(response.headers()["grpc-status"], "16");
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let response = authorize_request(&authorizer, &metrics, &headers)
+            .await
+            .expect_err("non-bearer credential must be rejected");
+        assert_eq!(response.headers()["grpc-status"], "16");
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer allowed"),
+        );
+        assert!(
+            authorize_request(&authorizer, &metrics, &headers)
+                .await
+                .is_ok()
+        );
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer invalid"),
+        );
+        let response = authorize_request(&authorizer, &metrics, &headers)
+            .await
+            .expect_err("invalid credential must be rejected");
+        assert_eq!(response.headers()["grpc-status"], "16");
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer denied"),
+        );
+        let response = authorize_request(&authorizer, &metrics, &headers)
+            .await
+            .expect_err("policy-denied credential must be rejected");
+        assert_eq!(response.headers()["grpc-status"], "7");
     }
 
     fn new_test_service(

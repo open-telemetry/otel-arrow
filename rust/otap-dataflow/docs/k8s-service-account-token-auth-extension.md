@@ -338,9 +338,9 @@ extensions:
 ```
 
 A receiver binds it via its `capabilities:` map (see
-[`docs/configuration-model.md`](configuration-model.md)). No built-in receiver
-invokes `bearer_token_authorizer` yet, so binding it does not itself enforce
-authentication.
+[`docs/configuration-model.md`](configuration-model.md)). The built-in OTLP
+receiver invokes `bearer_token_authorizer` for OTLP/gRPC and OTLP/HTTP requests
+before accepting their telemetry payloads.
 
 ### Collector RBAC
 
