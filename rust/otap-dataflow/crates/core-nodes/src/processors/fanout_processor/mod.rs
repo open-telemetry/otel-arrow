@@ -554,6 +554,7 @@ impl FanoutProcessor {
     }
 
     /// Dispatch ready destinations and return any new deadlines for the heap.
+    #[allow(clippy::result_large_err)]
     async fn dispatch_ready(
         request_id: u64,
         inflight: &mut Inflight,

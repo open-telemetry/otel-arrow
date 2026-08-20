@@ -1480,6 +1480,8 @@ impl MultiContext {
 }
 
 impl<T: OtapPayloadHelpers> Inputs<T> {
+    // Draining rather than `mem::take` keeps the accumulator's capacity for the next batch.
+    #[allow(clippy::drain_collect)]
     fn drain(&mut self) -> Self {
         Self {
             pending: std::mem::take(&mut self.pending),
