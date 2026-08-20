@@ -147,5 +147,42 @@ fn count_payload_items(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(payload_measurements, count_logs, count_payload_items);
+fn measure_payload_size(c: &mut Criterion) {
+    let mut group = c.benchmark_group("PData size overhead");
+
+    for record_count in [10, 100, 1_000] {
+        let message = OtlpProtoMessage::Logs(create_logs_data(record_count));
+        let otlp_bytes: OtlpProtoBytes = otlp_message_to_bytes(&message);
+        let otap_records: OtapArrowRecords = otlp_to_otap(&message);
+
+        _ = group.bench_function(BenchmarkId::new("OTLP/size/direct", record_count), |b| {
+            let mut pdata =
+                OtapPdata::new(Context::default(), black_box(otlp_bytes.clone().into()));
+            b.iter(|| black_box(pdata.num_bytes()))
+        });
+
+        _ = group.bench_function(BenchmarkId::new("OTAP/size/uncached", record_count), |b| {
+            b.iter_batched_ref(
+                || OtapPdata::new(Context::default(), black_box(otap_records.clone().into())),
+                |pdata| black_box(pdata.num_bytes()),
+                BatchSize::SmallInput,
+            )
+        });
+
+        let mut cached = OtapPdata::new(Context::default(), black_box(otap_records.clone().into()));
+        _ = black_box(cached.num_bytes());
+        _ = group.bench_function(BenchmarkId::new("OTAP/size/cached", record_count), |b| {
+            b.iter(|| black_box(cached.num_bytes()))
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    payload_measurements,
+    count_logs,
+    count_payload_items,
+    measure_payload_size
+);
 criterion_main!(payload_measurements);

@@ -170,9 +170,9 @@ impl PayloadData {
 /// Container for the various representations of the telemetry data.
 ///
 /// `OtapPayload` owns both the concrete [`PayloadData`] and cached expensive
-/// measurements. The only cached measurement currently implemented is the
-/// OTLP item count. The cache is scoped to the exact logical payload version
-/// it was created for:
+/// measurements. OTLP item counts and OTAP logical byte sizes are cached when
+/// first requested. The cache is scoped to the exact logical payload version it
+/// was created for:
 ///
 /// - Constructing a new `OtapPayload` (via `From`, [`Self::empty`], or
 ///   [`Self::take_payload`]'s emptied remainder) always starts with a fresh,
@@ -188,6 +188,7 @@ impl PayloadData {
 pub struct OtapPayload {
     data: PayloadData,
     item_count: Option<usize>,
+    size: Option<usize>,
 }
 
 impl OtapPayload {
@@ -197,6 +198,7 @@ impl OtapPayload {
         Self {
             data,
             item_count: None,
+            size: None,
         }
     }
 
@@ -263,6 +265,7 @@ impl OtapPayload {
         Self {
             data: old_data,
             item_count: self.item_count.take(),
+            size: self.size.take(),
         }
     }
 
@@ -291,8 +294,20 @@ impl OtapPayload {
     /// Arrow's logical slice-memory estimate. Returns `None` if the current
     /// representation cannot be measured.
     #[must_use]
-    pub fn num_bytes(&self) -> Option<usize> {
-        self.data.num_bytes()
+    pub fn num_bytes(&mut self) -> Option<usize> {
+        match &self.data {
+            // OTLP already stores the exact encoded length in Bytes metadata.
+            PayloadData::OtlpBytes(_) => self.data.num_bytes(),
+            // Cache OTAP sizing because it walks every Arrow array and buffer.
+            PayloadData::OtapArrowRecords(_) => {
+                if let Some(size) = self.size {
+                    return Some(size);
+                }
+                let size = self.data.num_bytes()?;
+                self.size = Some(size);
+                Some(size)
+            }
+        }
     }
 
     /// Returns the best available retained-memory byte estimate.
@@ -312,6 +327,7 @@ impl OtapPayload {
         Self {
             data: PayloadData::OtlpBytes(OtlpProtoBytes::empty(signal)),
             item_count: None,
+            size: None,
         }
     }
 
@@ -321,6 +337,13 @@ impl OtapPayload {
     #[must_use]
     pub fn test_has_cached_item_count(&self) -> bool {
         self.item_count.is_some()
+    }
+
+    /// Test-only introspection: true if the OTAP size cache has been computed.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn test_has_cached_size(&self) -> bool {
+        self.size.is_some()
     }
 }
 

@@ -400,7 +400,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
 
     fn call(&mut self, request: tonic::Request<OtapPdata>) -> Self::Future {
         let (metadata, extensions, mut otap_batch) = request.into_parts();
-        let payload_size = otap_batch.payload_ref().num_bytes();
+        let payload_size = otap_batch.num_bytes();
 
         // Keep the final weighted admission decision at the request-service
         // boundary, where both transport metadata and the raw payload weight
