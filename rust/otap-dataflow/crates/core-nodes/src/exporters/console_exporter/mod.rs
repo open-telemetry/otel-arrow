@@ -32,8 +32,8 @@ use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::views::otap::{OtapLogsView, OtapMetricsView};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::{OtapPayload, PayloadData};
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
+use otap_df_pdata::{OtapPayload, PayloadData};
 use otap_df_pdata_views::views::common::InstrumentationScopeView;
 use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
@@ -295,8 +295,8 @@ impl ConsoleExporter {
             return self.unsupported_signal("metrics");
         }
 
-        match payload {
-            OtapPayload::OtlpBytes(bytes) => {
+        match payload.data() {
+            PayloadData::OtlpBytes(bytes) => {
                 let metrics_bytes = match bytes {
                     otap_df_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes,
                     _ => unreachable!("metrics payload must contain metrics OTLP bytes"),
@@ -309,7 +309,7 @@ impl ConsoleExporter {
                     }
                 }
             }
-            OtapPayload::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
+            PayloadData::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
                 Ok(metrics_view) => self.formatter.print_metrics_data(&metrics_view).await,
                 Err(e) => {
                     otel_warn!("console.metrics_view.otap_create_failed", error = ?e);
@@ -926,10 +926,10 @@ mod tests {
             "| | +- METRIC name=size_distribution unit=By\n",
             "| | | +- EXPONENTIAL_HISTOGRAM temporality=cumulative\n",
             "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=6 scale=-1 zero_count=1 zero_threshold=0.01 sum=30 min=-4 max=16 flags=1 [series=blue]\n",
-            "| | | | | +- POSITIVE_BUCKET offset=2 bucket_index=2 count=2\n",
-            "| | | | | +- POSITIVE_BUCKET offset=2 bucket_index=3 count=1\n",
-            "| | | | | +- NEGATIVE_BUCKET offset=-2 bucket_index=-2 count=1\n",
-            "| | | | | +- NEGATIVE_BUCKET offset=-2 bucket_index=-1 count=1\n",
+            "| | | | | +- POS_BUCKET offset=2 bucket_index=2 count=2\n",
+            "| | | | | +- POS_BUCKET offset=2 bucket_index=3 count=1\n",
+            "| | | | | +- NEG_BUCKET offset=-2 bucket_index=-2 count=1\n",
+            "| | | | | +- NEG_BUCKET offset=-2 bucket_index=-1 count=1\n",
             "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
             "| | +- METRIC name=request_summary unit=ms\n",
             "| | | +- SUMMARY\n",

@@ -235,10 +235,10 @@ impl HierarchicalFormatter {
             write_flags(w, point.flags().into_inner())
         })?;
         if let Some(positive) = point.positive() {
-            self.format_buckets("POSITIVE_BUCKET", &positive, output)?;
+            self.format_buckets("POS_BUCKET", &positive, output)?;
         }
         if let Some(negative) = point.negative() {
-            self.format_buckets("NEGATIVE_BUCKET", &negative, output)?;
+            self.format_buckets("NEG_BUCKET", &negative, output)?;
         }
         for exemplar in point.exemplars() {
             self.format_exemplar(&exemplar, output)?;
