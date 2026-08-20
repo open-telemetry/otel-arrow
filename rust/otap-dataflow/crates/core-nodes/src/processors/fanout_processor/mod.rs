@@ -559,7 +559,7 @@ impl FanoutProcessor {
         inflight: &mut Inflight,
         destinations: &[DestinationConfig],
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<DeadlineVec, Box<TypedError<OtapPdata>>> {
+    ) -> Result<DeadlineVec, TypedError<OtapPdata>> {
         let mut to_send = DestinationIndexQueue::new();
         let mut new_deadlines = DeadlineVec::new();
         match inflight.mode {
@@ -590,8 +590,7 @@ impl FanoutProcessor {
                 }
                 effect_handler
                     .send_message_to(destinations[idx].port.clone(), payload)
-                    .await
-                    .map_err(Box::new)?;
+                    .await?;
             }
         }
         Ok(new_deadlines)
@@ -727,8 +726,7 @@ impl FanoutProcessor {
             if let Some(inflight) = self.inflight.get_mut(&req) {
                 let deadlines =
                     Self::dispatch_ready(req, inflight, &self.config.destinations, effect_handler)
-                        .await
-                        .map_err(|error| *error)?;
+                        .await?;
                 for d in deadlines {
                     self.deadline_heap.push(Reverse(d));
                 }
@@ -825,8 +823,7 @@ impl FanoutProcessor {
                     &self.config.destinations,
                     effect_handler,
                 )
-                .await
-                .map_err(|error| *error)?;
+                .await?;
                 for d in deadlines {
                     self.deadline_heap.push(Reverse(d));
                 }
@@ -897,8 +894,7 @@ impl FanoutProcessor {
                 &self.config.destinations,
                 effect_handler,
             )
-            .await
-            .map_err(|error| *error)?;
+            .await?;
             for d in deadlines {
                 self.deadline_heap.push(Reverse(d));
             }
@@ -1130,8 +1126,7 @@ impl Processor<OtapPdata> for FanoutProcessor {
                         &self.config.destinations,
                         effect_handler,
                     )
-                    .await
-                    .map_err(|error| *error)?;
+                    .await?;
                     for d in deadlines {
                         self.deadline_heap.push(Reverse(d));
                     }

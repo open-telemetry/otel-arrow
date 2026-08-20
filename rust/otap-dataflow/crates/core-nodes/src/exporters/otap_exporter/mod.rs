@@ -327,7 +327,7 @@ enum EnqueueResult {
     Done,
     /// The stream queue was full. The caller should wait for capacity while
     /// continuing to poll the control channel, then retry.
-    QueueFull(Box<StreamBatch>, Instant, usize),
+    QueueFull(StreamBatch, Instant, usize),
 }
 
 impl OTAPExporter {
@@ -418,11 +418,7 @@ impl OTAPExporter {
             Err(tokio::sync::mpsc::error::TrySendError::Full(item)) => {
                 // Queue is full -- return to caller so it can wait for capacity
                 // while still polling the control channel in the main select.
-                Ok(EnqueueResult::QueueFull(
-                    Box::new(item),
-                    enqueue_start,
-                    queue_depth,
-                ))
+                Ok(EnqueueResult::QueueFull(item, enqueue_start, queue_depth))
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 self.stream_metrics.record_stream_enqueue(
@@ -752,7 +748,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                         {
                             pending = Some((
                                 sender.clone(),
-                                *item,
+                                item,
                                 enqueue_start,
                                 signal_type,
                                 queue_depth,
