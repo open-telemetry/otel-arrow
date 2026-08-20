@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn otlp_payload_num_bytes_matches_retained_memory_bytes() {
         let otlp_bytes = OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(b"abc"));
-        let otlp_payload: OtapPayload = otlp_bytes.clone().into();
+        let mut otlp_payload: OtapPayload = otlp_bytes.clone().into();
 
         assert_eq!(otlp_bytes.num_bytes(), otlp_bytes.retained_memory_bytes());
         assert_eq!(
