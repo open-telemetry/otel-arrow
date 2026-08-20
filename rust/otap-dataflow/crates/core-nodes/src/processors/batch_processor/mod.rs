@@ -1482,8 +1482,8 @@ impl MultiContext {
 impl<T: OtapPayloadHelpers> Inputs<T> {
     fn drain(&mut self) -> Self {
         Self {
-            pending: self.pending.drain(..).collect(),
-            context: self.context.drain(..).collect(),
+            pending: std::mem::take(&mut self.pending),
+            context: std::mem::take(&mut self.context),
             weight: std::mem::take(&mut self.weight),
         }
     }

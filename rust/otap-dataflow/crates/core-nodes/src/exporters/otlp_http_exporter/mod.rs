@@ -288,10 +288,10 @@ struct CompletedExport {
     saved_payload: OtapPayload,
     signal_type: SignalType,
     export_started_at: Instant,
-    /// Generation of the bearer token stamped on this request (`None` when no
-    /// provider is bound). Echoed back so a 401 invalidates exactly the token
-    /// that was used, not a newer one already cached (see
-    /// [`BearerAuth::invalidate`]).
+    /// Authentication mode used by this request. Bearer-provider requests retain
+    /// the token generation so a 401 invalidates only the token that was sent;
+    /// agent-fed and unauthenticated requests retain their mode for response
+    /// handling.
     request_auth: RequestAuth,
 }
 
