@@ -945,7 +945,7 @@ impl KafkaExporter {
     ///    touched. Building only spawns the new poll thread; it does not contact
     ///    the broker, so it cannot block.
     /// 2. **Swap (new generation).** The new producer, config, and allowlists are
-    ///    installed and the generation counter is bumped. Every batch is routed
+    ///    installed. Every batch is routed
     ///    and enqueued under the generation active when the exporter DEQUEUES it
     ///    (see [`Self::enqueue_pdata`]): a batch already in flight on the retiring
     ///    generation's producer resolved its topic and was handed to librdkafka
@@ -981,7 +981,6 @@ impl KafkaExporter {
         &mut self,
         config: serde_json::Value,
         in_flight: &mut InFlightSends,
-        generation: &mut u64,
         retiring_producer: &mut Option<tokio::task::JoinHandle<()>>,
         effect_handler: &EffectHandler<OtapPdata>,
     ) {
@@ -1087,8 +1086,6 @@ impl KafkaExporter {
         // already in-flight batches drain to the old destination. There is no
         // pre-swap barrier: normal processing and backpressure keep flowing on
         // the new generation while the old generation's tail delivers.
-        *generation = generation.wrapping_add(1);
-        self.metrics.inc_config_generation();
         let old_producer = std::mem::replace(&mut self.producer, new_producer);
         self.config = new_config;
         self.traces_allowed_topics_regex = new_traces_regex;
@@ -1121,7 +1118,6 @@ impl KafkaExporter {
         otap_df_telemetry::otel_info!(
             "kafka.exporter.reconfigured",
             brokers = %self.config.brokers(),
-            generation = *generation,
         );
         effect_handler
             .info("Kafka exporter reconfiguration complete")
@@ -1157,12 +1153,6 @@ impl Exporter<OtapPdata> for KafkaExporter {
         // and propagates backpressure upstream. The default of 1 preserves the
         // historical serial behavior.
         let mut in_flight = InFlightSends::new(self.config.max_in_flight());
-
-        // Monotonic configuration generation, bumped on each applied live
-        // reconfiguration. Used for observability (correlating a cutover in
-        // logs). Wraps on overflow, which is harmless as it is never used
-        // for correctness comparisons.
-        let mut generation: u64 = 0;
 
         // At most one outstanding producer-retirement task (a `spawn_blocking`
         // flush + purge + drop of a retired generation's producer). Threaded like
@@ -1332,7 +1322,6 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     self.reconfigure(
                         config,
                         &mut in_flight,
-                        &mut generation,
                         &mut retiring_producer,
                         &effect_handler,
                     )

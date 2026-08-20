@@ -42,11 +42,6 @@ pub struct KafkaExporterOperationalMetrics {
     /// Batches where topic was resolved from static per-signal config.
     #[metric(unit = "{batch}")]
     pub topic_from_static_config: Counter<u64>,
-    /// Number of live reconfigurations applied. Each applied `Config` starts a
-    /// new config generation, so the cumulative count equals the generation the
-    /// exporter is currently running (`0` before the first applied `Config`).
-    #[metric(unit = "{generation}")]
-    pub config_generation: Counter<u64>,
 }
 
 /// Composite metrics for the Kafka exporter.
@@ -123,13 +118,6 @@ impl KafkaExporterMetrics {
     /// Increments the counter for batches where the topic was resolved from static configuration.
     pub fn inc_topic_from_static_config(&mut self) {
         self.operational_metrics.topic_from_static_config.inc();
-    }
-
-    /// Increments the applied-reconfiguration counter by one. Called once per
-    /// applied reconfiguration; the accumulated total equals the config
-    /// generation currently in effect.
-    pub fn inc_config_generation(&mut self) {
-        self.operational_metrics.config_generation.inc();
     }
 }
 
@@ -345,26 +333,5 @@ mod tests {
         m.inc_topic_from_static_config();
         assert_eq!(m.operational_metrics.topic_from_static_config.get(), 2);
         assert_eq!(m.operational_metrics.topic_from_header.get(), 0);
-    }
-
-    /// Scenario: Two live reconfigurations are applied.
-    /// Guarantees: `config_generation` counts each applied reconfiguration by one,
-    /// so the accumulated value equals the config generation currently in effect.
-    #[test]
-    fn inc_config_generation_counts_reconfigurations() {
-        let mut m = new_metrics();
-        assert_eq!(
-            m.operational_metrics.config_generation.get(),
-            0,
-            "generation starts at 0 before any reconfiguration"
-        );
-        m.inc_config_generation();
-        assert_eq!(m.operational_metrics.config_generation.get(), 1);
-        m.inc_config_generation();
-        assert_eq!(
-            m.operational_metrics.config_generation.get(),
-            2,
-            "each applied reconfiguration increments the generation by one"
-        );
     }
 }
