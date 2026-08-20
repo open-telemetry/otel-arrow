@@ -42,7 +42,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use arrow::array::{ArrayRef, RecordBatch};
+use arrow::array::{ArrayRef, AsArray, RecordBatch};
 use arrow::datatypes::{Field, Schema};
 use datafusion::logical_expr::{ColumnarValue, Expr};
 use datafusion::physical_expr::PhysicalExprRef;
@@ -170,19 +170,91 @@ impl From<&ColumnAccessor> for DataScope {
     }
 }
 
-/// Short-circuit strategy for logical binary expressions within
+/// Short-circuit strategy for logical binary expressions.
 ///
 /// When evaluating a binary expression, this can be used to identify when to short-circuit
 /// evaluation based on the results of one side of the expression, which may avoid costly and
 /// unnecessary evaluation of the other-side
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShortCircuitStrategy {
-    /// AND semantics: short-circuit to all-false when any child evaluates to
-    /// all-false
+    /// AND semantics: short-circuit to all-false when any child evaluates to all-false
     And,
-    /// OR semantics: short-circuit to all-true when any child evaluates to
-    /// all-true
+
+    /// AND semantics but the result of the expression should be inverted.
+    /// This is used for expressions such as not(A and B)
+    NotAnd,
+
+    /// OR semantics: short-circuit to all-true when any child evaluates to all-true
     Or,
+
+    /// OR semantics but the result of the expression should be inverted.
+    /// This is used for expressions such as not(A or B)
+    NotOr,
+}
+
+impl ShortCircuitStrategy {
+    /// Check whether a child result allows the parent `JoinAndEval` to short-circuit.
+    ///
+    /// For `And`: returns `true` when the value is definitively all-false (or all-null),
+    /// meaning the AND result will be all-false regardless of remaining children.
+    ///
+    /// For `Or`: returns `true` when the value is definitively all-true, meaning the OR
+    /// result will be all-true regardless of remaining children.
+    fn should_short_circuit(&self, values: &ColumnarValue) -> bool {
+        match self {
+            Self::And | Self::NotAnd => Self::is_all_false_or_null(values),
+            Self::Or | Self::NotOr => Self::is_all_true(values),
+        }
+    }
+
+    /// Produce the short-circuit result value for a given strategy.
+    pub(crate) fn value(&self) -> ScopedValue {
+        ScopedValue::new_scalar(ScalarValue::Boolean(Some(match self {
+            Self::And => false,
+            Self::NotAnd => true,
+            Self::Or => true,
+            Self::NotOr => false,
+        })))
+    }
+
+    fn invert(&self) -> Self {
+        match self {
+            Self::And => Self::NotAnd,
+            Self::NotAnd => Self::And,
+            Self::Or => Self::NotOr,
+            Self::NotOr => Self::Or,
+        }
+    }
+
+    fn is_all_false_or_null(values: &ColumnarValue) -> bool {
+        match values {
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(false)))
+            | ColumnarValue::Scalar(ScalarValue::Boolean(None))
+            | ColumnarValue::Scalar(ScalarValue::Null) => true,
+            ColumnarValue::Array(arr) => {
+                if let Some(boolean_arr) = arr.as_boolean_opt() {
+                    boolean_arr.true_count() == 0
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn is_all_true(values: &ColumnarValue) -> bool {
+        match values {
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => true,
+            ColumnarValue::Array(arr) => {
+                if let Some(boolean_arr) = arr.as_boolean_opt() {
+                    boolean_arr.true_count() == boolean_arr.len()
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
 }
 
 /// An execution tree node for evaluating expressions on OTAP data.

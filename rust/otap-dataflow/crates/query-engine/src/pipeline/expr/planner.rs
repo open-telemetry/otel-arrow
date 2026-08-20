@@ -576,7 +576,7 @@ impl ExprPlanner {
                             children,
                             default_null_children,
                             align_children_to_root,
-                            short_circuit,
+                            short_circuit: short_circuit.map(|s| s.invert()),
                             eval: LeafEval::DatafusionExpr {
                                 logical_expr: not(logical_expr),
                                 physical_expr: None,
