@@ -87,12 +87,11 @@ fn main() {
         ),
         run_workload("typed_large", large_typed_workload(), registered_redaction),
     ];
-    enforce_targets(&results);
-
     println!(
         "{}",
         serde_json::to_string_pretty(&results).expect("benchmark results should serialize")
     );
+    enforce_targets(&results);
 }
 
 fn enforce_targets(results: &[WorkloadResult]) {

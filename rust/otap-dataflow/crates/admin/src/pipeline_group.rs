@@ -605,6 +605,49 @@ mod tests {
         );
     }
 
+    /// Scenario: the control plane commits a group whose returned config cannot
+    /// be redacted for the response.
+    /// Guarantees: `create_group` fails closed with the existing internal error
+    /// envelope instead of echoing an unredacted committed group.
+    #[tokio::test]
+    async fn create_group_fails_closed_for_unredactable_committed_group() {
+        let committed: PipelineGroupConfig = serde_json::from_value(serde_json::json!({
+            "pipelines": {
+                "main": {
+                    "nodes": {
+                        "exporter": {
+                            "type": "urn:test:exporter:typed-redaction",
+                            "config": {
+                                "password": {"nested": "create-diagnostic-secret"}
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("committed group fixture should deserialize");
+
+        let response = create_group(
+            Path("default".to_string()),
+            State(test_app_state(stub(
+                Ok(None),
+                Ok(committed),
+                Ok(delete_status("succeeded")),
+            ))),
+            Json(PipelineGroupConfig::new()),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::Internal);
+    }
+
     /// Scenario: the control plane rejects group creation as invalid.
     /// Guarantees: the handler returns a typed operation error with HTTP 422.
     #[tokio::test]

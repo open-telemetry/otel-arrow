@@ -1322,11 +1322,13 @@ fn heartbeat_message(
         &mut remote_config_status,
         session_state.last_reconcile_result.as_ref(),
     );
+    let mut health = component_health(session_state, &status_snapshot);
+    let _ = effective_config(context, &mut health);
     AgentToServer {
         instance_uid: session_state.instance_uid.to_vec(),
         sequence_num: session_state.sequence_num,
         capabilities: capabilities(),
-        health: Some(component_health(session_state, &status_snapshot)),
+        health: Some(health),
         custom_message: pipeline_status_custom_message(&status_snapshot),
         remote_config_status: Some(remote_config_status),
         ..Default::default()
@@ -1595,7 +1597,9 @@ fn effective_config(
                 error = e.as_str(),
             );
             health.healthy = false;
-            health.status = health_status::DEGRADED.into();
+            if health.status.is_empty() || health.status == health_status::RUNNING {
+                health.status = health_status::DEGRADED.into();
+            }
             health.last_error = e;
             None
         }
@@ -1847,6 +1851,25 @@ mod test {
         assert!(!health.healthy);
         assert_eq!(health.status, health_status::DEGRADED);
         assert!(health.last_error.contains("snapshot redaction"));
+
+        let mut failed_health = ComponentHealth {
+            status: health_status::FAILED.into(),
+            ..Default::default()
+        };
+        assert!(effective_config(&context, &mut failed_health).is_none());
+        assert_eq!(failed_health.status, health_status::FAILED);
+
+        let opamp_config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "ws://127.0.0.1:1/v1/opamp"
+        }))
+        .expect("OpAMP config should deserialize");
+        let session_state =
+            SessionState::try_new(&opamp_config).expect("session state should initialize");
+        let heartbeat = heartbeat_message(&session_state, &context);
+        let heartbeat_health = heartbeat.health.expect("heartbeat should include health");
+        assert!(!heartbeat_health.healthy);
+        assert!(heartbeat_health.last_error.contains("snapshot redaction"));
     }
 
     #[tokio::test]

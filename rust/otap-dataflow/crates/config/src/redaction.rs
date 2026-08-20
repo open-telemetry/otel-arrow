@@ -10,7 +10,7 @@ use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 /// Placeholder emitted for type-owned secrets in config snapshots.
@@ -238,14 +238,6 @@ where
     })?;
     let first = serialize_with_marker(&typed, PRIVATE_MARKER_A)?;
     let second = serialize_with_marker(&typed, PRIVATE_MARKER_B)?;
-    let mut secrets = Vec::new();
-    collect_private_secret_values(&first, &second, &mut secrets)?;
-    let mut unique_secrets = HashSet::with_capacity(secrets.len());
-    for secret in secrets {
-        if !unique_secrets.insert(secret) || count_string_occurrences(config, secret) != 1 {
-            return Err(RedactionError::ShapeMismatch);
-        }
-    }
     let counts = compare_and_apply(Some(config), &first, &second)?;
 
     if counts.serialized != deserialized_secrets {
@@ -384,63 +376,6 @@ fn private_secret_value<'a>(first: &'a Value, second: &'a Value) -> Option<&'a s
     let first = first.as_str()?.strip_prefix(PRIVATE_MARKER_A)?;
     let second = second.as_str()?.strip_prefix(PRIVATE_MARKER_B)?;
     (first == second).then_some(first)
-}
-
-fn collect_private_secret_values<'a>(
-    first: &'a Value,
-    second: &'a Value,
-    secrets: &mut Vec<&'a str>,
-) -> Result<(), RedactionError> {
-    if let Some(secret) = private_secret_value(first, second) {
-        secrets.push(secret);
-        return Ok(());
-    }
-    if first == second {
-        return Ok(());
-    }
-    match (first, second) {
-        (Value::Array(first_values), Value::Array(second_values))
-            if first_values.len() == second_values.len() =>
-        {
-            for (first_value, second_value) in first_values.iter().zip(second_values) {
-                collect_private_secret_values(first_value, second_value, secrets)?;
-            }
-            Ok(())
-        }
-        (Value::Object(first_values), Value::Object(second_values))
-            if first_values.len() == second_values.len()
-                && first_values
-                    .keys()
-                    .all(|key| second_values.contains_key(key)) =>
-        {
-            for (key, first_value) in first_values {
-                collect_private_secret_values(
-                    first_value,
-                    second_values
-                        .get(key)
-                        .ok_or(RedactionError::Serialization)?,
-                    secrets,
-                )?;
-            }
-            Ok(())
-        }
-        _ => Err(RedactionError::Serialization),
-    }
-}
-
-fn count_string_occurrences(value: &Value, needle: &str) -> usize {
-    match value {
-        Value::String(value) => usize::from(value == needle),
-        Value::Array(values) => values
-            .iter()
-            .map(|value| count_string_occurrences(value, needle))
-            .sum(),
-        Value::Object(values) => values
-            .values()
-            .map(|value| count_string_occurrences(value, needle))
-            .sum(),
-        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
-    }
 }
 
 #[cfg(test)]
@@ -640,18 +575,19 @@ mod tests {
                 "urn:test:exporter:duplicate-redaction",
                 redact_registered_test_config,
             ),
+            ConfigRedactor::new(
+                "urn:test:exporter:unique-redaction",
+                redact_registered_test_config,
+            ),
         ];
+        let index = build_redactor_index(&registrations);
 
         assert!(matches!(
-            build_redactor_index(&registrations).get("urn:test:exporter:duplicate-redaction"),
+            index.get("urn:test:exporter:duplicate-redaction"),
             Some(RedactorEntry::Duplicate)
         ));
         assert!(matches!(
-            build_redactor_index(&[ConfigRedactor::new(
-                "urn:test:exporter:unique-redaction",
-                redact_registered_test_config,
-            )])
-            .get("urn:test:exporter:unique-redaction"),
+            index.get("urn:test:exporter:unique-redaction"),
             Some(RedactorEntry::Redactor(_))
         ));
     }
@@ -666,8 +602,8 @@ mod tests {
 
     /// Scenario: asymmetric serde names swap a secret and non-secret field onto
     /// existing raw paths.
-    /// Guarantees: value identity prevents redacting the public field while
-    /// leaving the real secret exposed.
+    /// Guarantees: a nonmatching raw value prevents redacting the public field
+    /// while leaving the real secret exposed.
     #[test]
     fn typed_redaction_rejects_asymmetric_path_collision() {
         let raw = serde_json::json!({
@@ -682,21 +618,31 @@ mod tests {
         assert_eq!(raw["secret"], "identity-bound-secret");
     }
 
-    /// Scenario: asymmetric serde paths contain equal secret and public values.
-    /// Guarantees: duplicate-value ambiguity fails closed instead of letting a
-    /// value comparison validate the wrong raw path.
+    #[derive(Deserialize, Serialize)]
+    struct RepeatedValueConfig {
+        primary: RedactedString,
+        secondary: RedactedString,
+        label: String,
+    }
+
+    /// Scenario: multiple symmetric secret fields and a public field share the
+    /// same string value.
+    /// Guarantees: both declared secret paths are redacted while the public
+    /// value remains unchanged.
     #[test]
-    fn typed_redaction_rejects_equal_value_path_collision() {
+    fn typed_redaction_accepts_repeated_values_on_symmetric_paths() {
         let raw = serde_json::json!({
-            "secret": "same-value",
-            "public": "same-value"
+            "primary": "same-value",
+            "secondary": "same-value",
+            "label": "same-value"
         });
 
-        let error = redact_typed_config::<AsymmetricConfig>(&raw)
-            .expect_err("equal-value path collision must fail closed");
+        let redacted = redact_typed_config::<RepeatedValueConfig>(&raw)
+            .expect("symmetric repeated values should redact");
 
-        assert_eq!(error, RedactionError::ShapeMismatch);
-        assert_eq!(raw["secret"], "same-value");
+        assert_eq!(redacted["primary"], REDACTED_VALUE);
+        assert_eq!(redacted["secondary"], REDACTED_VALUE);
+        assert_eq!(redacted["label"], "same-value");
     }
 
     #[derive(Deserialize, Serialize)]
