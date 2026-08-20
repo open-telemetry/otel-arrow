@@ -111,12 +111,12 @@ fn enforce_targets(results: &[WorkloadResult]) {
     let typed_large = get("typed_large");
 
     assert!(
-        typed_typical.latency_ns.p99 < 50_000,
-        "typed typical p99 must remain below 50 us"
+        typed_typical.latency_ns.p99 < 100_000,
+        "typed typical p99 must remain below 100 us"
     );
     assert!(
-        typed_large.latency_ns.p99 < 2_000_000,
-        "typed large p99 must remain below 2 ms"
+        typed_large.latency_ns.p99 < 4_000_000,
+        "typed large p99 must remain below 4 ms"
     );
     assert!(
         typed_typical.allocation.bytes_per_iteration

@@ -10,7 +10,7 @@ use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// Placeholder emitted for type-owned secrets in config snapshots.
@@ -24,8 +24,9 @@ thread_local! {
     static SERIALIZED_SECRET_MARKER: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
-/// A string value that remains cleartext in memory but always serializes as
-/// redacted.
+/// A string value that remains cleartext in memory but never serializes its
+/// cleartext. Normal serialization emits the redaction marker; internal
+/// declaration validation emits only an opaque per-instance token.
 ///
 /// This wrapper is for config values, not map keys. Component owners declare
 /// the corresponding raw fields in their exact [`ConfigRedactor`]
@@ -88,7 +89,7 @@ impl Serialize for RedactedString {
         S: Serializer,
     {
         match SERIALIZED_SECRET_MARKER.with(Cell::get) {
-            Some(prefix) => serializer.serialize_str(&format!("{prefix}{}", self.expose())),
+            Some(prefix) => serializer.serialize_str(&format!("{prefix}{self:p}")),
             None => serializer.serialize_str(REDACTED_VALUE),
         }
     }
@@ -270,19 +271,23 @@ where
     let second = second.as_object().ok_or(RedactionError::ShapeMismatch)?;
     let object = config.as_object().ok_or(RedactionError::ShapeMismatch)?;
     let mut active_fields = Vec::with_capacity(secret_fields.len());
+    let mut declared_names = HashSet::with_capacity(secret_fields.len());
 
     for field in secret_fields {
+        if !declared_names.insert(field.name) {
+            return Err(RedactionError::ShapeMismatch);
+        }
         match object.get(field.name) {
-            Some(Value::String(raw)) => {
-                let first_secret = first
+            Some(Value::String(_)) => {
+                let first_token = first
                     .get(field.name)
                     .and_then(Value::as_str)
                     .and_then(|value| value.strip_prefix(PRIVATE_MARKER_A));
-                let second_secret = second
+                let second_token = second
                     .get(field.name)
                     .and_then(Value::as_str)
                     .and_then(|value| value.strip_prefix(PRIVATE_MARKER_B));
-                if first_secret != Some(raw.as_str()) || second_secret != Some(raw.as_str()) {
+                if first_token.is_none() || first_token != second_token {
                     return Err(RedactionError::ShapeMismatch);
                 }
                 active_fields.push(field.name);
@@ -461,6 +466,30 @@ mod tests {
 
         assert_eq!(error, RedactionError::ShapeMismatch);
         assert_eq!(raw["password"], "required-secret");
+    }
+
+    /// Scenario: two live typed secrets are paired with duplicate declarations
+    /// for the same raw field.
+    /// Guarantees: duplicate declaration names fail closed instead of masking
+    /// one field twice and leaving its sibling secret exposed.
+    #[test]
+    fn typed_redaction_rejects_duplicate_declarations() {
+        let raw = serde_json::json!({
+            "password": "first-secret",
+            "optional_token": "second-secret",
+            "label": "visible"
+        });
+
+        let error = redact_typed_config::<TestConfig>(
+            &raw,
+            &[
+                SecretField::required("password"),
+                SecretField::required("password"),
+            ],
+        )
+        .expect_err("duplicate declarations must fail closed");
+
+        assert_eq!(error, RedactionError::ShapeMismatch);
     }
 
     /// Scenario: raw config cannot deserialize into its registered type and
