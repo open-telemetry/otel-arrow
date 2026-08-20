@@ -145,6 +145,42 @@ they are NACK'd as **retryable**.) A token is guaranteed to eventually arrive:
 the bound extension holds data-path startup until its first token publish, and
 its token stream stays live for the exporter's lifetime.
 
+### Agent-fed credentials
+
+An embedding host can instead bind `agent_fed_credential_provider`. The exporter
+reads one current credential snapshot for every export attempt, validates that
+its token is non-empty and safely outside the expiry margin, and sends it as the
+bearer credential. This observes host-side rotation without restarting the
+pipeline. Vendor attributes in the snapshot are not used by OTLP/HTTP because
+the configured OTLP endpoint remains authoritative.
+
+```yaml
+nodes:
+  otlp-http-exporter:
+    type: "urn:otel:exporter:otlp_http"
+    capabilities:
+      # "agent_auth" is an embedding-host extension instance that provides
+      # agent_fed_credential_provider.
+      agent_fed_credential_provider: agent_auth
+    config:
+      endpoint: "https://my-endpoint:4318"
+      client_pool_size: 1
+      http: {}
+```
+
+The host sets the token by publishing an `AgentFedCredentialSnapshot` containing
+a `BearerToken`; there is no token field under the exporter. An unavailable,
+malformed, empty, expired, or near-expiry token backpressures new input rather
+than sending an unauthenticated request. A buffered batch that must be drained
+during shutdown is NACK'd as retryable. HTTP 401 is also retryable, and the next
+attempt reads a new snapshot.
+
+Bind either `agent_fed_credential_provider` or `bearer_token_provider`, not both.
+The exporter rejects an ambiguous configuration. With neither capability bound,
+the existing unauthenticated behavior is unchanged. A fixed token can still be
+set as `http.headers.authorization: "Bearer <token>"`, but it is not refreshed
+and should only be used when an auth extension is unavailable.
+
 ## Examples
 
 With one signal-specific URL:
