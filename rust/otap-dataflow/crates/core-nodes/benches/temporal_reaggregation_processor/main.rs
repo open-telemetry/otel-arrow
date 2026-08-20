@@ -243,7 +243,7 @@ fn generate_bench_data() -> (Vec<OtapPdata>, Vec<OtapPdata>) {
         .map(|md| {
             let msg = OtlpProtoMessage::Metrics(md.clone());
             let otlp_bytes = otlp_message_to_bytes(&msg);
-            OtapPdata::new_default(OtapPayload::OtlpBytes(otlp_bytes))
+            OtapPdata::new_default(OtapPayload::from(otlp_bytes))
         })
         .collect();
 
@@ -252,7 +252,7 @@ fn generate_bench_data() -> (Vec<OtapPdata>, Vec<OtapPdata>) {
         .map(|md| {
             let msg = OtlpProtoMessage::Metrics(md.clone());
             let otap_records = otlp_to_otap(&msg);
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
+            OtapPdata::new_default(OtapPayload::from(otap_records))
         })
         .collect();
 

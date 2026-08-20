@@ -131,7 +131,7 @@ impl RecordsetKqlProcessor {
 
     async fn process_data(
         &mut self,
-        data: OtapPdata,
+        mut data: OtapPdata,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let signal = data.signal_type();
@@ -158,7 +158,7 @@ impl RecordsetKqlProcessor {
         match result {
             Ok(ProcessedSignal { payload, counters }) => {
                 // Convert back to OtapPayload and reconstruct OtapPdata
-                let payload: OtapPayload = payload.into();
+                let mut payload: OtapPayload = payload.into();
                 // Note! we are recomputing the number of matched items, which
                 // the engine could tell us.
                 let output_items = payload.num_items() as u64;

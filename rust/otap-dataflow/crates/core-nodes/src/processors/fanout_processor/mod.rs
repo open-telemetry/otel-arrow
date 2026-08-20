@@ -559,7 +559,7 @@ impl FanoutProcessor {
         inflight: &mut Inflight,
         destinations: &[DestinationConfig],
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<DeadlineVec, TypedError<OtapPdata>> {
+    ) -> Result<DeadlineVec, Box<TypedError<OtapPdata>>> {
         let mut to_send = DestinationIndexQueue::new();
         let mut new_deadlines = DeadlineVec::new();
         match inflight.mode {
@@ -590,7 +590,8 @@ impl FanoutProcessor {
                 }
                 effect_handler
                     .send_message_to(destinations[idx].port.clone(), payload)
-                    .await?;
+                    .await
+                    .map_err(Box::new)?;
             }
         }
         Ok(new_deadlines)
@@ -726,7 +727,8 @@ impl FanoutProcessor {
             if let Some(inflight) = self.inflight.get_mut(&req) {
                 let deadlines =
                     Self::dispatch_ready(req, inflight, &self.config.destinations, effect_handler)
-                        .await?;
+                        .await
+                        .map_err(|error| *error)?;
                 for d in deadlines {
                     self.deadline_heap.push(Reverse(d));
                 }
@@ -823,7 +825,8 @@ impl FanoutProcessor {
                     &self.config.destinations,
                     effect_handler,
                 )
-                .await?;
+                .await
+                .map_err(|error| *error)?;
                 for d in deadlines {
                     self.deadline_heap.push(Reverse(d));
                 }
@@ -894,7 +897,8 @@ impl FanoutProcessor {
                 &self.config.destinations,
                 effect_handler,
             )
-            .await?;
+            .await
+            .map_err(|error| *error)?;
             for d in deadlines {
                 self.deadline_heap.push(Reverse(d));
             }
@@ -1126,7 +1130,8 @@ impl Processor<OtapPdata> for FanoutProcessor {
                         &self.config.destinations,
                         effect_handler,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| *error)?;
                     for d in deadlines {
                         self.deadline_heap.push(Reverse(d));
                     }
@@ -1321,7 +1326,7 @@ mod tests {
     const TEST_UPSTREAM_NODE_ID: usize = 12345;
 
     fn make_pdata() -> OtapPdata {
-        let payload = OtapPayload::OtlpBytes(OtlpProtoBytes::empty(SignalType::Logs));
+        let payload = OtapPayload::from(OtlpProtoBytes::empty(SignalType::Logs));
         // Simulate an upstream subscriber (e.g., receiver) so acks/nacks route correctly.
         OtapPdata::new(Context::default(), payload).test_subscribe_to(
             Interests::ACKS | Interests::NACKS,
