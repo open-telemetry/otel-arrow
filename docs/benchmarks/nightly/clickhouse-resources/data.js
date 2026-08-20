@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787162001865,
+  "lastUpdate": 1787191107010,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1270,6 +1270,112 @@ window.BENCHMARK_DATA = {
           {
             "name": "test_duration",
             "value": 60.001967,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Utkarsh Umesan Pillai",
+            "username": "utpilla",
+            "email": "66651184+utpilla@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1f0f51b347e76a5fd58028e52db3225b2428787d",
+          "message": "chore: [Geneva Exporter] Update the YAML to show events mapping example (#3824)\n\n# Change summary\n- Update the example YAML to add some comments and also show event\nmapping\n\nCo-authored-by: Utkarsh Umesan Pillai <utpilla@users.noreply.github.com>",
+          "timestamp": "2026-08-19T23:12:06Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1f0f51b347e76a5fd58028e52db3225b2428787d"
+        },
+        "date": 1787191106097,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 46.95099199357758,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse CPU"
+          },
+          {
+            "name": "go-collector_cpu_percentage_normalized_avg",
+            "value": 89.29235090135373,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector CPU"
+          },
+          {
+            "name": "go-collector_ram_mib_max",
+            "value": 183.77734375,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector RAM"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1249.32421875,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 44.34573044443184,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 50.693345343883855,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1210.515625,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 51.13671875,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003162,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 24.780918798230157,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 51.00333681814415,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 52.046875,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1245.53125,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.007045,
             "unit": "seconds",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
           }
