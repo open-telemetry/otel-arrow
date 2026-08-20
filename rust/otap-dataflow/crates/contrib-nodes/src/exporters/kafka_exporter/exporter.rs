@@ -136,16 +136,22 @@ fn retire_producer_blocking(producer: ExporterProducer, flush_timeout: Duration)
     drop(producer);
 }
 
-/// Spawns retirement of `producer`, serialized behind any `prior` retirement,
-/// and returns the single handle representing the whole retirement chain.
+/// Spawns the off-loop teardown of a retiring generation's `producer`,
+/// serialized behind any `prior` retirement task, and returns the single handle
+/// representing the retirement chain.
 ///
 /// The blocking retirement work ([`retire_producer_blocking`]: flush, purge on
 /// failure, drop-and-join) runs on a [`tokio::task::spawn_blocking`] thread, so
 /// a slow or unavailable broker never stalls the event loop. When a `prior`
 /// retirement is still running it is awaited first (bounded by `flush_timeout`
 /// so a wedged prior retirement cannot make the chain accumulate unbounded
-/// latency), so at most one producer flushes at a time and one handle
-/// represents the chain. The event loop returns immediately either way.
+/// latency), so at most one producer flushes at a time. The event loop returns
+/// immediately either way.
+///
+/// The retiring generation's still-outstanding in-flight deliveries are tracked
+/// separately by the event loop (in its `retiring_in_flight` set), not here, so
+/// they no longer count against the live generation's `max_in_flight` admission
+/// bound and a stalled retiring producer cannot starve new-generation delivery.
 fn spawn_producer_retirement(
     prior: Option<tokio::task::JoinHandle<()>>,
     producer: ExporterProducer,
@@ -314,6 +320,16 @@ struct InFlightSends {
     max_in_flight: usize,
 }
 
+/// An empty set with a zero admission bound, for the event loop's retiring
+/// in-flight set. That set's bound is never consulted -- it is drained, not
+/// admission-gated (`is_full`/`push` are never called on it) -- so the zero
+/// bound is inert.
+impl Default for InFlightSends {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
 impl InFlightSends {
     /// Creates an empty set bounded at `max_in_flight` concurrent deliveries.
     fn new(max_in_flight: usize) -> Self {
@@ -323,17 +339,32 @@ impl InFlightSends {
         }
     }
 
-    /// Adjusts the concurrency bound in place without discarding outstanding
-    /// deliveries.
+    /// Adjusts the concurrency bound in place.
     ///
-    /// Used on live reconfiguration when `max_in_flight` changes: the tracked
-    /// deliveries belong to the retiring generation and must keep being polled to
-    /// completion (their retiring producer stays alive so they resolve rather
-    /// than cancel), so the set is retuned rather than rebuilt. A lowered bound
-    /// takes effect for subsequent admissions; a raised bound applies
-    /// immediately.
+    /// Used on live reconfiguration when `max_in_flight` changes. The set only
+    /// ever holds current-generation deliveries (a cutover moves the retiring
+    /// generation's deliveries out via [`Self::retire`]), so this is a pure
+    /// bound change: a lowered bound takes effect for subsequent admissions; a
+    /// raised bound applies immediately.
     fn retune(&mut self, max_in_flight: usize) {
         self.max_in_flight = max_in_flight;
+    }
+
+    /// Retires this (live) generation into `retiring` at a cutover: moves this
+    /// set's still-outstanding deliveries into `retiring` (folding with any prior
+    /// retiring generation already tracked there) and leaves `self` empty.
+    ///
+    /// `retiring` is the event loop's retiring set: its deliveries no longer
+    /// count against the live generation's `max_in_flight` admission bound (its
+    /// bound is never consulted -- it is drained, not admission-gated), so a
+    /// stalled retiring producer cannot starve new-generation delivery. Each
+    /// delivery keeps the producer/topic it was committed to at enqueue time;
+    /// this only changes which set polls its completion, so a folded prior batch
+    /// is still delivered to its original topic.
+    fn retire(&mut self, retiring: &mut InFlightSends) {
+        for delivery in std::mem::take(&mut self.futures) {
+            retiring.futures.push(delivery);
+        }
     }
 
     /// Whether there are no outstanding deliveries.
@@ -377,6 +408,8 @@ impl InFlightSends {
         } else {
             None
         };
+        // Box the delivery future paired with its `meta` so the resolved
+        // completion yields both for finalization.
         self.futures.push(Box::pin(async move {
             let result = delivery.await;
             (meta, result)
@@ -934,6 +967,41 @@ impl KafkaExporter {
         }
     }
 
+    /// Finalizes an [`InFlightSends`]'s deliveries, bounded by `deadline_at`.
+    ///
+    /// Used on shutdown for both the live and the retiring in-flight sets: each
+    /// resolved delivery is reported as an ack/nack; if the deadline is reached
+    /// first, the remainder is abandoned (their futures resolve as `Canceled`
+    /// when the producers drop) so shutdown stays deadline-bounded.
+    async fn drain_in_flight_until(
+        &mut self,
+        in_flight: &mut InFlightSends,
+        deadline_at: tokio::time::Instant,
+        reporter: &dyn AckNackReporter,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) {
+        loop {
+            if in_flight.is_empty() {
+                return;
+            }
+            match tokio::time::timeout_at(deadline_at, in_flight.next_completion()).await {
+                Ok((meta, result)) => {
+                    self.finalize_send_completion(meta, result, reporter, Some(effect_handler))
+                        .await;
+                }
+                Err(_elapsed) => {
+                    otap_df_telemetry::otel_warn!(
+                        "kafka.exporter.shutdown.drain_deadline_exceeded",
+                        abandoned = in_flight.len() as u64,
+                        error = "shutdown deadline reached before all in-flight deliveries were \
+                                 finalized; abandoning the remainder",
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
     /// Applies a live configuration change pushed via
     /// [`NodeControlMsg::Config`].
     ///
@@ -960,11 +1028,20 @@ impl KafkaExporter {
     ///    to the OLD destination), `purge`, and drop (the drop joins its poll
     ///    thread) run on a [`tokio::task::spawn_blocking`] thread, so a slow or
     ///    unavailable broker cannot stall normal processing or backpressure. The
-    ///    generation's tracked delivery futures resolve from that flush and are
-    ///    finalized (acked/nacked) by the event loop as usual. Retirement is
-    ///    bounded to at most one generation at a time: if a prior generation is
-    ///    still retiring, it is awaited (bounded by the old flush timeout) before
-    ///    the next is spawned.
+    ///    generation's delivery futures are moved OUT of the live in-flight set
+    ///    into the event loop's separate `retiring_in_flight` set (so they no
+    ///    longer count against the new generation's `max_in_flight` admission
+    ///    bound -- a stalled retiring producer cannot starve new-generation
+    ///    delivery) and are finalized (acked/nacked) by the event loop as they
+    ///    resolve. Each delivery was committed to its own generation's
+    ///    producer/topic at enqueue time, so it is still delivered to that
+    ///    original topic regardless of which set now polls its completion. If a
+    ///    prior generation is still retiring, its still-outstanding deliveries are
+    ///    folded into `retiring_in_flight` (so they stay tracked and finalized --
+    ///    delivered by the prior producer's flush or transiently nacked when it
+    ///    drops, never silently lost) and its producer-teardown task is chained
+    ///    (bounded by the old flush timeout, so at most one producer flushes at a
+    ///    time).
     ///
     /// The flush is bounded by the retiring (old) config's `timeout_ms`, matching
     /// the per-message delivery bound. In-flight records get one final bounded
@@ -981,6 +1058,7 @@ impl KafkaExporter {
         &mut self,
         config: serde_json::Value,
         in_flight: &mut InFlightSends,
+        retiring_in_flight: &mut InFlightSends,
         retiring_producer: &mut Option<tokio::task::JoinHandle<()>>,
         effect_handler: &EffectHandler<OtapPdata>,
     ) {
@@ -1091,24 +1169,32 @@ impl KafkaExporter {
         self.traces_allowed_topics_regex = new_traces_regex;
         self.metrics_allowed_topics_regex = new_metrics_regex;
         self.logs_allowed_topics_regex = new_logs_regex;
-        // Rebuild the in-flight set at the new bound if `max_in_flight` changed.
-        // Any deliveries still tracked in the previous set belong to the retiring
-        // generation; they were moved out of `self` here only conceptually -- the
-        // set is owned by the event loop, which keeps polling them to completion
-        // regardless of the swap, and the retiring producer below stays alive so
-        // they resolve successfully rather than being cancelled.
+
+        // Retire the live generation's in-flight deliveries: `retire` moves them
+        // out of the live set (leaving it empty) and folds them into
+        // `retiring_in_flight` alongside any prior retiring generation. They no
+        // longer count against the live generation's `max_in_flight` admission
+        // bound, so a stalled retiring producer can no longer starve
+        // new-generation delivery; the retiring producer below stays alive off the
+        // event loop to drive them to completion (or purge), and the event loop
+        // drains `retiring_in_flight` to report each batch's ack/nack. Folding the
+        // prior generation in preserves its still-tracked deliveries; each was
+        // committed to its own generation's producer/topic at enqueue time, so it
+        // is still delivered to that original topic regardless of which set now
+        // polls its completion.
+        in_flight.retire(retiring_in_flight);
+
+        // The live set is now empty and holds only current-generation
+        // deliveries, so applying the new `max_in_flight` is a pure bound change.
         if let Some(max_in_flight) = new_max_in_flight {
             in_flight.retune(max_in_flight);
         }
 
-        // Retire the old generation's producer off the event loop, without ever
-        // blocking it. Retirement (flush of the generation's still in-flight
-        // batches to the OLD destination, then purge and drop, which joins the
-        // poll thread) runs on a `spawn_blocking` thread, so a slow or unavailable
-        // broker cannot stall the pipeline. Retirement concurrency is bounded to
-        // at most one outstanding task by chaining the previous retirement into
-        // the new one (see `spawn_producer_retirement`); the event loop returns
-        // immediately.
+        // Retire the old generation's producer off the event loop without ever
+        // blocking it. If a prior generation is still retiring, only its
+        // producer-teardown task is chained (bounded by the flush timeout, so at
+        // most one producer flushes at a time); its deliveries were already folded
+        // into `retiring_in_flight` above.
         *retiring_producer = Some(spawn_producer_retirement(
             retiring_producer.take(),
             old_producer,
@@ -1154,31 +1240,71 @@ impl Exporter<OtapPdata> for KafkaExporter {
         // historical serial behavior.
         let mut in_flight = InFlightSends::new(self.config.max_in_flight());
 
+        // The retiring generation from the most recent live reconfiguration(s):
+        // its still-outstanding in-flight deliveries, moved out of the live set
+        // at each cutover (via `InFlightSends::retire`) so they never gate
+        // new-generation admission -- its `max_in_flight` bound is never consulted
+        // (it is drained, not admission-gated), hence `default()`. The event loop
+        // drains these to report acks/nacks; each delivery was committed to its
+        // own generation's producer/topic at enqueue time, so it still delivers to
+        // that original topic. Successive cutovers fold their prior deliveries in
+        // here, so a single set holds all still-outstanding retiring deliveries;
+        // it stays bounded because each retiring producer's chained teardown drops
+        // it (resolving its deliveries) within the flush timeout.
+        let mut retiring_in_flight = InFlightSends::default();
+
         // At most one outstanding producer-retirement task (a `spawn_blocking`
-        // flush + purge + drop of a retired generation's producer). Threaded like
-        // `in_flight`: a reconfiguration chains onto it (so at most one runs at a
-        // time) and shutdown awaits it bounded by the deadline.
+        // flush + purge + drop of a retired generation's producer). A
+        // reconfiguration chains onto it (so at most one runs at a time) and
+        // shutdown awaits it bounded by the deadline.
         let mut retiring_producer: Option<tokio::task::JoinHandle<()>> = None;
 
         // Main loop: biased-wait for either an in-flight completion or the next
         // inbound message, admitting new pdata only while the in-flight set has
         // spare capacity.
         loop {
-            // Gate pdata admission on spare capacity: while the set is full only
-            // control messages (and shutdown-time force-drained pdata) can
-            // arrive, so the `max_in_flight` bound is respected. Completions win
-            // ties so acks/nacks drain promptly and in-flight memory is
-            // released.
+            // Release a finished retirement task once its deliveries have all been
+            // finalized, so a later cutover starts fresh.
+            if retiring_in_flight.is_empty()
+                && retiring_producer
+                    .as_ref()
+                    .is_some_and(tokio::task::JoinHandle::is_finished)
+            {
+                retiring_producer = None;
+            }
+
+            // Gate pdata admission on spare capacity: while the live set is full
+            // only control messages (and shutdown-time force-drained pdata) can
+            // arrive, so the `max_in_flight` bound is respected. Admission is
+            // gated ONLY by the live generation's in-flight set -- the retiring
+            // generation's deliveries are tracked separately and never count
+            // toward the bound, so a stalled retiring producer cannot starve
+            // new-generation delivery. Completions win ties so acks/nacks drain
+            // promptly and in-flight memory is released.
             let accepting_pdata = !in_flight.is_full();
-            let msg = if in_flight.is_empty() {
+            let msg = if in_flight.is_empty() && retiring_in_flight.is_empty() {
                 inbox.recv_when(accepting_pdata).await?
             } else {
-                let completion_fut = in_flight.next_completion().fuse();
+                // Either completion source stays pending forever when its set is
+                // empty, so both arms are always safe to poll.
+                let live_completion_fut = in_flight.next_completion().fuse();
+                let retiring_completion_fut = retiring_in_flight.next_completion().fuse();
                 let recv_fut = inbox.recv_when(accepting_pdata).fuse();
-                futures::pin_mut!(completion_fut, recv_fut);
+                futures::pin_mut!(live_completion_fut, retiring_completion_fut, recv_fut);
 
                 futures::select_biased! {
-                    completion = completion_fut => {
+                    completion = live_completion_fut => {
+                        let (meta, result) = completion;
+                        self.finalize_send_completion(
+                            meta,
+                            result,
+                            &ack_nack_reporter,
+                            Some(&effect_handler),
+                        )
+                        .await;
+                        continue;
+                    }
+                    completion = retiring_completion_fut => {
                         let (meta, result) = completion;
                         self.finalize_send_completion(
                             meta,
@@ -1254,40 +1380,33 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // ack/nack is reported before we return.
                     self.drain_and_flush(deadline, &effect_handler).await;
 
-                    // Finalize tracked in-flight deliveries, but bounded by the
-                    // shutdown `deadline`. Deliveries against a retiring generation
-                    // resolve only when that producer's off-loop flush/purge
-                    // completes (bounded by its own, possibly larger, timeout), so
-                    // an unbounded drain here could overrun the deadline. Per the
-                    // engine shutdown contract (deadline-boundedness wins), stop at
-                    // the deadline and abandon the rest: their futures resolve as
-                    // Canceled when the producers drop (a best-effort transient
-                    // nack).
+                    // Finalize tracked in-flight deliveries, bounded by the
+                    // shutdown `deadline`. Deliveries resolve only when their
+                    // producer's off-loop flush/purge completes (bounded by its
+                    // own, possibly larger, timeout), so an unbounded drain could
+                    // overrun the deadline. Per the engine shutdown contract
+                    // (deadline-boundedness wins), stop at the deadline and abandon
+                    // the rest: their futures resolve as Canceled when the
+                    // producers drop (a best-effort transient nack).
+                    //
+                    // Drain sequentially under a single deadline: first the live
+                    // generation, then the retiring generation's deliveries, then
+                    // await the retiring producer's teardown task.
                     let deadline_at = tokio::time::Instant::from_std(deadline);
-                    while !in_flight.is_empty() {
-                        match tokio::time::timeout_at(deadline_at, in_flight.next_completion())
-                            .await
-                        {
-                            Ok((meta, result)) => {
-                                self.finalize_send_completion(
-                                    meta,
-                                    result,
-                                    &ack_nack_reporter,
-                                    Some(&effect_handler),
-                                )
-                                .await;
-                            }
-                            Err(_elapsed) => {
-                                otap_df_telemetry::otel_warn!(
-                                    "kafka.exporter.shutdown.drain_deadline_exceeded",
-                                    abandoned = in_flight.len() as u64,
-                                    error = "shutdown deadline reached before all in-flight \
-                                             deliveries were finalized; abandoning the remainder",
-                                );
-                                break;
-                            }
-                        }
-                    }
+                    self.drain_in_flight_until(
+                        &mut in_flight,
+                        deadline_at,
+                        &ack_nack_reporter,
+                        &effect_handler,
+                    )
+                    .await;
+                    self.drain_in_flight_until(
+                        &mut retiring_in_flight,
+                        deadline_at,
+                        &ack_nack_reporter,
+                        &effect_handler,
+                    )
+                    .await;
 
                     // Wait for any in-flight producer retirement from a recent
                     // reconfiguration to finish, bounded by the remaining shutdown
@@ -1322,6 +1441,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     self.reconfigure(
                         config,
                         &mut in_flight,
+                        &mut retiring_in_flight,
                         &mut retiring_producer,
                         &effect_handler,
                     )
@@ -1654,8 +1774,8 @@ pub mod test_support {
         /// outlives the (short) deadline, modeling a librdkafka flush still
         /// running on its own blocking thread.
         /// Guarantees: the call returns bounded by the deadline, does NOT re-arm
-        /// the slot (it is left empty), and does NOT abort the still-running
-        /// task -- the retirement continues to completion on its own thread.
+        /// the slot (it is left empty), and does NOT abort the still-running task
+        /// -- the retirement continues to completion on its own thread.
         #[tokio::test]
         async fn await_pending_retirement_returns_when_task_outlives_deadline() {
             use std::sync::atomic::{AtomicBool, Ordering};
@@ -3222,17 +3342,11 @@ pub mod test_support {
         /// end-to-end to the new cluster's topic WHILE the retiring producer is
         /// still stalled (within the stall window, far below the old config's
         /// `timeout_ms`), so a healthy new generation is not held hostage by an
-        /// unflushable retiring one.
-        ///
-        /// KNOWN GAP: this test currently FAILS. The in-flight set (`InFlightSends`)
-        /// is shared across generations, so the two stuck old-generation deliveries
-        /// keep occupying it after the cutover. The event loop's admission gate
-        /// (`accepting_pdata = !in_flight.is_full()`) therefore stays closed and the
-        /// new-generation batch cannot be dequeued/delivered until an old delivery
-        /// drains -- i.e. only after the stall releases. Lowering `max_in_flight`
-        /// from 2 to 1 makes this strictly worse, but the starvation also occurs
-        /// when the bound is unchanged (2 stuck deliveries fill a bound of 2). It is
-        /// left failing (unfixed) to document the gap.
+        /// unflushable retiring one. The retiring generation's deliveries are
+        /// tracked separately (in the event loop's `retiring_in_flight` set) and
+        /// do not count against the live generation's `max_in_flight` admission
+        /// bound; once the stall releases the two old-generation batches still
+        /// deliver only to the old topic.
         ///
         /// Two independent mock clusters isolate the producers: the harness and
         /// consumers are wired purely from each config's `bootstrap.servers`, so
@@ -3242,9 +3356,6 @@ pub mod test_support {
         /// process-wide `AllBrokersDown` transient that the strict test consumer on
         /// the healthy cluster would treat as fatal.
         #[tokio::test]
-        #[ignore = "documents a known gap (unfixed): a stalled, unflushable retiring \
-                    generation whose stuck in-flight deliveries fill the shared in-flight \
-                    set starves new-generation delivery; run explicitly with `-- --ignored`"]
         async fn reconfigure_lowered_max_in_flight_new_producer_delivers_while_retiring_producer_cannot_flush()
          {
             let original_topic = "it-reconfig-mif-stall-old";
@@ -3288,6 +3399,17 @@ pub mod test_support {
                     // dequeue and enqueue both (bound = 2 admits both) before the
                     // stall is applied, so they are deterministically in flight --
                     // not merely buffered -- at cutover time.
+                    // Stall cluster A's OLD topic BEFORE the old batches are
+                    // enqueued, so neither delivery can flush and both are still in
+                    // flight on the old producer at cutover time. Making the old
+                    // topic's partition leaderless holds produce pending without a
+                    // hard disconnect. This fault is scoped to cluster A's old topic
+                    // (not a broker-wide round-trip delay), so it cannot slow the
+                    // separate, healthy cluster B where the new generation delivers.
+                    cluster_a
+                        .faults()
+                        .set_partition_leader(original_topic, 0, None);
+
                     exporter
                         .send_pdata(logs_pdata(p_old_1.clone(), None))
                         .await
@@ -3296,26 +3418,16 @@ pub mod test_support {
                         .send_pdata(logs_pdata(p_old_2.clone(), None))
                         .await
                         .expect("send old-gen pdata 2 before reconfigure");
+                    // Brief settle so the event loop dequeues and enqueues both to
+                    // the old producer (bound = 2 admits both) where they stall in
+                    // flight, before the cutover.
                     tokio::time::sleep(Duration::from_millis(300)).await;
-
-                    // Stall cluster A's broker so neither in-flight delivery can
-                    // flush during the core assertion window below: a per-request
-                    // round-trip delay holds the retiring producer's flush pending
-                    // (it cannot complete until the delay elapses) without a hard
-                    // disconnect. The stall is comfortably longer than a healthy
-                    // new-generation delivery, so a correct implementation would
-                    // deliver the new batch well within it while the retiring
-                    // producer still cannot flush; it stays well under `timeout_ms`
-                    // so it releases on its own afterward and the old-generation
-                    // batches still deliver to the old topic.
-                    const STALL: Duration = Duration::from_secs(2);
-                    cluster_a.faults().round_trip_time(1, STALL);
 
                     // Reconfigure onto the healthy cluster B and lower
                     // max_in_flight to 1. The two stuck old-generation deliveries
-                    // remain tracked in the in-flight set, so the lowered bound is
-                    // already exceeded (is_full() is true) when the new generation
-                    // begins.
+                    // are moved into the retiring generation's separate tracker, so
+                    // the live in-flight set starts empty at the new bound and the
+                    // new generation is admitted immediately.
                     exporter
                         .send_config(logs_reconfig_json_mif(
                             cluster_b.bootstrap_servers(),
@@ -3333,19 +3445,12 @@ pub mod test_support {
                         .expect("send new-gen pdata after reconfigure");
 
                     // Core assertion: the new-generation batch must land on the new
-                    // cluster's topic WHILE the retiring producer is still stalled
-                    // (within STALL, far below the old config's `timeout_ms`), so a
-                    // new, healthy generation is not held hostage by an unflushable
-                    // retiring one.
-                    //
-                    // This currently FAILS and documents a gap: the in-flight set is
-                    // shared across generations, so the two stuck old-generation
-                    // deliveries keep it full and the admission gate stays closed;
-                    // the new-generation batch is starved until an old delivery
-                    // drains (i.e. only after the stall releases). A correct
-                    // implementation would let the new generation deliver
-                    // independently of the retiring generation's stuck deliveries.
-                    let delivered = new_consumer.try_recv(STALL).await.expect(
+                    // cluster's topic promptly WHILE the retiring producer is still
+                    // stalled (well below the old config's `timeout_ms`), so a new,
+                    // healthy generation is not held hostage by an unflushable
+                    // retiring one. The retiring generation's stuck deliveries are
+                    // tracked separately and never gate live-generation admission.
+                    let delivered = new_consumer.try_recv(Duration::from_secs(5)).await.expect(
                         "new-generation batch must be delivered while the retiring producer is \
                          still stalled, not starved behind its stuck in-flight deliveries under \
                          the lowered max_in_flight bound",
@@ -3357,12 +3462,15 @@ pub mod test_support {
                         .assert_no_more_messages(Duration::from_millis(500))
                         .await;
 
-                    // The stall releases on its own (STALL < `timeout_ms`), so the
-                    // retiring producer's off-loop flush finally delivers the two
-                    // old-generation batches. Routing verification: cluster A's old
-                    // topic must eventually receive both old-generation payloads
-                    // (delivered, not dropped or misrouted) and never the
-                    // new-generation payload.
+                    // Restore the old topic's leader so the retiring producer's
+                    // off-loop flush finally delivers the two old-generation
+                    // batches. Routing verification: cluster A's old topic must
+                    // eventually receive both old-generation payloads (delivered,
+                    // not dropped or misrouted) and never the new-generation
+                    // payload.
+                    cluster_a
+                        .faults()
+                        .set_partition_leader(original_topic, 0, Some(1));
                     let mut old_delivered: std::collections::HashSet<Vec<u8>> =
                         std::collections::HashSet::new();
                     for m in original_consumer
@@ -3374,12 +3482,336 @@ pub mod test_support {
                     assert!(
                         old_delivered.contains(&p_old_1) && old_delivered.contains(&p_old_2),
                         "both old-generation batches must be delivered to the old topic after \
-                         the stall releases, not dropped or misrouted"
+                         the leader is restored, not dropped or misrouted"
                     );
                     assert!(
                         !old_delivered.contains(&p_new),
                         "the new-generation batch must never land on the old topic"
                     );
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): with every broker down so
+        /// nothing can flush, put a batch in flight on generation 0, then apply two
+        /// back-to-back reconfigurations (to generation 1, then generation 2) while
+        /// generation 0's batch is still stuck in flight.
+        /// Guarantees: single-generation bounded tracking. The second cutover does
+        /// not block on the still-stuck prior generation, and generation 0's
+        /// folded-in in-flight batch is never silently lost -- once the broker
+        /// recovers it is finalized (delivered) by the retiring producer's flush.
+        #[tokio::test]
+        async fn reconfigure_rapid_cutover_keeps_prior_generation_finalizable() {
+            let t0 = "it-reconfig-bounded-0";
+            let t1 = "it-reconfig-bounded-1";
+            let t2 = "it-reconfig-bounded-2";
+            with_cluster(
+                KafkaTestCluster::builder().topic(t0).topic(t1).topic(t2),
+                |cluster| async move {
+                    // Every broker down: no producer can flush, so generation 0's
+                    // batch stays stuck in flight through both reconfigures.
+                    cluster.faults().all_brokers_down();
+                    const FLUSH_TIMEOUT_MS: u64 = 30_000;
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(t0.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(FLUSH_TIMEOUT_MS)
+                        .try_into()
+                        .expect("config should be valid");
+                    let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // P0 in flight on generation 0 (subscribed so its completion is
+                    // observable end-to-end via the completion channel).
+                    let p0 = logs_request_bytes_seq(1);
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(p0.clone(), None))
+                        .await
+                        .expect("send pdata before first reconfigure");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    // First cutover retires generation 0 (its stuck batch moves to
+                    // the retiring tracker). Second cutover, back-to-back while
+                    // generation 0 is still stuck, must not block: it folds
+                    // generation 0's deliveries into the new retiring generation and
+                    // chains the teardown, returning far below FLUSH_TIMEOUT_MS.
+                    let start = std::time::Instant::now();
+                    let phase = tokio::time::timeout(Duration::from_secs(3), async {
+                        exporter
+                            .send_config(logs_reconfig_json(cluster.bootstrap_servers(), t1))
+                            .await;
+                        exporter
+                            .send_config(logs_reconfig_json(cluster.bootstrap_servers(), t2))
+                            .await;
+                    })
+                    .await;
+                    assert!(
+                        phase.is_ok() && start.elapsed() < Duration::from_secs(3),
+                        "back-to-back cutovers must stay bounded (not wait the {FLUSH_TIMEOUT_MS}ms \
+                         flush timeout): took {:?}",
+                        start.elapsed()
+                    );
+
+                    // Recover the broker so the retiring producer's flush finally
+                    // delivers generation 0's folded-in batch. It must be finalized
+                    // (an ACK) rather than silently lost.
+                    cluster.faults().all_brokers_up();
+                    let completion = exporter
+                        .try_recv_completion(Duration::from_secs(15))
+                        .await
+                        .expect("generation 0's folded-in batch must be finalized, not lost");
+                    assert!(
+                        matches!(
+                            completion,
+                            otap_df_engine::control::PipelineCompletionMsg::DeliverAck { .. }
+                        ),
+                        "generation 0's batch is delivered once the broker recovers"
+                    );
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): configure topic A and put
+        /// a batch (`p_a`) in flight on generation A (stalled so it cannot flush);
+        /// reconfigure to topic B (generation A retires, `p_a` folds into the
+        /// retiring set); put a batch (`p_b`) in flight on generation B (also
+        /// stalled); reconfigure again to topic C (generation A's `p_a` is now
+        /// merged alongside B's `p_b` in the same retiring set). Then release the
+        /// stalls.
+        /// Guarantees: a batch's destination is fixed at enqueue time, so a merged
+        /// prior-generation batch is still delivered to ITS ORIGINAL topic --
+        /// `p_a` lands only on topic A and `p_b` only on topic B, regardless of
+        /// how many later cutovers fold them into a shared retiring set. No batch
+        /// is dropped or misrouted to a later generation's topic.
+        #[tokio::test]
+        async fn reconfigure_merged_prior_generation_delivers_to_original_topic() {
+            let topic_a = "it-reconfig-merge-a";
+            let topic_b = "it-reconfig-merge-b";
+            let topic_c = "it-reconfig-merge-c";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(topic_a)
+                    .topic(topic_b)
+                    .topic(topic_c),
+                |cluster| async move {
+                    let consumer_a = cluster.consumer().subscribe(&[topic_a]);
+                    let consumer_b = cluster.consumer().subscribe(&[topic_b]);
+                    let consumer_c = cluster.consumer().subscribe(&[topic_c]);
+
+                    // Generous flush bound so stalled batches release (deliver)
+                    // rather than time out and purge.
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic_a.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(30_000)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Byte-distinct payloads so each can be traced to its origin
+                    // generation/topic.
+                    let p_a = logs_request_bytes_seq(1);
+                    let p_b = logs_request_bytes_seq(2);
+                    let p_c = logs_request_bytes_seq(3);
+
+                    // Stall topic A (topic-scoped: leaderless partition holds A's
+                    // produce pending without disturbing B/C), then put p_a in
+                    // flight on generation A.
+                    cluster.faults().set_partition_leader(topic_a, 0, None);
+                    exporter
+                        .send_pdata(logs_pdata(p_a.clone(), None))
+                        .await
+                        .expect("send p_a on generation A");
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                    // Cutover to topic B: generation A retires; p_a folds into the
+                    // retiring set.
+                    exporter
+                        .send_config(logs_reconfig_json(cluster.bootstrap_servers(), topic_b))
+                        .await;
+
+                    // Stall topic B and put p_b in flight on generation B.
+                    cluster.faults().set_partition_leader(topic_b, 0, None);
+                    exporter
+                        .send_pdata(logs_pdata(p_b.clone(), None))
+                        .await
+                        .expect("send p_b on generation B");
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                    // Cutover to topic C: generation B retires; p_a (from A) is now
+                    // merged alongside p_b (from B) in the same retiring set.
+                    exporter
+                        .send_config(logs_reconfig_json(cluster.bootstrap_servers(), topic_c))
+                        .await;
+
+                    // p_c on generation C delivers immediately to topic C (its
+                    // producer/topic are healthy).
+                    exporter
+                        .send_pdata(logs_pdata(p_c.clone(), None))
+                        .await
+                        .expect("send p_c on generation C");
+                    let _ = consumer_c
+                        .recv()
+                        .await
+                        .assert_topic(topic_c)
+                        .assert_payload(&p_c);
+
+                    // Release both stalls so the retiring producers finally flush.
+                    cluster.faults().set_partition_leader(topic_a, 0, Some(1));
+                    cluster.faults().set_partition_leader(topic_b, 0, Some(1));
+
+                    // Delivery proof: the merged prior-generation batches land on
+                    // their ORIGINAL topics -- p_a on A, p_b on B -- and each topic
+                    // receives only its own generation's payload.
+                    let _ = consumer_a
+                        .recv()
+                        .await
+                        .assert_topic(topic_a)
+                        .assert_payload(&p_a);
+                    consumer_a
+                        .assert_no_more_messages(Duration::from_millis(500))
+                        .await;
+                    let _ = consumer_b
+                        .recv()
+                        .await
+                        .assert_topic(topic_b)
+                        .assert_payload(&p_b);
+                    consumer_b
+                        .assert_no_more_messages(Duration::from_millis(500))
+                        .await;
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): the same 3-config merge as
+        /// `reconfigure_merged_prior_generation_delivers_to_original_topic`, but
+        /// across TWO brokers. Config A sends to broker A (topic A); config B and
+        /// config C both send to broker B (topics B then C). Put `p_a` in flight on
+        /// broker A (stalled), cutover to broker B (generation A retires, `p_a`
+        /// folds into the retiring set while its retiring producer targets broker
+        /// A), put `p_b` in flight on broker B (stalled), then cutover again on
+        /// broker B (generation B retires, so `p_a` now coexists with `p_b` in the
+        /// same retiring set whose most-recent retiring producer targets broker B).
+        /// Release the stalls.
+        /// Guarantees: a batch's destination broker+topic is fixed at enqueue time,
+        /// so `p_a` is still delivered to BROKER A / topic A even though it was
+        /// absorbed into a retiring set whose retiring producer sends to broker B;
+        /// `p_b` lands only on broker B / topic B. No batch is dropped or misrouted
+        /// across the broker boundary.
+        ///
+        /// Two independent mock clusters model the two brokers: the harness and
+        /// consumers are wired purely from each config's `bootstrap.servers`, so
+        /// per-topic leaderless stalls on one cluster do not affect the other.
+        #[tokio::test]
+        async fn reconfigure_merged_prior_generation_delivers_to_original_broker() {
+            let topic_a = "it-reconfig-merge-broker-a";
+            let topic_b = "it-reconfig-merge-broker-b";
+            let topic_c = "it-reconfig-merge-broker-c";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic_a),
+                |cluster_a| async move {
+                    // Second broker (cluster B), hosting the topics for configs B
+                    // and C. Built inline on the same LocalSet thread.
+                    let cluster_b = KafkaTestCluster::builder()
+                        .topic(topic_b)
+                        .topic(topic_c)
+                        .build();
+
+                    let consumer_a = cluster_a.consumer().subscribe(&[topic_a]);
+                    let consumer_b = cluster_b.consumer().subscribe(&[topic_b]);
+                    let consumer_c = cluster_b.consumer().subscribe(&[topic_c]);
+
+                    // Config A -> broker A, topic A. Generous flush bound so stalled
+                    // batches release (deliver) rather than time out and purge.
+                    let cfg = KafkaExporterConfigBuilder::new(cluster_a.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic_a.into(), MessageFormat::OtlpProto))
+                        .with_timeout_ms(30_000)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster_a, cfg);
+
+                    let p_a = logs_request_bytes_seq(1);
+                    let p_b = logs_request_bytes_seq(2);
+                    let p_c = logs_request_bytes_seq(3);
+
+                    // Stall broker A's topic A (leaderless partition), then put p_a
+                    // in flight on generation A (broker A).
+                    cluster_a.faults().set_partition_leader(topic_a, 0, None);
+                    exporter
+                        .send_pdata(logs_pdata(p_a.clone(), None))
+                        .await
+                        .expect("send p_a on generation A (broker A)");
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                    // Config B -> broker B, topic B. Generation A retires; p_a folds
+                    // into the retiring set (its retiring producer still targets
+                    // broker A).
+                    exporter
+                        .send_config(logs_reconfig_json(cluster_b.bootstrap_servers(), topic_b))
+                        .await;
+
+                    // Stall broker B's topic B, then put p_b in flight on generation
+                    // B (broker B).
+                    cluster_b.faults().set_partition_leader(topic_b, 0, None);
+                    exporter
+                        .send_pdata(logs_pdata(p_b.clone(), None))
+                        .await
+                        .expect("send p_b on generation B (broker B)");
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                    // Config C -> broker B, topic C. Generation B retires; p_a (from
+                    // broker A) now coexists with p_b (from broker B) in the same
+                    // retiring set, whose most-recent retiring producer targets
+                    // broker B.
+                    exporter
+                        .send_config(logs_reconfig_json(cluster_b.bootstrap_servers(), topic_c))
+                        .await;
+
+                    // p_c on generation C delivers immediately to broker B / topic C
+                    // (its producer/topic are healthy).
+                    exporter
+                        .send_pdata(logs_pdata(p_c.clone(), None))
+                        .await
+                        .expect("send p_c on generation C (broker B)");
+                    let _ = consumer_c
+                        .recv()
+                        .await
+                        .assert_topic(topic_c)
+                        .assert_payload(&p_c);
+
+                    // Release both stalls so the retiring producers finally flush.
+                    cluster_a.faults().set_partition_leader(topic_a, 0, Some(1));
+                    cluster_b.faults().set_partition_leader(topic_b, 0, Some(1));
+
+                    // Delivery proof across the broker boundary: p_a lands on BROKER
+                    // A / topic A even though it was absorbed into a retiring set
+                    // whose retiring producer targets broker B; p_b lands on broker
+                    // B / topic B. Each topic receives only its own payload.
+                    let _ = consumer_a
+                        .recv()
+                        .await
+                        .assert_topic(topic_a)
+                        .assert_payload(&p_a);
+                    consumer_a
+                        .assert_no_more_messages(Duration::from_millis(500))
+                        .await;
+                    let _ = consumer_b
+                        .recv()
+                        .await
+                        .assert_topic(topic_b)
+                        .assert_payload(&p_b);
+                    consumer_b
+                        .assert_no_more_messages(Duration::from_millis(500))
+                        .await;
 
                     exporter.shutdown(Duration::from_secs(10)).await;
                     exporter.await_stopped().await;
@@ -3735,6 +4167,60 @@ pub mod test_support {
                 in_flight.is_empty(),
                 "set is empty after draining both sends"
             );
+        }
+
+        /// Scenario (live reconfiguration): a cutover retires the live set's
+        /// outstanding deliveries into a separate retiring set via `retire`,
+        /// leaving stuck retiring deliveries tracked separately.
+        /// Guarantees: the live set is empty (not full) after `retire`, so live
+        /// admission is gated only by current-generation deliveries and a stalled
+        /// retiring generation cannot starve new-generation admission -- while the
+        /// moved deliveries remain finalizable from the retiring set.
+        #[tokio::test]
+        async fn retire_frees_live_admission_from_retiring_deliveries() {
+            // Live set at bound 1 with one outstanding (never-resolving) delivery,
+            // so it is at capacity and would otherwise block admission.
+            let mut in_flight = InFlightSends::new(1);
+            let (never_tx, never_rx) = futures_channel::oneshot::channel::<OwnedDeliveryResult>();
+            // Keep the sender alive so the delivery future stays pending (not
+            // Canceled) for the duration of the test.
+            let _never_tx = never_tx;
+            let stuck_delivery = ExporterDeliveryFuture::from_receiver_for_test(never_rx);
+            let stuck_meta = SendMeta {
+                signal_type: SignalType::Logs,
+                topic: "old".to_string(),
+                pdata: sample_pdata(SignalType::Logs),
+            };
+            let drained = in_flight.push(stuck_delivery, stuck_meta).await;
+            assert!(drained.is_none());
+            assert!(in_flight.is_full(), "the live set is at capacity (max=1)");
+
+            // Cutover: retire the live generation's deliveries into the (empty)
+            // retiring set. The live set is now empty, so it accepts
+            // new-generation pdata even though the moved delivery is still stuck.
+            let mut retiring = InFlightSends::default();
+            in_flight.retire(&mut retiring);
+            assert!(
+                in_flight.is_empty() && !in_flight.is_full(),
+                "after retire the live set is empty and admits new deliveries"
+            );
+            assert_eq!(
+                retiring.len(),
+                1,
+                "the stuck delivery moved into the retiring set"
+            );
+
+            // The live set admits and completes a fresh (current-generation)
+            // delivery independently of the stuck retiring one.
+            let (d_new, m_new) = ready_send("new");
+            assert!(in_flight.push(d_new, m_new).await.is_none());
+            let (new_meta, new_result) = in_flight.next_completion().await;
+            assert_eq!(new_meta.topic, "new");
+            assert!(matches!(new_result, Ok(Ok(_))));
+
+            // The moved delivery is still tracked (finalizable) in the retiring
+            // set, not lost.
+            assert_eq!(retiring.len(), 1);
         }
 
         // ---- Backpressure & delivery-future pipelining ----
