@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787263000424,
+  "lastUpdate": 1787264286582,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -19684,6 +19684,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 114.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mmaratov@microsoft.com",
+            "name": "Maksat Maratov",
+            "username": "maksmara"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "a2785e8879c2d5e0ddcca0f812b013cfe077cb2f",
+          "message": "feat(console): render metrics in pretty output (#3802)\n\n# Change summary\n\nAdd metrics rendering to the Rust console exporter's human-readable\n`pretty` format.\n \n- Render metrics from validated OTLP protobuf bytes and OTAP Arrow\nrecords through the shared `MetricsView` traits.\n- Support Gauge, Sum, Histogram, ExponentialHistogram, and Summary data.\n- Include resources, scopes, metric metadata, aggregation properties,\ndata points, attributes, timestamps, values, exemplars, flags, buckets,\nand quantiles.\n- Report metric view creation failures through warning events and\nconsole exporter failure metrics.\n- Keep `record_json` explicitly logs-only; metrics using that format\nretain the unsupported-signal behavior.\n- Use a console-owned data-plane writer so complete metric lines are\npreserved without applying the bounded internal self-tracing line limit.\n- Normalize pretty metrics field and attribute spacing so rendered lines\ncontain no doubled separators or trailing whitespace.\n- Update console documentation, the traffic-generator example, and\nrelease notes.\n\n## Related issue\n\nCloses #3750\n\n## Example output\n \nWith `format: pretty`, `color: false`, and `unicode: false`, histograms\nuse compact output by default:\n\n```text\nRESOURCE schema_url=https://opentelemetry.io/schemas/1.0.0 [service.name=checkout]\n| +- SCOPE name=checkout.metrics version=1.0.0\n| | +- METRIC name=requests unit={request}\n| | | +- SUM temporality=cumulative monotonic=true\n| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 value_int=42 [method=GET]\n| | +- METRIC name=latency unit=ms\n| | | +- HISTOGRAM temporality=delta\n| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=4 sum=20 avg=5 min=0.5 max=12 [route=/checkout]\n```\n\nSet `pretty.histogram: raw` to render the complete histogram\nrepresentation:\n\n```yaml\ntype: exporter:console\nconfig:\n  format: pretty\n  color: false\n  unicode: false\n  pretty:\n    histogram: raw\n```\n\n```text\n| | +- METRIC name=latency unit=ms\n| | | +- HISTOGRAM temporality=delta\n| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=4 sum=20 min=0.5 max=12 [route=/checkout]\n| | | | | +- EXPLICIT_BOUND index=0 value=1\n| | | | | +- EXPLICIT_BOUND index=1 value=10\n| | | | | +- BUCKET_COUNT index=0 count=1\n| | | | | +- BUCKET_COUNT index=1 count=2\n| | | | | +- BUCKET_COUNT index=2 count=1\n```\n\n## Validation\n\n- Added compact/raw golden-output, long-line fidelity, writer-error\npropagation, spacing, configuration, and OTLP/OTAP equivalence coverage\nfor pretty metrics rendering.\n- `cargo test -p otap-df-core-nodes exporters::console_exporter::tests`\n- `cargo test -p otap-df-telemetry self_tracing::formatter`\n- `cargo test -p otap-df-core-nodes pretty_metrics_`\n- `cargo clippy -p otap-df-core-nodes --lib --tests -- -D warnings`\n- `cargo xtask check`\n\n## User-facing changes\n\nThe console exporter can now display metrics from OTLP and OTAP payloads\nwhen `format: pretty` is selected. Histograms use compact statistics by\ndefault, while `pretty.histogram: raw` exposes complete bucket details.\nComplete metric lines are preserved even when they exceed the internal\nself-tracing line limit. `record_json` remains logs-only.\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-08-20T21:21:02Z",
+          "tree_id": "2b966262c340f82f5d5e7552a3667b3736354faa",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a2785e8879c2d5e0ddcca0f812b013cfe077cb2f"
+        },
+        "date": 1787264273154,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.49,
             "unit": "MB"
           },
           {
