@@ -129,6 +129,12 @@ fn select_dynamic_auth(
     }
 }
 
+fn capability_config_error(error: EngineError) -> ConfigError {
+    ConfigError::InvalidUserConfig {
+        error: error.to_string(),
+    }
+}
+
 /// Declare the OTLP HTTP Exporter as a local exporter factory
 #[allow(unsafe_code)]
 #[otap_df_engine::component_inventory(category = Exporter)]
@@ -170,14 +176,10 @@ fn factory_create(
     // extension) supplies refreshed OAuth tokens.
     let token_provider = capabilities
         .optional_local::<otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider>()
-        .map_err(|e| ConfigError::InvalidUserConfig {
-            error: e.to_string(),
-        })?;
+        .map_err(capability_config_error)?;
     let agent_fed_provider = capabilities
         .optional_local::<otap_df_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider>()
-        .map_err(|e| ConfigError::InvalidUserConfig {
-            error: e.to_string(),
-        })?;
+        .map_err(capability_config_error)?;
     let dynamic_auth = select_dynamic_auth(token_provider, agent_fed_provider)?;
     Ok(ExporterWrapper::local(
         OtlpHttpExporter::from_config(pipeline, &node_config.config, dynamic_auth)?,
@@ -1661,17 +1663,9 @@ mod test {
                         .recv()
                         .await
                         .expect("expected a pipeline completion message");
-                    match msg {
-                        PipelineCompletionMsg::DeliverNack { nack } => {
-                            assert!(
-                                !nack.permanent,
-                                "a 401 with agent-fed auth must remain retryable"
-                            );
-                        }
-                        PipelineCompletionMsg::DeliverAck { .. } => {
-                            panic!("a 401 response must not Ack")
-                        }
-                    }
+                    let message = format!("{msg:?}");
+                    assert!(message.starts_with("DeliverNack"));
+                    assert!(message.contains("permanent: false"));
                 })
             });
 
@@ -1977,6 +1971,18 @@ mod test {
         let bearer = RequestAuth::BearerProvider { generation: 42 };
         assert!(bearer.is_dynamic());
         assert_eq!(bearer.bearer_generation(), Some(42));
+    }
+
+    /// Scenario: Capability lookup fails while the exporter factory resolves authentication.
+    /// Guarantees: Capability failures are reported as invalid user configuration errors.
+    #[test]
+    fn capability_errors_become_configuration_errors() {
+        let error = capability_config_error(EngineError::CapabilityAlreadyConsumed {
+            capability: "agent_fed_credential_provider".to_owned(),
+        });
+
+        assert!(matches!(error, ConfigError::InvalidUserConfig { .. }));
+        assert!(error.to_string().contains("already been claimed"));
     }
 
     /// Scenario: Agent-fed credentials and a static Authorization header are configured.
