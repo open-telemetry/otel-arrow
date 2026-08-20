@@ -2,4 +2,4 @@ change_type: enhancement
 component: pipeline
 note: "Render metrics from OTLP bytes and OTAP Arrow records in the console exporter's pretty format."
 issues: [3750]
-subtext: "Gauge, Sum, Histogram, ExponentialHistogram, and Summary output now includes metadata, aggregation properties, data points, buckets, exemplars, flags, and quantiles."
+subtext: "Histograms use compact statistics by default, with complete bounds and buckets available through pretty.histogram: raw."

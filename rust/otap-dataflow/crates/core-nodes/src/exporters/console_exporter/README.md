@@ -48,6 +48,11 @@ config:
   # Applies only to pretty output.
   unicode: true
 
+  # Format-specific pretty options.
+  pretty:
+    # "compact" (default) or "raw".
+    histogram: compact
+
   # Format-specific record_json options.
   record_json:
     # "rfc3339" (default) or "unix_nano".
@@ -92,7 +97,7 @@ config:
 The `pretty` format accepts metrics from both OTLP protobuf bytes and OTAP Arrow
 records. It renders resources, scopes, metric metadata, aggregation properties,
 data points, attributes, exact nanosecond timestamps, values, exemplars, flags,
-histogram buckets, and summary quantiles.
+compact histogram statistics, and summary quantiles.
 
 ```yaml
 type: exporter:console
@@ -113,8 +118,21 @@ RESOURCE [service.name=checkout]
 ```
 
 Aggregation temporality and monotonicity are printed before data points.
-Histogram and exponential histogram bucket entries are split across lines so
-large distributions remain inspectable.
+Histograms default to compact `count`, `sum`, `avg`, `min`, and `max`
+statistics. `avg` is emitted only when both `sum` is present and `count` is
+non-zero. Percentiles are not currently estimated.
+
+To inspect the complete histogram representation, including explicit bounds,
+bucket counts, exponential scale, offsets, zero count, and zero threshold,
+select raw histogram output:
+
+```yaml
+type: exporter:console
+config:
+  format: pretty
+  pretty:
+    histogram: raw
+```
 
 ### Record JSON output
 
@@ -257,6 +275,8 @@ the actual console export result.
 - Traces are not currently rendered in either format. To inspect traces, use
   `processor:debug` and terminate the pipeline with `exporter:noop`.
 - Metrics are rendered only by `pretty`. `record_json` remains logs-only.
+- Pretty histogram output is compact by default. Select
+  `pretty.histogram: raw` for complete bucket details.
 - OTAP views do not currently expose every scope field. In particular, scope
   name and version can be absent from `record_json` after conversion to OTAP,
   while scope attributes remain available.

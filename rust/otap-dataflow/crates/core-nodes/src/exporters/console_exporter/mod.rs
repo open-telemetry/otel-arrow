@@ -63,6 +63,25 @@ pub enum ConsoleOutputFormat {
     RecordJson,
 }
 
+/// Histogram detail levels supported by `pretty`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrettyHistogramMode {
+    /// Render compact distribution statistics without bucket details.
+    #[default]
+    Compact,
+    /// Render the complete histogram representation, including buckets.
+    Raw,
+}
+
+/// Format-specific configuration for `pretty`.
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+pub struct PrettyConfig {
+    /// Histogram detail level (default: compact).
+    #[serde(default)]
+    pub histogram: PrettyHistogramMode,
+}
+
 /// Timestamp encodings supported by `record_json`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -144,6 +163,9 @@ pub struct ConsoleExporterConfig {
     /// Whether to use Unicode box-drawing characters (default: true)
     #[serde(default = "default_unicode")]
     pub unicode: bool,
+    /// Format-specific options for `pretty`.
+    #[serde(default)]
+    pub pretty: PrettyConfig,
     /// Format-specific options for `record_json`.
     #[serde(default)]
     pub record_json: RecordJsonConfig,
@@ -155,6 +177,7 @@ impl Default for ConsoleExporterConfig {
             format: ConsoleOutputFormat::default(),
             color: default_color(),
             unicode: default_unicode(),
+            pretty: PrettyConfig::default(),
             record_json: RecordJsonConfig::default(),
         }
     }
@@ -184,9 +207,11 @@ impl ConsoleExporter {
     pub fn new(pipeline_ctx: &PipelineContext, config: ConsoleExporterConfig) -> Self {
         let metrics = ConsoleExporterMetrics::register(pipeline_ctx, config.format);
         let formatter = match config.format {
-            ConsoleOutputFormat::Pretty => {
-                ConsoleFormatter::Pretty(HierarchicalFormatter::new(config.color, config.unicode))
-            }
+            ConsoleOutputFormat::Pretty => ConsoleFormatter::Pretty(HierarchicalFormatter::new(
+                config.color,
+                config.unicode,
+                config.pretty.histogram,
+            )),
             ConsoleOutputFormat::RecordJson => {
                 ConsoleFormatter::RecordJson(RecordJsonFormatter::new(config.record_json))
             }
@@ -444,12 +469,17 @@ impl TreeChars {
 pub struct HierarchicalFormatter {
     color: ColorMode,
     tree: TreeChars,
+    histogram_mode: PrettyHistogramMode,
 }
 
 impl HierarchicalFormatter {
     /// Create a new hierarchical formatter.
     #[must_use]
-    pub const fn new(use_color: bool, use_unicode: bool) -> Self {
+    pub const fn new(
+        use_color: bool,
+        use_unicode: bool,
+        histogram_mode: PrettyHistogramMode,
+    ) -> Self {
         Self {
             color: if use_color {
                 ColorMode::Color
@@ -461,6 +491,7 @@ impl HierarchicalFormatter {
             } else {
                 TreeChars::ASCII
             },
+            histogram_mode,
         }
     }
 
@@ -856,15 +887,22 @@ mod tests {
         }
     }
 
-    fn format_pretty_metrics(metrics_data: &MetricsData) -> String {
+    fn format_pretty_metrics_with_histogram_mode(
+        metrics_data: &MetricsData,
+        histogram_mode: PrettyHistogramMode,
+    ) -> String {
         let bytes = metrics_data.encode_to_vec();
         let metrics_view = RawMetricsData::try_new(&bytes).expect("metrics");
-        let formatter = HierarchicalFormatter::new(false, false);
+        let formatter = HierarchicalFormatter::new(false, false, histogram_mode);
         let mut output = Vec::new();
         formatter
             .format_metrics_data_to(&metrics_view, &mut output)
             .expect("format pretty metrics");
         String::from_utf8(output).expect("pretty output is UTF-8")
+    }
+
+    fn format_pretty_metrics(metrics_data: &MetricsData) -> String {
+        format_pretty_metrics_with_histogram_mode(metrics_data, PrettyHistogramMode::Compact)
     }
 
     /// Scenario: the text formatter receives a fixture with multiple scopes and records.
@@ -873,7 +911,7 @@ mod tests {
     fn text_formatter_preserves_hierarchical_output() {
         let logs_data = logs_with_full_resource_and_scope();
         let bytes = OtlpProtoBytes::ExportLogsRequest(logs_data.encode_to_vec().into());
-        let formatter = HierarchicalFormatter::new(false, true);
+        let formatter = HierarchicalFormatter::new(false, true, PrettyHistogramMode::Compact);
 
         let mut output = Vec::new();
         let logs_view = RawLogsData::try_from(&bytes).expect("logs");
@@ -897,8 +935,8 @@ mod tests {
     }
 
     /// Scenario: Pretty output receives one batch containing every OTLP metric data type.
-    /// Guarantees: The complete metrics hierarchy, field ordering, and tree prefixes remain
-    /// byte-for-byte stable.
+    /// Guarantees: The compact metrics hierarchy, field ordering, and tree prefixes remain
+    /// byte-for-byte stable while raw histogram details are omitted.
     #[test]
     fn pretty_metrics_render_all_data_types_and_semantics() {
         let text = format_pretty_metrics(&metrics_with_all_data_types());
@@ -916,20 +954,11 @@ mod tests {
             "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
             "| | +- METRIC name=latency unit=ms\n",
             "| | | +- HISTOGRAM temporality=delta\n",
-            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=4 sum=20 min=0.5 max=12 flags=1 [series=blue]\n",
-            "| | | | | +- EXPLICIT_BOUND index=0 value=1\n",
-            "| | | | | +- EXPLICIT_BOUND index=1 value=10\n",
-            "| | | | | +- BUCKET_COUNT index=0 count=1\n",
-            "| | | | | +- BUCKET_COUNT index=1 count=2\n",
-            "| | | | | +- BUCKET_COUNT index=2 count=1\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=4 sum=20 avg=5 min=0.5 max=12 flags=1 [series=blue]\n",
             "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
             "| | +- METRIC name=size_distribution unit=By\n",
             "| | | +- EXPONENTIAL_HISTOGRAM temporality=cumulative\n",
-            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=6 scale=-1 zero_count=1 zero_threshold=0.01 sum=30 min=-4 max=16 flags=1 [series=blue]\n",
-            "| | | | | +- POS_BUCKET offset=2 bucket_index=2 count=2\n",
-            "| | | | | +- POS_BUCKET offset=2 bucket_index=3 count=1\n",
-            "| | | | | +- NEG_BUCKET offset=-2 bucket_index=-2 count=1\n",
-            "| | | | | +- NEG_BUCKET offset=-2 bucket_index=-1 count=1\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=6 sum=30 avg=5 min=-4 max=16 flags=1 [series=blue]\n",
             "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
             "| | +- METRIC name=request_summary unit=ms\n",
             "| | | +- SUMMARY\n",
@@ -940,23 +969,73 @@ mod tests {
         assert_eq!(text, expected);
     }
 
-    /// Scenario: Equivalent metrics are formatted through OTLP bytes and OTAP Arrow records.
-    /// Guarantees: Both supported payload models render the complete metrics hierarchy identically.
+    /// Scenario: Compact histograms have no usable sum or contain no observations.
+    /// Guarantees: Average is omitted instead of emitting a fabricated or undefined value.
+    #[test]
+    fn pretty_metrics_compact_histograms_omit_unavailable_average() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        let Some(metric::Data::Histogram(histogram)) = metrics[2].data.as_mut() else {
+            panic!("expected explicit histogram");
+        };
+        histogram.data_points[0].count = 0;
+        histogram.data_points[0].sum = Some(0.0);
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[3].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        histogram.data_points[0].sum = None;
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(!text.contains(" avg="));
+    }
+
+    /// Scenario: Pretty metrics select raw histogram rendering.
+    /// Guarantees: Exact explicit and exponential bucket details remain available on request.
+    #[test]
+    fn pretty_metrics_raw_histograms_preserve_bucket_details() {
+        let text = format_pretty_metrics_with_histogram_mode(
+            &metrics_with_all_data_types(),
+            PrettyHistogramMode::Raw,
+        );
+
+        assert!(text.contains(
+            "count=4 sum=20 min=0.5 max=12 flags=1 [series=blue]\n\
+             | | | | | +- EXPLICIT_BOUND index=0 value=1\n\
+             | | | | | +- EXPLICIT_BOUND index=1 value=10\n\
+             | | | | | +- BUCKET_COUNT index=0 count=1\n\
+             | | | | | +- BUCKET_COUNT index=1 count=2\n\
+             | | | | | +- BUCKET_COUNT index=2 count=1\n"
+        ));
+        assert!(text.contains(
+            "count=6 scale=-1 zero_count=1 zero_threshold=0.01 sum=30 min=-4 max=16 flags=1 [series=blue]\n\
+             | | | | | +- POS_BUCKET offset=2 bucket_index=2 count=2\n\
+             | | | | | +- POS_BUCKET offset=2 bucket_index=3 count=1\n\
+             | | | | | +- NEG_BUCKET offset=-2 bucket_index=-2 count=1\n\
+             | | | | | +- NEG_BUCKET offset=-2 bucket_index=-1 count=1\n"
+        ));
+    }
+
+    /// Scenario: Equivalent metrics use compact and raw formatting through both payload models.
+    /// Guarantees: OTLP bytes and OTAP Arrow records render identically in each histogram mode.
     #[test]
     fn pretty_metrics_support_otlp_and_otap_views() {
         let metrics_data = metrics_with_all_data_types();
-        let otlp_text = format_pretty_metrics(&metrics_data);
-
         let records = encode_metrics_otap_batch(&metrics_data).expect("encode OTAP metrics");
         let otap_view = OtapMetricsView::try_from(&records).expect("OTAP metrics view");
-        let formatter = HierarchicalFormatter::new(false, false);
-        let mut output = Vec::new();
-        formatter
-            .format_metrics_data_to(&otap_view, &mut output)
-            .expect("format OTAP metrics");
-        let otap_text = String::from_utf8(output).expect("pretty output is UTF-8");
 
-        assert_eq!(otap_text, otlp_text);
+        for histogram_mode in [PrettyHistogramMode::Compact, PrettyHistogramMode::Raw] {
+            let otlp_text =
+                format_pretty_metrics_with_histogram_mode(&metrics_data, histogram_mode);
+            let formatter = HierarchicalFormatter::new(false, false, histogram_mode);
+            let mut output = Vec::new();
+            formatter
+                .format_metrics_data_to(&otap_view, &mut output)
+                .expect("format OTAP metrics");
+            let otap_text = String::from_utf8(output).expect("pretty output is UTF-8");
+
+            assert_eq!(otap_text, otlp_text);
+        }
     }
 
     /// Scenario: A metrics field exceeds the fixed line capacity used by internal telemetry.
@@ -969,7 +1048,7 @@ mod tests {
 
         let bytes = metrics_data.encode_to_vec();
         let metrics_view = RawMetricsData::try_new(&bytes).expect("metrics");
-        let formatter = HierarchicalFormatter::new(true, false);
+        let formatter = HierarchicalFormatter::new(true, false, PrettyHistogramMode::Compact);
         let mut output = Vec::new();
         formatter
             .format_metrics_data_to(&metrics_view, &mut output)
@@ -1005,7 +1084,7 @@ mod tests {
         let metrics_data = metrics_with_all_data_types();
         let bytes = metrics_data.encode_to_vec();
         let metrics_view = RawMetricsData::try_new(&bytes).expect("metrics");
-        let formatter = HierarchicalFormatter::new(false, false);
+        let formatter = HierarchicalFormatter::new(false, false, PrettyHistogramMode::Compact);
 
         let err = formatter
             .format_metrics_data_to(&metrics_view, &mut FailingWriter)
@@ -1023,6 +1102,7 @@ mod tests {
         assert_eq!(config.format, ConsoleOutputFormat::Pretty);
         assert!(config.color);
         assert!(config.unicode);
+        assert_eq!(config.pretty.histogram, PrettyHistogramMode::Compact);
         assert_eq!(
             config.record_json.timestamp_format,
             RecordJsonTimestampFormat::Rfc3339
@@ -1036,11 +1116,22 @@ mod tests {
         assert!(config.record_json.scope);
         assert!(!config.record_json.otel);
 
-        let config: ConsoleExporterConfig =
-            serde_json::from_value(json!({"format": "pretty"})).expect("pretty config");
+        let config: ConsoleExporterConfig = serde_json::from_value(json!({
+            "format": "pretty",
+            "pretty": {
+                "histogram": "raw"
+            }
+        }))
+        .expect("pretty config");
         assert_eq!(config.format, ConsoleOutputFormat::Pretty);
+        assert_eq!(config.pretty.histogram, PrettyHistogramMode::Raw);
         assert!(
-            ConsoleFormatter::Pretty(HierarchicalFormatter::new(false, false)).supports_metrics()
+            ConsoleFormatter::Pretty(HierarchicalFormatter::new(
+                false,
+                false,
+                config.pretty.histogram
+            ))
+            .supports_metrics()
         );
 
         let config: ConsoleExporterConfig = serde_json::from_value(json!({
@@ -1081,6 +1172,16 @@ mod tests {
             }));
             assert!(result.is_err(), "{unsupported} should be rejected");
         }
+        let result = serde_json::from_value::<ConsoleExporterConfig>(json!({
+            "format": "pretty",
+            "pretty": {
+                "histogram": "summary"
+            }
+        }));
+        assert!(
+            result.is_err(),
+            "unsupported histogram mode should be rejected"
+        );
         for (field, unsupported) in [
             ("timestamp_format", "epoch"),
             ("body_field", "log"),

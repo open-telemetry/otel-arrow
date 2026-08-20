@@ -3,7 +3,7 @@
 
 //! Human-readable metrics formatting for the console exporter.
 
-use super::{HierarchicalFormatter, pretty_writer::PrettyWriter};
+use super::{HierarchicalFormatter, PrettyHistogramMode, pretty_writer::PrettyWriter};
 use otap_df_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
 use otap_df_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, DataType, DataView, ExemplarView,
@@ -177,22 +177,30 @@ impl HierarchicalFormatter {
         output: &mut dyn Write,
     ) -> io::Result<()> {
         self.format_attribute_line(4, "DATA_POINT", point.attributes(), output, |w| {
+            let count = point.count();
+            let sum = point.sum();
             write_times(w, point.start_time_unix_nano(), point.time_unix_nano())?;
-            write!(w, " count={}", point.count())?;
-            write_optional_f64(w, "sum", point.sum())?;
+            write!(w, " count={count}")?;
+            write_optional_f64(w, "sum", sum)?;
+            if self.histogram_mode == PrettyHistogramMode::Compact {
+                // TODO: Add percentile estimates to compact histogram output.
+                write_average(w, sum, count)?;
+            }
             write_optional_f64(w, "min", point.min())?;
             write_optional_f64(w, "max", point.max())?;
             write_flags(w, point.flags().into_inner())
         })?;
-        for (index, bound) in point.explicit_bounds().enumerate() {
-            self.format_plain_line(5, "EXPLICIT_BOUND", output, |w| {
-                write!(w, " index={index} value={bound}")
-            })?;
-        }
-        for (index, count) in point.bucket_counts().enumerate() {
-            self.format_plain_line(5, "BUCKET_COUNT", output, |w| {
-                write!(w, " index={index} count={count}")
-            })?;
+        if self.histogram_mode == PrettyHistogramMode::Raw {
+            for (index, bound) in point.explicit_bounds().enumerate() {
+                self.format_plain_line(5, "EXPLICIT_BOUND", output, |w| {
+                    write!(w, " index={index} value={bound}")
+                })?;
+            }
+            for (index, count) in point.bucket_counts().enumerate() {
+                self.format_plain_line(5, "BUCKET_COUNT", output, |w| {
+                    write!(w, " index={index} count={count}")
+                })?;
+            }
         }
         for exemplar in point.exemplars() {
             self.format_exemplar(&exemplar, output)?;
@@ -220,25 +228,35 @@ impl HierarchicalFormatter {
         output: &mut dyn Write,
     ) -> io::Result<()> {
         self.format_attribute_line(4, "DATA_POINT", point.attributes(), output, |w| {
+            let count = point.count();
+            let sum = point.sum();
             write_times(w, point.start_time_unix_nano(), point.time_unix_nano())?;
-            write!(
-                w,
-                " count={} scale={} zero_count={} zero_threshold={}",
-                point.count(),
-                point.scale(),
-                point.zero_count(),
-                point.zero_threshold()
-            )?;
-            write_optional_f64(w, "sum", point.sum())?;
+            write!(w, " count={count}")?;
+            if self.histogram_mode == PrettyHistogramMode::Raw {
+                write!(
+                    w,
+                    " scale={} zero_count={} zero_threshold={}",
+                    point.scale(),
+                    point.zero_count(),
+                    point.zero_threshold()
+                )?;
+            }
+            write_optional_f64(w, "sum", sum)?;
+            if self.histogram_mode == PrettyHistogramMode::Compact {
+                // TODO: Add percentile estimates to compact histogram output.
+                write_average(w, sum, count)?;
+            }
             write_optional_f64(w, "min", point.min())?;
             write_optional_f64(w, "max", point.max())?;
             write_flags(w, point.flags().into_inner())
         })?;
-        if let Some(positive) = point.positive() {
-            self.format_buckets("POS_BUCKET", &positive, output)?;
-        }
-        if let Some(negative) = point.negative() {
-            self.format_buckets("NEG_BUCKET", &negative, output)?;
+        if self.histogram_mode == PrettyHistogramMode::Raw {
+            if let Some(positive) = point.positive() {
+                self.format_buckets("POS_BUCKET", &positive, output)?;
+            }
+            if let Some(negative) = point.negative() {
+                self.format_buckets("NEG_BUCKET", &negative, output)?;
+            }
         }
         for exemplar in point.exemplars() {
             self.format_exemplar(&exemplar, output)?;
@@ -424,6 +442,15 @@ fn write_flags(w: &mut MetricsWriter<'_>, flags: u32) -> io::Result<()> {
 fn write_optional_f64(w: &mut MetricsWriter<'_>, name: &str, value: Option<f64>) -> io::Result<()> {
     if let Some(value) = value {
         write!(w, " {name}={value}")?;
+    }
+    Ok(())
+}
+
+fn write_average(writer: &mut MetricsWriter<'_>, sum: Option<f64>, count: u64) -> io::Result<()> {
+    if count > 0 {
+        if let Some(sum) = sum {
+            write!(writer, " avg={}", sum / count as f64)?;
+        }
     }
     Ok(())
 }
