@@ -1,0 +1,4 @@
+# Weaver's live-check action does not expose the shared --v2 CLI flag, so make
+# the registry version explicit through its supported configuration input.
+[registry]
+v2 = true

@@ -12,12 +12,16 @@ Tracking issue:
 
 ```text
 semconv/
+  live-check.weaver.toml
   manifest.yaml
   registry/
     attributes.yaml
     entities.yaml
     metrics/*.yaml
     events/*.yaml
+  triggers/*.sh
+semconv-live-check/
+  internal-events.yaml
 ```
 
 The manifest imports upstream OpenTelemetry semantic conventions when the
@@ -47,6 +51,11 @@ while `otap_dataflow.wire.event_name` preserves the emitted value. Event
 definitions include every statically declared attribute, scope, severity, and
 source location.
 
+The `semconv-live-check/` manifests describe the signals that a particular CI
+runtime scenario must exercise. They are coverage expectations, not
+semantic-convention definitions. Weaver still validates every telemetry sample
+received during the scenario against the complete registry.
+
 Metrics and events use `entity_associations` to identify the entity carrying
 their scope attributes. When a signal can originate from several alternative
 scope types, the association uses `one_of`.
@@ -63,7 +72,8 @@ weaver registry check --v2 --registry semconv
 ```
 
 The command validates the v2 registry and imported references. CI pins Weaver
-to v0.25.1 and always passes `--v2`.
+to v0.25.1, runs the static check with `--v2`, and live-checks telemetry emitted
+by an exercised engine scenario against the same registry.
 
 ## Updating the contract
 

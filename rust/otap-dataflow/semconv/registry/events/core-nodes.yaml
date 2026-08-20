@@ -1568,6 +1568,27 @@ events:
         sources:
         - crates/core-nodes/src/exporters/otlp_grpc_exporter/mod.rs
         availability: []
+- name: otlp.exporter.grpc.receive
+  brief: >
+    Emitted by the OTLP gRPC exporter when it receives a message from its
+    upstream channel.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        event_name: otlp.exporter.grpc.receive
+        scope_names:
+        - otel.exporter.otlp_grpc
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/exporters/otlp_grpc_exporter/mod.rs
+        availability: []
 - name: otlp.exporter.grpc.shutdown
   brief: The otlp.exporter.grpc.shutdown internal telemetry event occurred.
   stability: development
