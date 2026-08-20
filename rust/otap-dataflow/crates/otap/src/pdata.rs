@@ -1229,6 +1229,23 @@ mod test {
         assert!(end_handler.stop_total.get() > 0);
     }
 
+    /// Scenario: a processor consumes an active zero-item flow message without forwarding it.
+    /// Guarantees: no-output completion records end-node duration and produced zero items.
+    #[test]
+    fn flow_hook_completes_without_output() {
+        let mut pdata = create_empty_test_pdata();
+        pdata.start_flow_metric();
+
+        let end_handler = FakeFlowMetricHandler::end(7);
+        pdata.complete_processor_without_output(&end_handler);
+
+        assert_eq!(end_handler.stop_total_calls.get(), 1);
+        assert_eq!(end_handler.stop_signals_calls.get(), 1);
+        assert_eq!(end_handler.stop_signals.get(), 0);
+        assert!(end_handler.stop_total.get() > 0);
+        assert!(!pdata.has_active_flow_metric());
+    }
+
     #[tokio::test]
     async fn shared_receiver_send_with_source_node() {
         let (tx, mut rx) = mpsc::channel::<OtapPdata>(4);
