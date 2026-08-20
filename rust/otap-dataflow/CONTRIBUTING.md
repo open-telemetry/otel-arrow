@@ -31,8 +31,10 @@ not offset the limited parallelism gains.
 ## Rust toolchain
 
 Both Rust workspaces pin an exact toolchain version in `rust-toolchain.toml`
-rather than tracking the `stable` channel, so local checks and CI always run
+rather than tracking the `stable` channel, so local checks and CI build with
 the same compiler and a new Rust release never breaks unrelated pull requests.
+The pin is a directory override, so run `cargo` from inside the workspace; it
+does not apply to commands invoked from elsewhere via `--manifest-path`.
 
 To move to a new toolchain, open a dedicated pull request that bumps `channel`
 in both `rust/otap-dataflow/rust-toolchain.toml` and
