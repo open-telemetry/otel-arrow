@@ -126,18 +126,23 @@ fn make_produced_size_metrics(
 ///
 /// - `has_input`: whether to register consumed-request metrics (false for receivers).
 /// - `has_outputs`: whether to register produced-request metrics (false for exporters).
-/// - `item_counts_enabled`: whether to register the optional item metric sets.
-/// - `size_enabled`: whether to register the optional size metric sets.
+/// - `node_interests`: the effective metric interests for this node.
 fn make_node_metric_handles(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
     has_input: bool,
     has_outputs: bool,
-    item_counts_enabled: bool,
-    size_enabled: bool,
+    node_interests: Interests,
     completion_emission: Option<CompletionEmissionMetricsHandle>,
 ) -> NodeMetricHandles {
-    let consumed = if has_input {
+    let consumer_metrics_enabled =
+        has_input && node_interests.contains(Interests::CONSUMER_METRICS);
+    let producer_metrics_enabled =
+        has_outputs && node_interests.contains(Interests::PRODUCER_METRICS);
+    let item_counts_enabled = node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS);
+    let size_enabled = node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE);
+
+    let consumed = if consumer_metrics_enabled {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
@@ -147,7 +152,7 @@ fn make_node_metric_handles(
     } else {
         None
     };
-    let consumed_size = if size_enabled && has_input {
+    let consumed_size = if size_enabled && consumer_metrics_enabled {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
@@ -159,7 +164,7 @@ fn make_node_metric_handles(
     } else {
         None
     };
-    let consumed_items = if item_counts_enabled && has_input {
+    let consumed_items = if item_counts_enabled && consumer_metrics_enabled {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
@@ -171,17 +176,17 @@ fn make_node_metric_handles(
     } else {
         None
     };
-    let produced = if has_outputs {
+    let produced = if producer_metrics_enabled {
         make_produced_metrics(telemetry_handle, pipeline_context)
     } else {
         Vec::new()
     };
-    let produced_items = if item_counts_enabled && has_outputs {
+    let produced_items = if item_counts_enabled && producer_metrics_enabled {
         make_produced_item_metrics(telemetry_handle, pipeline_context)
     } else {
         Vec::new()
     };
-    let produced_size = if size_enabled && has_outputs {
+    let produced_size = if size_enabled && producer_metrics_enabled {
         make_produced_size_metrics(telemetry_handle, pipeline_context)
     } else {
         Vec::new()
@@ -598,8 +603,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     true,
                     false,
-                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
-                    node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
+                    node_interests,
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -681,8 +685,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     true,
                     true,
-                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
-                    node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
+                    node_interests,
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -795,8 +798,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     false,
                     true,
-                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
-                    node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
+                    node_interests,
                     None,
                 ),
             ));
@@ -1140,7 +1142,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attributes::EngineEntityAttributeSet;
+    use crate::attributes::{
+        ChannelImplementation, ChannelKind, ChannelMode, ChannelType, EngineEntityAttributeSet,
+    };
     use crate::channel_metrics::ChannelSenderMetrics;
     use crate::entity_context::{NodeTelemetryGuard, NodeTelemetryHandle};
     use otel_arrow_dfe_config::SignalType;
@@ -1149,6 +1153,51 @@ mod tests {
     use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
+
+    /// Scenario: optional node measurement interests are present without the normal-level message interests.
+    /// Guarantees: no consumed or produced message, item, or size metric sets are registered below normal.
+    #[test]
+    fn node_metrics_require_direction_interests() {
+        let (pipeline_context, registry) = crate::testing::test_pipeline_ctx();
+        let node_entity_key = pipeline_context.register_node_entity();
+        let telemetry_handle = NodeTelemetryHandle::new(registry.clone(), node_entity_key);
+
+        let input_key = pipeline_context.register_node_channel_entity(
+            "input-channel".into(),
+            "input".into(),
+            ChannelKind::Pdata,
+            ChannelMode::Local,
+            ChannelType::Mpsc,
+            ChannelImplementation::Internal,
+        );
+        telemetry_handle.set_input_channel_key(input_key);
+        let output_key = pipeline_context.register_node_channel_entity(
+            "output-channel".into(),
+            "default".into(),
+            ChannelKind::Pdata,
+            ChannelMode::Local,
+            ChannelType::Mpsc,
+            ChannelImplementation::Internal,
+        );
+        telemetry_handle.add_output_channel_key("default".into(), output_key);
+
+        let handles = make_node_metric_handles(
+            &Some(telemetry_handle),
+            &pipeline_context,
+            true,
+            true,
+            Interests::PRODUCED_CONSUMED_ITEM_COUNTS | Interests::PRODUCED_CONSUMED_SIZE,
+            None,
+        );
+
+        assert!(handles.input.is_none());
+        assert!(handles.input_items.is_none());
+        assert!(handles.input_size.is_none());
+        assert!(handles.outputs.is_empty());
+        assert!(handles.output_items.is_empty());
+        assert!(handles.output_size.is_empty());
+        assert_eq!(registry.metric_set_count(), 0);
+    }
 
     /// Scenario: a pipeline has pending terminal metrics when telemetry cleanup starts.
     /// Guarantees: the final snapshot reaches the registry before entity handles are released.
