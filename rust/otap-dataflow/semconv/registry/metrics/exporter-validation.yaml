@@ -1,0 +1,67 @@
+file_format: definition/2
+metrics:
+- name: exporter.validation.check.failed
+  brief: Number of validation checks that did not match expectation
+  instrument: counter
+  unit: '{check}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.validation
+      rust:
+        field: failed_checks
+- name: exporter.validation.check.passed
+  brief: Number of validation checks that did match expectation
+  instrument: counter
+  unit: '{check}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.validation
+      rust:
+        field: passed_checks
+- name: exporter.validation.finished
+  brief: Whether the exporter has finished processing 0 -> still receiving / processing 1 -> idle timeout
+    reached, final validation performed
+  instrument: gauge
+  unit: '{state}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.validation
+- name: exporter.validation.valid
+  brief: The value of the last comparison result 0 -> not valid 1 -> valid
+  instrument: gauge
+  unit: '{input}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.validation

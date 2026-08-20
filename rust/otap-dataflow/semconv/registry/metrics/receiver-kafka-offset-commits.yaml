@@ -1,0 +1,20 @@
+file_format: definition/2
+metrics:
+- name: receiver.kafka.offset_commits.commits
+  brief: Number of offset commit results reported by librdkafka.
+  instrument: counter
+  unit: '{commit}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: outcome
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.offset_commits

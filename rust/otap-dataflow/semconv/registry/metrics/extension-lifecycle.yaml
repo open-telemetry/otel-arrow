@@ -1,0 +1,106 @@
+file_format: definition/2
+metrics:
+- name: extension.lifecycle.completed.cancelled
+  brief: Number of extension tasks that completed because they were cancelled.
+  instrument: counter
+  unit: '{completion}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.lifecycle
+- name: extension.lifecycle.completed.error
+  brief: Number of extension tasks that completed with an error.
+  instrument: counter
+  unit: '{completion}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.lifecycle
+- name: extension.lifecycle.completed.ok
+  brief: Number of extension tasks that completed successfully.
+  instrument: counter
+  unit: '{completion}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.lifecycle
+- name: extension.lifecycle.completed.panic
+  brief: Number of extension tasks that completed because the task panicked.
+  instrument: counter
+  unit: '{completion}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.lifecycle
+- name: extension.lifecycle.shutdown.sent
+  brief: Number of shutdown signals sent to extension tasks.
+  instrument: counter
+  unit: '{shutdown}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.lifecycle
+- name: extension.lifecycle.shutdown.timeout
+  brief: Number of extension tasks that exceeded their shutdown deadline.
+  instrument: counter
+  unit: '{timeout}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.lifecycle
+- name: extension.lifecycle.spawned
+  brief: Number of extension tasks spawned by the engine.
+  instrument: counter
+  unit: '{spawn}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.lifecycle
+- name: extension.lifecycle.state
+  brief: Current lifecycle state of an extension task.
+  instrument: gauge
+  unit: '{state}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.lifecycle

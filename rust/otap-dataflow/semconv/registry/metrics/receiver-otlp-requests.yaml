@@ -1,0 +1,62 @@
+file_format: definition/2
+metrics:
+- name: receiver.otlp.requests.completed
+  brief: Number of admitted requests whose receiver work terminated.
+  instrument: counter
+  unit: '{request}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: protocol
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.otlp.requests
+- name: receiver.otlp.requests.payload.size
+  brief: Decompressed payload bytes for requests admitted to the pipeline send path.
+  instrument: counter
+  unit: By
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: protocol
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.otlp.requests
+- name: receiver.otlp.requests.started
+  brief: Number of requests admitted to the pipeline send path.
+  instrument: counter
+  unit: '{request}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: protocol
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.otlp.requests

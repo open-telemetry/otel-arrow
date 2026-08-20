@@ -1,0 +1,152 @@
+file_format: definition/2
+metrics:
+- name: pipeline.completion.ack.attempted
+  brief: 'Count of Ack completions routed toward an interested upstream node. This increments once the
+    dispatcher finds the closest interested frame and attempts delivery, even if the node-control channel
+    is temporarily full and the send must be retried later. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.completion
+- name: pipeline.completion.ack.delivered
+  brief: 'Count of Ack control messages actually delivered to upstream nodes. This increments only when
+    the node-control send succeeds, either immediately or later via the completion dispatcher''s pending-send
+    retry loop. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.completion
+- name: pipeline.completion.ack.dropped_no_interest
+  brief: 'Count of Ack completions dropped because no upstream frame was interested. This distinguishes
+    "successful unwind with no listener" from send failure or dispatcher backlog, which is useful when
+    validating routing expectations and subscription placement. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.completion
+- name: pipeline.completion.deliver_ack.received
+  brief: 'Count of `DeliverAck` messages received by the completion dispatcher. This shows inbound successful
+    completion pressure on the shared completion path and helps explain downstream-to-upstream unwind
+    load. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.completion
+- name: pipeline.completion.deliver_nack.received
+  brief: 'Count of `DeliverNack` messages received by the completion dispatcher. This is the failure-side
+    counterpart to received acks and is especially useful when investigating retry storms or elevated
+    downstream refusal rates. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.completion
+- name: pipeline.completion.nack.attempted
+  brief: 'Count of Nack completions routed toward an interested upstream node. This is the failure-side
+    counterpart to attempted Acks and captures how many downstream refusals found an upstream subscriber
+    and entered the delivery path. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.completion
+- name: pipeline.completion.nack.delivered
+  brief: 'Count of Nack control messages actually delivered to upstream nodes. This is the delivery-side
+    counterpart to attempted Nacks and helps distinguish routing intent from successful node-control delivery
+    under backpressure. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.completion
+- name: pipeline.completion.nack.dropped_no_interest
+  brief: 'Count of Nack completions dropped because no upstream frame was interested. This is particularly
+    important for liveness and correctness analysis: it means failure information reached the dispatcher
+    but no upstream frame subscribed to receive it. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.completion
+- name: pipeline.completion.pending_sends.buffered
+  brief: 'Number of completion deliveries currently buffered for later retry. A sustained backlog here
+    means the completion dispatcher is making progress by deferring sends to full node-control inboxes
+    instead of blocking, but it also indicates unwind traffic is under pressure. Level: `basic`.'
+  instrument: gauge
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.completion
+- name: pipeline.completion.unwind.depth
+  brief: 'Distribution of unwind stack depth consumed per completion outcome. Larger values indicate completions
+    are traversing more frames before finding an interested upstream node or concluding that none exists,
+    which helps explain completion-path cost and routing behavior. Level: `detailed`.'
+  instrument: histogram
+  unit: '{frame}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: pipeline.completion

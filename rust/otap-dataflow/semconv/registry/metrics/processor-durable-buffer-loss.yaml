@@ -1,0 +1,76 @@
+file_format: definition/2
+metrics:
+- name: processor.durable_buffer.loss.bundles
+  brief: Number of bundles lost.
+  instrument: counter
+  unit: '{bundle}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer.loss
+- name: processor.durable_buffer.loss.bytes
+  brief: Persisted segment bytes lost.
+  instrument: counter
+  unit: By
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer.loss
+- name: processor.durable_buffer.loss.items
+  brief: Number of items lost.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer.loss
+- name: processor.durable_buffer.loss.segments
+  brief: Number of segments lost.
+  instrument: counter
+  unit: '{segment}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer.loss

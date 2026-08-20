@@ -1,0 +1,167 @@
+file_format: definition/2
+metrics:
+- name: node.local_wakeup.scheduler.cancel.ignored_shutdown
+  brief: Count of cancel attempts ignored after shutdown was latched.
+  instrument: counter
+  unit: '{attempt}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
+- name: node.local_wakeup.scheduler.cancel.missed
+  brief: Count of cancel attempts that found no live wakeup in the slot.
+  instrument: counter
+  unit: '{attempt}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
+- name: node.local_wakeup.scheduler.cancel.removed
+  brief: Count of cancel attempts that removed a live wakeup.
+  instrument: counter
+  unit: '{wakeup}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
+- name: node.local_wakeup.scheduler.capacity
+  brief: Configured live wakeup slot capacity.
+  instrument: gauge
+  unit: '{wakeup}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
+- name: node.local_wakeup.scheduler.live
+  brief: Current number of live wakeups.
+  instrument: gauge
+  unit: '{wakeup}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
+- name: node.local_wakeup.scheduler.pop.due
+  brief: Count of wakeups popped for delivery to the processor.
+  instrument: counter
+  unit: '{wakeup}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
+- name: node.local_wakeup.scheduler.set.error_capacity
+  brief: Count of set attempts rejected because the live-slot capacity was full.
+  instrument: counter
+  unit: '{attempt}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
+- name: node.local_wakeup.scheduler.set.error_shutdown
+  brief: Count of set attempts rejected after shutdown was latched.
+  instrument: counter
+  unit: '{attempt}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
+- name: node.local_wakeup.scheduler.set.inserted
+  brief: Count of newly inserted wakeups.
+  instrument: counter
+  unit: '{wakeup}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
+- name: node.local_wakeup.scheduler.set.replaced
+  brief: Count of wakeups that replaced an existing live slot.
+  instrument: counter
+  unit: '{wakeup}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
+- name: node.local_wakeup.scheduler.shutdown.cleared
+  brief: Count of live wakeups dropped when shutdown was latched.
+  instrument: counter
+  unit: '{wakeup}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.local_wakeup.scheduler
