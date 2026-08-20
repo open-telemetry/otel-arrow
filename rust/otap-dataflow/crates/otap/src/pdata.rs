@@ -2906,7 +2906,7 @@ mod test {
     }
 
     /// Scenario: a cached OTAP size exists before the payload is taken.
-    /// Guarantees: the returned payload keeps the count and the empty replacement starts uncached.
+    /// Guarantees: the returned payload keeps the cached size and the empty replacement starts uncached.
     #[test]
     fn take_payload_invalidates_cached_size() {
         let mut pdata = create_test_otap_pdata();
