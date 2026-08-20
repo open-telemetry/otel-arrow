@@ -49,7 +49,7 @@ use otap_df_engine::{
     local::processor as local,
     message::Message,
     node::NodeId,
-    processor::ProcessorWrapper,
+    processor::{FlowMetricHook, ProcessorWrapper},
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
@@ -951,7 +951,8 @@ where
             // Note: we do not check for empty envelopes, e.g., logs
             // requests with only a resource and no log records. We do
             // not count these.
-            let pdata = OtapPdata::new(ctx, payload.into());
+            let mut pdata = OtapPdata::new(ctx, payload.into());
+            pdata.complete_processor_without_output(effect);
             effect.notify_ack(AckMsg::new(pdata)).await?;
             return Ok(());
         }
@@ -1344,86 +1345,60 @@ impl local::Processor<OtapPdata> for BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         match msg {
-            Message::Control(ctrl) => {
-                match ctrl {
-                    NodeControlMsg::Config { .. } => Ok(()),
-                    NodeControlMsg::Shutdown { .. } => {
-                        self.flush_shutdown(effect).await?;
-                        Ok(())
-                    }
-                    NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    } => {
-                        effect
-                            .report_local_scheduler_metrics(&mut metrics_reporter)
-                            .map_err(|e| EngineError::InternalError {
-                                message: e.to_string(),
-                            })?;
-                        metrics_reporter.report(&mut self.metrics).map_err(|e| {
-                            EngineError::InternalError {
-                                message: e.to_string(),
-                            }
-                        })?;
-                        Ok(())
-                    }
-                    NodeControlMsg::Wakeup { slot, when, .. } => {
-                        let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
-                            return Ok(());
-                        };
-
-                        match format {
-                            SignalFormat::OtapRecords => {
-                                if let Some(mut otap_format) = self.otap_format() {
-                                    otap_format
-                                        .for_signal(signal)
-                                        .flush_signal_impl(effect, when, FlushReason::Timer)
-                                        .await?;
-                                }
-                            }
-                            SignalFormat::OtlpBytes => {
-                                if let Some(mut otlp_format) = self.otlp_format() {
-                                    otlp_format
-                                        .for_signal(signal)
-                                        .flush_signal_impl(effect, when, FlushReason::Timer)
-                                        .await?;
-                                }
-                            }
-                        };
-
-                        Ok(())
-                    }
-                    NodeControlMsg::DelayedData { data, when } => {
-                        let signal = data.signal_type();
-
-                        match self.format_for_signal_format(data.signal_format()) {
-                            Some(ActiveBatchProcessorFormatKind::Otap) => self
-                                .otap_format()
-                                .expect(
-                                    "otap batch state must exist when otap format kind is selected",
-                                )
-                                .for_signal(signal)
-                                .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?,
-                            Some(ActiveBatchProcessorFormatKind::Otlp) => self
-                                .otlp_format()
-                                .expect(
-                                    "otlp batch state must exist when otlp format kind is selected",
-                                )
-                                .for_signal(signal)
-                                .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?,
-                            None => return Err(Self::no_active_format_error()),
-                        };
-
-                        Ok(())
-                    }
-                    NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
-                    NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
-                    NodeControlMsg::DrainIngress { .. } => Ok(()),
-                    NodeControlMsg::TimerTick { .. } => unreachable!(),
-                    NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
+            Message::Control(ctrl) => match ctrl {
+                NodeControlMsg::Config { .. } => Ok(()),
+                NodeControlMsg::Shutdown { .. } => {
+                    self.flush_shutdown(effect).await?;
+                    Ok(())
                 }
-            }
+                NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } => {
+                    effect
+                        .report_local_scheduler_metrics(&mut metrics_reporter)
+                        .map_err(|e| EngineError::InternalError {
+                            message: e.to_string(),
+                        })?;
+                    metrics_reporter.report(&mut self.metrics).map_err(|e| {
+                        EngineError::InternalError {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    Ok(())
+                }
+                NodeControlMsg::Wakeup { slot, when, .. } => {
+                    let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
+                        return Ok(());
+                    };
+
+                    match format {
+                        SignalFormat::OtapRecords => {
+                            if let Some(mut otap_format) = self.otap_format() {
+                                otap_format
+                                    .for_signal(signal)
+                                    .flush_signal_impl(effect, when, FlushReason::Timer)
+                                    .await?;
+                            }
+                        }
+                        SignalFormat::OtlpBytes => {
+                            if let Some(mut otlp_format) = self.otlp_format() {
+                                otlp_format
+                                    .for_signal(signal)
+                                    .flush_signal_impl(effect, when, FlushReason::Timer)
+                                    .await?;
+                            }
+                        }
+                    };
+
+                    Ok(())
+                }
+                NodeControlMsg::ResumeData { .. } => Ok(()),
+                NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
+                NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
+                NodeControlMsg::DrainIngress { .. } => Ok(()),
+                NodeControlMsg::TimerTick { .. } => unreachable!(),
+                NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
+            },
             Message::PData(request) => self.process_signal_impl(effect, request).await,
         }
     }
@@ -1481,8 +1456,8 @@ impl MultiContext {
 impl<T: OtapPayloadHelpers> Inputs<T> {
     fn drain(&mut self) -> Self {
         Self {
-            pending: self.pending.drain(..).collect(),
-            context: self.context.drain(..).collect(),
+            pending: std::mem::take(&mut self.pending),
+            context: std::mem::take(&mut self.context),
             weight: std::mem::take(&mut self.weight),
         }
     }
@@ -3242,8 +3217,8 @@ mod tests {
             });
     }
 
-    /// A zero-byte OTLP request is acked immediately and never reaches the
-    /// batch buffer.
+    /// Scenario: a subscribed zero-byte OTLP request reaches the batch processor.
+    /// Guarantees: it is acknowledged without output or entering the batch buffer.
     #[test]
     fn test_otlp_zero_byte_request_acked_immediately() {
         let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
@@ -3257,12 +3232,33 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                ctx.set_pipeline_completion_sender(completion_tx);
                 let empty = OtlpProtoBytes::ExportLogsRequest(Bytes::new());
-                ctx.process(Message::PData(OtapPdata::new_default(empty.into())))
+                let pdata = OtapPdata::new_default(empty.into()).test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    11,
+                );
+                ctx.process(Message::PData(pdata))
                     .await
                     .expect("process empty otlp");
 
                 assert!(ctx.drain_pdata().await.is_empty(), "no batch should flush");
+                match next_completion(
+                    &mut completion_rx,
+                    Duration::from_secs(1),
+                    "zero-byte input should be acknowledged",
+                )
+                .await
+                {
+                    PipelineCompletionMsg::DeliverAck { mut ack } => {
+                        assert_eq!(ack.accepted.num_items(), 0);
+                    }
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        panic!("zero-byte input was unexpectedly nacked: {}", nack.reason);
+                    }
+                }
 
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,

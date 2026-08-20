@@ -64,6 +64,10 @@ telemetry precisely, but does not see allocator slack or non-pdata state.
 Neither number replaces the other, and later enforcement layers are expected to
 keep the process limiter as the final backstop.
 
+See [Memory Resource Management](../docs/memory-resource-management.md) for the
+high-level relationship among process pressure, allocator telemetry,
+retained-work attribution, receiver throttling, and future scoped policy.
+
 A retained-work budget must be smaller than the process memory limit. Some
 process memory must remain available for runtime and thread overhead, allocator
 overhead and fragmentation, shared and unattributed state, internal telemetry,

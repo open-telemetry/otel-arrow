@@ -36,7 +36,7 @@ use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
+use otap_df_engine::processor::{FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper};
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
@@ -170,8 +170,9 @@ impl LogSamplingProcessor {
         // decision node in a flow that enables `dropped.items`.
         effect_handler.record_flow_dropped_items(SignalType::Logs, dropped as u64);
 
-        let pdata = OtapPdata::new(context, OtapPayload::from(filtered));
+        let mut pdata = OtapPdata::new(context, OtapPayload::from(filtered));
         if kept == 0 {
+            pdata.complete_processor_without_output(effect_handler);
             effect_handler.notify_ack(AckMsg::new(pdata)).await?;
         } else {
             effect_handler.send_message_with_source_node(pdata).await?;
@@ -226,7 +227,7 @@ impl local::Processor<OtapPdata> for LogSamplingProcessor {
                 | NodeControlMsg::MemoryPressureChanged { .. }
                 | NodeControlMsg::DrainIngress { .. }
                 | NodeControlMsg::Wakeup { .. }
-                | NodeControlMsg::DelayedData { .. } => Ok(()),
+                | NodeControlMsg::ResumeData { .. } => Ok(()),
             },
         }
     }
@@ -251,12 +252,15 @@ fn create_log_sampling_processor(
 mod tests {
     use super::*;
     use arrow::array::AsArray;
+    use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::{PipelineCompletionMsg, pipeline_completion_msg_channel};
     use otap_df_engine::message::Message;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::{TestContext, TestRuntime};
     use otap_df_engine::testing::test_node;
     use otap_df_otap::pdata::Context;
+    use otap_df_otap::testing::TestCallData;
     use otap_df_pdata::PayloadData;
     use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
     use otap_df_pdata::otap::OtapBatchStore;
@@ -336,6 +340,8 @@ mod tests {
         });
     }
 
+    /// Scenario: a zip sampler exhausts its budget and fully drops a subscribed log batch.
+    /// Guarantees: the dropped batch is acknowledged without producing downstream pdata.
     #[test]
     fn test_zip_basic_flow() {
         let config = serde_json::json!({
@@ -364,10 +370,27 @@ mod tests {
                 assert_eq!(msgs[0].num_items(), 10, "only 10 remaining budget");
 
                 // Send 5 more (budget exhausted, should be acked/dropped)
-                let pdata = make_log_pdata_arrow(5);
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                ctx.set_pipeline_completion_sender(completion_tx);
+                let pdata = make_log_pdata_arrow(5).test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    11,
+                );
                 ctx.process(Message::PData(pdata)).await.expect("process");
                 let msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 0, "budget exhausted, nothing forwarded");
+                match completion_rx.recv().await.expect("expected completion") {
+                    PipelineCompletionMsg::DeliverAck { mut ack } => {
+                        assert_eq!(ack.accepted.num_items(), 0);
+                    }
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        panic!(
+                            "fully sampled batch was unexpectedly nacked: {}",
+                            nack.reason
+                        );
+                    }
+                }
             })
         });
     }

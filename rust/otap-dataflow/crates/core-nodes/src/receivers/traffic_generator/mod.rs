@@ -389,7 +389,7 @@ impl TrafficGeneratorReceiver {
     ) -> Result<Result<u64, OtapPdata>, Error> {
         let signal = pdata.signal_type();
         let count = pdata.num_items() as u64;
-        let payload_bytes = pdata.payload_ref().num_bytes();
+        let payload_bytes = pdata.num_bytes();
         match handler.try_send_message_with_source_node(pdata) {
             Ok(()) => {
                 match signal {
