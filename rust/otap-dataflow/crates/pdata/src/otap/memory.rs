@@ -1,13 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Retained-memory sizing helpers for OTAP Arrow record batches.
+//! Byte-sizing helpers for OTAP Arrow record batches.
 //!
-//! These helpers count deduped Arrow-owned buffer capacity retained by record
-//! batches. The value is logical retained memory, not process RSS: it excludes
-//! allocator, struct, and `Arc` overhead. It is intended for callers that need
-//! to account for retained work, while `num_bytes()` remains encoded/wire-size
-//! semantics.
+//! [`record_batch_logical_bytes`] estimates the bytes associated with the
+//! active Arrow array ranges using [`ArrayData::get_slice_memory_size`]. This
+//! is the OTAP representation's `num_bytes()` value; it is not an encoded OTAP
+//! wire size.
+//!
+//! [`record_batch_pinned_bytes`] counts deduped Arrow-owned buffer capacity
+//! retained by record batches. This is an estimate of retained memory, not
+//! process RSS: it excludes allocator, struct, and `Arc` overhead.
 //!
 //! Buffer allocations are deduped by [`arrow::buffer::Buffer::data_ptr`], which
 //! returns the allocation base and ignores slice offsets. This matters because
@@ -15,11 +18,11 @@
 //! [`RecordBatch::slice`](arrow::array::RecordBatch::slice), so multiple slices
 //! can share the same parent allocation.
 //!
-//! The accounting uses buffer `capacity()`, not `len()`: a small slice pins the
-//! whole parent allocation until it is dropped. One known limitation is that
-//! externally owned Arrow buffers report `capacity() == 0`; IPC-decoded OTAP
-//! batches are Rust-allocated today, but future zero-copy or mmap ingest would
-//! be under-counted by these helpers.
+//! Retained-memory accounting uses buffer `capacity()`, not `len()`: a small
+//! slice pins the whole parent allocation until it is dropped. One known
+//! limitation is that externally owned Arrow buffers report `capacity() == 0`;
+//! IPC-decoded OTAP batches are Rust-allocated today, but future zero-copy or
+//! mmap ingest would be under-counted by retained-memory accounting.
 //!
 //! This module does not cache sizes inside pdata. `OtapArrowRecords` and its
 //! stores are cloneable and mutable through `set()` and `remove()`, so an
@@ -27,12 +30,12 @@
 //! symmetry should compute once when retention starts and store the value with
 //! their retained state or ticket.
 //!
-//! Performance is proportional to the number of arrays and buffers, not to the
-//! number of rows or byte values. Each column calls `to_data()`, which performs
-//! a small structural clone of `Arc`-backed Arrow metadata and does not copy
-//! buffer contents. Each accounting call also creates a fresh `HashSet` for
-//! deduping buffers; if this ever shows up in profiles, callers can reuse and
-//! clear a [`CountedAllocations`] value across accounting calls.
+//! Sizing performance is proportional to the number of arrays and buffers, not
+//! to the number of rows or byte values. Each column calls `to_data()`, which
+//! performs a small structural clone of `Arc`-backed Arrow metadata and does
+//! not copy buffer contents. Retained-memory accounting also uses a `HashSet`
+//! to dedupe buffers; callers can reuse and clear a [`CountedAllocations`]
+//! value across calls if this ever shows up in profiles.
 
 use std::{collections::HashSet, ptr::NonNull};
 

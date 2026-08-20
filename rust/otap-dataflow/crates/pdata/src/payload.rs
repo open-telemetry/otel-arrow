@@ -288,7 +288,8 @@ impl OtapPayload {
     /// Returns the logical byte size of the current payload representation.
     ///
     /// OTLP reports its protobuf service-request byte length. OTAP reports
-    /// Arrow's logical slice-memory estimate.
+    /// Arrow's logical slice-memory estimate. Returns `None` if the current
+    /// representation cannot be measured.
     #[must_use]
     pub fn num_bytes(&self) -> Option<usize> {
         self.data.num_bytes()
