@@ -715,7 +715,6 @@ impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for Effect
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::_private::AckNackRouting;
     use crate::completion_emission_metrics::make_completion_emission_metrics;
     use crate::context::ControllerContext;
     use crate::control::{
