@@ -320,7 +320,8 @@ pub struct ControllerRunOptions {
     /// attributes. Populate from the binary crate (e.g. `CARGO_BIN_NAME`/`CARGO_PKG_VERSION`).
     pub build_info: BuildInfo,
     /// Whether the controller handles process-wide OS termination signals.
-    /// Embedding hosts that own signal handling should disable this.
+    /// Defaults to `false` so embedding hosts retain signal ownership. Standalone
+    /// binaries that own the process can opt in explicitly.
     pub handle_os_signals: bool,
 }
 
@@ -329,7 +330,7 @@ impl Default for ControllerRunOptions {
         Self {
             extensions: ControllerExtensionRegistry::default(),
             build_info: BuildInfo::default(),
-            handle_os_signals: true,
+            handle_os_signals: false,
         }
     }
 }
@@ -3023,6 +3024,13 @@ mod tests {
             )]
         );
         assert!(BuildInfo::default().seed_attrs().is_empty());
+    }
+
+    /// Scenario: an embedding host starts from default controller run options.
+    /// Guarantees: process-wide OS signal handling remains disabled unless explicitly enabled.
+    #[test]
+    fn controller_run_options_disable_os_signals_by_default() {
+        assert!(!ControllerRunOptions::default().handle_os_signals);
     }
 
     /// Scenario: `merge_resource_defaults` runs with a config-provided `service.name`, a detector

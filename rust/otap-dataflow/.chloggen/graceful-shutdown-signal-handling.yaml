@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add OS signal handling for graceful pipeline shutdown (SIGINT/SIGTERM on Unix; Ctrl-C, Ctrl-Break, console close, and system shutdown on Windows) with a double-signal force-exit convention.
+note: Add graceful OS signal handling to the Dataflow Engine executable with a double-signal force-exit convention.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2325]
@@ -16,4 +16,4 @@ issues: [2325]
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
-subtext:
+subtext: Library embedders can opt in with ControllerRunOptions::handle_os_signals; it defaults to false so the host retains process-wide signal ownership.
