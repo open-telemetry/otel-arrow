@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787264286582,
+  "lastUpdate": 1787265758663,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -19828,6 +19828,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 114.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "632eb206df0cf863df74bee6facb71745a66a542",
+          "message": "  docs: map memory management mechanisms and policy boundaries (#3775)\n\n## Summary\n\nAdd a shared architecture map for memory resource management in OTAP\nDataflow.\n\nMemory-related work is currently spread across the process memory\nlimiter,\npressure-aware receiver throttling, pipeline allocator telemetry,\nretained-work\naccounting, durable buffering, Pdata Context, and their associated\nissues and\nRFCs. This document explains how these mechanisms relate without\nconflating\n  their measurements, attribution models, policies, or responsibilities.\n\n  ## What this adds\n\n- A status-labelled map of Current, Partial, Proposed, and Future\nmechanisms.\n  - Clear separation between:\n    - process-wide memory pressure;\n    - receiver admission throttling;\n    - calling-thread allocation activity;\n    - allocation-origin heap inventory;\n    - logical retained-work ownership;\n    - tenant identity and future tenant-aware policy.\n- A concrete example showing why allocation origin, current retained\nowner,\ntenant identity, and process pressure can produce different answers for\nthe\n    same batch.\n  - Mermaid diagrams for the principal relationships and flows.\n  - Guidance for interpreting the memory views together without treating\n    attribution as an automatic enforcement input.\n- Links to the existing memory limiter, throttling, retained-work, Pdata\nContext, topic, durable-buffer, and allocator-inventory design material.\n- A maintenance section identifying when implementation status and\npending RFC\n    links should be updated.\n  - An entry in the architecture index for discoverability.\n\nThe document also clarifies that `pipeline.memory_usage` is derived from\ncalling-thread allocation and deallocation counters and must not be\ninterpreted\n  as authoritative per-pipeline live memory when objects cross threads.\n\n  ## Scope\n\nThis is a documentation-only change. It does not introduce new metrics,\n  allocator domains, budgets, throttling behavior, or configuration.\n\nProposed and Future sections summarize linked design work and clearly\nidentify\n  what is not yet implemented.\n\n  Related to:\n\n  - #3725\n  - #3272\n  - #3742\n\n  ## Validation\n\n  - `npx markdownlint-cli2` passes for all changed Markdown files.\n  - `python3 tools/sanitycheck.py` passes.\n  - All relative documentation links resolve.\n  - No changelog entry is required for this documentation-only change.\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-08-20T21:42:43Z",
+          "tree_id": "3df8b2f526be98cf10fa16f3dcca4f488f0aa8f6",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/632eb206df0cf863df74bee6facb71745a66a542"
+        },
+        "date": 1787265744492,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.48,
             "unit": "MB"
           },
           {
