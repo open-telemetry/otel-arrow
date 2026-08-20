@@ -8,8 +8,9 @@
 //! node factories consume them via [`registry::Capabilities`].
 //!
 //! Capability traits are defined per-capability in submodules grouped by domain
-//! (e.g., `auth::bearer_token_provider`), with local (!Send) and shared (Send)
-//! variants re-exported from [`local::capability`](crate::local::capability) and
+//! (e.g., `auth::bearer_token_provider`), with local (!Send) and shared
+//! (Send + Sync) variants re-exported from
+//! [`local::capability`](crate::local::capability) and
 //! [`shared::capability`](crate::shared::capability).
 
 // Capability code is organized so every public item has exactly **one** export
@@ -83,9 +84,9 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// (e.g., `dyn local::capability::auth::bearer_token_provider::BearerTokenProvider`).
     type Local: ?Sized + 'static;
 
-    /// The shared (Send) trait object type for this capability
+    /// The shared (Send + Sync) trait object type for this capability
     /// (e.g., `dyn shared::capability::auth::bearer_token_provider::BearerTokenProvider`).
-    type Shared: ?Sized + Send + 'static;
+    type Shared: ?Sized + Send + Sync + 'static;
 
     /// Human-readable name used in error messages and config validation.
     #[must_use]

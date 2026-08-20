@@ -3,7 +3,7 @@
 
 //! [`CapabilityRegistry`] -- the build-phase store of capability
 //! registrations, keyed by `(capability TypeId, extension ID)` and
-//! split into local (!Send) and shared (Send) buckets.
+//! split into local (!Send) and shared (Send + Sync) buckets.
 
 use super::{Error, LocalCapabilityEntry, SharedCapabilityEntry};
 use otap_df_config::ExtensionId;

@@ -23,7 +23,7 @@ trait TestCapLocal {
 }
 
 /// A minimal test capability trait (shared version).
-trait TestCapShared: Send {
+trait TestCapShared: Send + Sync {
     fn value(&self) -> &str;
 }
 
@@ -1439,7 +1439,7 @@ fn test_local_entry_produce_uses_double_box_envelope() {
 trait MutSelfCapLocal {
     fn bump(&mut self) -> u32;
 }
-trait MutSelfCapShared: Send {
+trait MutSelfCapShared: Send + Sync {
     fn bump(&mut self) -> u32;
 }
 

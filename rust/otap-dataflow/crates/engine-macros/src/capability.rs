@@ -7,9 +7,7 @@
 //! generates:
 //!
 //! - `local::<TraitName>` trait (`#[async_trait(?Send)]`)
-//! - `shared::<TraitName>` trait (`#[async_trait]`, `: Send`). `Sync` is not
-//!   required by the trait; it is only imposed at the impl site if a method
-//!   signature (e.g. `async fn foo(&self)`) forces it.
+//! - `shared::<TraitName>` trait (`#[async_trait]`, `: Send + Sync`)
 //! - `SharedAsLocal<TraitName>` adapter struct
 //! - Zero-sized `<TraitName>` registration struct
 //! - `Sealed` + `ExtensionCapability` impls
@@ -352,7 +350,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
     let known_cap_static = format_ident!("_KNOWN_CAP_{}", static_suffix);
 
     // Generate method signatures for the local trait (#[async_trait(?Send)])
-    // and the shared trait (#[async_trait] + Send). Shape is identical
+    // and the shared trait (#[async_trait] + Send + Sync). Shape is identical
     // between the two; only the outer async_trait attribute differs.
     let local_methods: Vec<TokenStream> = methods.iter().map(|m| emit_method(m)).collect();
     let shared_methods: Vec<TokenStream> = methods.iter().map(|m| emit_method(m)).collect();
@@ -430,7 +428,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             }
         }
 
-        /// Shared (Send) version of the capability trait.
+        /// Shared (Send + Sync) version of the capability trait.
         ///
         /// `pub(crate)`: reachable publicly only through the hand-written
         /// `shared::capability::<name>` re-export, never directly under
@@ -440,7 +438,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
 
             #(#trait_docs)*
             #[::async_trait::async_trait]
-            pub trait #trait_name: Send {
+            pub trait #trait_name: Send + Sync {
                 #(#shared_methods)*
             }
         }
