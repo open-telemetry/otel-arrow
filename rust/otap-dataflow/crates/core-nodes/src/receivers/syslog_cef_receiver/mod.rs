@@ -29,7 +29,7 @@ use otap_df_engine::{
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::common_attributes::{
-    Outcome, ReceiverRejectionErrorType, SignalOutcomeAttributes,
+    Outcome, ReceiverRejectionErrorType, SignalOutcomeAttributes, SignalRegistrationAttributes,
 };
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -1039,13 +1039,14 @@ pub struct SyslogCefRejectionAttributes {
 /// Log records observed at the socket before parsing.
 #[metric_set(
     name = "receiver.syslog_cef.received",
+    registration_attributes = SignalRegistrationAttributes,
     measurement_attributes = SyslogCefTransportAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogCefReceivedMetrics {
-    /// Number of logs received
-    #[metric(unit = "{log}")]
-    pub logs: Counter<u64>,
+    /// Number of items received
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
 }
 
 /// Protocol dimension for a transport-level receiver error.
@@ -1063,30 +1064,34 @@ pub struct SyslogCefTransportAttributes {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogCefForwardMetrics {
-    /// Number of logs delivered
-    #[metric(unit = "{log}")]
-    pub logs: Counter<u64>,
+    /// Number of items delivered
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
 }
 
 /// Rejections metrics for syslog cef
 #[metric_set(
     name = "receiver.syslog_cef.rejections",
+    registration_attributes = SignalRegistrationAttributes,
     measurement_attributes = SyslogCefRejectionAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogCefRejectionMetrics {
-    /// Number of logs rejected
-    #[metric(unit = "{log}")]
-    pub logs: Counter<u64>,
+    /// Number of items rejected
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
 }
 
 /// Truncations metrics for syslog cef
-#[metric_set(name = "receiver.syslog_cef.truncations")]
+#[metric_set(
+    name = "receiver.syslog_cef.truncations",
+    registration_attributes = SignalRegistrationAttributes
+)]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogCefTruncationMetrics {
     /// Truncated payloads
-    #[metric(unit = "{log}")]
-    pub logs: Counter<u64>,
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
 }
 
 /// Transport-level syslog cef errors.
@@ -1127,12 +1132,15 @@ impl SyslogCefReceiverMetrics {
     /// Registers all syslog cef receiver metric sets for a pipeline node.
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+        let signal_attrs = SignalRegistrationAttributes {
+            signal: SignalType::Logs,
+        };
         Self {
-            received: SyslogCefReceivedMetrics::register(pipeline_ctx),
+            received: SyslogCefReceivedMetrics::register(pipeline_ctx, &signal_attrs),
             forwards: SyslogCefForwardMetrics::register(pipeline_ctx),
-            rejections: SyslogCefRejectionMetrics::register(pipeline_ctx),
+            rejections: SyslogCefRejectionMetrics::register(pipeline_ctx, &signal_attrs),
             transport: SyslogCefTransportMetrics::register(pipeline_ctx),
-            truncations: SyslogCefTruncationMetrics::register(pipeline_ctx),
+            truncations: SyslogCefTruncationMetrics::register(pipeline_ctx, &signal_attrs),
             connections: SyslogCefConnectionMetrics::register(pipeline_ctx),
         }
     }
@@ -1141,7 +1149,7 @@ impl SyslogCefReceiverMetrics {
     pub fn record_received(&mut self, protocol: SyslogCefProtocol) {
         self.received
             .with(SyslogCefTransportAttributes { protocol })
-            .logs
+            .items
             .inc();
     }
 
@@ -1152,7 +1160,7 @@ impl SyslogCefReceiverMetrics {
                 signal: SignalType::Logs,
                 outcome,
             })
-            .logs
+            .items
             .add(count);
     }
 
@@ -1168,7 +1176,7 @@ impl SyslogCefReceiverMetrics {
                 protocol,
                 error_type,
             })
-            .logs
+            .items
             .add(count);
     }
 
@@ -1182,7 +1190,7 @@ impl SyslogCefReceiverMetrics {
 
     /// Records a truncated payload
     pub fn record_truncation(&mut self) {
-        self.truncations.logs.inc();
+        self.truncations.items.inc();
     }
 
     /// Records an active connection
@@ -1346,14 +1354,14 @@ mod tests {
 
         assert_eq!(arrow_records_builder.len(), 0);
         let m = receiver.metrics.borrow();
-        assert_eq!(m.forwards_for(Outcome::Success).logs.get(), 0);
-        assert_eq!(m.forwards_for(Outcome::Refused).logs.get(), 0);
+        assert_eq!(m.forwards_for(Outcome::Success).items.get(), 0);
+        assert_eq!(m.forwards_for(Outcome::Refused).items.get(), 0);
         assert!(
             m.rejections_for(
                 SyslogCefProtocol::Tcp,
                 ReceiverRejectionErrorType::MemoryPressure
             )
-            .logs
+            .items
             .get()
                 > 0
         );
@@ -2394,7 +2402,7 @@ mod telemetry_tests {
             if s.descriptor().name != "receiver.syslog_cef.forwards" {
                 continue;
             }
-            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "logs") {
+            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "items") {
                 if let Some(o) = outcome {
                     if s.measurement_attribute_value("outcome") == Some(o) {
                         total += s.get_metrics()[idx].to_u64_lossy();
@@ -2416,7 +2424,7 @@ mod telemetry_tests {
             if s.descriptor().name != "receiver.syslog_cef.rejections" {
                 continue;
             }
-            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "logs") {
+            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "items") {
                 if let Some(e) = error_type {
                     if s.measurement_attribute_value("error.type") == Some(e) {
                         total += s.get_metrics()[idx].to_u64_lossy();
@@ -2435,7 +2443,7 @@ mod telemetry_tests {
             if s.descriptor().name != "receiver.syslog_cef.truncations" {
                 continue;
             }
-            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "logs") {
+            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "items") {
                 total += s.get_metrics()[idx].to_u64_lossy();
             }
         }
@@ -3438,7 +3446,7 @@ mod telemetry_tests {
             1,
         );
         metrics.record_transport_error(SyslogCefProtocol::Udp);
-        metrics.truncations.logs.add(1);
+        metrics.truncations.items.add(1);
         metrics.connections.active.add(1);
         metrics.record_received(SyslogCefProtocol::Udp);
 
