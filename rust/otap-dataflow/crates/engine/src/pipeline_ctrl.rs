@@ -4599,8 +4599,8 @@ mod tests {
             .await;
     }
 
-    // Timer ticks and telemetry ticks should both be reflected in
-    // runtime-control counters when they become due.
+    /// Scenario: due runtime and telemetry timers become ready while the runtime-control manager is running.
+    /// Guarantees: runtime-control metrics record at least one timer tick and one telemetry dispatch when they become due.
     #[tokio::test]
     async fn test_runtime_control_metrics_track_due_work_dispatch() {
         let local = LocalSet::new();
