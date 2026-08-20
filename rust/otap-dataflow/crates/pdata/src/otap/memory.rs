@@ -1,13 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Retained-memory sizing helpers for OTAP Arrow record batches.
+//! Byte-sizing helpers for OTAP Arrow record batches.
 //!
-//! These helpers count deduped Arrow-owned buffer capacity retained by record
-//! batches. The value is logical retained memory, not process RSS: it excludes
-//! allocator, struct, and `Arc` overhead. It is intended for callers that need
-//! to account for retained work, while `num_bytes()` remains encoded/wire-size
-//! semantics.
+//! [`record_batch_logical_bytes`] estimates the bytes associated with the
+//! active Arrow array ranges using [`ArrayData::get_slice_memory_size`]. This
+//! is the OTAP representation's `num_bytes()` value; it is not an encoded OTAP
+//! wire size.
+//!
+//! [`record_batch_pinned_bytes`] counts deduped Arrow-owned buffer capacity
+//! retained by record batches. This is an estimate of retained memory, not
+//! process RSS: it excludes allocator, struct, and `Arc` overhead.
 //!
 //! Buffer allocations are deduped by [`arrow::buffer::Buffer::data_ptr`], which
 //! returns the allocation base and ignores slice offsets. This matters because
@@ -15,11 +18,11 @@
 //! [`RecordBatch::slice`](arrow::array::RecordBatch::slice), so multiple slices
 //! can share the same parent allocation.
 //!
-//! The accounting uses buffer `capacity()`, not `len()`: a small slice pins the
-//! whole parent allocation until it is dropped. One known limitation is that
-//! externally owned Arrow buffers report `capacity() == 0`; IPC-decoded OTAP
-//! batches are Rust-allocated today, but future zero-copy or mmap ingest would
-//! be under-counted by these helpers.
+//! Retained-memory accounting uses buffer `capacity()`, not `len()`: a small
+//! slice pins the whole parent allocation until it is dropped. One known
+//! limitation is that externally owned Arrow buffers report `capacity() == 0`;
+//! IPC-decoded OTAP batches are Rust-allocated today, but future zero-copy or
+//! mmap ingest would be under-counted by retained-memory accounting.
 //!
 //! This module does not cache sizes inside pdata. `OtapArrowRecords` and its
 //! stores are cloneable and mutable through `set()` and `remove()`, so an
@@ -27,16 +30,17 @@
 //! symmetry should compute once when retention starts and store the value with
 //! their retained state or ticket.
 //!
-//! Performance is proportional to the number of arrays and buffers, not to the
-//! number of rows or byte values. Each column calls `to_data()`, which performs
-//! a small structural clone of `Arc`-backed Arrow metadata and does not copy
-//! buffer contents. Each accounting call also creates a fresh `HashSet` for
-//! deduping buffers; if this ever shows up in profiles, callers can reuse and
-//! clear a [`CountedAllocations`] value across accounting calls.
+//! Sizing performance is proportional to the number of arrays and buffers, not
+//! to the number of rows or byte values. Each column calls `to_data()`, which
+//! performs a small structural clone of `Arc`-backed Arrow metadata and does
+//! not copy buffer contents. Retained-memory accounting also uses a `HashSet`
+//! to dedupe buffers; callers can reuse and clear a [`CountedAllocations`]
+//! value across calls if this ever shows up in profiles.
 
 use std::{collections::HashSet, ptr::NonNull};
 
 use arrow::array::{ArrayData, RecordBatch};
+use arrow::error::ArrowError;
 
 /// Buffer allocations already counted during one retained-memory accounting
 /// call.
@@ -54,6 +58,23 @@ pub fn record_batch_pinned_bytes(batch: &RecordBatch, seen: &mut CountedAllocati
         .iter()
         .map(|array| array_data_pinned_bytes(&array.to_data(), seen))
         .sum()
+}
+
+/// Returns the logical Arrow buffer bytes associated with `batch`.
+///
+/// This delegates the definition to [`ArrayData::get_slice_memory_size`].
+/// Direct buffers are measured using the array's active offset and length,
+/// nested child arrays follow Arrow's own recursive sizing semantics, and
+/// shared buffers are counted once per logical array reference.
+pub fn record_batch_logical_bytes(batch: &RecordBatch) -> Result<usize, ArrowError> {
+    batch.columns().iter().try_fold(0usize, |total, array| {
+        let array_bytes = array.to_data().get_slice_memory_size()?;
+        total.checked_add(array_bytes).ok_or_else(|| {
+            ArrowError::ComputeError(
+                "Integer overflow computing logical Arrow byte size".to_string(),
+            )
+        })
+    })
 }
 
 fn array_data_pinned_bytes(data: &ArrayData, seen: &mut CountedAllocations) -> usize {
@@ -85,18 +106,26 @@ mod tests {
     use std::{mem::size_of, sync::Arc};
 
     use arrow::array::{
-        Array, ArrayRef, DictionaryArray, RecordBatch, StringArray, UInt8Array, UInt32Array,
-        UInt32Builder,
+        Array, ArrayRef, DictionaryArray, ListArray, RecordBatch, StringArray, UInt8Array,
+        UInt32Array, UInt32Builder,
     };
-    use arrow::datatypes::{DataType, Field, Schema, UInt8Type};
+    use arrow::datatypes::{DataType, Field, Int32Type, Schema, UInt8Type};
     use bytes::Bytes;
 
     use crate::otap::{Logs, OtapArrowRecords};
     use crate::otlp::OtlpProtoBytes;
     use crate::payload::{OtapPayload, OtapPayloadHelpers, PayloadData};
+    use crate::proto::OtlpProtoMessage;
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
+    use crate::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
+    };
+    use crate::proto::opentelemetry::resource::v1::Resource;
+    use crate::testing::fixtures::logs_with_full_resource_and_scope;
+    use crate::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
 
-    use super::{CountedAllocations, record_batch_pinned_bytes};
+    use super::{CountedAllocations, record_batch_logical_bytes, record_batch_pinned_bytes};
 
     fn batch_with_columns(columns: Vec<(&str, DataType, ArrayRef)>) -> RecordBatch {
         let fields = columns
@@ -114,6 +143,43 @@ mod tests {
     fn pinned_bytes(batch: &RecordBatch) -> usize {
         let mut seen = CountedAllocations::default();
         record_batch_pinned_bytes(batch, &mut seen)
+    }
+
+    fn logical_bytes(batch: &RecordBatch) -> usize {
+        record_batch_logical_bytes(batch).unwrap()
+    }
+
+    fn repeated_logs(record_count: usize) -> LogsData {
+        let records: Vec<_> = (0..record_count)
+            .map(|index| {
+                LogRecord::build()
+                    .time_unix_nano(index as u64 + 1)
+                    .severity_number(SeverityNumber::Info as i32)
+                    .event_name("repeated.event")
+                    .body(AnyValue::new_string("the same repeated log body"))
+                    .attributes(vec![KeyValue::new(
+                        "deployment.environment",
+                        AnyValue::new_string("production"),
+                    )])
+                    .finish()
+            })
+            .collect();
+
+        LogsData::new(vec![ResourceLogs::new(
+            Resource::build()
+                .attributes(vec![KeyValue::new(
+                    "service.name",
+                    AnyValue::new_string("size-comparison"),
+                )])
+                .finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("size-test")
+                    .version("1.0.0")
+                    .finish(),
+                records,
+            )],
+        )])
     }
 
     #[test]
@@ -222,10 +288,87 @@ mod tests {
         assert!(pinned_bytes(&batch) > row_bytes);
     }
 
+    /// Scenario: a primitive array has more allocated capacity than active values.
+    /// Guarantees: logical sizing counts active values rather than retained capacity.
     #[test]
-    fn empty_otap_arrow_records_have_no_retained_memory() {
+    fn logical_bytes_ignore_excess_primitive_capacity() {
+        let mut builder = UInt32Builder::with_capacity(16);
+        builder.append_value(1);
+        builder.append_value(2);
+        builder.append_value(3);
+        let array = builder.finish();
+        let batch = batch_with_columns(vec![("number", DataType::UInt32, Arc::new(array))]);
+
+        assert_eq!(logical_bytes(&batch), 3 * size_of::<u32>());
+        assert!(pinned_bytes(&batch) > logical_bytes(&batch));
+    }
+
+    /// Scenario: a record batch slice selects subsets of primitive and UTF-8 arrays.
+    /// Guarantees: logical sizing follows Arrow's active-slice accounting.
+    #[test]
+    fn logical_bytes_follow_primitive_and_utf8_slices() {
+        let batch = batch_with_columns(vec![
+            (
+                "number",
+                DataType::UInt32,
+                Arc::new(UInt32Array::from(vec![1, 2, 3, 4])) as ArrayRef,
+            ),
+            (
+                "text",
+                DataType::Utf8,
+                Arc::new(StringArray::from(vec!["alpha", "beta", "gamma", "delta"])) as ArrayRef,
+            ),
+        ]);
+
+        let slice = batch.slice(1, 2);
+        let primitive_bytes = 2 * size_of::<u32>();
+        let utf8_offset_bytes = 2 * size_of::<i32>();
+        let utf8_value_bytes = "betagamma".len();
+
+        assert_eq!(
+            logical_bytes(&slice),
+            primitive_bytes + utf8_offset_bytes + utf8_value_bytes
+        );
+    }
+
+    /// Scenario: two dictionary columns share one dictionary values array.
+    /// Guarantees: logical sizing counts the dictionary for each logical array reference.
+    #[test]
+    fn logical_bytes_count_shared_dictionary_per_array_reference() {
+        let values: ArrayRef = Arc::new(StringArray::from(vec!["alpha", "beta"]));
+        let dict_a: ArrayRef = Arc::new(DictionaryArray::<UInt8Type>::new(
+            UInt8Array::from(vec![0, 1, 0, 1]),
+            Arc::clone(&values),
+        ));
+        let dict_b: ArrayRef = Arc::new(DictionaryArray::<UInt8Type>::new(
+            UInt8Array::from(vec![1, 0, 1, 0]),
+            Arc::clone(&values),
+        ));
+        let batch = batch_with_columns(vec![
+            (
+                "dict_a",
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                dict_a,
+            ),
+            (
+                "dict_b",
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                dict_b,
+            ),
+        ]);
+        let keys_bytes = 4 * size_of::<u8>();
+        let dictionary_bytes = 2 * size_of::<i32>() + "alphabeta".len();
+
+        assert_eq!(logical_bytes(&batch), 2 * (keys_bytes + dictionary_bytes));
+    }
+
+    /// Scenario: an OTAP logs payload contains no Arrow record batches.
+    /// Guarantees: both its logical and retained byte counts are zero.
+    #[test]
+    fn empty_otap_arrow_records_have_zero_byte_sizes() {
         let records = OtapArrowRecords::Logs(Logs::default());
 
+        assert_eq!(records.logical_arrow_bytes().unwrap(), 0);
         assert_eq!(records.retained_memory_bytes(), 0);
     }
 
@@ -239,26 +382,90 @@ mod tests {
         assert_eq!(records.retained_memory_bytes(), 0);
     }
 
+    /// Scenario: a serialized OTLP payload is wrapped in the opaque payload type.
+    /// Guarantees: OTLP logical and retained byte estimates both equal the protobuf length.
     #[test]
-    fn payload_retained_memory_bytes_preserves_num_bytes_semantics() {
+    fn otlp_payload_num_bytes_matches_retained_memory_bytes() {
         let otlp_bytes = OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(b"abc"));
         let otlp_payload: OtapPayload = otlp_bytes.clone().into();
+
+        assert_eq!(otlp_bytes.num_bytes(), otlp_bytes.retained_memory_bytes());
+        assert_eq!(
+            otlp_payload.num_bytes(),
+            Some(otlp_payload.retained_memory_bytes())
+        );
+    }
+
+    /// Scenario: an empty OTAP logs payload is converted into and out of the opaque payload type.
+    /// Guarantees: the conversion preserves the payload's logs root type.
+    #[test]
+    fn empty_otap_payload_preserves_root_type() {
         let arrow_payload: OtapPayload = OtapArrowRecords::Logs(Logs::default()).into();
 
-        assert_eq!(otlp_bytes.retained_memory_bytes(), 3);
-        assert_eq!(otlp_payload.retained_memory_bytes(), 3);
-        assert_eq!(otlp_payload.num_bytes(), Some(3));
-        assert_eq!(arrow_payload.retained_memory_bytes(), 0);
-        assert_eq!(arrow_payload.num_bytes(), None);
-
-        // Keep the root payload type reachable on an empty OTAP batch without
-        // implying there is retained Arrow memory.
         assert_eq!(
             match arrow_payload.into_data() {
                 PayloadData::OtapArrowRecords(records) => records.root_payload_type(),
                 PayloadData::OtlpBytes(_) => unreachable!(),
             },
             ArrowPayloadType::Logs
+        );
+    }
+
+    /// Scenario: a ListArray slice selects one list while retaining its original child array.
+    /// Guarantees: logical sizing preserves Arrow's recursive child-array semantics.
+    #[test]
+    fn logical_bytes_follow_arrow_list_child_semantics() {
+        let array = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(0), Some(1), Some(2)]),
+            Some(vec![Some(3), Some(4), Some(5)]),
+            Some(vec![Some(6), Some(7)]),
+        ]);
+        let data_type = array.data_type().clone();
+        let slice = array.slice(1, 1);
+        let batch = batch_with_columns(vec![("list", data_type, Arc::new(slice) as ArrayRef)]);
+        let list_offset_bytes = size_of::<i32>();
+        let child_bytes = size_of::<[i32; 8]>();
+
+        assert_eq!(logical_bytes(&batch), list_offset_bytes + child_bytes);
+    }
+
+    /// Scenario: a small equivalent logs payload is represented as OTLP bytes and OTAP arrays.
+    /// Guarantees: protobuf has less representation overhead for this small payload.
+    #[test]
+    fn small_equivalent_logs_are_smaller_as_otlp() {
+        let message = OtlpProtoMessage::Logs(logs_with_full_resource_and_scope());
+        let otlp_bytes = otlp_message_to_bytes(&message).num_bytes();
+        let otap = otlp_to_otap(&message);
+        let otap_bytes = otap.logical_arrow_bytes().unwrap();
+        let retained_bytes = otap.retained_memory_bytes();
+
+        assert!(
+            otlp_bytes < otap_bytes,
+            "expected small OTLP payload ({otlp_bytes}) to be smaller than OTAP ({otap_bytes})"
+        );
+        assert!(
+            otap_bytes < retained_bytes,
+            "expected OTAP logical bytes ({otap_bytes}) to be smaller than retained bytes ({retained_bytes})"
+        );
+    }
+
+    /// Scenario: many equivalent logs repeat the same body, event, and attributes.
+    /// Guarantees: OTAP columnar and dictionary representations reduce logical bytes.
+    #[test]
+    fn large_repetitive_equivalent_logs_are_smaller_as_otap() {
+        let message = OtlpProtoMessage::Logs(repeated_logs(1_000));
+        let otlp_bytes = otlp_message_to_bytes(&message).num_bytes();
+        let otap = otlp_to_otap(&message);
+        let otap_bytes = otap.logical_arrow_bytes().unwrap();
+        let retained_bytes = otap.retained_memory_bytes();
+
+        assert!(
+            otap_bytes < otlp_bytes,
+            "expected repetitive OTAP payload ({otap_bytes}) to be smaller than OTLP ({otlp_bytes})"
+        );
+        assert!(
+            otap_bytes < retained_bytes,
+            "expected OTAP logical bytes ({otap_bytes}) to be smaller than retained bytes ({retained_bytes})"
         );
     }
 }

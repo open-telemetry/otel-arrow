@@ -110,6 +110,26 @@ impl OtapArrowRecords {
             .sum()
     }
 
+    /// Logical Arrow buffer bytes associated with this batch set.
+    ///
+    /// This delegates sizing to Arrow's `ArrayData::get_slice_memory_size`.
+    pub fn logical_arrow_bytes(&self) -> Result<usize> {
+        self.allowed_payload_types()
+            .iter()
+            .filter_map(|payload_type| self.get(*payload_type))
+            .try_fold(0usize, |total, batch| {
+                let batch_bytes = memory::record_batch_logical_bytes(batch)
+                    .map_err(|source| error::Error::LogicalArrowSize { source })?;
+                total
+                    .checked_add(batch_bytes)
+                    .ok_or_else(|| error::Error::LogicalArrowSize {
+                        source: arrow::error::ArrowError::ComputeError(
+                            "Integer overflow computing logical Arrow byte size".to_string(),
+                        ),
+                    })
+            })
+    }
+
     /// Get the root payload type for the signal type represented by this OTAP batch
     #[must_use]
     pub fn root_payload_type(&self) -> ArrowPayloadType {
