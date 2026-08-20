@@ -255,12 +255,39 @@ sequenceDiagram
     T->>B: deliver object
     B-->>H: remote free
     Note over B: deallocation activity +10 MiB
-    Note over H: application-live returns toward baseline
+    Note over H: application-live eventually returns toward baseline
 ```
 
-The origin domain remains A even while B logically holds the work. This makes
-allocator inventory useful for physical diagnosis, but unsuitable as the sole
-basis for deciding which pipeline or tenant should be throttled.
+Origin-domain inventory is eventually accurate at the telemetry sampling and
+lifecycle boundary, not necessarily immediately after every remote free.
+[Prototype results reported during review](https://github.com/open-telemetry/otel-arrow/pull/3775#pullrequestreview-4977099790)
+found that jemalloc remote frees of small allocations remained charged to the
+origin arena until the freeing pipeline thread flushed its thread cache at a
+telemetry safe point. Mimalloc did not require the same cache flush, but an
+active heap had to be inspected by its owning pipeline thread at a quiescent
+telemetry safe point. Frees performed by uninstrumented threads can take longer
+to become visible in origin-domain inventory.
+
+Backend footprint gauges are not directly equivalent. The jemalloc prototype
+reports arena mapped and retained memory, while the mimalloc prototype reports
+reserved heap areas. Backend identity and gauge semantics must therefore remain
+explicit when these values are reported or compared.
+
+The origin domain remains A even while B logically holds the work. These
+different attribution dimensions support different decisions:
+
+- origin-heap inventory can support physical diagnosis and, when explicitly
+  adopted by policy, reactive source-side admission that slows Pipeline A to
+  reduce new allocations;
+- retained-work ownership is needed to attribute and budget work currently
+  retained by Pipeline B;
+- tenant identity is needed to apply fairness, quotas, or tenant-specific
+  throttling.
+
+Origin-heap admission does not identify the current retainer or provide tenant
+fairness. It is reactive allocation-origin admission, not accurate
+retained-owner enforcement. The process limiter remains the hard outer
+guardrail in every case.
 
 Per-pipeline domains also introduce costs and lifecycle requirements:
 
@@ -269,11 +296,26 @@ Per-pipeline domains also introduce costs and lifecycle requirements:
 - remote frees can outlive the pipeline thread that created the allocation;
 - retired pipeline generations require bounded, post-exit observation.
 
+The same prototype found the following retirement lifecycle workable:
+
+1. Mark the allocator domain retired and its owner inactive.
+2. Continue sampling the domain until its live bytes reach zero.
+3. Publish the final zero-live snapshot.
+4. Wait for the telemetry collector barrier.
+5. Delete the mimalloc heap, or purge and recycle the jemalloc arena.
+
+Process-level lifecycle metrics should include active and retired domains,
+retired live bytes, the oldest retired-domain age, and recycled domains. These
+signals can reveal stranded generations and unbounded allocator metadata
+growth.
+
 These costs must be measured before changing the default allocation topology.
 
 See [issue #3725](https://github.com/open-telemetry/otel-arrow/issues/3725) for
 the proposed allocator-domain metrics, backend requirements, lifecycle, and
-validation criteria.
+validation criteria. Backend-specific allocator APIs and compatibility shims
+are implementation details tracked there rather than part of this architecture
+contract.
 
 ## Proposed Logical Retained-Work Accounting
 
