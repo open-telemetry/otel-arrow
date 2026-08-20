@@ -59,8 +59,9 @@ and
 for backend-specific configuration examples.
 
 Azure storage authentication is supplied by a bound `bearer_token_provider`
-capability. Configure the Azure identity extension with the storage scope; do
-not place identity credentials in the exporter config:
+capability. The top-level `azure` feature enables the Azure identity extension
+for you; you still need to declare it and bind it on the node. Configure it with
+the storage scope, and do not place identity credentials in the exporter config:
 
 ```yaml
 extensions:
