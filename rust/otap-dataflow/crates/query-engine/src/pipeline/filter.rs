@@ -2398,7 +2398,6 @@ mod test {
         );
 
         // check simple inverted "and" filter with mixed attributes & properties predicates
-        // check simple inverted "and" filter with attributes predicates
         let result = exec_logs_pipeline::<P>(
             "logs | where not(attributes[\"x\"] == \"c\" and severity_text == \"DEBUG\")",
             to_logs_data(log_records.clone()),
@@ -2408,6 +2407,31 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[1].clone()],
         );
+
+        // check that the inverted "and" produces all matches when one side has no matches and each
+        // side of the "and" is from different data sources. This will be planned with a short
+        // circuit strategy and we want to ensure the value produced by is properly inverted
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(severity_text == \"TRACE\" and attributes[\"x\"] == \"a\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_records[0].clone(),
+                log_records[1].clone(),
+                log_records[2].clone()
+            ],
+        );
+
+        // same test case as above - but now with double not, so no records should pass filter
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(not(severity_text == \"TRACE\" and attributes[\"x\"] == \"a\"))",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(result.resource_logs.len(), 0);
     }
 
     #[tokio::test]
@@ -2425,6 +2449,7 @@ mod test {
             LogRecord::build()
                 .event_name("1")
                 .severity_text("INFO")
+                .severity_number(9i32)
                 .attributes(vec![
                     KeyValue::new("x", AnyValue::new_string("a")),
                     KeyValue::new("y", AnyValue::new_string("d")),
@@ -2433,6 +2458,7 @@ mod test {
             LogRecord::build()
                 .event_name("2")
                 .severity_text("ERROR")
+                .severity_number(17i32)
                 .attributes(vec![
                     KeyValue::new("x", AnyValue::new_string("b")),
                     KeyValue::new("y", AnyValue::new_string("e")),
@@ -2441,6 +2467,7 @@ mod test {
             LogRecord::build()
                 .event_name("3")
                 .severity_text("DEBUG")
+                .severity_number(5i32)
                 .attributes(vec![
                     KeyValue::new("x", AnyValue::new_string("c")),
                     KeyValue::new("y", AnyValue::new_string("f")),
@@ -2479,6 +2506,31 @@ mod test {
         pretty_assertions::assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone()],
+        );
+
+        // check that the inverted "or" produces all matches when one side has is all true and each
+        // side of the "or" is from different data sources. This will be planned with a short
+        // circuit strategy and we want to ensure the value produced by is properly inverted
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(severity_number > 0 or attributes[\"x\"] == \"a\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(result.resource_logs.len(), 0);
+
+        // same test case as above but now with double not - so all rows should be returned
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(not(severity_number > 0 or attributes[\"x\"] == \"a\"))",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_records[0].clone(),
+                log_records[1].clone(),
+                log_records[2].clone()
+            ],
         );
     }
 

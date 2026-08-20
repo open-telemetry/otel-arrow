@@ -915,7 +915,7 @@ mod tests {
     /// Scenario: a processor-local delayed resume is scheduled for immediate
     /// delivery while the processor inbox is otherwise idle.
     /// Guarantees: the inbox surfaces the due retained payload as
-    /// `NodeControlMsg::DelayedData` with the original deadline and payload.
+    /// `NodeControlMsg::ResumeData` with the original deadline and payload.
     #[tokio::test]
     async fn processor_inbox_emits_due_delayed_resume_as_control_message() {
         let (_control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
@@ -930,7 +930,7 @@ mod tests {
             .expect("message should arrive");
         assert!(matches!(
             message,
-            Message::Control(NodeControlMsg::DelayedData { when: observed, data })
+            Message::Control(NodeControlMsg::ResumeData { when: observed, data })
                 if observed == when && *data == TestMsg::new("delayed")
         ));
     }
@@ -990,7 +990,7 @@ mod tests {
                     saw_pdata = true;
                     break;
                 }
-                Message::Control(NodeControlMsg::DelayedData { .. }) => {
+                Message::Control(NodeControlMsg::ResumeData { .. }) => {
                     delayed += 1;
                 }
                 other => panic!("unexpected message {other:?}"),
@@ -1165,7 +1165,7 @@ mod tests {
     /// Scenario: shutdown is latched while the processor-local scheduler still
     /// holds a future delayed resume.
     /// Guarantees: pending delayed resumes become immediately available as
-    /// `DelayedData` control traffic before the latched shutdown is delivered.
+    /// `ResumeData` control traffic before the latched shutdown is delivered.
     #[tokio::test]
     async fn processor_inbox_returns_pending_delayed_resumes_on_shutdown_latch() {
         let (control_tx, _pdata_tx, scheduler, mut inbox) = local_processor_inbox(4);
@@ -1202,7 +1202,7 @@ mod tests {
             .expect("delayed resume should return immediately during shutdown");
         assert!(matches!(
             resumed,
-            Message::Control(NodeControlMsg::DelayedData { when, data })
+            Message::Control(NodeControlMsg::ResumeData { when, data })
                 if when < original_when && *data == TestMsg::new("delayed")
         ));
 
