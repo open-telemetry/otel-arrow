@@ -171,18 +171,17 @@ impl From<&ColumnAccessor> for DataScope {
 }
 
 /// Short-circuit strategy for logical binary expressions within
-/// [`ScopedExpr::JoinAndEval`].
 ///
-/// When a `JoinAndEval` node carries a short-circuit strategy, child evaluation
-/// may terminate early when an intermediate result already determines the final
-/// outcome -- avoiding the join and subsequent DataFusion evaluation.
+/// When evaluating a binary expression, this can be used to identify when to short-circuit
+/// evaluation based on the results of one side of the expression, which may avoid costly and
+/// unnecessary evaluation of the other-side
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShortCircuitStrategy {
     /// AND semantics: short-circuit to all-false when any child evaluates to
-    /// all-false (or all-null).
+    /// all-false
     And,
     /// OR semantics: short-circuit to all-true when any child evaluates to
-    /// all-true.
+    /// all-true
     Or,
 }
 
@@ -202,8 +201,6 @@ pub(crate) enum ShortCircuitStrategy {
 /// materializing intermediate arrays.
 #[derive(Debug)]
 pub(crate) enum ScopedExpr {
-    // NOTE: when adding new fields to any variant below, check all match sites in this file,
-    // eval.rs, bitmap.rs, planner.rs, assign.rs, and pipeline/planner.rs.
     /// Leaf: evaluate an expression on a specific data scope (RecordBatch).
     ///
     /// For `LeafEval::DatafusionExpr`, this reads from the scope's RecordBatch and evaluates a
