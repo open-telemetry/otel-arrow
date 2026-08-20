@@ -40,4 +40,5 @@ pprof = { workspace = true }
 jemalloc_pprof = { workspace = true, optional = true }
 
 [dev-dependencies]
+linkme = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }

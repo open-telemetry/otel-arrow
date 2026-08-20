@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use otap_df_config::error::Error as ConfigError;
+use otap_df_config::extension::{ExtensionUrn, ExtensionUserConfig};
+use otap_df_config::redaction::REDACTED_VALUE;
 use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::testing::EmptyAttributes;
@@ -40,6 +42,36 @@ fn valid_config_json(token_url: &str) -> serde_json::Value {
         "client_id": "id",
         "client_secret": "secret",
     })
+}
+
+/// Scenario: inline OAuth client and JWT signing secrets are exposed through
+/// an extension config snapshot.
+/// Guarantees: the registered type-owned redactor masks both values without
+/// adding omitted defaults or mutating the stored config.
+#[test]
+fn snapshot_redactor_masks_inline_oauth_secrets() {
+    let raw = serde_json::json!({
+        "token_url": "https://identity.example/token",
+        "client_id": "client-id",
+        "client_secret": "oauth-client-secret",
+        "client_certificate_key": "jwt-signing-key"
+    });
+    let extension = ExtensionUserConfig::new(
+        ExtensionUrn::parse(OAUTH2_CLIENT_AUTH_URN).expect("extension URN should parse"),
+        raw.clone(),
+    );
+
+    let redacted = extension
+        .try_redacted_for_snapshot()
+        .expect("OAuth snapshot redaction should succeed");
+
+    assert_eq!(redacted.config["client_secret"], REDACTED_VALUE);
+    assert_eq!(redacted.config["client_certificate_key"], REDACTED_VALUE);
+    assert!(
+        redacted.config.get("grant_type").is_none(),
+        "omitted defaults must stay omitted"
+    );
+    assert_eq!(extension.config, raw, "stored config must remain cleartext");
 }
 
 fn make_tracker() -> TokenProviderMetricsTracker<OAuth2ClientAuthMetrics> {

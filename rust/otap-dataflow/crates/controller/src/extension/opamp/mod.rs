@@ -1128,7 +1128,7 @@ fn initial_message(
         agent_description: agent_description(config),
         capabilities: capabilities(),
         health: Some(component_health(session_state, &status_snapshot)),
-        effective_config: Some(effective_config(context)),
+        effective_config: effective_config(context),
         flags: AgentToServerFlags::Unspecified as u64,
         custom_capabilities: Some(custom_capabilities()),
         remote_config_status: Some(RemoteConfigStatus {
@@ -1183,7 +1183,7 @@ fn applying_message(
     };
 
     if reply_to_server.report_full_state {
-        message.effective_config = Some(effective_config(context));
+        message.effective_config = effective_config(context);
         message.agent_description = agent_description(config);
         message.custom_capabilities = Some(custom_capabilities());
 
@@ -1221,7 +1221,7 @@ fn applied_result_message(
         flags: AgentToServerFlags::Unspecified as u64,
         capabilities: capabilities(),
         health: Some(component_health(session_state, &status_snapshot)),
-        effective_config: Some(effective_config(context)),
+        effective_config: effective_config(context),
         remote_config_status: Some(remote_config_status),
         custom_message: pipeline_status_custom_message(&status_snapshot),
         ..Default::default()
@@ -1284,7 +1284,7 @@ fn full_state_reply_message(
         sequence_num: session_state.sequence_num,
         capabilities: capabilities(),
         health: Some(component_health(session_state, &status_snapshot)),
-        effective_config: Some(effective_config(context)),
+        effective_config: effective_config(context),
         agent_description: agent_description(config),
         custom_capabilities: Some(custom_capabilities()),
         remote_config_status: Some(remote_config_status),
@@ -1544,11 +1544,16 @@ fn set_health_and_status_from_components(group_health: &mut ComponentHealth) {
 }
 
 /// Serialize the current applied config as the effective config for the AgentToServer message
-fn effective_config(context: &ControllerExtensionContext) -> EffectiveConfig {
+fn effective_config(context: &ControllerExtensionContext) -> Option<EffectiveConfig> {
     let config_result = context
         .control_plane
         .engine_config_snapshot()
         .map_err(|e| format!("Failed to get engine config snapshot: {e:?}"))
+        .and_then(|config| {
+            config
+                .try_redacted_for_snapshot()
+                .map_err(|e| format!("Failed to redact engine config snapshot: {e}"))
+        })
         .and_then(|config| {
             serde_json::to_vec(&config)
                 .map_err(|e| format!("Failed to serialize engine config: {e}"))
@@ -1564,9 +1569,9 @@ fn effective_config(context: &ControllerExtensionContext) -> EffectiveConfig {
             let mut config_map = HashMap::new();
             _ = config_map.insert("state".into(), config_file);
 
-            EffectiveConfig {
+            Some(EffectiveConfig {
                 config_map: Some(AgentConfigMap { config_map }),
-            }
+            })
         }
         Err(e) => {
             otel_error!(
@@ -1574,7 +1579,7 @@ fn effective_config(context: &ControllerExtensionContext) -> EffectiveConfig {
                 message = "Could not build effective config",
                 error = e.as_str(),
             );
-            EffectiveConfig { config_map: None }
+            None
         }
     }
 }
@@ -1617,13 +1622,19 @@ fn pipeline_status_custom_message(
 mod test {
     use std::{borrow::Cow, sync::Arc};
 
+    use linkme::distributed_slice;
     use otap_df_admin::ControlPlane;
     use otap_df_config::{
         extension::{ExtensionUrn, ExtensionUserConfig},
         observed_state::ObservedStateSettings,
+        redaction::{
+            CONFIG_REDACTORS, ConfigRedactor, RedactedString, RedactionError,
+            redact_typed_config_in_place,
+        },
     };
     use otap_df_state::store::ObservedStateStore;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use serde::{Deserialize, Serialize};
 
     use crate::extension::opamp::proto::opamp::v1::{
         AgentRemoteConfig, AnyValue, RetryInfo, ServerErrorResponse, any_value::Value,
@@ -1636,6 +1647,22 @@ mod test {
     use super::*;
 
     mod util;
+
+    #[derive(Deserialize, Serialize)]
+    struct OpampTypedConfig {
+        password: RedactedString,
+    }
+
+    fn redact_opamp_test_config(config: &mut serde_json::Value) -> Result<(), RedactionError> {
+        redact_typed_config_in_place::<OpampTypedConfig>(config)
+    }
+
+    #[allow(unsafe_code)]
+    #[distributed_slice(CONFIG_REDACTORS)]
+    static OPAMP_TEST_CONFIG_REDACTOR: ConfigRedactor = ConfigRedactor::new(
+        "urn:test:exporter:opamp-typed-redaction",
+        redact_opamp_test_config,
+    );
 
     /// Start a mock server, and the agent controller with the passed config. Messages will then
     /// be exchanged until the number of expected exchanges have occurred. Afterward, the requests
@@ -1693,6 +1720,111 @@ mod test {
         client_handle.await.unwrap().unwrap();
 
         server_state.take_requests().await
+    }
+
+    /// Scenario: the committed engine config contains a type-owned secret and
+    /// is reported to an OpAMP server as effective config.
+    /// Guarantees: the off-box AgentToServer payload contains only the
+    /// redaction marker and never the cleartext secret.
+    #[tokio::test]
+    async fn effective_config_redacts_type_owned_secrets() {
+        let engine_config: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": "otel_dataflow/v1",
+            "groups": {
+                "default": {
+                    "pipelines": {
+                        "main": {
+                            "nodes": {
+                                "exporter": {
+                                    "type": "urn:test:exporter:opamp-typed-redaction",
+                                    "config": {
+                                        "password": "opamp-effective-config-secret"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("engine config should deserialize");
+        let cleartext = serde_json::to_value(&engine_config)
+            .expect("engine config should serialize")
+            .pointer("/groups/default/pipelines/main/nodes/exporter/config/password")
+            .and_then(serde_json::Value::as_str)
+            .expect("fixture password should be a string")
+            .to_owned();
+        let control_plane = Arc::new(MockControlPlane::new(engine_config));
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": ""
+        }))
+        .expect("OpAMP config should deserialize");
+
+        let requests = run_web_socket_test_with_config(vec![None], control_plane, 1, config).await;
+        let effective = requests[0]
+            .effective_config
+            .as_ref()
+            .and_then(|effective| effective.config_map.as_ref())
+            .and_then(|map| map.config_map.get("state"))
+            .expect("initial message should contain effective config");
+        let body = String::from_utf8(effective.body.clone()).expect("effective config is utf-8");
+
+        assert!(
+            !body.contains(&cleartext),
+            "effective config must not contain the cleartext secret: {body}"
+        );
+        assert!(
+            body.contains(otap_df_config::redaction::REDACTED_VALUE),
+            "effective config should contain the redaction marker: {body}"
+        );
+    }
+
+    /// Scenario: a registered component's config cannot be deserialized for
+    /// snapshot redaction.
+    /// Guarantees: the AgentToServer message omits effective config rather than
+    /// reporting an empty map or serializing the raw secret-bearing snapshot.
+    #[test]
+    fn effective_config_omits_report_when_redaction_fails() {
+        let engine_config: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": "otel_dataflow/v1",
+            "groups": {
+                "default": {
+                    "pipelines": {
+                        "main": {
+                            "nodes": {
+                                "exporter": {
+                                    "type": "urn:test:exporter:opamp-typed-redaction",
+                                    "config": {
+                                        "password": {
+                                            "nested": "opamp-diagnostic-secret"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("engine config should deserialize");
+        let telemetry_registry = TelemetryRegistryHandle::default();
+        let observed_state_store = ObservedStateStore::new(
+            &ObservedStateSettings::default(),
+            telemetry_registry.clone(),
+        );
+        let context = ControllerExtensionContext {
+            extension_id: Cow::Borrowed("opamp"),
+            extension: Arc::new(ExtensionUserConfig::with_type(
+                ExtensionUrn::parse(CONTROL_EXTENSION_URN).expect("extension URN should parse"),
+            )),
+            control_plane: Arc::new(MockControlPlane::new(engine_config)),
+            observed_state: observed_state_store.handle(),
+            telemetry_registry,
+            engine_config: empty_engine_config(),
+        };
+
+        assert!(effective_config(&context).is_none());
     }
 
     #[tokio::test]

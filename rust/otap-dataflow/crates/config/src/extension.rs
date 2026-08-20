@@ -54,21 +54,20 @@ impl ExtensionUserConfig {
         }
     }
 
-    /// Returns a clone of this extension config with credential header values
-    /// redacted, for safe exposure through the admin/config snapshot APIs.
+    /// Returns a shape-preserving snapshot that applies an exact component
+    /// redactor before the compatibility header walk.
     ///
-    /// Extension `config` is the same raw [`Value`] mechanism as
-    /// [`NodeUserConfig::config`](crate::node::NodeUserConfig::config), so an
-    /// extension that carries static `headers` (credentials) is redacted with
-    /// the same policy as a node: every value under any `headers` object is
-    /// replaced with
-    /// [`REDACTED_HEADER_VALUE`](crate::node::REDACTED_HEADER_VALUE) while the
-    /// keys are preserved. The stored config is left unchanged.
-    #[must_use]
-    pub fn redacted_for_snapshot(&self) -> ExtensionUserConfig {
+    /// Extensions without a registration receive header redaction only.
+    /// Extension owners must register every non-header type-owned secret;
+    /// schema-wide and untyped redaction remains tracked by #3347.
+    pub fn try_redacted_for_snapshot(
+        &self,
+    ) -> Result<ExtensionUserConfig, crate::redaction::RedactionError> {
         let mut redacted = self.clone();
+        let _ =
+            crate::redaction::redact_registered_config(self.r#type.as_str(), &mut redacted.config)?;
         crate::node::redact_secret_headers(&mut redacted.config);
-        redacted
+        Ok(redacted)
     }
 }
 
@@ -108,7 +107,9 @@ config:
     authorization: "Bearer ext-super-secret"
 "#;
         let cfg: ExtensionUserConfig = serde_yaml::from_str(yaml).unwrap();
-        let redacted = cfg.redacted_for_snapshot();
+        let redacted = cfg
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
         assert_eq!(
             redacted.config["headers"]["authorization"],
             crate::node::REDACTED_HEADER_VALUE

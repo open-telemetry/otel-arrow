@@ -62,7 +62,6 @@ ryu = { workspace = true, optional = true }
 # ClickHouse exporter dependencies (optional, behind feature flag)
 clickhouse = { workspace = true, optional = true }
 clickhouse-ext-arrow = { workspace = true, optional = true }
-secrecy = { workspace = true, optional = true }
 serde-transcode = { workspace = true, optional = true }
 serde_cbor = { workspace = true, optional = true }
 arrow-array = { workspace = true, optional = true }
@@ -133,7 +132,6 @@ contrib-exporters = [
 clickhouse-exporter = [
     "dep:clickhouse",
     "dep:clickhouse-ext-arrow",
-    "dep:secrecy",
     "dep:serde-transcode",
     "dep:serde_cbor",
     "dep:arrow-array",

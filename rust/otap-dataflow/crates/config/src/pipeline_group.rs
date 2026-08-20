@@ -41,18 +41,18 @@ impl PipelineGroupConfig {
         }
     }
 
-    /// Returns a clone of this pipeline group with every node's and
-    /// extension's credential header values redacted, for safe exposure
-    /// through the admin/config snapshot APIs. See
-    /// [`PipelineConfig::redacted_for_snapshot`](crate::pipeline::PipelineConfig::redacted_for_snapshot).
-    /// The stored config is left unchanged.
-    #[must_use]
-    pub fn redacted_for_snapshot(&self) -> PipelineGroupConfig {
+    /// Returns a shape-preserving snapshot using registered type redactors and
+    /// the compatibility header policy.
+    pub fn try_redacted_for_snapshot(
+        &self,
+    ) -> Result<PipelineGroupConfig, crate::redaction::RedactionError> {
         let mut redacted = self.clone();
-        for pipeline in redacted.pipelines.values_mut() {
-            *pipeline = pipeline.redacted_for_snapshot();
+        for (pipeline_id, pipeline) in &mut redacted.pipelines {
+            *pipeline = pipeline
+                .try_redacted_for_snapshot()
+                .map_err(|error| error.at(format!("pipeline `{pipeline_id}`")))?;
         }
-        redacted
+        Ok(redacted)
     }
 
     /// Adds a pipeline to the pipeline group.
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn redacted_for_snapshot_masks_node_and_extension_headers() {
         // A pipeline group whose pipeline carries credential headers on BOTH a
-        // node and an extension. `redacted_for_snapshot()` must scrub both
+        // node and an extension. Snapshot redaction must scrub both
         // before the config is exposed through the admin/config snapshot APIs.
         // Deserialize directly (no validation) to keep the test focused on
         // redaction.
@@ -149,7 +149,9 @@ mod tests {
         "#;
         let group: PipelineGroupConfig =
             serde_yaml::from_str(yaml).expect("pipeline group should deserialize");
-        let redacted = group.redacted_for_snapshot();
+        let redacted = group
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
 
         let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
         assert!(

@@ -98,6 +98,17 @@ impl ControlPlaneError {
     }
 }
 
+fn snapshot_redaction_error(error: otap_df_config::redaction::RedactionError) -> ControlPlaneError {
+    otel_warn!(
+        "admin.config_snapshot.redaction_failed",
+        error = error.to_string(),
+        message = "Config snapshot redaction failed"
+    );
+    ControlPlaneError::Internal {
+        message: "config snapshot redaction failed".to_owned(),
+    }
+}
+
 /// Control-plane interface implemented by the controller runtime.
 pub trait ControlPlane: Send + Sync {
     /// Requests shutdown of all currently running runtime instances.

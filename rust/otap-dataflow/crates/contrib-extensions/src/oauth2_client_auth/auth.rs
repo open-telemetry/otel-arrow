@@ -18,11 +18,11 @@ use oauth2::{
     AccessToken, AsyncHttpClient, Client, ClientId, ClientSecret, EndpointNotSet, HttpRequest,
     HttpResponse, RefreshToken, Scope, StandardRevocableToken, TokenResponse, TokenUrl,
 };
+use otap_df_config::redaction::RedactedString;
 use otap_df_engine::capability::auth::BearerToken;
 use otap_df_otap::tls_utils::{read_file_with_limit_async, read_file_with_limit_sync};
 use rand::RngExt;
 use reqwest::{Certificate, Identity};
-use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 use super::config::{Config, GrantType, SignatureAlgorithm};
@@ -57,13 +57,13 @@ pub struct Auth {
     /// Path to a file holding the client identifier (re-read each acquisition).
     client_id_file: Option<PathBuf>,
     /// Inline client secret (client-credentials grant).
-    client_secret: Option<SecretString>,
+    client_secret: Option<RedactedString>,
     /// Path to a file holding the client secret (re-read each acquisition).
     client_secret_file: Option<PathBuf>,
     /// RSA algorithm used to sign the JWT-bearer assertion.
     signature_algorithm: SignatureAlgorithm,
     /// Inline signing key (PEM) for the JWT-bearer assertion.
-    client_certificate_key: Option<SecretString>,
+    client_certificate_key: Option<RedactedString>,
     /// Path to a file holding the signing key (re-read each acquisition).
     client_certificate_key_file: Option<PathBuf>,
     /// Optional `kid` header placed on the signed assertion.
@@ -156,7 +156,7 @@ impl Auth {
         .await?;
         let client_secret = read_credential(
             self.client_secret_file.as_ref(),
-            self.client_secret.as_ref().map(ExposeSecret::expose_secret),
+            self.client_secret.as_ref().map(RedactedString::expose),
             "client_secret",
         )
         .await?;
@@ -203,7 +203,7 @@ impl Auth {
             self.client_certificate_key_file.as_ref(),
             self.client_certificate_key
                 .as_ref()
-                .map(ExposeSecret::expose_secret),
+                .map(RedactedString::expose),
             "client_certificate_key",
         )
         .await?;

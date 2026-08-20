@@ -128,10 +128,9 @@ fn shutdown_is_success(state: &str) -> bool {
 
 /// Returns committed configuration details for one logical pipeline.
 ///
-/// Credential header values are redacted from the response (see
-/// [`otap_df_config::pipeline::PipelineConfig::redacted_for_snapshot`]) so
-/// secrets configured in node and extension `headers` are not exposed in
-/// cleartext.
+/// Registered type-owned secrets and credential header values are redacted
+/// from the response (see
+/// [`otap_df_config::pipeline::PipelineConfig::try_redacted_for_snapshot`]).
 pub async fn show_pipeline(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -141,7 +140,13 @@ pub async fn show_pipeline(
         .pipeline_details(&pipeline_group_id, &pipeline_id)
     {
         Ok(Some(mut details)) => {
-            details.pipeline = details.pipeline.redacted_for_snapshot();
+            details.pipeline = details
+                .pipeline
+                .try_redacted_for_snapshot()
+                .map_err(|error| {
+                    let _ = crate::snapshot_redaction_error(error);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
             Ok(Json(details))
         }
         Ok(None) => Err(StatusCode::NOT_FOUND),
@@ -689,9 +694,10 @@ mod tests {
         }
     }
 
-    /// Scenario: a pipeline's node config contains credential header values.
-    /// Guarantees: `show_pipeline` redacts them so the raw credential never
-    /// appears in the response body.
+    /// Scenario: a pipeline's node config contains typed and header credential
+    /// values.
+    /// Guarantees: `show_pipeline` redacts both secret classes before returning
+    /// the response.
     #[tokio::test]
     async fn show_pipeline_redacts_credential_header_values() {
         let details: PipelineDetails = serde_json::from_value(json!({
@@ -700,8 +706,9 @@ mod tests {
             "pipeline": {
                 "nodes": {
                     "exporter": {
-                        "type": "urn:test:exporter:example",
+                        "type": "urn:test:exporter:typed-redaction",
                         "config": {
+                            "password": "pipeline-password-secret",
                             "headers": { "authorization": "Bearer super-secret-token" }
                         }
                     }
@@ -709,6 +716,13 @@ mod tests {
             }
         }))
         .expect("pipeline details fixture should deserialize");
+        let cleartext_password = details
+            .pipeline
+            .nodes()
+            .get("exporter")
+            .and_then(|node| node.config["password"].as_str())
+            .expect("fixture password should be a string")
+            .to_owned();
 
         let response = show_pipeline(
             Path(("default".to_string(), "main".to_string())),
@@ -725,12 +739,57 @@ mod tests {
             .expect("body should collect");
         let text = String::from_utf8(body.to_vec()).expect("pipeline body is utf-8");
         assert!(
+            !text.contains(&cleartext_password),
+            "typed password must not appear in the pipeline response: {text}"
+        );
+        assert!(
             !text.contains("Bearer super-secret-token"),
             "raw credential must not appear in the pipeline response: {text}"
         );
         assert!(
             text.contains("[REDACTED]"),
             "redacted placeholder should appear in the pipeline response: {text}"
+        );
+    }
+
+    /// Scenario: a pipeline detail contains malformed config for a registered
+    /// typed redactor.
+    /// Guarantees: `show_pipeline` returns HTTP 500 and never serializes the
+    /// raw pipeline snapshot.
+    #[tokio::test]
+    async fn show_pipeline_fails_closed_when_typed_redaction_fails() {
+        let details: PipelineDetails = serde_json::from_value(json!({
+            "pipelineGroupId": "default",
+            "pipelineId": "main",
+            "pipeline": {
+                "nodes": {
+                    "exporter": {
+                        "type": "urn:test:exporter:typed-redaction",
+                        "config": {
+                            "password": {"nested": "pipeline-diagnostic-secret"}
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("pipeline details fixture should deserialize");
+
+        let response = show_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            State(test_app_state(Arc::new(PipelineDetailsStub {
+                details: Ok(Some(details)),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        assert!(
+            body.is_empty(),
+            "bare-status endpoint must not emit raw config"
         );
     }
 

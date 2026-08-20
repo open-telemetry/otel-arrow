@@ -29,12 +29,17 @@ fn operation_error_response(status: StatusCode, error: crate::ControlPlaneError)
 
 /// Returns the full controller-owned engine configuration.
 ///
-/// Credential header values are redacted from the response (see
-/// [`OtelDataflowSpec::redacted_for_snapshot`]) so secrets configured in node
-/// and extension `headers` are not exposed in cleartext through this endpoint.
+/// Registered type-owned secrets and credential header values are redacted
+/// from the response (see [`OtelDataflowSpec::try_redacted_for_snapshot`]).
 pub async fn show_config(State(state): State<AppState>) -> impl IntoResponse {
     match state.controller.engine_config_snapshot() {
-        Ok(config) => (StatusCode::OK, Json(config.redacted_for_snapshot())).into_response(),
+        Ok(config) => match config.try_redacted_for_snapshot() {
+            Ok(redacted) => (StatusCode::OK, Json(redacted)).into_response(),
+            Err(error) => operation_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::snapshot_redaction_error(error),
+            ),
+        },
         Err(error) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
@@ -82,13 +87,39 @@ mod tests {
         RolloutStatus, ShutdownStatus,
     };
     use axum::body::to_bytes;
+    use linkme::distributed_slice;
     use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
     use otap_df_config::engine::OtelDataflowSpec;
     use otap_df_config::observed_state::ObservedStateSettings;
+    use otap_df_config::redaction::{
+        CONFIG_REDACTORS, ConfigRedactor, RedactedString, RedactionError,
+        redact_typed_config_in_place,
+    };
     use otap_df_engine::memory_limiter::MemoryPressureState;
     use otap_df_state::store::ObservedStateStore;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    use std::collections::BTreeMap;
     use std::sync::Arc;
+
+    #[derive(Deserialize, Serialize)]
+    struct AdminTypedConfig {
+        password: RedactedString,
+        #[serde(flatten)]
+        remaining: BTreeMap<String, Value>,
+    }
+
+    fn redact_admin_typed_config(config: &mut Value) -> Result<(), RedactionError> {
+        redact_typed_config_in_place::<AdminTypedConfig>(config)
+    }
+
+    #[allow(unsafe_code)]
+    #[distributed_slice(CONFIG_REDACTORS)]
+    static ADMIN_TEST_CONFIG_REDACTOR: ConfigRedactor = ConfigRedactor::new(
+        "urn:test:exporter:typed-redaction",
+        redact_admin_typed_config,
+    );
 
     #[derive(Clone)]
     struct StubControlPlane {
@@ -252,9 +283,10 @@ mod tests {
         assert_eq!(decoded, config);
     }
 
-    /// Scenario: a node config contains credential header values.
-    /// Guarantees: `show_config` redacts them so the raw credential never
-    /// appears in the response body.
+    /// Scenario: a node config contains credential header values alongside
+    /// non-secret fields.
+    /// Guarantees: `show_config` redacts only the credential values while
+    /// preserving the complete response shape and leaving stored config intact.
     #[tokio::test]
     async fn show_config_redacts_credential_header_values() {
         let yaml = r#"
@@ -269,8 +301,10 @@ groups:
             type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:exporter:example"
+            type: "urn:test:exporter:typed-redaction"
             config:
+              password: "admin-password-secret"
+              endpoint: "https://backend.example"
               headers:
                 authorization: "Bearer super-secret-token"
         connections:
@@ -278,8 +312,18 @@ groups:
             to: exporter
 "#;
         let config = OtelDataflowSpec::from_yaml(yaml).expect("spec should parse and validate");
+        let original =
+            serde_json::to_value(&config).expect("stored config should serialize before request");
+        let cleartext_password = original
+            .pointer("/groups/default/pipelines/main/nodes/exporter/config/password")
+            .and_then(Value::as_str)
+            .expect("fixture password should be a string")
+            .to_owned();
+        let expected = config
+            .try_redacted_for_snapshot()
+            .expect("typed snapshot redaction should succeed");
         let response = show_config(State(test_app_state(stub(
-            Ok(config),
+            Ok(config.clone()),
             Ok(reconcile_status(EngineConfigReconcileState::Succeeded)),
         ))))
         .await
@@ -291,6 +335,10 @@ groups:
             .expect("body should collect");
         let text = String::from_utf8(body.to_vec()).expect("config body is utf-8");
         assert!(
+            !text.contains(&cleartext_password),
+            "typed password must not appear in the config response: {text}"
+        );
+        assert!(
             !text.contains("Bearer super-secret-token"),
             "raw credential must not appear in the config response: {text}"
         );
@@ -298,6 +346,73 @@ groups:
             text.contains("[REDACTED]"),
             "redacted placeholder should appear in the config response: {text}"
         );
+        let decoded: OtelDataflowSpec =
+            serde_json::from_slice(&body).expect("config response should deserialize");
+        assert_eq!(
+            decoded, expected,
+            "the endpoint must preserve every non-secret field"
+        );
+        assert_eq!(
+            serde_json::to_value(&config).expect("stored config should serialize after request"),
+            original,
+            "the endpoint must not mutate stored config"
+        );
+    }
+
+    /// Scenario: a registered typed config cannot be deserialized for
+    /// redaction and its malformed value contains sensitive text.
+    /// Guarantees: `show_config` fails closed with the existing internal error
+    /// envelope and never includes the sensitive value in its response.
+    #[tokio::test]
+    async fn show_config_fails_closed_without_value_bearing_error() {
+        let config: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": "otel_dataflow/v1",
+            "groups": {
+                "default": {
+                    "pipelines": {
+                        "main": {
+                            "nodes": {
+                                "exporter": {
+                                    "type": "urn:test:exporter:typed-redaction",
+                                    "config": {
+                                        "password": {
+                                            "nested": "diagnostic-secret"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("malformed typed config should remain raw JSON");
+        let sensitive_value = serde_json::to_value(&config)
+            .expect("fixture should serialize")
+            .pointer("/groups/default/pipelines/main/nodes/exporter/config/password/nested")
+            .and_then(Value::as_str)
+            .expect("fixture sensitive value should be a string")
+            .to_owned();
+
+        let response = show_config(State(test_app_state(stub(
+            Ok(config),
+            Ok(reconcile_status(EngineConfigReconcileState::Succeeded)),
+        ))))
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let text = String::from_utf8(body.to_vec()).expect("error body is utf-8");
+        assert!(
+            !text.contains(&sensitive_value),
+            "redaction error must not expose the malformed value: {text}"
+        );
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::Internal);
     }
 
     /// Scenario: the active control plane does not support full config

@@ -26,20 +26,20 @@
 //! The merge helpers (`from_patch` and `merge_table`) apply patch overrides on top of defaults so
 //! downstream code can generate schemas and write data without needing to reason about missing
 //! configuration fields.
-use secrecy::SecretString;
-use serde::Deserialize;
+use otap_df_config::redaction::RedactedString;
+use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 
 const DEFAULT_MAX_IN_FLIGHT: NonZeroUsize =
     NonZeroUsize::new(10).expect("default max_in_flight must be non-zero");
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigPatch {
     pub endpoint: String,
     pub database: String,
     pub username: String,
-    pub password: SecretString,
+    pub password: RedactedString,
 
     pub async_insert: Option<bool>,
 
@@ -63,7 +63,7 @@ pub struct Config {
     /// Clickhouse user name
     pub username: String,
     /// Clickhouse password
-    pub password: SecretString,
+    pub password: RedactedString,
     /// Use async insert
     pub async_insert: bool,
     /// Maximum number of ClickHouse insert requests allowed to run concurrently.
@@ -93,7 +93,7 @@ impl Config {
 }
 
 /// Configuration for a ClickHouse table engine
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TableEngine {
     pub name: String,
     #[serde(default)]
@@ -109,7 +109,7 @@ impl Default for TableEngine {
 }
 
 /// Configuration for a single table, Option values are overriden by global defaults if None.
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct TableConfigPatch {
     pub name: Option<String>,
@@ -135,7 +135,7 @@ pub struct TableConfig {
 }
 
 /// Default Table configuration settings
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DefaultTableConfig {
     /// TTL INTERVAL, e.g., "72 HOUR"
     #[serde(default)]
@@ -164,7 +164,7 @@ fn default_true() -> bool {
 }
 
 /// Configuration for metrics tables by type
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct MetricsTableConfigPatch {
     pub gauge: Option<TableConfigPatch>,
@@ -228,7 +228,7 @@ impl MetricsTableConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct TablesConfigPatch {
     pub logs: Option<TableConfigPatch>,
@@ -293,7 +293,8 @@ fn merge_table(default: TableConfig, patch: Option<TableConfigPatch>) -> TableCo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secrecy::ExposeSecret;
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::redaction::REDACTED_VALUE;
 
     /// Scenario: a ClickHouse exporter config omits the concurrency setting.
     /// Guarantees: the runtime configuration permits ten concurrent inserts by default.
@@ -377,7 +378,7 @@ mod tests {
         assert_eq!(config.endpoint, "http://localhost:8123");
         assert_eq!(config.database, "otap");
         assert_eq!(config.username, "clickhouse");
-        assert_eq!(config.password.expose_secret(), "secret");
+        assert_eq!(config.password.expose(), "secret");
         assert!(!config.async_insert);
 
         // --- Table defaults ---
@@ -401,6 +402,46 @@ mod tests {
 
         // Default metrics tables
         assert_eq!(config.tables.metrics.sum.name, "otel_metrics_sum");
+    }
+
+    /// Scenario: a ClickHouse node config is exposed through the registered
+    /// snapshot redaction path.
+    /// Guarantees: the password is masked, omitted/default fields stay omitted,
+    /// non-secret fields are unchanged, and the source config remains cleartext.
+    #[test]
+    fn registered_snapshot_redactor_masks_password_without_shape_drift() {
+        let raw_config = serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "clickhouse-secret",
+            "tables": {
+                "logs": {
+                    "ttl": "12 HOUR"
+                }
+            }
+        });
+        let node: NodeUserConfig = serde_json::from_value(serde_json::json!({
+            "type": crate::exporters::clickhouse_exporter::CLICKHOUSE_EXPORTER_URN,
+            "config": raw_config.clone()
+        }))
+        .expect("ClickHouse node config should deserialize");
+
+        let redacted = node
+            .try_redacted_for_snapshot()
+            .expect("registered ClickHouse redaction should succeed");
+
+        assert_eq!(redacted.config["password"], REDACTED_VALUE);
+        assert_eq!(
+            redacted.config["endpoint"], raw_config["endpoint"],
+            "non-secret fields must be preserved"
+        );
+        assert_eq!(redacted.config["tables"], raw_config["tables"]);
+        assert!(
+            redacted.config.get("async_insert").is_none(),
+            "omitted defaults must stay omitted"
+        );
+        assert_eq!(node.config, raw_config, "stored config must stay cleartext");
     }
 
     /// Scenario: a ClickHouse exporter config contains an unsupported top-level field.
