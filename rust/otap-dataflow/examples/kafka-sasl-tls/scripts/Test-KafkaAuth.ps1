@@ -7,6 +7,15 @@ $ErrorActionPreference = 'Stop'
 $exampleDirectory = Split-Path -Parent $PSScriptRoot
 $composeFile = Join-Path $exampleDirectory 'compose.yaml'
 
+$runningServices = @(docker compose -f $composeFile ps --status running --services 2>&1)
+if ($LASTEXITCODE -ne 0) {
+    $runningServices | Write-Host
+    throw "Failed to inspect the Kafka Compose services."
+}
+if (-not ($runningServices | Where-Object { $_ -eq 'kafka' })) {
+    throw "Kafka is not running. Run: docker compose -f `"$composeFile`" up -d --wait kafka"
+}
+
 $tests = @(
     @{
         Name = 'PLAIN'
