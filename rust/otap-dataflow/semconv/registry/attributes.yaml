@@ -1,0 +1,2748 @@
+file_format: definition/2
+attributes:
+- key: abandoned_writes
+  type: any
+  stability: development
+  brief: The abandoned_writes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: abandoned_writes
+- key: account
+  type: any
+  stability: development
+  brief: The account value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: account
+- key: ack_propagation
+  type: any
+  stability: development
+  brief: The ack_propagation value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: ack_propagation
+- key: action
+  type: any
+  stability: development
+  brief: The action value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: action
+- key: actual_len
+  type: any
+  stability: development
+  brief: The actual_len value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: actual_len
+- key: added
+  type: any
+  stability: development
+  brief: The added value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: added
+- key: aggregate_bytes
+  type: any
+  stability: development
+  brief: The aggregate_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: aggregate_bytes
+- key: attempt
+  type: any
+  stability: development
+  brief: The attempt value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: attempt
+- key: attempts
+  type: any
+  stability: development
+  brief: The attempts value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: attempts
+- key: attribute_key
+  type: any
+  stability: development
+  brief: The attribute_key value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: attribute_key
+- key: audience
+  type: string
+  stability: development
+  brief: The audience value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: audience
+- key: audiences
+  type: string
+  stability: development
+  brief: The audiences value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: audiences
+- key: backoff_ms
+  type: any
+  stability: development
+  brief: The backoff_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: backoff_ms
+- key: balanced_group_count
+  type: any
+  stability: development
+  brief: The balanced_group_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: balanced_group_count
+- key: batch_id
+  type: any
+  stability: development
+  brief: The batch_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: batch_id
+- key: batch_max_duration_ms
+  type: any
+  stability: development
+  brief: The batch_max_duration_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: batch_max_duration_ms
+- key: batch_max_size
+  type: any
+  stability: development
+  brief: The batch_max_size value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: batch_max_size
+- key: bind_address
+  type: any
+  stability: development
+  brief: The bind_address value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: bind_address
+- key: blocked_ms
+  type: any
+  stability: development
+  brief: The blocked_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: blocked_ms
+- key: blocking
+  type: boolean
+  stability: development
+  brief: The blocking value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: blocking
+- key: bound_nodes
+  type: any
+  stability: development
+  brief: The bound_nodes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: bound_nodes
+- key: brokers
+  type: string
+  stability: development
+  brief: The brokers value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: brokers
+- key: budget_cap
+  type: any
+  stability: development
+  brief: The budget_cap value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: budget_cap
+- key: budget_ms
+  type: any
+  stability: development
+  brief: The budget_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: budget_ms
+- key: bundle_index
+  type: any
+  stability: development
+  brief: The bundle_index value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: bundle_index
+- key: bundles_drained
+  type: any
+  stability: development
+  brief: The bundles_drained value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: bundles_drained
+- key: bundles_processed
+  type: any
+  stability: development
+  brief: The bundles_processed value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: bundles_processed
+- key: bytes_written
+  type: any
+  stability: development
+  brief: The bytes_written value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: bytes_written
+- key: ca_file
+  type: string
+  stability: development
+  brief: The ca_file value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: ca_file
+- key: ca_path
+  type: string
+  stability: development
+  brief: The ca_path value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: ca_path
+- key: cert
+  type: string
+  stability: development
+  brief: The cert value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: cert
+- key: cert_file
+  type: string
+  stability: development
+  brief: The cert_file value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: cert_file
+- key: cert_path
+  type: string
+  stability: development
+  brief: The cert_path value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: cert_path
+- key: changes
+  type: any
+  stability: development
+  brief: The changes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: changes
+- key: channel.id
+  type: string
+  stability: development
+  brief: Unique channel identifier within the host scope.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: channel.id
+- key: channel.impl
+  type: any
+  stability: development
+  brief: Channel implementation ("tokio", "flume", "internal").
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: channel.impl
+- key: channel.kind
+  type: any
+  stability: development
+  brief: Channel payload kind ("control" or "pdata").
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: channel.kind
+- key: channel.mode
+  type: any
+  stability: development
+  brief: Concurrency mode of the channel ("local" or "shared").
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: channel.mode
+- key: channel.type
+  type: any
+  stability: development
+  brief: Channel type ("mpsc", "mpmc", "spsc", "spmc").
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: channel.type
+- key: code
+  type: string
+  stability: development
+  brief: The code value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: code
+- key: columns
+  type: any
+  stability: development
+  brief: The columns value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: columns
+- key: command
+  type: string
+  stability: development
+  brief: The command value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: command
+- key: command_type
+  type: string
+  stability: development
+  brief: The command_type value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: command_type
+- key: completeness
+  type: any
+  stability: development
+  brief: The completeness value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: completeness
+- key: condensed_items
+  type: any
+  stability: development
+  brief: The condensed_items value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: condensed_items
+- key: config
+  type: string
+  stability: development
+  brief: The config value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: config
+- key: config_path
+  type: any
+  stability: development
+  brief: The config_path value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: config_path
+- key: confirmed
+  type: string
+  stability: development
+  brief: The confirmed value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: confirmed
+- key: consecutive_failures
+  type: any
+  stability: development
+  brief: The consecutive_failures value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: consecutive_failures
+- key: context
+  type: any
+  stability: development
+  brief: The context value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: context
+- key: core
+  type: any
+  stability: development
+  brief: The core value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: core
+- key: core.id
+  type: int
+  stability: development
+  brief: Core identifier.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: core.id
+- key: core_allocation
+  type: any
+  stability: development
+  brief: The core_allocation value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: core_allocation
+- key: core_id
+  type: any
+  stability: development
+  brief: The core_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: core_id
+- key: count
+  type: any
+  stability: development
+  brief: The count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: count
+- key: create_directories
+  type: any
+  stability: development
+  brief: The create_directories value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: create_directories
+- key: cumulative_segment_bytes
+  type: any
+  stability: development
+  brief: The cumulative_segment_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: cumulative_segment_bytes
+- key: current
+  type: any
+  stability: development
+  brief: The current value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: current
+- key: current_identity
+  type: any
+  stability: development
+  brief: The current_identity value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: current_identity
+- key: cursor_position
+  type: any
+  stability: development
+  brief: The cursor_position value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: cursor_position
+- key: custom
+  type: any
+  stability: development
+  brief: Custom user-defined attributes
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: custom
+- key: database
+  type: any
+  stability: development
+  brief: The database value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: database
+- key: dcr
+  type: any
+  stability: development
+  brief: The dcr value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: dcr
+- key: deadline
+  type: string
+  stability: development
+  brief: The deadline value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: deadline
+- key: default_ms
+  type: any
+  stability: development
+  brief: The default_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: default_ms
+- key: definition
+  type: any
+  stability: development
+  brief: The definition value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: definition
+- key: delay_ms
+  type: any
+  stability: development
+  brief: The delay_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: delay_ms
+- key: delete_missing
+  type: any
+  stability: development
+  brief: The delete_missing value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: delete_missing
+- key: deleted
+  type: any
+  stability: development
+  brief: The deleted value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: deleted
+- key: deleted_count
+  type: any
+  stability: development
+  brief: The deleted_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: deleted_count
+- key: denominator
+  type: any
+  stability: development
+  brief: The denominator value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: denominator
+- key: deployment.generation
+  type: int
+  stability: development
+  brief: Deployment generation for this runtime instance.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: deployment.generation
+- key: deployment_generation
+  type: any
+  stability: development
+  brief: The deployment_generation value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: deployment_generation
+- key: destination
+  type: string
+  stability: development
+  brief: The destination value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: destination
+- key: detail
+  type: string
+  stability: development
+  brief: The detail value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: detail
+- key: details
+  type: any
+  stability: development
+  brief: The details value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: details
+- key: dimension
+  type: any
+  stability: development
+  brief: Weight dimension the limiter meters.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: dimension
+- key: domain
+  type: any
+  stability: development
+  brief: The domain value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: domain
+- key: dropped_events
+  type: any
+  stability: development
+  brief: The dropped_events value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: dropped_events
+- key: dropped_existing_destination_items
+  type: any
+  stability: development
+  brief: The dropped_existing_destination_items value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: dropped_existing_destination_items
+- key: dropped_items
+  type: any
+  stability: development
+  brief: The dropped_items value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: dropped_items
+- key: durability
+  type: any
+  stability: development
+  brief: The durability value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: durability
+- key: duration_ms
+  type: any
+  stability: development
+  brief: The duration_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: duration_ms
+- key: elapsed_ms
+  type: any
+  stability: development
+  brief: The elapsed_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: elapsed_ms
+- key: encoding
+  type: string
+  stability: development
+  brief: The encoding value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: encoding
+- key: endpoint
+  type: any
+  stability: development
+  brief: The endpoint value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: endpoint
+- key: endpoint_source
+  type: string
+  stability: development
+  brief: The endpoint_source value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: endpoint_source
+- key: entry_count
+  type: any
+  stability: development
+  brief: The entry_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: entry_count
+- key: error
+  type: any
+  stability: development
+  brief: The error value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: error
+- key: error.type
+  type: any
+  stability: development
+  brief: Bounded Kafka export failure category.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: error.type
+- key: error_kind
+  type: any
+  stability: development
+  brief: The error_kind value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: error_kind
+- key: error_msg
+  type: any
+  stability: development
+  brief: The error_msg value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: error_msg
+- key: error_type
+  type: string
+  stability: development
+  brief: The error_type value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: error_type
+- key: errors
+  type: string
+  stability: development
+  brief: The errors value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: errors
+- key: event
+  type: string
+  stability: development
+  brief: The event value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: event
+- key: event_name
+  type: any
+  stability: development
+  brief: The event_name value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: event_name
+- key: event_paths
+  type: string
+  stability: development
+  brief: The event_paths value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: event_paths
+- key: event_type
+  type: any
+  stability: development
+  brief: The event_type value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: event_type
+- key: expected
+  type: string
+  stability: development
+  brief: The expected value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: expected
+- key: expected_key
+  type: any
+  stability: development
+  brief: The expected_key value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: expected_key
+- key: expired
+  type: any
+  stability: development
+  brief: The expired value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: expired
+- key: explicitly_opted_out_nodes
+  type: any
+  stability: development
+  brief: The explicitly_opted_out_nodes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: explicitly_opted_out_nodes
+- key: exporter_refs
+  type: any
+  stability: development
+  brief: The exporter_refs value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: exporter_refs
+- key: extension
+  type: any
+  stability: development
+  brief: The extension value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: extension
+- key: extension.id
+  type: string
+  stability: development
+  brief: Extension unique identifier within its host scope.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: extension.id
+- key: extension.variant
+  type: string
+  stability: development
+  brief: Physical variant of the extension (`"local"` or `"shared"`).
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: extension.variant
+- key: extension_id
+  type: any
+  stability: development
+  brief: The extension_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: extension_id
+- key: extension_type
+  type: any
+  stability: development
+  brief: The extension_type value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: extension_type
+- key: failed_generation
+  type: any
+  stability: development
+  brief: The failed_generation value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: failed_generation
+- key: failure
+  type: any
+  stability: development
+  brief: The failure value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: failure
+- key: failure_reason
+  type: string
+  stability: development
+  brief: The failure_reason value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: failure_reason
+- key: field
+  type: any
+  stability: development
+  brief: The field value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: field
+- key: file
+  type: string
+  stability: development
+  brief: The file value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: file
+- key: file_size
+  type: any
+  stability: development
+  brief: The file_size value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: file_size
+- key: file_type
+  type: string
+  stability: development
+  brief: The file_type value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: file_type
+- key: first
+  type: string
+  stability: development
+  brief: The first value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: first
+- key: flow.id
+  type: string
+  stability: development
+  brief: User-given flow identifier.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: flow.id
+- key: flow.node.decision
+  type: string
+  stability: development
+  brief: 'Name of the decision node that recorded `signals.dropped`. Always emitted as the `flow.node.decision`
+    scope attribute; carries an empty value for the flow''s incoming/outgoing/duration entity (which is
+    not attributed to a specific decision node). Lets a single flow contain multiple decision nodes without
+    conflation. `signals.dropped` aggregates correctly across this attribute: drops at different decision
+    nodes are disjoint (a dropped item never reaches a later node), so the sum equals the flow''s total
+    removed = `signals.incoming - signals.outgoing`. There is deliberately no per-node "kept" metric:
+    a survivor count is non-additive across series nodes (nested subsets double-count) and undefined under
+    fan-out, and the flow-wide kept count is simply `signals.outgoing`.'
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: flow.node.decision
+- key: flow.node.end
+  type: string
+  stability: development
+  brief: Name of the processor node where the measurement ends.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: flow.node.end
+- key: flow.node.start
+  type: string
+  stability: development
+  brief: Name of the processor node where the measurement begins.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: flow.node.start
+- key: flow.purpose
+  type: string
+  stability: development
+  brief: Per-flow purpose differentiator (e.g. `filter`, `transform`). Always emitted as the `flow.purpose`
+    scope attribute; carries an empty value when the flow declares no purpose. Lets OTel View selectors
+    target distinct flavors of processor work while all flows share the single `flow` scope.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: flow.purpose
+- key: flushed
+  type: any
+  stability: development
+  brief: The flushed value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: flushed
+- key: force_dropped_bundles
+  type: any
+  stability: development
+  brief: The force_dropped_bundles value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: force_dropped_bundles
+- key: force_dropped_segments
+  type: any
+  stability: development
+  brief: The force_dropped_segments value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: force_dropped_segments
+- key: format
+  type: any
+  stability: development
+  brief: The format value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: format
+- key: found
+  type: string
+  stability: development
+  brief: The found value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: found
+- key: frequency_ms
+  type: any
+  stability: development
+  brief: The frequency_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: frequency_ms
+- key: from_generation
+  type: any
+  stability: development
+  brief: The from_generation value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: from_generation
+- key: grace_secs
+  type: any
+  stability: development
+  brief: The grace_secs value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: grace_secs
+- key: grpc_endpoint
+  type: any
+  stability: development
+  brief: The grpc_endpoint value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: grpc_endpoint
+- key: gzip_compression_level
+  type: any
+  stability: development
+  brief: The gzip_compression_level value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: gzip_compression_level
+- key: handle
+  type: any
+  stability: development
+  brief: The handle value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: handle
+- key: hard_limit_bytes
+  type: any
+  stability: development
+  brief: The hard_limit_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: hard_limit_bytes
+- key: has_auth
+  type: any
+  stability: development
+  brief: The has_auth value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: has_auth
+- key: has_broadcast_receivers
+  type: any
+  stability: development
+  brief: The has_broadcast_receivers value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: has_broadcast_receivers
+- key: has_unknown_receiver_mode
+  type: any
+  stability: development
+  brief: The has_unknown_receiver_mode value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: has_unknown_receiver_mode
+- key: header
+  type: any
+  stability: development
+  brief: The header value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: header
+- key: header_key
+  type: any
+  stability: development
+  brief: The header_key value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: header_key
+- key: header_name
+  type: any
+  stability: development
+  brief: The header_name value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: header_name
+- key: header_names
+  type: any
+  stability: development
+  brief: The header_names value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: header_names
+- key: header_topic
+  type: string
+  stability: development
+  brief: The header_topic value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: header_topic
+- key: host
+  type: any
+  stability: development
+  brief: The host value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: host
+- key: ignored
+  type: any
+  stability: development
+  brief: The ignored value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: ignored
+- key: in_flight
+  type: any
+  stability: development
+  brief: The in_flight value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: in_flight
+- key: input_items
+  type: any
+  stability: development
+  brief: The input_items value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: input_items
+- key: interval
+  type: string
+  stability: development
+  brief: The interval value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: interval
+- key: is_canceled
+  type: any
+  stability: development
+  brief: The is_canceled value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: is_canceled
+- key: is_new_file
+  type: any
+  stability: development
+  brief: The is_new_file value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: is_new_file
+- key: is_panic
+  type: any
+  stability: development
+  brief: The is_panic value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: is_panic
+- key: journal_root_path
+  type: any
+  stability: development
+  brief: The journal_root_path value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: journal_root_path
+- key: key
+  type: any
+  stability: development
+  brief: The key value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: key
+- key: key_file
+  type: string
+  stability: development
+  brief: The key_file value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: key_file
+- key: key_path
+  type: string
+  stability: development
+  brief: The key_path value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: key_path
+- key: kind
+  type: string
+  stability: development
+  brief: The kind value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: kind
+- key: language
+  type: any
+  stability: development
+  brief: The language value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: language
+- key: lifecycle
+  type: any
+  stability: development
+  brief: The lifecycle value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: lifecycle
+- key: listed_count
+  type: any
+  stability: development
+  brief: The listed_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: listed_count
+- key: listening_addr
+  type: any
+  stability: development
+  brief: The listening_addr value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: listening_addr
+- key: live_pipelines
+  type: any
+  stability: development
+  brief: The live_pipelines value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: live_pipelines
+- key: logs
+  type: any
+  stability: development
+  brief: The logs value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: logs
+- key: logs_endpoint
+  type: any
+  stability: development
+  brief: The logs_endpoint value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: logs_endpoint
+- key: mapping
+  type: any
+  stability: development
+  brief: The mapping value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: mapping
+- key: max_age
+  type: string
+  stability: development
+  brief: The max_age value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: max_age
+- key: max_age_secs
+  type: any
+  stability: development
+  brief: The max_age_secs value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: max_age_secs
+- key: max_concurrent
+  type: any
+  stability: development
+  brief: The max_concurrent value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: max_concurrent
+- key: max_frame_bytes
+  type: any
+  stability: development
+  brief: The max_frame_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: max_frame_bytes
+- key: max_in_flight
+  type: any
+  stability: development
+  brief: The max_in_flight value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: max_in_flight
+- key: max_len
+  type: any
+  stability: development
+  brief: The max_len value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: max_len
+- key: max_restarts
+  type: any
+  stability: development
+  brief: The max_restarts value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: max_restarts
+- key: max_rotated_files
+  type: any
+  stability: development
+  brief: The max_rotated_files value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: max_rotated_files
+- key: max_segment_open_duration
+  type: string
+  stability: development
+  brief: The max_segment_open_duration value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: max_segment_open_duration
+- key: max_wal_size
+  type: any
+  stability: development
+  brief: The max_wal_size value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: max_wal_size
+- key: message_id
+  type: any
+  stability: development
+  brief: The message_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: message_id
+- key: metrics_endpoint
+  type: any
+  stability: development
+  brief: The metrics_endpoint value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: metrics_endpoint
+- key: min_budget
+  type: any
+  stability: development
+  brief: The min_budget value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: min_budget
+- key: min_header_size
+  type: any
+  stability: development
+  brief: The min_header_size value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: min_header_size
+- key: msg_id
+  type: any
+  stability: development
+  brief: The msg_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: msg_id
+- key: name
+  type: any
+  stability: development
+  brief: The name value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: name
+- key: namespace
+  type: any
+  stability: development
+  brief: The namespace value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: namespace
+- key: new_instance_id
+  type: string
+  stability: development
+  brief: The new_instance_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: new_instance_id
+- key: next_segment_seq
+  type: any
+  stability: development
+  brief: The next_segment_seq value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: next_segment_seq
+- key: next_sequence
+  type: any
+  stability: development
+  brief: The next_sequence value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: next_sequence
+- key: node
+  type: any
+  stability: development
+  brief: The node value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: node
+- key: node.id
+  type: string
+  stability: development
+  brief: Node unique identifier (in scope of the pipeline).
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: node.id
+- key: node.port
+  type: string
+  stability: development
+  brief: Port name for the channel endpoint. On the sender side, this is the port to which the channel
+    is connected. On the receiver side, this defaults to the node's input port.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: node.port
+- key: node.type
+  type: string
+  stability: development
+  brief: Node type (e.g., "receiver", "processor", "exporter").
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: node.type
+- key: node.urn
+  type: string
+  stability: development
+  brief: Node plugin URN.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: node.urn
+- key: node_id
+  type: any
+  stability: development
+  brief: The node_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: node_id
+- key: node_kind
+  type: any
+  stability: development
+  brief: The node_kind value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: node_kind
+- key: num_connections
+  type: any
+  stability: development
+  brief: The num_connections value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: num_connections
+- key: num_cores
+  type: any
+  stability: development
+  brief: The num_cores value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: num_cores
+- key: num_pipeline_groups
+  type: any
+  stability: development
+  brief: The num_pipeline_groups value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: num_pipeline_groups
+- key: num_pipelines
+  type: any
+  stability: development
+  brief: The num_pipelines value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: num_pipelines
+- key: num_rows
+  type: any
+  stability: development
+  brief: The num_rows value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: num_rows
+- key: numa.node.id
+  type: int
+  stability: development
+  brief: NUMA node identifier.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: numa.node.id
+- key: numerator
+  type: any
+  stability: development
+  brief: The numerator value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: numerator
+- key: observed_pipelines
+  type: any
+  stability: development
+  brief: The observed_pipelines value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: observed_pipelines
+- key: open_mode
+  type: any
+  stability: development
+  brief: The open_mode value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: open_mode
+- key: operation
+  type: any
+  stability: development
+  brief: Timed exporter phase.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: operation
+- key: operation_id
+  type: any
+  stability: development
+  brief: The operation_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: operation_id
+- key: operation_kind
+  type: any
+  stability: development
+  brief: The operation_kind value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: operation_kind
+- key: original_key_type
+  type: string
+  stability: development
+  brief: The original_key_type value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: original_key_type
+- key: outcome
+  type: any
+  stability: development
+  brief: Terminal outcome of the phase.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: outcome
+- key: output_items
+  type: any
+  stability: development
+  brief: The output_items value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: output_items
+- key: partition
+  type: any
+  stability: development
+  brief: The partition value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: partition
+- key: partitions
+  type: string
+  stability: development
+  brief: The partitions value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: partitions
+- key: path
+  type: any
+  stability: development
+  brief: The path value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: path
+- key: pattern
+  type: any
+  stability: development
+  brief: The pattern value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: pattern
+- key: payload_len
+  type: any
+  stability: development
+  brief: The payload_len value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: payload_len
+- key: peer
+  type: string
+  stability: development
+  brief: The peer value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: peer
+- key: pending_deletes_cleared
+  type: any
+  stability: development
+  brief: The pending_deletes_cleared value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: pending_deletes_cleared
+- key: pending_tracked
+  type: any
+  stability: development
+  brief: The pending_tracked value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: pending_tracked
+- key: per_core_size_cap
+  type: any
+  stability: development
+  brief: The per_core_size_cap value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: per_core_size_cap
+- key: permanent
+  type: any
+  stability: development
+  brief: The permanent value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: permanent
+- key: phase
+  type: any
+  stability: development
+  brief: The phase value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: phase
+- key: pipeline.group.id
+  type: string
+  stability: development
+  brief: Pipeline group identifier.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: pipeline.group.id
+- key: pipeline.id
+  type: string
+  stability: development
+  brief: Pipeline identifier as defined in the configuration.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: pipeline.id
+- key: pipeline_core
+  type: any
+  stability: development
+  brief: The pipeline_core value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: pipeline_core
+- key: pipeline_group_id
+  type: any
+  stability: development
+  brief: The pipeline_group_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: pipeline_group_id
+- key: pipeline_id
+  type: any
+  stability: development
+  brief: The pipeline_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: pipeline_id
+- key: platform
+  type: string
+  stability: development
+  brief: The platform value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: platform
+- key: policy
+  type: string
+  stability: development
+  brief: The policy value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: policy
+- key: poll_interval
+  type: string
+  stability: development
+  brief: The poll_interval value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: poll_interval
+- key: port
+  type: any
+  stability: development
+  brief: The port value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: port
+- key: post_purge_usage_bytes
+  type: any
+  stability: development
+  brief: The post_purge_usage_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: post_purge_usage_bytes
+- key: pre_purge_usage_bytes
+  type: any
+  stability: development
+  brief: The pre_purge_usage_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: pre_purge_usage_bytes
+- key: prev_identity
+  type: any
+  stability: development
+  brief: The prev_identity value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: prev_identity
+- key: previous
+  type: any
+  stability: development
+  brief: The previous value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: previous
+- key: projected_bytes
+  type: any
+  stability: development
+  brief: The projected_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: projected_bytes
+- key: protocol
+  type: any
+  stability: development
+  brief: The protocol value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: protocol
+- key: provider_count
+  type: any
+  stability: development
+  brief: The provider_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: provider_count
+- key: provider_name
+  type: any
+  stability: development
+  brief: The provider_name value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: provider_name
+- key: proxy
+  type: any
+  stability: development
+  brief: The proxy value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: proxy
+- key: purge_duration_ms
+  type: any
+  stability: development
+  brief: The purge_duration_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: purge_duration_ms
+- key: purged_bytes
+  type: any
+  stability: development
+  brief: The purged_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: purged_bytes
+- key: query_column_number
+  type: any
+  stability: development
+  brief: The query_column_number value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: query_column_number
+- key: query_line_number
+  type: any
+  stability: development
+  brief: The query_line_number value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: query_line_number
+- key: queue_on_full
+  type: any
+  stability: development
+  brief: The queue_on_full value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: queue_on_full
+- key: raw_os_error
+  type: any
+  stability: development
+  brief: The raw_os_error value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: raw_os_error
+- key: raw_value
+  type: any
+  stability: development
+  brief: The raw_value value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: raw_value
+- key: ready_pipelines
+  type: any
+  stability: development
+  brief: The ready_pipelines value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: ready_pipelines
+- key: reason
+  type: any
+  stability: development
+  brief: The reason value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: reason
+- key: received
+  type: string
+  stability: development
+  brief: The received value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: received
+- key: receiver_refs
+  type: any
+  stability: development
+  brief: The receiver_refs value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: receiver_refs
+- key: receiver_urn
+  type: any
+  stability: development
+  brief: The receiver_urn value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: receiver_urn
+- key: receiver_was_inner
+  type: any
+  stability: development
+  brief: The receiver_was_inner value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: receiver_was_inner
+- key: recovered_bytes
+  type: any
+  stability: development
+  brief: The recovered_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: recovered_bytes
+- key: refusal
+  type: any
+  stability: development
+  brief: Why the request was declined.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: refusal
+- key: remaining
+  type: any
+  stability: development
+  brief: The remaining value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: remaining
+- key: remaining_rotated_files
+  type: any
+  stability: development
+  brief: The remaining_rotated_files value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: remaining_rotated_files
+- key: removed_count
+  type: any
+  stability: development
+  brief: The removed_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: removed_count
+- key: replayed
+  type: any
+  stability: development
+  brief: The replayed value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: replayed
+- key: replayed_count
+  type: any
+  stability: development
+  brief: The replayed_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: replayed_count
+- key: replayed_so_far
+  type: any
+  stability: development
+  brief: The replayed_so_far value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: replayed_so_far
+- key: resolved_cores
+  type: any
+  stability: development
+  brief: The resolved_cores value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: resolved_cores
+- key: resolved_numa_nodes
+  type: any
+  stability: development
+  brief: The resolved_numa_nodes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: resolved_numa_nodes
+- key: response
+  type: any
+  stability: development
+  brief: Result category for the recorded HTTP request attempt.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: response
+- key: restart_count
+  type: any
+  stability: development
+  brief: The restart_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: restart_count
+- key: retry_count
+  type: any
+  stability: development
+  brief: The retry_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: retry_count
+- key: retry_in
+  type: string
+  stability: development
+  brief: The retry_in value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: retry_in
+- key: retry_scheduled
+  type: any
+  stability: development
+  brief: The retry_scheduled value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: retry_scheduled
+- key: retryable
+  type: any
+  stability: development
+  brief: The retryable value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: retryable
+- key: role_instance
+  type: any
+  stability: development
+  brief: The role_instance value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: role_instance
+- key: role_name
+  type: any
+  stability: development
+  brief: The role_name value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: role_name
+- key: rollback_error
+  type: any
+  stability: development
+  brief: The rollback_error value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: rollback_error
+- key: rollout_id
+  type: any
+  stability: development
+  brief: The rollout_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: rollout_id
+- key: rotated_file_bytes
+  type: any
+  stability: development
+  brief: The rotated_file_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: rotated_file_bytes
+- key: rotated_file_count
+  type: any
+  stability: development
+  brief: The rotated_file_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: rotated_file_count
+- key: rotation_id
+  type: any
+  stability: development
+  brief: The rotation_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: rotation_id
+- key: rotation_target_bytes
+  type: any
+  stability: development
+  brief: The rotation_target_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: rotation_target_bytes
+- key: row_count
+  type: any
+  stability: development
+  brief: The row_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: row_count
+- key: rows
+  type: any
+  stability: development
+  brief: The rows value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: rows
+- key: schema
+  type: any
+  stability: development
+  brief: The schema value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: schema
+- key: schema_source
+  type: any
+  stability: development
+  brief: The schema_source value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: schema_source
+- key: scope
+  type: string
+  stability: development
+  brief: The scope value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: scope
+- key: scope.kind
+  type: string
+  stability: development
+  brief: Scope kind discriminator. Always paired with the populated payload field that matches it.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: scope.kind
+- key: segment
+  type: any
+  stability: development
+  brief: The segment value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: segment
+- key: segment_count
+  type: any
+  stability: development
+  brief: The segment_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: segment_count
+- key: segment_seq
+  type: any
+  stability: development
+  brief: The segment_seq value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: segment_seq
+- key: segment_size
+  type: any
+  stability: development
+  brief: The segment_size value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: segment_size
+- key: selected_mode
+  type: any
+  stability: development
+  brief: The selected_mode value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: selected_mode
+- key: selection_policy
+  type: any
+  stability: development
+  brief: The selection_policy value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: selection_policy
+- key: sender_was_inner
+  type: any
+  stability: development
+  brief: The sender_was_inner value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: sender_was_inner
+- key: sequence
+  type: any
+  stability: development
+  brief: The sequence value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: sequence
+- key: session_name
+  type: any
+  stability: development
+  brief: The session_name value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: session_name
+- key: set_permissions_supported
+  type: boolean
+  stability: development
+  brief: The set_permissions_supported value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: set_permissions_supported
+- key: setting
+  type: string
+  stability: development
+  brief: The setting value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: setting
+- key: signal
+  type: any
+  stability: development
+  brief: The signal value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: signal
+- key: signal_type
+  type: any
+  stability: development
+  brief: The signal_type value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: signal_type
+- key: size_bytes
+  type: any
+  stability: development
+  brief: The size_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: size_bytes
+- key: size_hint
+  type: any
+  stability: development
+  brief: The size_hint value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: size_hint
+- key: skipped_expired
+  type: any
+  stability: development
+  brief: The skipped_expired value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: skipped_expired
+- key: slot_count
+  type: any
+  stability: development
+  brief: The slot_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: slot_count
+- key: slot_id
+  type: any
+  stability: development
+  brief: The slot_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: slot_id
+- key: soft_limit_bytes
+  type: any
+  stability: development
+  brief: The soft_limit_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: soft_limit_bytes
+- key: source
+  type: any
+  stability: development
+  brief: The source value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: source
+- key: source_id
+  type: any
+  stability: development
+  brief: The source_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: source_id
+- key: spans
+  type: any
+  stability: development
+  brief: The spans value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: spans
+- key: state
+  type: string
+  stability: development
+  brief: The state value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: state
+- key: stats
+  type: string
+  stability: development
+  brief: The stats value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: stats
+- key: status
+  type: any
+  stability: development
+  brief: The status value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: status
+- key: status_line
+  type: any
+  stability: development
+  brief: The status_line value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: status_line
+- key: stopped_at_corruption
+  type: any
+  stability: development
+  brief: The stopped_at_corruption value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: stopped_at_corruption
+- key: stream
+  type: any
+  stability: development
+  brief: The stream value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: stream
+- key: subject
+  type: string
+  stability: development
+  brief: The subject value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: subject
+- key: subscriber_id
+  type: string
+  stability: development
+  brief: The subscriber_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: subscriber_id
+- key: subscription
+  type: any
+  stability: development
+  brief: The subscription value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: subscription
+- key: table
+  type: any
+  stability: development
+  brief: The table value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: table
+- key: tail_recovery
+  type: any
+  stability: development
+  brief: The tail_recovery value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: tail_recovery
+- key: target
+  type: any
+  stability: development
+  brief: The target value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: target
+- key: target_generation
+  type: any
+  stability: development
+  brief: The target_generation value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: target_generation
+- key: task_id
+  type: any
+  stability: development
+  brief: The task_id value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: task_id
+- key: telemetry_entities
+  type: any
+  stability: development
+  brief: The telemetry_entities value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: telemetry_entities
+- key: telemetry_metric_sets
+  type: any
+  stability: development
+  brief: The telemetry_metric_sets value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: telemetry_metric_sets
+- key: timeout
+  type: string
+  stability: development
+  brief: The timeout value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: timeout
+- key: timeout_ms
+  type: any
+  stability: development
+  brief: The timeout_ms value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: timeout_ms
+- key: timeout_secs
+  type: any
+  stability: development
+  brief: The timeout_secs value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: timeout_secs
+- key: timestamp_nanos
+  type: any
+  stability: development
+  brief: The timestamp_nanos value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: timestamp_nanos
+- key: token_url
+  type: any
+  stability: development
+  brief: The token_url value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: token_url
+- key: topic
+  type: any
+  stability: development
+  brief: Topic name associated with the node metrics.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: topic
+- key: topic.source
+  type: any
+  stability: development
+  brief: Bounded source of the resolved topic.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: topic.source
+- key: topology_mode
+  type: any
+  stability: development
+  brief: The topology_mode value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: topology_mode
+- key: total_errors
+  type: any
+  stability: development
+  brief: The total_errors value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: total_errors
+- key: total_size_cap
+  type: any
+  stability: development
+  brief: The total_size_cap value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: total_size_cap
+- key: total_values
+  type: any
+  stability: development
+  brief: The total_values value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: total_values
+- key: traces_endpoint
+  type: any
+  stability: development
+  brief: The traces_endpoint value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: traces_endpoint
+- key: tracked
+  type: any
+  stability: development
+  brief: The tracked value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: tracked
+- key: truncated
+  type: any
+  stability: development
+  brief: The truncated value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: truncated
+- key: type
+  type: string
+  stability: development
+  brief: The type value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: type
+- key: usage_bytes
+  type: any
+  stability: development
+  brief: The usage_bytes value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: usage_bytes
+- key: username
+  type: any
+  stability: development
+  brief: The username value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: username
+- key: variant
+  type: any
+  stability: development
+  brief: The variant value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: variant
+- key: visible_cpu_count
+  type: any
+  stability: development
+  brief: The visible_cpu_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: visible_cpu_count
+- key: visible_node_count
+  type: any
+  stability: development
+  brief: The visible_node_count value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: visible_node_count
+- key: wait
+  type: any
+  stability: development
+  brief: The wait value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: wait
+- key: wakeup_revision
+  type: any
+  stability: development
+  brief: The wakeup_revision value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: wakeup_revision
+- key: wakeup_slot
+  type: any
+  stability: development
+  brief: The wakeup_slot value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: wakeup_slot
+- key: wal_end
+  type: any
+  stability: development
+  brief: The wal_end value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: wal_end
+- key: watched_path
+  type: string
+  stability: development
+  brief: The watched_path value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: watched_path
+- key: watching_parent
+  type: string
+  stability: development
+  brief: The watching_parent value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: watching_parent
+- key: widened_key_type
+  type: string
+  stability: development
+  brief: The widened_key_type value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: widened_key_type
+- key: will_retry
+  type: any
+  stability: development
+  brief: The will_retry value recorded by OTAP Dataflow internal telemetry.
+  annotations:
+    otap_dataflow:
+      wire:
+        attribute_key: will_retry
