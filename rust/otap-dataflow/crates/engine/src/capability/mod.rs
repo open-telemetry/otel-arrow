@@ -25,8 +25,8 @@
 //   TokenStream}`). Their defining modules stay private, so each item has a
 //   single public path.
 //
-// - A capability's **trait variants** (the `local` `!Send` / `shared` `Send`
-//   traits the `#[capability]` macro generates) are exposed only on the
+// - A capability's **trait variants** (the `local` `!Send` / `shared`
+//   `Send + Sync` traits the `#[capability]` macro generates) are exposed only on the
 //   **execution-model** surface, `{local,shared}::capability::<domain>::<name>` --
 //   the surface extensions implement against, alongside `{local,shared}::extension`,
 //   etc.

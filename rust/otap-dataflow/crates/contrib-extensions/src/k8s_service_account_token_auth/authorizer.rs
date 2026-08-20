@@ -3,7 +3,7 @@
 
 //! The two capability variants of Kubernetes service-account-token auth.
 //!
-//! - [`SharedK8sServiceAccountTokenAuth`]: `Send`, `Arc` handle over a
+//! - [`SharedK8sServiceAccountTokenAuth`]: `Send + Sync`, `Arc` handle over a
 //!   [`SharedDecisionCache`].
 //! - [`LocalK8sServiceAccountTokenAuth`]: `!Send`, `Rc` handle over a
 //!   [`LocalDecisionCache`], so thread-per-core consumers pay for neither a lock
@@ -29,9 +29,9 @@ use super::config::AudienceConfig;
 use super::config::DEFAULT_REVIEW_TIMEOUT;
 use super::core::Core;
 
-// -- Shared variant (Send; Arc + Mutex) -------------------------------------
+// -- Shared variant (Send + Sync; Arc + Mutex) ------------------------------
 
-/// Shared, `Send` Kubernetes service-account-token auth provider.
+/// Shared, `Send + Sync` Kubernetes service-account-token auth provider.
 ///
 /// Every clone shares the same [`SharedInner`] via `Arc`, so they share one
 /// lazily-built Kubernetes client and one decision cache.

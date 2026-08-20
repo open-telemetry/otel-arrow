@@ -64,7 +64,7 @@ impl SlotHandle for Rc<OnceCell<FlightResult>> {
     }
 }
 
-/// Slot handle used by the shared (`Send`, cross-thread) variant.
+/// Slot handle used by the shared (`Send + Sync`, cross-thread) variant.
 pub(crate) type SharedSlot = Arc<OnceCell<FlightResult>>;
 
 /// Slot handle used by the local (`!Send`, thread-per-core) variant.
@@ -81,9 +81,9 @@ pub(crate) fn digest(token: &str) -> TokenDigest {
     hasher.finalize().into()
 }
 
-// -- Shared variant cache (Send; Mutex + Arc slots) -------------------------
+// -- Shared variant cache (Send + Sync; Mutex + Arc slots) ------------------
 
-/// Decision cache for the shared (`Send`) capability variant.
+/// Decision cache for the shared (`Send + Sync`) capability variant.
 pub(crate) struct SharedDecisionCache {
     entries: Mutex<Entries<SharedSlot>>,
 }

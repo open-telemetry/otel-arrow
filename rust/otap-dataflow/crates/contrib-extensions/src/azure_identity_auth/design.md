@@ -142,7 +142,7 @@ stream itself carries only successfully published tokens.
 The `TokenStream` alias omits a `Send` bound: the subscription is always
 consumed on the core that created it (thread-per-core), so it need not be `Send`.
 The `#[capability]` macro emits the signature into both the `local` (`?Send`)
-and `shared` (`Send`) variants; dropping the bound is what lets a passive
+and `shared` (`Send + Sync`) variants; dropping the bounds is what lets a passive
 provider back it with a `!Send` `unfold`. This extension backs it with a `watch`
 channel.
 

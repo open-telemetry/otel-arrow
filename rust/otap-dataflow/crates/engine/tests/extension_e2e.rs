@@ -160,7 +160,7 @@ enum CallSequence {
     /// boxed handle. Captures the return value for shared-state tests.
     StatefulIncrement,
     /// `require_shared::<NoOpStateful>()`, then call `.increment()` on the
-    /// boxed shared handle (sync `&mut self` through the `Send` trait
+    /// boxed shared handle (sync `&mut self` through the `Send + Sync` trait
     /// variant). Captures the return value.
     SharedStatefulIncrement,
     /// `require_local::<NoOpStateful>()`; the create() body keeps the
