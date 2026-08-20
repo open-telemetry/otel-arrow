@@ -200,10 +200,21 @@ impl ShortCircuitStrategy {
     ///
     /// For `Or`: returns `true` when the value is definitively all-true, meaning the OR
     /// result will be all-true regardless of remaining children.
-    fn should_short_circuit(&self, values: &ColumnarValue) -> bool {
+    fn should_short_circuit(&self, data_scope: &DataScope, values: &ColumnarValue) -> bool {
         match self {
             Self::And | Self::NotAnd => Self::is_all_false_or_null(values),
-            Self::Or | Self::NotOr => Self::is_all_true(values),
+            Self::Or | Self::NotOr => {
+                // we only apply "or" short circuiting for data scopes where all rows from the
+                // batch have a resolved value. These scopes are in contrast to something like,
+                // attributes scoped, where rows are only present where the attribute had some key.
+                // if we check that all present attributes have passed some predicate, it doesn't
+                // necessarily mean that rows not having these attributes pass the predicate we're
+                // short circuiting, hence why the "or"/all-true short-circuit strategy can't apply
+                matches!(
+                    data_scope,
+                    DataScope::Root | DataScope::RootParent(_) | DataScope::StaticScalar
+                ) && Self::is_all_true(values)
+            }
         }
     }
 
@@ -527,6 +538,7 @@ mod test {
     use crate::pipeline::expr::{
         LeafEval, ScopedExpr, ScopedValue, ShortCircuitStrategy, SignalTypePredicate,
     };
+    use crate::pipeline::functions::test::always_panic;
     use crate::pipeline::id_mask::IdMask;
     use crate::pipeline::planner::AttributesIdentifier;
 
@@ -594,6 +606,10 @@ mod test {
                 .attributes(vec![
                     KeyValue::new("code.namespace", AnyValue::new_string("main")),
                     KeyValue::new("code.line.number", AnyValue::new_int(7)),
+                    KeyValue::new(
+                        "exception.type",
+                        AnyValue::new_string("java.net.IOException"),
+                    ),
                 ])
                 .event_name("e3")
                 .finish(),
@@ -989,7 +1005,8 @@ mod test {
         let right_child = attrs_eval_dict_downcast(
             AttributesIdentifier::Root,
             "code.namespace",
-            col(VALUE_COLUMN_NAME).eq(lit("main")),
+            // will panic if actually evaluated
+            always_panic().call(vec![col(VALUE_COLUMN_NAME)]),
         );
 
         let mut op = ScopedExpr::JoinAndEval {
@@ -1029,7 +1046,8 @@ mod test {
         let right_child = attrs_eval_dict_downcast(
             AttributesIdentifier::Root,
             "code.namespace",
-            col(VALUE_COLUMN_NAME).eq(lit("main")),
+            // will panic if actually evaluated
+            always_panic().call(vec![col(VALUE_COLUMN_NAME)]),
         );
 
         let mut op = ScopedExpr::JoinAndEval {
@@ -1090,5 +1108,37 @@ mod test {
         assert!(bool_arr.value(0));
         assert!(!bool_arr.value(1));
         assert!(bool_arr.value(2));
+    }
+
+    #[test]
+    /// Scenario: JoinAndEval with Or short circuit does not fire when the left
+    /// child has a non-root scope (e.g. attributes)
+    /// Guarantees: we don't erroneously interpret "all present attributes" passing
+    /// some predicate meaning that all root rows actually have these attributes
+    fn test_join_or_eval_no_short_circuit_on_non_root_scoped_left() {
+        let otap = test_logs_data();
+        let session_ctx = Pipeline::create_session_context();
+
+        // something scoped to attributes that will pass for all rows having the attribute
+        let left_child = attrs_eval(
+            AttributesIdentifier::Root,
+            "exception.type",
+            col(VALUE_COLUMN_NAME).eq(lit("java.net.IOException")),
+        );
+
+        let right_child = root_eval(col(consts::SEVERITY_TEXT).eq(lit("ERROR")));
+        let mut op = ScopedExpr::JoinAndEval {
+            children: vec![left_child, right_child],
+            default_null_children: false,
+            align_children_to_root: false,
+            short_circuit: Some(ShortCircuitStrategy::Or),
+            eval: LeafEval::new_df_expr(col(arg_column_name(0)).or(col(arg_column_name(1))), false)
+                .unwrap(),
+        };
+
+        let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
+
+        // we should be returning a selection vec, not a scalar (which is returned by short-circuit)
+        assert!(!matches!(result.values, ColumnarValue::Scalar(_)));
     }
 }

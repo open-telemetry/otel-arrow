@@ -272,7 +272,7 @@ pub(super) fn join_and_eval_value(
         // Check for short-circuit: skip remaining children and the join when the
         // outcome is already determined by this child's result.
         if let Some(strategy) = short_circuit {
-            if strategy.should_short_circuit(&result.values) {
+            if strategy.should_short_circuit(&result.scope, &result.values) {
                 return Ok(Some(strategy.value()));
             }
         }
