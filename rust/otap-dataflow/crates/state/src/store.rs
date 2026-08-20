@@ -17,6 +17,7 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, LogContext, StyledBufWriter};
 use otap_df_telemetry::{otel_error, otel_info};
 use serde::Serialize;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -399,11 +400,21 @@ impl ObservedStateStore {
                 );
             }
             EventType::Error(err) => {
+                let event_type = err.kind();
+                let summary = err.summary();
+                let node = summary.and_then(|summary| summary.node());
+                let node_kind = node.map(|(_, node_kind)| Cow::from(*node_kind));
+
                 otel_error!("state.observed_error",
                     pipeline_group_id = %observed_event.key.pipeline_group_id,
                     pipeline_id = %observed_event.key.pipeline_id,
                     core_id = observed_event.key.core_id,
-                    event_type = ?err,
+                    node = node.map(|(node, _)| node),
+                    node_kind = node_kind.as_deref(),
+                    event_type = event_type,
+                    error_kind = summary.map(|summary| summary.error_kind()),
+                    error = summary.map(|summary| summary.message()),
+                    source = summary.and_then(|summary| summary.source()),
                     message = observed_event.message.as_deref().unwrap_or(""),
                 );
             }
@@ -585,8 +596,7 @@ mod tests {
     use otap_df_telemetry::log_tap;
     use otap_df_telemetry::otel_info;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::self_tracing::{LogContext, LogRecord};
-    use std::borrow::Cow;
+    use otap_df_telemetry::self_tracing::{LOG_ARGUMENTS_ENCODE_INLINE, LogContext, LogRecord};
     use std::time::Duration;
     use std::time::SystemTime;
     use tokio_util::sync::CancellationToken;
@@ -621,6 +631,21 @@ mod tests {
         }
     }
 
+    struct LogCaptureLayer {
+        sender: flume::Sender<LogRecord>,
+    }
+
+    impl<S> Layer<S> for LogCaptureLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            self.sender
+                .try_send(LogRecord::new(event, LogContext::default()))
+                .expect("log capture receiver should be connected");
+        }
+    }
+
     fn emit_log_via_async_reporter(reporter: ObservedEventReporter, message: &str) {
         let dispatch = tracing::Dispatch::new(
             tracing_subscriber::Registry::default().with(ReporterLayer { reporter }),
@@ -628,6 +653,87 @@ mod tests {
         tracing::dispatcher::with_default(&dispatch, || {
             otel_info!("state.test.log", message = message);
         });
+    }
+
+    /// Scenario: a terminal pipeline error exceeds the bounded record budget.
+    /// Guarantees: identity, classification, and a marked error prefix remain visible.
+    #[test]
+    fn observed_runtime_error_preserves_identity_and_error_prefix() {
+        let store = ObservedStateStore::new(
+            &ObservedStateSettings::default(),
+            TelemetryRegistryHandle::new(),
+        );
+        let (sender, receiver) = flume::unbounded();
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::Registry::default().with(LogCaptureLayer { sender }),
+        );
+        let key = otap_df_config::DeployedPipelineKey {
+            pipeline_group_id: Cow::Borrowed("runtime_error_reproduction_pipeline_group"),
+            pipeline_id: Cow::Borrowed("runtime_error_reproduction_pipeline"),
+            core_id: 0,
+            deployment_generation: 0,
+        };
+        let error = format!(
+            "Pipeline runtime error: {}",
+            "x".repeat(LOG_ARGUMENTS_ENCODE_INLINE * 2)
+        );
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let result = store
+                .report_engine(EngineEvent::pipeline_runtime_error(
+                    key,
+                    "Pipeline encountered a runtime error.",
+                    otap_df_telemetry::event::ErrorSummary::Pipeline {
+                        error_kind: "runtime".into(),
+                        message: error,
+                        source: None,
+                    },
+                ))
+                .expect_err("runtime error from Pending should be rejected after logging");
+            assert!(matches!(result, Error::InvalidTransition { .. }));
+        });
+
+        let rendered_pipeline = receiver
+            .recv()
+            .expect("pipeline runtime error log should be captured")
+            .to_string();
+        assert!(
+            rendered_pipeline.contains("error=Pipeline"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("[...]"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("error_kind=runtime"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("event_type=runtime_error"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline
+                .contains("pipeline_group_id=runtime_error_reproduction_pipeline_group"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("pipeline_id=runtime_error_reproduction_pipeline"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("core_id=0"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            !rendered_pipeline.contains("source="),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            !rendered_pipeline.contains("error=RuntimeError("),
+            "rendered log should not use verbose enum Debug output: {rendered_pipeline}"
+        );
     }
 
     /// Validates that `send_timeout(1ms)` on a full bounded channel drops

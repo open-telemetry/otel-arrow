@@ -45,7 +45,9 @@ use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
-use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
+use otap_df_pdata::{
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData,
+};
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -528,8 +530,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     };
 
                     // Dispatch based on signal type and the concrete payload representation.
-                    match (signal_type, payload) {
-                        (SignalType::Logs, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                    match (signal_type, payload.into_data()) {
+                        (SignalType::Logs, PayloadData::OtapArrowRecords(otap_batch)) => {
                             dispatch_otap_export(
                                 otap_batch,
                                 context,
@@ -549,7 +551,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             )
                             .await;
                         }
-                        (SignalType::Metrics, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                        (SignalType::Metrics, PayloadData::OtapArrowRecords(otap_batch)) => {
                             dispatch_otap_export(
                                 otap_batch,
                                 context,
@@ -569,7 +571,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             )
                             .await;
                         }
-                        (SignalType::Traces, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                        (SignalType::Traces, PayloadData::OtapArrowRecords(otap_batch)) => {
                             dispatch_otap_export(
                                 otap_batch,
                                 context,
@@ -589,7 +591,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             )
                             .await;
                         }
-                        (_, OtapPayload::OtlpBytes(service_req)) => {
+                        (_, PayloadData::OtlpBytes(service_req)) => {
                             let prepared = match service_req {
                                 OtlpProtoBytes::ExportLogsRequest(bytes) => prepare_otlp_export(
                                     bytes,
@@ -2136,8 +2138,8 @@ mod tests {
                                 nack.reason
                             );
                             let (_context, payload) = (*nack.refused).into_parts();
-                            match payload {
-                                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+                            match payload.into_data() {
+                                PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
                                     bytes,
                                 )) => assert_eq!(
                                     bytes, expected_bytes,
@@ -2261,7 +2263,7 @@ mod tests {
             req.encode(&mut req_bytes).unwrap();
 
             // send a request while the server isn't running and check how we handle it
-            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+            let pdata = OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
@@ -2287,7 +2289,7 @@ mod tests {
             _ = server_startup_ack_receiver.recv().await.unwrap();
 
             // send a pdata
-            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+            let pdata = OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
@@ -2313,7 +2315,7 @@ mod tests {
             _ = server_shutdown_ack_receiver.recv().await.unwrap();
 
             // send a request while the server isn't running and check that we still handle it correctly
-            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+            let pdata = OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
@@ -2337,7 +2339,7 @@ mod tests {
             _ = server_startup_ack_receiver.recv().await.unwrap();
 
             // send another pdata. This ensures the client can reconnect after it was shut down
-            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+            let pdata = OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(req_bytes.clone().into()),
             ))
             .test_subscribe_to(
@@ -2857,7 +2859,7 @@ mod tests {
             let req = ExportLogsServiceRequest::default();
             let mut req_bytes = vec![];
             req.encode(&mut req_bytes).unwrap();
-            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+            let pdata = OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(req_bytes)),
             ))
             .test_subscribe_to(

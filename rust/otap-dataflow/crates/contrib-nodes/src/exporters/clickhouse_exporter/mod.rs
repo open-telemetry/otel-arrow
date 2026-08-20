@@ -53,7 +53,9 @@ use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+use otap_df_pdata::{
+    OtapArrowRecords, OtapPayload, OtlpProtoBytes, PayloadData, TryIntoWithOptions,
+};
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MetricSetHandler;
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
@@ -196,8 +198,8 @@ fn transform_raw_otlp_logs(
     payload: &OtapPayload,
     transformer: &mut OtlpLogsTransformer,
 ) -> Option<Result<Option<arrow::array::RecordBatch>, error::ClickhouseExporterError>> {
-    match payload {
-        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
+    match payload.data() {
+        PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
             Some(transformer.transform(bytes))
         }
         _ => None,
@@ -484,8 +486,8 @@ mod tests {
     /// Guarantees: only serialized OTLP log requests are selected for direct transformation.
     #[test]
     fn raw_otlp_log_routing_is_signal_and_format_specific() {
-        let logs = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new()));
-        let traces = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportTracesRequest(Bytes::new()));
+        let logs = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::new()));
+        let traces = OtapPayload::from(OtlpProtoBytes::ExportTracesRequest(Bytes::new()));
         let mut transformer = OtlpLogsTransformer::default();
 
         assert!(transform_raw_otlp_logs(&logs, &mut transformer).is_some());
@@ -496,7 +498,7 @@ mod tests {
     /// Guarantees: the routing layer classifies it as invalid instead of using legacy fallback.
     #[test]
     fn malformed_raw_otlp_logs_are_not_fallback_candidates() {
-        let logs = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(
+        let logs = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(
             b"\xff",
         )));
         let mut transformer = OtlpLogsTransformer::default();

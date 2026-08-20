@@ -117,10 +117,13 @@ jobs:
         with:
           toolchain: stable
 
+      # Keep specialized analysis caches restore-only so they do not compete
+      # with the required build caches published by Post-Merge Actions.
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
+          save-if: false
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
