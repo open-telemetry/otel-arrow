@@ -1122,13 +1122,15 @@ fn initial_message(
     context: &ControllerExtensionContext,
 ) -> AgentToServer {
     let status_snapshot = context.observed_state.snapshot();
+    let mut health = component_health(session_state, &status_snapshot);
+    let effective_config = effective_config(context, &mut health);
     AgentToServer {
         instance_uid: session_state.instance_uid.to_vec(),
         sequence_num: session_state.sequence_num,
         agent_description: agent_description(config),
         capabilities: capabilities(),
-        health: Some(component_health(session_state, &status_snapshot)),
-        effective_config: effective_config(context),
+        health: Some(health),
+        effective_config,
         flags: AgentToServerFlags::Unspecified as u64,
         custom_capabilities: Some(custom_capabilities()),
         remote_config_status: Some(RemoteConfigStatus {
@@ -1183,7 +1185,13 @@ fn applying_message(
     };
 
     if reply_to_server.report_full_state {
-        message.effective_config = effective_config(context);
+        message.effective_config = effective_config(
+            context,
+            message
+                .health
+                .as_mut()
+                .expect("applying message always includes health"),
+        );
         message.agent_description = agent_description(config);
         message.custom_capabilities = Some(custom_capabilities());
 
@@ -1215,13 +1223,15 @@ fn applied_result_message(
     };
     set_remote_config_status_from_reconcile_result(&mut remote_config_status, Some(result));
     let status_snapshot = context.observed_state.snapshot();
+    let mut health = component_health(session_state, &status_snapshot);
+    let effective_config = effective_config(context, &mut health);
     AgentToServer {
         instance_uid: session_state.instance_uid.to_vec(),
         sequence_num: session_state.sequence_num,
         flags: AgentToServerFlags::Unspecified as u64,
         capabilities: capabilities(),
-        health: Some(component_health(session_state, &status_snapshot)),
-        effective_config: effective_config(context),
+        health: Some(health),
+        effective_config,
         remote_config_status: Some(remote_config_status),
         custom_message: pipeline_status_custom_message(&status_snapshot),
         ..Default::default()
@@ -1279,12 +1289,14 @@ fn full_state_reply_message(
         &mut remote_config_status,
         session_state.last_reconcile_result.as_ref(),
     );
+    let mut health = component_health(session_state, &status_snapshot);
+    let effective_config = effective_config(context, &mut health);
     AgentToServer {
         instance_uid: session_state.instance_uid.to_vec(),
         sequence_num: session_state.sequence_num,
         capabilities: capabilities(),
-        health: Some(component_health(session_state, &status_snapshot)),
-        effective_config: effective_config(context),
+        health: Some(health),
+        effective_config,
         agent_description: agent_description(config),
         custom_capabilities: Some(custom_capabilities()),
         remote_config_status: Some(remote_config_status),
@@ -1544,7 +1556,10 @@ fn set_health_and_status_from_components(group_health: &mut ComponentHealth) {
 }
 
 /// Serialize the current applied config as the effective config for the AgentToServer message
-fn effective_config(context: &ControllerExtensionContext) -> Option<EffectiveConfig> {
+fn effective_config(
+    context: &ControllerExtensionContext,
+    health: &mut ComponentHealth,
+) -> Option<EffectiveConfig> {
     let config_result = context
         .control_plane
         .engine_config_snapshot()
@@ -1579,6 +1594,9 @@ fn effective_config(context: &ControllerExtensionContext) -> Option<EffectiveCon
                 message = "Could not build effective config",
                 error = e.as_str(),
             );
+            health.healthy = false;
+            health.status = health_status::DEGRADED.into();
+            health.last_error = e;
             None
         }
     }
@@ -1824,7 +1842,11 @@ mod test {
             engine_config: empty_engine_config(),
         };
 
-        assert!(effective_config(&context).is_none());
+        let mut health = ComponentHealth::default();
+        assert!(effective_config(&context, &mut health).is_none());
+        assert!(!health.healthy);
+        assert_eq!(health.status, health_status::DEGRADED);
+        assert!(health.last_error.contains("snapshot redaction"));
     }
 
     #[tokio::test]

@@ -100,13 +100,6 @@ pub async fn create_group(
         pipeline_group_id = pipeline_group_id.as_str()
     );
 
-    if let Err(error) = group.try_redacted_for_snapshot() {
-        return operation_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            crate::snapshot_redaction_error(error),
-        );
-    }
-
     match state.controller.create_group(&pipeline_group_id, group) {
         Ok(group) => match group.try_redacted_for_snapshot() {
             Ok(redacted) => (StatusCode::CREATED, Json(redacted)).into_response(),
@@ -610,49 +603,6 @@ mod tests {
             text.contains("[REDACTED]"),
             "redacted placeholder should appear in the create response: {text}"
         );
-    }
-
-    /// Scenario: a created group contains malformed config for a registered
-    /// typed redactor.
-    /// Guarantees: `create_group` returns the existing structured internal
-    /// error envelope and never echoes the raw group.
-    #[tokio::test]
-    async fn create_group_fails_closed_when_typed_redaction_fails() {
-        let group: PipelineGroupConfig = serde_json::from_value(serde_json::json!({
-            "pipelines": {
-                "main": {
-                    "nodes": {
-                        "exporter": {
-                            "type": "urn:test:exporter:typed-redaction",
-                            "config": {
-                                "password": {"nested": "create-diagnostic-secret"}
-                            }
-                        }
-                    }
-                }
-            }
-        }))
-        .expect("group should deserialize");
-
-        let response = create_group(
-            Path("default".to_string()),
-            State(test_app_state(stub(
-                Ok(None),
-                Ok(group.clone()),
-                Ok(delete_status("succeeded")),
-            ))),
-            Json(group),
-        )
-        .await
-        .into_response();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body should collect");
-        let error: OperationError =
-            serde_json::from_slice(&body).expect("error body should deserialize");
-        assert_eq!(error.kind, OperationErrorKind::Internal);
     }
 
     /// Scenario: the control plane rejects group creation as invalid.

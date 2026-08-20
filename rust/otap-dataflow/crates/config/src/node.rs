@@ -399,7 +399,7 @@ impl NodeUserConfig {
 
 /// Placeholder substituted for credential values that have been redacted from a
 /// config snapshot exposed through the admin/config APIs.
-pub const REDACTED_HEADER_VALUE: &str = "[REDACTED]";
+pub const REDACTED_HEADER_VALUE: &str = crate::redaction::REDACTED_VALUE;
 
 /// Recursively redacts credential values held under any `headers` field,
 /// replacing them with [`REDACTED_HEADER_VALUE`].

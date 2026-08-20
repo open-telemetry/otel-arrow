@@ -9,6 +9,7 @@ use crate::tls_utils;
 use http::header::HeaderValue;
 use hyper_util::rt::TokioIo;
 use otap_df_config::byte_units;
+use otap_df_config::redaction::REDACTED_VALUE;
 use otap_df_config::tls::TlsClientConfig;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
@@ -338,6 +339,12 @@ impl GrpcClientSettings {
 
         let mut seen_names = HashSet::new();
         for (name, value) in &self.headers {
+            if value.expose_secret() == REDACTED_VALUE {
+                return Err(GrpcEndpointError::InvalidConfig(format!(
+                    "header \"{name}\" contains the display-only redaction placeholder; provide \
+                     the secret again"
+                )));
+            }
             let key = name
                 .parse::<MetadataKey<tonic::metadata::Ascii>>()
                 .map_err(|_| {
@@ -851,6 +858,25 @@ mod tests {
             settings.validate(),
             Err(GrpcEndpointError::InvalidConfig(_))
         ));
+    }
+
+    /// Scenario: a config snapshot's metadata redaction marker is submitted as
+    /// a runtime credential.
+    /// Guarantees: validation rejects the display-only marker before any gRPC
+    /// call can send it as authorization metadata.
+    #[test]
+    fn validate_rejects_redacted_header_placeholder() {
+        let mut headers = HashMap::new();
+        let _ = headers.insert("authorization".to_string(), REDACTED_VALUE.into());
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+
+        let error = settings
+            .validate()
+            .expect_err("redaction placeholder must be rejected");
+        assert!(error.to_string().contains("provide the secret again"));
     }
 
     #[test]

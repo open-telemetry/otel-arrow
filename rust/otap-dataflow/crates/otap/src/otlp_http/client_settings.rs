@@ -3,6 +3,7 @@
 
 //! Shared configuration for HTTP-based clients.
 
+use otap_df_config::redaction::REDACTED_VALUE;
 use reqwest::ClientBuilder;
 use reqwest::header::HeaderValue;
 use secrecy::{ExposeSecret, SecretString};
@@ -120,6 +121,12 @@ impl HttpClientSettings {
 
         let mut seen_names = HashSet::new();
         for (name, value) in &self.headers {
+            if value.expose_secret() == REDACTED_VALUE {
+                return Err(HttpClientError::InvalidConfig(format!(
+                    "header \"{name}\" contains the display-only redaction placeholder; provide \
+                     the secret again"
+                )));
+            }
             let header_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
                 HttpClientError::InvalidConfig(format!(
                     "header name \"{name}\" is not a valid HTTP header name"
@@ -442,6 +449,25 @@ mod tests {
             settings.validate(),
             Err(HttpClientError::InvalidConfig(_))
         ));
+    }
+
+    /// Scenario: a config snapshot's header redaction marker is submitted as a
+    /// runtime credential.
+    /// Guarantees: validation rejects the display-only marker before any HTTP
+    /// request can send it as an authorization value.
+    #[test]
+    fn validate_rejects_redacted_header_placeholder() {
+        let mut headers = HashMap::new();
+        let _ = headers.insert("authorization".to_string(), REDACTED_VALUE.into());
+        let settings = HttpClientSettings {
+            headers,
+            ..HttpClientSettings::default()
+        };
+
+        let error = settings
+            .validate()
+            .expect_err("redaction placeholder must be rejected");
+        assert!(error.to_string().contains("provide the secret again"));
     }
 
     #[test]

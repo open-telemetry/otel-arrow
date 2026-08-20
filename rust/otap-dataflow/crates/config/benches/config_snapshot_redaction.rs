@@ -87,10 +87,49 @@ fn main() {
         ),
         run_workload("typed_large", large_typed_workload(), registered_redaction),
     ];
+    enforce_targets(&results);
 
     println!(
         "{}",
         serde_json::to_string_pretty(&results).expect("benchmark results should serialize")
+    );
+}
+
+fn enforce_targets(results: &[WorkloadResult]) {
+    let get = |name| {
+        results
+            .iter()
+            .find(|result| result.workload == name)
+            .unwrap_or_else(|| panic!("missing benchmark workload {name}"))
+    };
+    let unregistered_typical = get("unregistered_typical");
+    let typed_typical = get("typed_typical");
+    let unregistered_large = get("unregistered_large");
+    let typed_large = get("typed_large");
+
+    assert!(
+        typed_typical.latency_ns.p99 < 1_000_000,
+        "typed typical p99 must remain below 1 ms"
+    );
+    assert!(
+        typed_large.latency_ns.p99 < 5_000_000,
+        "typed large p99 must remain below 5 ms"
+    );
+    assert!(
+        typed_typical.allocation.bytes_per_iteration
+            <= unregistered_typical.allocation.bytes_per_iteration * 5.0,
+        "typed typical allocation must remain within 5x unregistered"
+    );
+    assert!(
+        typed_large.allocation.bytes_per_iteration
+            <= unregistered_large.allocation.bytes_per_iteration * 5.0,
+        "typed large allocation must remain within 5x unregistered"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|result| result.allocation.retained_bytes_after_iterations == 0),
+        "redaction workloads must retain zero bytes"
     );
 }
 

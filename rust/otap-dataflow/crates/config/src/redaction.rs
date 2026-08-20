@@ -10,7 +10,7 @@ use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// Placeholder emitted for type-owned secrets in config snapshots.
@@ -172,9 +172,13 @@ impl ConfigRedactor {
 #[distributed_slice]
 pub static CONFIG_REDACTORS: [ConfigRedactor] = [..];
 
-static CONFIG_REDACTOR_INDEX: OnceLock<
-    Result<HashMap<&'static str, ConfigRedactorFn>, &'static str>,
-> = OnceLock::new();
+static CONFIG_REDACTOR_INDEX: OnceLock<HashMap<&'static str, RedactorEntry>> = OnceLock::new();
+
+#[derive(Clone, Copy)]
+enum RedactorEntry {
+    Redactor(ConfigRedactorFn),
+    Duplicate,
+}
 
 /// Applies the exact registered redactor, or returns `None` when the component
 /// has no type-owned registration.
@@ -183,31 +187,34 @@ pub fn redact_registered_config(
     config: &mut Value,
 ) -> Result<bool, RedactionError> {
     let index = CONFIG_REDACTOR_INDEX.get_or_init(|| build_redactor_index(&CONFIG_REDACTORS));
-    let index = index
-        .as_ref()
-        .map_err(|component_type| RedactionError::DuplicateRegistration {
-            component_type: (*component_type).to_owned(),
-        })?;
-    let Some(redact) = index.get(component_type) else {
+    let Some(entry) = index.get(component_type) else {
         return Ok(false);
+    };
+    let redact = match entry {
+        RedactorEntry::Redactor(redact) => redact,
+        RedactorEntry::Duplicate => {
+            return Err(RedactionError::DuplicateRegistration {
+                component_type: component_type.to_owned(),
+            });
+        }
     };
     redact(config).map_err(|error| error.at(format!("component type `{component_type}`")))?;
     Ok(true)
 }
 
-fn build_redactor_index(
-    registrations: &[ConfigRedactor],
-) -> Result<HashMap<&'static str, ConfigRedactorFn>, &'static str> {
+fn build_redactor_index(registrations: &[ConfigRedactor]) -> HashMap<&'static str, RedactorEntry> {
     let mut index = HashMap::with_capacity(registrations.len());
     for registration in registrations {
-        if index
-            .insert(registration.component_type, registration.redact)
-            .is_some()
-        {
-            return Err(registration.component_type);
+        match index.entry(registration.component_type) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let _ = entry.insert(RedactorEntry::Redactor(registration.redact));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let _ = entry.insert(RedactorEntry::Duplicate);
+            }
         }
     }
-    Ok(index)
+    index
 }
 
 /// Redacts every [`RedactedString`] in typed config `T` while preserving the
@@ -231,6 +238,14 @@ where
     })?;
     let first = serialize_with_marker(&typed, PRIVATE_MARKER_A)?;
     let second = serialize_with_marker(&typed, PRIVATE_MARKER_B)?;
+    let mut secrets = Vec::new();
+    collect_private_secret_values(&first, &second, &mut secrets)?;
+    let mut unique_secrets = HashSet::with_capacity(secrets.len());
+    for secret in secrets {
+        if !unique_secrets.insert(secret) || count_string_occurrences(config, secret) != 1 {
+            return Err(RedactionError::ShapeMismatch);
+        }
+    }
     let counts = compare_and_apply(Some(config), &first, &second)?;
 
     if counts.serialized != deserialized_secrets {
@@ -369,6 +384,63 @@ fn private_secret_value<'a>(first: &'a Value, second: &'a Value) -> Option<&'a s
     let first = first.as_str()?.strip_prefix(PRIVATE_MARKER_A)?;
     let second = second.as_str()?.strip_prefix(PRIVATE_MARKER_B)?;
     (first == second).then_some(first)
+}
+
+fn collect_private_secret_values<'a>(
+    first: &'a Value,
+    second: &'a Value,
+    secrets: &mut Vec<&'a str>,
+) -> Result<(), RedactionError> {
+    if let Some(secret) = private_secret_value(first, second) {
+        secrets.push(secret);
+        return Ok(());
+    }
+    if first == second {
+        return Ok(());
+    }
+    match (first, second) {
+        (Value::Array(first_values), Value::Array(second_values))
+            if first_values.len() == second_values.len() =>
+        {
+            for (first_value, second_value) in first_values.iter().zip(second_values) {
+                collect_private_secret_values(first_value, second_value, secrets)?;
+            }
+            Ok(())
+        }
+        (Value::Object(first_values), Value::Object(second_values))
+            if first_values.len() == second_values.len()
+                && first_values
+                    .keys()
+                    .all(|key| second_values.contains_key(key)) =>
+        {
+            for (key, first_value) in first_values {
+                collect_private_secret_values(
+                    first_value,
+                    second_values
+                        .get(key)
+                        .ok_or(RedactionError::Serialization)?,
+                    secrets,
+                )?;
+            }
+            Ok(())
+        }
+        _ => Err(RedactionError::Serialization),
+    }
+}
+
+fn count_string_occurrences(value: &Value, needle: &str) -> usize {
+    match value {
+        Value::String(value) => usize::from(value == needle),
+        Value::Array(values) => values
+            .iter()
+            .map(|value| count_string_occurrences(value, needle))
+            .sum(),
+        Value::Object(values) => values
+            .values()
+            .map(|value| count_string_occurrences(value, needle))
+            .sum(),
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+    }
 }
 
 #[cfg(test)]
@@ -570,10 +642,18 @@ mod tests {
             ),
         ];
 
-        assert_eq!(
-            build_redactor_index(&registrations),
-            Err("urn:test:exporter:duplicate-redaction")
-        );
+        assert!(matches!(
+            build_redactor_index(&registrations).get("urn:test:exporter:duplicate-redaction"),
+            Some(RedactorEntry::Duplicate)
+        ));
+        assert!(matches!(
+            build_redactor_index(&[ConfigRedactor::new(
+                "urn:test:exporter:unique-redaction",
+                redact_registered_test_config,
+            )])
+            .get("urn:test:exporter:unique-redaction"),
+            Some(RedactorEntry::Redactor(_))
+        ));
     }
 
     #[derive(Deserialize, Serialize)]
@@ -600,6 +680,23 @@ mod tests {
 
         assert_eq!(error, RedactionError::ShapeMismatch);
         assert_eq!(raw["secret"], "identity-bound-secret");
+    }
+
+    /// Scenario: asymmetric serde paths contain equal secret and public values.
+    /// Guarantees: duplicate-value ambiguity fails closed instead of letting a
+    /// value comparison validate the wrong raw path.
+    #[test]
+    fn typed_redaction_rejects_equal_value_path_collision() {
+        let raw = serde_json::json!({
+            "secret": "same-value",
+            "public": "same-value"
+        });
+
+        let error = redact_typed_config::<AsymmetricConfig>(&raw)
+            .expect_err("equal-value path collision must fail closed");
+
+        assert_eq!(error, RedactionError::ShapeMismatch);
+        assert_eq!(raw["secret"], "same-value");
     }
 
     #[derive(Deserialize, Serialize)]
