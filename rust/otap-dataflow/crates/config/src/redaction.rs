@@ -93,6 +93,9 @@ pub enum RedactionError {
     /// The raw config no longer deserializes into its registered type.
     #[error("registered config could not be deserialized for snapshot redaction")]
     Deserialization,
+    /// The typed config could not be inspected for declared secret fields.
+    #[error("registered config could not be serialized for snapshot redaction")]
+    Serialization,
     /// Typed secret declarations do not match the final typed value.
     #[error("registered config did not declare every deserialized secret")]
     SecretCountMismatch,
@@ -131,11 +134,18 @@ impl RedactionError {
 pub type SecretAccessor<T> = for<'a> fn(&'a T) -> Option<&'a RedactedString>;
 
 /// A top-level raw config field owned by a typed component.
-#[derive(Clone, Copy)]
 pub struct SecretField<T> {
     name: &'static str,
     required: bool,
     accessor: SecretAccessor<T>,
+}
+
+impl<T> Copy for SecretField<T> {}
+
+impl<T> Clone for SecretField<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 impl<T> SecretField<T> {
@@ -242,7 +252,7 @@ pub fn redact_typed_config<T>(
     secret_fields: &[SecretField<T>],
 ) -> Result<Value, RedactionError>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Serialize,
 {
     let mut redacted = config.clone();
     redact_typed_config_in_place::<T>(&mut redacted, secret_fields)?;
@@ -255,11 +265,15 @@ pub fn redact_typed_config_in_place<T>(
     secret_fields: &[SecretField<T>],
 ) -> Result<(), RedactionError>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Serialize,
 {
     let (typed, deserialized_secrets) = track_deserialized_secrets(|| {
         T::deserialize(&*config).map_err(|_| RedactionError::Deserialization)
     })?;
+    let typed_json = serde_json::to_value(&typed).map_err(|_| RedactionError::Serialization)?;
+    let typed_object = typed_json
+        .as_object()
+        .ok_or(RedactionError::ShapeMismatch)?;
     let object = config.as_object().ok_or(RedactionError::ShapeMismatch)?;
     let mut active_fields = Vec::with_capacity(secret_fields.len());
     let mut declared_names = HashSet::with_capacity(secret_fields.len());
@@ -270,6 +284,12 @@ where
         }
         match object.get(field.name) {
             Some(Value::String(raw)) => {
+                if !matches!(
+                    typed_object.get(field.name),
+                    Some(Value::String(value)) if value == REDACTED_VALUE
+                ) {
+                    return Err(RedactionError::ShapeMismatch);
+                }
                 let Some(secret) = (field.accessor)(&typed) else {
                     return Err(RedactionError::ShapeMismatch);
                 };
@@ -427,13 +447,13 @@ mod tests {
 
     /// Scenario: a component declares a public string field instead of its
     /// actual `RedactedString` field while the declaration count still matches.
-    /// Guarantees: marker identity rejects the wrong declaration before the
-    /// public field is masked and the real secret can escape.
+    /// Guarantees: typed serialization rejects the wrong declaration even when
+    /// the public field has the same bytes as the real secret.
     #[test]
     fn typed_redaction_rejects_misdeclared_public_field() {
         let raw = serde_json::json!({
             "password": "required-secret",
-            "label": "visible"
+            "label": "required-secret"
         });
 
         let error = redact_typed_config::<TestConfig>(
