@@ -173,6 +173,29 @@ Context entries can be defined at the pipeline group or the engine
 level. Pipeline group context entry names should not conflict with
 engine-level context entry names.
 
+Context entries are strongly typed and type-preserving. Entries that
+are defined as authorized identity fields cannot be converted to or
+from another type of entry. A chain of custody maintains the
+provenance of authorized identity entries aided by Rust safety
+mechanisms, as follows:
+
+1. Only Authorization extensions construct `AuthorizedIdentity`
+   values. The receiver is trusted to pass the result of successful
+   authorization to the Pdata context source binding.
+2. The Pdata context mechanism is trusted to securely hold the
+   authorized identity fields in addition to other information
+   with strong entry type information.
+3. Pdata context condition bindings are not granted direct access
+   to context entry values
+4. Pdata projector bindings are able to propagate context entries with
+   integrity by enforcing validity: a _context accumulator_ abstraction
+   will be used to construct outgoing contexts from ingoing contexts,
+   and the accumulator will erase conflicting entries.
+5. Pdata sinks are intentionally granted access to context entries
+   through user configuration; sink configuration will support type-safe
+   bindings, for example a `type: authorized_identity` selector for
+   propagating authorized identity entries as transport headers.
+
 ### Composite context entries
 
 A composite context entry combines multiple context entries. These
@@ -191,7 +214,7 @@ policies:
 ```
 
 The composite entry defined above might be useful to in a batch
-processor configuration, for example,
+processor configuration, for example.
 
 #### Conditional composite context entries
 
