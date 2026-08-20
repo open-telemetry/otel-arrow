@@ -121,11 +121,9 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         &rt,
         &batch_sizes,
         "and_short_circuit",
-        // left expr of "and" should be false for all rows
-        //
-        // this is different from the case above in that the "and" here is currently something that
-        // won't get optimized into a Composite<AttributeFilterExec> so we can test the fast path
-        // in Composite<FilterExec>
+        // Cross-scope AND: the left side (root field) is false for all rows, so the
+        // JoinAndEval short-circuit should skip evaluation of the right side (attribute)
+        // and the join entirely.
         "logs | where severity_text == \"invalid value\" and attributes[\"code.line.number\"] == 2",
     );
 
@@ -134,11 +132,9 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         &rt,
         &batch_sizes,
         "or_short_circuit",
-        // left expr of "or" should be true for all rows
-        //
-        // this is different from the case above in that the "and" here is currently something that
-        // won't get optimized into a Composite<AttributeFilterExec> so we can test the fast path
-        // in Composite<FilterExec>
+        // Cross-scope OR: the left side (attribute) is true for all rows, so the
+        // JoinAndEval short-circuit should skip evaluation of the right side and
+        // the join entirely.
         "logs | where attributes[\"code.line.number\"] >= 0 or not(attributes[\"some.attr\"] >= 0 and severity_text == \"WARN\")",
     );
 }
