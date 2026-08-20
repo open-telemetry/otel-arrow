@@ -587,7 +587,14 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Requeue retained pdata onto this node later.
-    pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+    ///
+    /// Returns a scheduler-local ID that accompanies the corresponding delayed-data
+    /// message. Returns the original pdata if scheduling is rejected.
+    pub fn requeue_later(
+        &self,
+        when: Instant,
+        data: Box<PData>,
+    ) -> Result<crate::control::LocalResumeId, PData> {
         self.core.requeue_later(when, data)
     }
 
