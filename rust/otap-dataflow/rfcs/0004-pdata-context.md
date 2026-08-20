@@ -507,6 +507,11 @@ etc. Specific binding features will dictate which context entries
 survive into the output context and which are dropped during
 processing.
 
+Projector binding users must coordinate with the engine memory
+controller when they retain work base on Pdata context, and nodes that
+use these bindings are responsible for determining what happens when
+capacity is reached.
+
 ### Pdata context sinks
 
 For exporters that produce external message context encoding from
