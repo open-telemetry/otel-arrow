@@ -151,12 +151,12 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
                 .await
         });
 
-        let expected = make_test_pdata();
+        let mut expected = make_test_pdata();
         exporter_input_tx
             .send(expected.clone())
             .expect("message should be sent to topic exporter");
 
-        let delivered = tokio::time::timeout(Duration::from_secs(2), receiver_output_rx.recv())
+        let mut delivered = tokio::time::timeout(Duration::from_secs(2), receiver_output_rx.recv())
             .await
             .expect("timed out waiting for topic receiver output")
             .expect("receiver output channel should stay open");

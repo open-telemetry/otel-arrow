@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: engine
+note: Keep pipeline identity and part of the failure reason visible when `state.observed_error` logs are too large.
+issues: [3598]

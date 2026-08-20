@@ -96,6 +96,16 @@ pub trait FlowMetricHook: Sized {
     /// forwards it to the output router.
     fn before_processor_send<H: FlowMetricEffectHandler>(&mut self, _handler: &H) {}
 
+    /// Finalizes processor-side bookkeeping when processing completes without
+    /// forwarding an output message.
+    ///
+    /// Call this instead of [`Self::before_processor_send`] when a processor
+    /// intentionally consumes a message, such as when filtering removes every
+    /// item. The default uses the same bookkeeping as the send path.
+    fn complete_processor_without_output<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
+        self.before_processor_send(handler);
+    }
+
     /// Invoked once per `Message::PData` immediately after it is dequeued
     /// by a processor's run loop and before `process()` runs. Lets PData
     /// types observe the *pre-process* state of the data -- e.g. counting

@@ -65,7 +65,7 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::OtapPayload;
+use otap_df_pdata::PayloadData;
 use otap_df_pdata::TryFromWithOptions;
 #[cfg(test)]
 use otap_df_pdata::TryIntoWithOptions;
@@ -484,15 +484,15 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                 }
                 Ok(())
             }
-            Message::PData(pdata) => {
+            Message::PData(mut pdata) => {
                 let signal_type = pdata.signal_type();
 
                 // Get allowed values (extension point for future dynamic auth)
                 let allowed_values = self.get_allowed_values(&pdata);
 
                 // Validate based on payload type
-                let validation_result = match pdata.payload_ref() {
-                    OtapPayload::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
+                let validation_result = match pdata.payload_ref().data() {
+                    PayloadData::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
                         (SignalType::Logs, OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                             let logs_data = RawLogsData::new(bytes.as_ref());
                             self.validate_logs(&logs_data, &allowed_values)
@@ -511,7 +511,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                             Ok(())
                         }
                     },
-                    OtapPayload::OtapArrowRecords(arrow_records) => match signal_type {
+                    PayloadData::OtapArrowRecords(arrow_records) => match signal_type {
                         SignalType::Logs => {
                             self.validate_arrow_logs(arrow_records, &allowed_values)
                         }

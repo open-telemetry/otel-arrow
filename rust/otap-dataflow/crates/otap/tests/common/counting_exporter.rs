@@ -97,7 +97,7 @@ impl Exporter<OtapPdata> for CountingExporter {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     break;
                 }
-                Message::PData(data) => {
+                Message::PData(mut data) => {
                     let items = data.num_items() as u64;
                     // Count items before ACKing
                     if let Some(ref counter) = self.counter {

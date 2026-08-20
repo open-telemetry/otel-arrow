@@ -144,11 +144,12 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use otap_df_otap::pdata::Context;
+    use otap_df_pdata::PayloadData;
     use otap_df_pdata::otlp::OtlpProtoBytes;
 
     /// Helper to create a test OtapPayload from bytes
     fn test_payload(data: &'static [u8]) -> OtapPayload {
-        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(data)))
+        OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(data)))
     }
 
     /// Helper to create an empty OtapPayload
@@ -194,8 +195,8 @@ mod tests {
         assert!(removed.is_some());
         // Verify the payload matches
         let (_, payload) = removed.unwrap();
-        match payload {
-            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
+        match payload.into_data() {
+            PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                 assert_eq!(bytes.as_ref(), b"test");
             }
             _ => panic!("Expected OtlpBytes::ExportLogsRequest"),
@@ -221,8 +222,8 @@ mod tests {
         let removed = state.delete_msg_data_if_orphaned(msg_id);
         assert!(removed.is_some());
         let (_, payload) = removed.unwrap();
-        match payload {
-            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
+        match payload.into_data() {
+            PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                 assert!(bytes.is_empty());
             }
             _ => panic!("Expected OtlpBytes::ExportLogsRequest"),

@@ -46,14 +46,15 @@ fn bench_logs_transform(c: &mut Criterion) {
     });
 
     let output = fast.transform_fast(&records);
+    let mut arrow_stream_bytes = Vec::new();
     _ = group.bench_function("arrow_stream/8192", |b| {
         b.iter(|| {
-            let mut bytes = Vec::new();
-            let mut writer = StreamWriter::try_new(&mut bytes, output.schema_ref())
+            arrow_stream_bytes.clear();
+            let mut writer = StreamWriter::try_new(&mut arrow_stream_bytes, output.schema_ref())
                 .expect("create ArrowStream writer");
             writer.write(&output).expect("encode ClickHouse batch");
             writer.finish().expect("finish ArrowStream");
-            black_box(bytes)
+            _ = black_box(&arrow_stream_bytes);
         });
     });
 
@@ -72,16 +73,35 @@ fn bench_logs_transform(c: &mut Criterion) {
     });
 
     let direct_output = otlp_direct.transform_otlp_direct(&request);
+    let mut direct_arrow_stream_bytes = Vec::new();
     _ = group.bench_function("otlp_direct_arrow_stream/8192", |b| {
         b.iter(|| {
-            let mut bytes = Vec::new();
-            let mut writer = StreamWriter::try_new(&mut bytes, direct_output.schema_ref())
-                .expect("create direct ArrowStream writer");
+            direct_arrow_stream_bytes.clear();
+            let mut writer =
+                StreamWriter::try_new(&mut direct_arrow_stream_bytes, direct_output.schema_ref())
+                    .expect("create direct ArrowStream writer");
             writer
                 .write(&direct_output)
                 .expect("encode direct ClickHouse batch");
             writer.finish().expect("finish direct ArrowStream");
-            black_box(bytes)
+            _ = black_box(&direct_arrow_stream_bytes);
+        });
+    });
+
+    let mut otlp_direct_with_arrow_stream = LogsTransformBenchmark::default();
+    let mut direct_with_arrow_stream_bytes = Vec::new();
+    _ = group.bench_function("otlp_direct_with_arrow_stream/8192", |b| {
+        b.iter(|| {
+            let output = otlp_direct_with_arrow_stream.transform_otlp_direct(black_box(&request));
+            direct_with_arrow_stream_bytes.clear();
+            let mut writer =
+                StreamWriter::try_new(&mut direct_with_arrow_stream_bytes, output.schema_ref())
+                    .expect("create direct ArrowStream writer");
+            writer
+                .write(&output)
+                .expect("encode direct ClickHouse batch");
+            writer.finish().expect("finish direct ArrowStream");
+            _ = black_box(&direct_with_arrow_stream_bytes);
         });
     });
 

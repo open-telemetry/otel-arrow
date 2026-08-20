@@ -21,8 +21,8 @@ use otap_df_admin::{
     EngineConfigReconcileRequest, EngineConfigReconcileState, EngineConfigReconcileStatus,
     GroupDeleteStatus, PipelineDeleteStatus, PipelineDetails,
     PipelineRolloutState as ApiPipelineRolloutState,
-    PipelineRolloutSummary as ApiPipelineRolloutSummary, ReconfigureRequest, RolloutCoreStatus,
-    RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
+    PipelineRolloutSummary as ApiPipelineRolloutSummary, PipelineShutdownInitiator,
+    ReconfigureRequest, RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
 use otap_df_engine::topology::NumaTopology;
 use otap_df_state::conditions::ConditionStatus;
@@ -485,9 +485,14 @@ impl<
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
+        initiator: PipelineShutdownInitiator,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
-        self.runtime
-            .request_shutdown_pipeline(pipeline_group_id, pipeline_id, timeout_secs)
+        self.runtime.request_shutdown_pipeline_with_initiator(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            initiator,
+        )
     }
 
     fn reconfigure_pipeline(

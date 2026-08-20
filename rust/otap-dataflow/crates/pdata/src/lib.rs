@@ -24,7 +24,7 @@ pub(crate) mod payload;
 
 pub use otap::OtapArrowRecords;
 pub use otlp::OtlpProtoBytes;
-pub use payload::{OtapPayload, OtapPayloadHelpers};
+pub use payload::{OtapPayload, OtapPayloadHelpers, PayloadData};
 
 /// Testing support
 #[cfg(any(test, feature = "testing"))]

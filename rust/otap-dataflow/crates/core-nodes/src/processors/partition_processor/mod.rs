@@ -24,7 +24,7 @@ use otap_df_engine::error::ProcessorErrorKind;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::processor::{FlowMetricHook, ProcessorWrapper};
 use otap_df_engine::wiring_contract::WiringContract;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
@@ -268,9 +268,10 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 match partitions.len() {
                     0 => {
                         // no partitions, just Ack the inbound
-                        let pdata =
+                        let mut pdata =
                             OtapPdata::new(inbound_context, OtapPayload::empty(signal_type));
 
+                        pdata.complete_processor_without_output(effect_handler);
                         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
                     }
                     1 => {
@@ -291,10 +292,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         ));
                         inbound_context.set_transport_headers(headers);
 
-                        let pdata = OtapPdata::new(
-                            inbound_context,
-                            OtapPayload::OtapArrowRecords(partition.batch),
-                        );
+                        let pdata =
+                            OtapPdata::new(inbound_context, OtapPayload::from(partition.batch));
                         effect_handler.send_message_with_source_node(pdata).await?;
                     }
                     _ => {
@@ -920,6 +919,8 @@ mod test {
             });
     }
 
+    /// Scenario: partitioning an empty subscribed batch produces no partitions.
+    /// Guarantees: the input is acknowledged without producing downstream pdata.
     #[test]
     fn test_empty_batch() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -1025,7 +1026,7 @@ mod test {
                 headers.push(TransportHeader::text("h1", "header1", "hello world"));
                 context.set_transport_headers(headers);
                 context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
-                let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
+                let mut pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
                 pdata.start_flow_metric();
                 pdata.add_flow_compute(8);
                 ctx.process(Message::PData(pdata))
@@ -1077,7 +1078,7 @@ mod test {
                 let mut headers = context.take_transport_headers().unwrap_or_default();
                 headers.push(TransportHeader::text("h1", "header1", "hello world"));
                 context.set_transport_headers(headers);
-                let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
+                let pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
                 ctx.process(Message::PData(pdata))
                     .await
                     .expect("no process error");
