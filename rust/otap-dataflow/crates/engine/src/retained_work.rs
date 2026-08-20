@@ -99,6 +99,7 @@ impl LocalRetainedAccount {
     ///
     /// `Some(bytes)` records a known logical size. `None` records one
     /// unknown-size item without guessing its byte size.
+    #[inline]
     pub fn charge(
         self: &Rc<Self>,
         bytes: Option<u64>,
@@ -231,6 +232,7 @@ impl LocalRetainedTicket {
     }
 
     /// Completes this retention interval normally and refunds its charge.
+    #[inline]
     pub fn complete(mut self) -> Result<(), LocalAccountingError> {
         self.active = false;
         self.account.settle(self.charge)
