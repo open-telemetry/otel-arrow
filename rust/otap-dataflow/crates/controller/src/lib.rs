@@ -312,13 +312,26 @@ impl ControllerExtensionRegistry {
 }
 
 /// Optional runtime integrations used when starting the controller.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ControllerRunOptions {
     /// Controller extension factories available to configured controller extensions.
     pub extensions: ControllerExtensionRegistry,
     /// Build-time identity of the binary, used to seed default self-telemetry resource
     /// attributes. Populate from the binary crate (e.g. `CARGO_BIN_NAME`/`CARGO_PKG_VERSION`).
     pub build_info: BuildInfo,
+    /// Whether the controller handles process-wide OS termination signals.
+    /// Embedding hosts that own signal handling should disable this.
+    pub handle_os_signals: bool,
+}
+
+impl Default for ControllerRunOptions {
+    fn default() -> Self {
+        Self {
+            extensions: ControllerExtensionRegistry::default(),
+            build_info: BuildInfo::default(),
+            handle_os_signals: true,
+        }
+    }
 }
 
 /// Build-time identity of the collector binary.
@@ -1801,10 +1814,16 @@ impl<
         // In standard engine mode, keep the main thread blocked until an explicit
         // engine-wide shutdown drains every pipeline. An empty engine, or one whose
         // last pipeline stops independently, must remain available for live control.
+        let shutdown_signal_listener =
+            if run_mode == RunMode::ParkMainThread && options.handle_os_signals {
+                // Listen for SIGINT/SIGTERM and trigger graceful shutdown via the
+                // control plane.
+                Some(Self::spawn_shutdown_signal_listener(signal_control_plane)?)
+            } else {
+                None
+            };
+
         if run_mode == RunMode::ParkMainThread {
-            // Listen for SIGINT/SIGTERM and trigger graceful shutdown via the
-            // control plane.
-            Self::spawn_shutdown_signal_listener(signal_control_plane);
             runtime.wait_until_global_shutdown_drains_or_released();
         }
 
@@ -1858,6 +1877,9 @@ impl<
         metrics_agg_handle.shutdown_and_join()?;
         obs_state_join_handle.shutdown_and_join()?;
         drop(telemetry_system);
+        if let Some(listener) = shutdown_signal_listener {
+            listener.shutdown_and_join()?;
+        }
 
         if let Some(err) = controller_extension_error {
             return Err(err);
@@ -2065,10 +2087,10 @@ impl<
     /// is best-effort in that case and the second-signal escape hatch does not
     /// apply.
     ///
-    /// The spawned thread's `JoinHandle` is intentionally dropped -- the thread
-    /// will terminate either via `process::exit(1)` on a second signal, or when
-    /// the process exits normally after all pipelines have drained.
-    fn spawn_shutdown_signal_listener(control_plane: Arc<dyn ControlPlane>) {
+    /// The returned handle cancels and joins the listener during controller teardown.
+    fn spawn_shutdown_signal_listener(
+        control_plane: Arc<dyn ControlPlane>,
+    ) -> Result<ShutdownSignalListenerHandle, Error> {
         // Construct the runtime and register handlers before spawning the waiter.
         // This closes the window in which the thread existed but the process still
         // had the platform's default termination behavior. Registration failures
@@ -2081,22 +2103,24 @@ impl<
             let _runtime_guard = rt.enter();
             TerminationSignals::register()
         };
+        let cancellation_token = CancellationToken::new();
+        let listener_cancellation_token = cancellation_token.clone();
 
-        // The JoinHandle is intentionally dropped -- the thread terminates when
-        // the process exits (after pipelines drain) or on force-exit.
-        drop(
-            thread::Builder::new()
-                .name("os-signal-handler".into())
-                .spawn(move || {
-                    rt.block_on(async {
-                        // First signal: graceful shutdown.
-                        let signal_name = signals.recv().await;
+        let join_handle = thread::Builder::new()
+            .name("os-signal-handler".into())
+            .spawn(move || {
+                rt.block_on(async {
+                    // First signal: graceful shutdown.
+                    let signal_name = tokio::select! {
+                        _ = listener_cancellation_token.cancelled() => return,
+                        signal_name = signals.recv() => signal_name,
+                    };
 
-                        otel_info!(
-                            "shutdown.signal_received",
-                            signal = signal_name,
-                            message = "OS termination signal received, initiating graceful shutdown. Send the signal again to force immediate exit."
-                        );
+                    otel_info!(
+                        "shutdown.signal_received",
+                        signal = signal_name,
+                        message = "OS termination signal received, initiating graceful shutdown. Send the signal again to force immediate exit."
+                    );
 
                         // Give pipelines a generous deadline to drain (60 s by default).
                         // Note: this exceeds the default Kubernetes
@@ -2112,45 +2136,58 @@ impl<
                         const MAX_RETRIES: u32 = 3;
                         const RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
-                        let mut last_err = None;
-                        for attempt in 0..MAX_RETRIES {
-                            match control_plane.shutdown_all(SHUTDOWN_TIMEOUT_SECS) {
-                                Ok(()) => {
-                                    otel_info!(
-                                        "shutdown.signal_dispatched",
-                                        message = "Shutdown requested for all pipelines"
-                                    );
-                                    last_err = None;
-                                    break;
-                                }
-                                Err(e) => {
-                                    last_err = Some(e);
-                                    if attempt + 1 < MAX_RETRIES {
-                                        tokio::time::sleep(RETRY_INTERVAL).await;
+                    let mut last_err = None;
+                    for attempt in 0..MAX_RETRIES {
+                        match control_plane.shutdown_all(SHUTDOWN_TIMEOUT_SECS) {
+                            Ok(()) => {
+                                otel_info!(
+                                    "shutdown.signal_dispatched",
+                                    message = "Shutdown requested for all pipelines"
+                                );
+                                last_err = None;
+                                break;
+                            }
+                            Err(e) => {
+                                last_err = Some(e);
+                                if attempt + 1 < MAX_RETRIES {
+                                    tokio::select! {
+                                        _ = listener_cancellation_token.cancelled() => return,
+                                        _ = tokio::time::sleep(RETRY_INTERVAL) => {}
                                     }
                                 }
                             }
                         }
-                        if let Some(e) = last_err {
-                            otel_error!(
-                                "shutdown.signal_dispatch_failed",
-                                error = ?e,
-                                message = "Failed to request shutdown via control plane after retries"
-                            );
-                        }
-
-                        // Second signal: force exit.
-                        let signal_name = signals.recv().await;
-                        raw_error!(
-                            "shutdown.force_exit",
-                            signal = signal_name,
-                            message = "Second termination signal received, forcing immediate exit"
+                    }
+                    if let Some(e) = last_err {
+                        otel_error!(
+                            "shutdown.signal_dispatch_failed",
+                            error = ?e,
+                            message = "Failed to request shutdown via control plane after retries"
                         );
-                        std::process::exit(1);
-                    });
-                })
-                .expect("failed to spawn signal-handler thread"),
-        );
+                    }
+
+                    // Second signal: force exit.
+                    let signal_name = tokio::select! {
+                        _ = listener_cancellation_token.cancelled() => return,
+                        signal_name = signals.recv() => signal_name,
+                    };
+                    raw_error!(
+                        "shutdown.force_exit",
+                        signal = signal_name,
+                        message = "Second termination signal received, forcing immediate exit"
+                    );
+                    std::process::exit(1);
+                });
+            })
+            .map_err(|source| Error::ThreadSpawnError {
+                thread_name: "os-signal-handler".to_owned(),
+                source,
+            })?;
+
+        Ok(ShutdownSignalListenerHandle {
+            cancellation_token,
+            join_handle: Some(join_handle),
+        })
     }
 
     /// Selects which CPU cores to use based on the given allocation.
@@ -2932,6 +2969,34 @@ impl TerminationSignals {
                 .await
                 .expect("failed to listen for Ctrl-C");
             "Ctrl-C"
+        }
+    }
+}
+
+struct ShutdownSignalListenerHandle {
+    cancellation_token: CancellationToken,
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl ShutdownSignalListenerHandle {
+    fn shutdown_and_join(mut self) -> Result<(), Error> {
+        self.cancellation_token.cancel();
+        self.join_handle
+            .take()
+            .expect("signal listener join handle missing")
+            .join()
+            .map_err(|panic| Error::ThreadJoinPanic {
+                thread_name: "os-signal-handler".to_owned(),
+                panic_message: format!("{panic:?}"),
+            })
+    }
+}
+
+impl Drop for ShutdownSignalListenerHandle {
+    fn drop(&mut self) {
+        self.cancellation_token.cancel();
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
         }
     }
 }
@@ -3847,6 +3912,10 @@ groups: {{}}
         );
     }
 
+    /// Scenario: a controller extension fails while `run_forever_with_options` is parked with OS
+    /// signal handling enabled.
+    /// Guarantees: controller execution returns the extension error and releases the signal
+    /// listener's control-plane reference before returning to the embedding host.
     #[test]
     fn controller_extension_runtime_error_stops_parked_controller() {
         const FAILING_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:failing";
@@ -3867,10 +3936,16 @@ groups: {{}}
         ))
         .expect("failing controller extension config should parse");
 
+        let retained_control_plane = Arc::new(std::sync::Mutex::new(None));
+        let retained_control_plane_for_factory = Arc::clone(&retained_control_plane);
         let mut registry = ControllerExtensionRegistry::empty();
         registry.register(
             FAILING_CONTROLLER_EXTENSION_URN.into(),
-            |_context| {
+            move |context| {
+                *retained_control_plane_for_factory
+                    .lock()
+                    .expect("retained control-plane mutex should not be poisoned") =
+                    Some(Arc::downgrade(&context.control_plane));
                 Ok(Box::new(|_cancellation_token| {
                     Box::pin(async {
                         Err::<(), ControllerExtensionError>(Box::new(std::io::Error::other(
@@ -3909,6 +3984,16 @@ groups: {{}}
 
         assert!(err.contains("Controller extension `failing` failed"));
         assert!(err.contains("simulated controller extension failure"));
+        assert!(
+            retained_control_plane
+                .lock()
+                .expect("retained control-plane mutex should not be poisoned")
+                .as_ref()
+                .expect("controller extension should observe the control plane")
+                .upgrade()
+                .is_none(),
+            "controller teardown should release the signal listener's control plane"
+        );
     }
 
     #[test]
