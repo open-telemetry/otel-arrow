@@ -3963,6 +3963,13 @@ groups: {{}}
                     engine_config,
                     ControllerRunOptions {
                         extensions: registry,
+                        // Enabling OS signal handling is what makes this test cover
+                        // the listener lifecycle: with the default of `false` no
+                        // listener is spawned and the control-plane assertion below
+                        // would pass vacuously. Note that tokio's signal registration
+                        // is process-wide and permanent, so this test binary stops
+                        // honoring SIGTERM/SIGINT for the remainder of the run.
+                        handle_os_signals: true,
                         ..Default::default()
                     },
                 )
