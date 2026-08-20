@@ -643,6 +643,11 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body should collect");
+        let text = String::from_utf8(body.to_vec()).expect("error body should be utf-8");
+        assert!(
+            !text.contains("create-diagnostic-secret") && !text.contains("\"password\""),
+            "fail-closed response must not echo committed config: {text}"
+        );
         let error: OperationError =
             serde_json::from_slice(&body).expect("error body should deserialize");
         assert_eq!(error.kind, OperationErrorKind::Internal);

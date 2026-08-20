@@ -1650,7 +1650,7 @@ mod test {
         extension::{ExtensionUrn, ExtensionUserConfig},
         observed_state::ObservedStateSettings,
         redaction::{
-            CONFIG_REDACTORS, ConfigRedactor, RedactedString, RedactionError,
+            CONFIG_REDACTORS, ConfigRedactor, RedactedString, RedactionError, SecretField,
             redact_typed_config_in_place,
         },
     };
@@ -1676,7 +1676,10 @@ mod test {
     }
 
     fn redact_opamp_test_config(config: &mut serde_json::Value) -> Result<(), RedactionError> {
-        redact_typed_config_in_place::<OpampTypedConfig>(config)
+        redact_typed_config_in_place::<OpampTypedConfig>(
+            config,
+            &[SecretField::required("password")],
+        )
     }
 
     #[allow(unsafe_code)]

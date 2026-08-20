@@ -16,20 +16,16 @@ use std::sync::OnceLock;
 /// Placeholder emitted for type-owned secrets in config snapshots.
 pub const REDACTED_VALUE: &str = "[REDACTED]";
 
-const PRIVATE_MARKER_A: &str = "\u{001e}otap-secret-marker-a\u{001f}";
-const PRIVATE_MARKER_B: &str = "\u{001e}otap-secret-marker-b\u{001f}";
-
 thread_local! {
     static TRACKED_SECRET_COUNT: Cell<Option<usize>> = const { Cell::new(None) };
-    static SERIALIZED_SECRET_MARKER: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
 /// A string value that remains cleartext in memory but always serializes as
 /// redacted.
 ///
-/// This wrapper is for config values, not map keys. Secret-bearing config types
-/// must use symmetric serde field mappings and register an exact
-/// [`ConfigRedactor`].
+/// This wrapper is for config values, not map keys. Component owners declare
+/// the corresponding raw fields in their exact [`ConfigRedactor`]
+/// registration.
 #[derive(Debug, JsonSchema)]
 pub struct RedactedString(#[schemars(with = "String")] SecretString);
 
@@ -44,14 +40,6 @@ impl Clone for RedactedString {
     }
 }
 
-impl RedactedString {
-    /// Returns the cleartext value for an explicit runtime use.
-    #[must_use]
-    pub fn expose(&self) -> &str {
-        self.0.expose_secret()
-    }
-}
-
 impl Drop for RedactedString {
     fn drop(&mut self) {
         TRACKED_SECRET_COUNT.with(|count| {
@@ -59,6 +47,14 @@ impl Drop for RedactedString {
                 count.set(Some(current.saturating_sub(1)));
             }
         });
+    }
+}
+
+impl RedactedString {
+    /// Returns the cleartext value for an explicit runtime use.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        self.0.expose_secret()
     }
 }
 
@@ -87,11 +83,7 @@ impl Serialize for RedactedString {
     where
         S: Serializer,
     {
-        let marker = SERIALIZED_SECRET_MARKER.with(Cell::get);
-        match marker {
-            Some(prefix) => serializer.serialize_str(&format!("{prefix}{}", self.expose())),
-            None => serializer.serialize_str(REDACTED_VALUE),
-        }
+        serializer.serialize_str(REDACTED_VALUE)
     }
 }
 
@@ -101,14 +93,11 @@ pub enum RedactionError {
     /// The raw config no longer deserializes into its registered type.
     #[error("registered config could not be deserialized for snapshot redaction")]
     Deserialization,
-    /// The typed config was not deterministic across marker serializations.
-    #[error("registered config could not be serialized deterministically for snapshot redaction")]
-    Serialization,
-    /// Deserialization and serialization observed different numbers of secrets.
-    #[error("registered config did not serialize every deserialized secret")]
+    /// Typed secret declarations do not match the final typed value.
+    #[error("registered config did not declare every deserialized secret")]
     SecretCountMismatch,
-    /// A typed secret path did not exist in the original raw config.
-    #[error("registered config secret paths did not match the raw config shape")]
+    /// A declared raw secret field did not match the original config shape.
+    #[error("registered config secret fields did not match the raw config shape")]
     ShapeMismatch,
     /// More than one component registered the same exact type URN.
     #[error("multiple snapshot redactors registered for component type `{component_type}`")]
@@ -138,16 +127,40 @@ impl RedactionError {
     }
 }
 
+/// A top-level raw config field owned by a typed component.
+#[derive(Clone, Copy)]
+pub struct SecretField {
+    name: &'static str,
+    required: bool,
+}
+
+impl SecretField {
+    /// Declares a required top-level secret field.
+    #[must_use]
+    pub const fn required(name: &'static str) -> Self {
+        Self {
+            name,
+            required: true,
+        }
+    }
+
+    /// Declares an optional top-level secret field.
+    #[must_use]
+    pub const fn optional(name: &'static str) -> Self {
+        Self {
+            name,
+            required: false,
+        }
+    }
+}
+
 /// Function pointer registered by a component that owns a typed config.
 pub type ConfigRedactorFn = fn(&mut Value) -> Result<(), RedactionError>;
 
 /// Type-owned snapshot redactor registration.
 ///
-/// The registered type must use deterministic, symmetric serde mappings:
-/// secrets must serialize at the same raw paths from which they deserialize.
-/// `RedactedString` fields must originate in the raw config and must not be
-/// omitted by serialization. Violations fail closed instead of returning a
-/// partially redacted snapshot.
+/// The component's callback must deserialize the same config type used by its
+/// validation/runtime path and declare every `RedactedString` raw field.
 #[derive(Clone, Copy)]
 pub struct ConfigRedactor {
     /// Exact component type URN.
@@ -180,7 +193,7 @@ enum RedactorEntry {
     Duplicate,
 }
 
-/// Applies the exact registered redactor, or returns `None` when the component
+/// Applies the exact registered redactor, or returns `false` when the component
 /// has no type-owned registration.
 pub fn redact_registered_config(
     component_type: &str,
@@ -217,34 +230,51 @@ fn build_redactor_index(registrations: &[ConfigRedactor]) -> HashMap<&'static st
     index
 }
 
-/// Redacts every [`RedactedString`] in typed config `T` while preserving the
-/// exact keys, values, and omissions in the original raw JSON.
-pub fn redact_typed_config<T>(config: &Value) -> Result<Value, RedactionError>
+/// Returns a redacted copy of a typed component config.
+pub fn redact_typed_config<T>(
+    config: &Value,
+    secret_fields: &[SecretField],
+) -> Result<Value, RedactionError>
 where
-    T: DeserializeOwned + Serialize,
+    T: DeserializeOwned,
 {
     let mut redacted = config.clone();
-    redact_typed_config_in_place::<T>(&mut redacted)?;
+    redact_typed_config_in_place::<T>(&mut redacted, secret_fields)?;
     Ok(redacted)
 }
 
-/// Redacts every [`RedactedString`] in typed config `T` in place.
-pub fn redact_typed_config_in_place<T>(config: &mut Value) -> Result<(), RedactionError>
+/// Redacts declared top-level `RedactedString` fields in place.
+pub fn redact_typed_config_in_place<T>(
+    config: &mut Value,
+    secret_fields: &[SecretField],
+) -> Result<(), RedactionError>
 where
-    T: DeserializeOwned + Serialize,
+    T: DeserializeOwned,
 {
-    let (typed, deserialized_secrets) = track_deserialized_secrets(|| {
+    let (_typed, deserialized_secrets) = track_deserialized_secrets(|| {
         T::deserialize(&*config).map_err(|_| RedactionError::Deserialization)
     })?;
-    let first = serialize_with_marker(&typed, PRIVATE_MARKER_A)?;
-    let second = serialize_with_marker(&typed, PRIVATE_MARKER_B)?;
-    let counts = compare_and_apply(Some(config), &first, &second)?;
+    let object = config.as_object().ok_or(RedactionError::ShapeMismatch)?;
+    let mut active_fields = Vec::with_capacity(secret_fields.len());
 
-    if counts.serialized != deserialized_secrets {
+    for field in secret_fields {
+        match object.get(field.name) {
+            Some(Value::String(_)) => active_fields.push(field.name),
+            Some(Value::Null) | None if !field.required => {}
+            _ => return Err(RedactionError::ShapeMismatch),
+        }
+    }
+
+    if active_fields.len() != deserialized_secrets {
         return Err(RedactionError::SecretCountMismatch);
     }
-    if counts.applied != counts.serialized {
-        return Err(RedactionError::ShapeMismatch);
+
+    let object = config
+        .as_object_mut()
+        .ok_or(RedactionError::ShapeMismatch)?;
+    for field in active_fields {
+        let value = object.get_mut(field).ok_or(RedactionError::ShapeMismatch)?;
+        *value = Value::String(REDACTED_VALUE.to_owned());
     }
     Ok(())
 }
@@ -268,136 +298,22 @@ fn track_deserialized_secrets<T>(
     result.map(|value| (value, count))
 }
 
-fn serialize_with_marker<T>(value: &T, marker: &'static str) -> Result<Value, RedactionError>
-where
-    T: Serialize,
-{
-    struct MarkerGuard(Option<&'static str>);
-
-    impl Drop for MarkerGuard {
-        fn drop(&mut self) {
-            SERIALIZED_SECRET_MARKER.with(|current| current.set(self.0));
-        }
-    }
-
-    let previous = SERIALIZED_SECRET_MARKER.with(|current| current.replace(Some(marker)));
-    let guard = MarkerGuard(previous);
-    let serialized = serde_json::to_value(value).map_err(|_| RedactionError::Serialization);
-    drop(guard);
-    serialized
-}
-
-#[derive(Default)]
-struct SecretCounts {
-    serialized: usize,
-    applied: usize,
-}
-
-impl SecretCounts {
-    fn add(&mut self, other: Self) {
-        self.serialized = self.serialized.saturating_add(other.serialized);
-        self.applied = self.applied.saturating_add(other.applied);
-    }
-}
-
-fn compare_and_apply(
-    raw: Option<&mut Value>,
-    first: &Value,
-    second: &Value,
-) -> Result<SecretCounts, RedactionError> {
-    if let Some(secret) = private_secret_value(first, second) {
-        let applied = if let Some(raw) = raw {
-            match raw {
-                Value::String(value) if value == secret => {
-                    *raw = Value::String(REDACTED_VALUE.to_owned());
-                    1
-                }
-                _ => return Err(RedactionError::ShapeMismatch),
-            }
-        } else {
-            0
-        };
-        return Ok(SecretCounts {
-            serialized: 1,
-            applied,
-        });
-    }
-
-    match (first, second) {
-        (Value::Array(first_values), Value::Array(second_values)) => {
-            if first_values.len() != second_values.len() {
-                return Err(RedactionError::Serialization);
-            }
-            let mut raw_values = match raw {
-                Some(Value::Array(values)) => Some(values),
-                _ => None,
-            };
-            let mut counts = SecretCounts::default();
-            for (index, (first_value, second_value)) in
-                first_values.iter().zip(second_values).enumerate()
-            {
-                let raw_value = raw_values
-                    .as_deref_mut()
-                    .and_then(|values| values.get_mut(index));
-                counts.add(compare_and_apply(raw_value, first_value, second_value)?);
-            }
-            Ok(counts)
-        }
-        (Value::Object(first_values), Value::Object(second_values)) => {
-            if first_values.len() != second_values.len()
-                || first_values
-                    .keys()
-                    .any(|key| !second_values.contains_key(key))
-            {
-                return Err(RedactionError::Serialization);
-            }
-            let mut raw_values = match raw {
-                Some(Value::Object(values)) => Some(values),
-                _ => None,
-            };
-            let mut counts = SecretCounts::default();
-            for (key, first_value) in first_values {
-                let second_value = second_values
-                    .get(key)
-                    .ok_or(RedactionError::Serialization)?;
-                let raw_value = raw_values
-                    .as_deref_mut()
-                    .and_then(|values| values.get_mut(key));
-                counts.add(compare_and_apply(raw_value, first_value, second_value)?);
-            }
-            Ok(counts)
-        }
-        (a, b) if a == b => Ok(SecretCounts::default()),
-        _ => Err(RedactionError::Serialization),
-    }
-}
-
-fn private_secret_value<'a>(first: &'a Value, second: &'a Value) -> Option<&'a str> {
-    let first = first.as_str()?.strip_prefix(PRIVATE_MARKER_A)?;
-    let second = second.as_str()?.strip_prefix(PRIVATE_MARKER_B)?;
-    (first == second).then_some(first)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
-    #[derive(Deserialize, Serialize)]
-    struct NestedConfig {
-        token: RedactedString,
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct TestConfig {
+        password: RedactedString,
+        optional_token: Option<RedactedString>,
         label: String,
     }
 
-    #[derive(Deserialize, Serialize)]
-    struct TestConfig {
-        password: RedactedString,
-        nested: Vec<NestedConfig>,
-        tokens: HashMap<String, RedactedString>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        omitted: Option<String>,
-        literal_marker: String,
-    }
+    const TEST_SECRET_FIELDS: &[SecretField] = &[
+        SecretField::required("password"),
+        SecretField::optional("optional_token"),
+    ];
 
     /// Scenario: a cleartext value is loaded into a `RedactedString`.
     /// Guarantees: explicit access returns cleartext while Debug and JSON
@@ -427,82 +343,60 @@ mod tests {
         assert!(error.to_string().contains("provide the secret again"));
     }
 
-    /// Scenario: a typed config contains required, nested, sequence, and map
-    /// secrets plus omitted and ordinary values.
-    /// Guarantees: every typed secret is redacted while raw JSON shape and all
-    /// non-secret values remain byte-for-byte equivalent as JSON values.
+    /// Scenario: required and optional typed secrets share a value with a
+    /// public field.
+    /// Guarantees: declared secret fields are redacted by raw path while the
+    /// public value and source config remain unchanged.
     #[test]
-    fn typed_redaction_preserves_raw_shape() {
+    fn typed_redaction_preserves_shape_with_repeated_values() {
         let raw = serde_json::json!({
-            "password": "top-secret",
-            "nested": [
-                {"token": "nested-secret", "label": "first"}
-            ],
-            "tokens": {
-                "primary": "map-secret"
-            },
-            "literal_marker": REDACTED_VALUE
+            "password": "same-value",
+            "optional_token": "same-value",
+            "label": "same-value"
         });
 
-        let redacted =
-            redact_typed_config::<TestConfig>(&raw).expect("typed redaction should succeed");
+        let redacted = redact_typed_config::<TestConfig>(&raw, TEST_SECRET_FIELDS)
+            .expect("declared secrets should redact");
 
-        assert_eq!(
-            redacted,
-            serde_json::json!({
-                "password": REDACTED_VALUE,
-                "nested": [
-                    {"token": REDACTED_VALUE, "label": "first"}
-                ],
-                "tokens": {
-                    "primary": REDACTED_VALUE
-                },
-                "literal_marker": REDACTED_VALUE
-            })
-        );
-        assert!(redacted.get("omitted").is_none());
-        assert_eq!(raw["password"], "top-secret");
+        assert_eq!(redacted["password"], REDACTED_VALUE);
+        assert_eq!(redacted["optional_token"], REDACTED_VALUE);
+        assert_eq!(redacted["label"], "same-value");
+        assert_eq!(raw["password"], "same-value");
     }
 
-    #[derive(Deserialize, Serialize)]
-    struct AliasedConfig {
-        #[serde(alias = "token")]
-        secret: RedactedString,
-    }
-
-    /// Scenario: deserialization accepts an alias whose serialized field path
-    /// differs from the original raw key.
-    /// Guarantees: redaction fails closed instead of returning a config with an
-    /// unmatched cleartext secret.
+    /// Scenario: an optional secret is absent from raw config.
+    /// Guarantees: redaction leaves the field omitted and preserves all
+    /// non-secret values.
     #[test]
-    fn typed_redaction_rejects_unmatched_alias_path() {
-        let error = redact_typed_config::<AliasedConfig>(&serde_json::json!({
-            "token": "alias-secret"
-        }))
-        .expect_err("alias path must not be guessed");
+    fn typed_redaction_preserves_omitted_optional_secret() {
+        let raw = serde_json::json!({
+            "password": "required-secret",
+            "label": "visible"
+        });
 
-        assert_eq!(error, RedactionError::ShapeMismatch);
-        assert!(!error.to_string().contains("alias-secret"));
+        let redacted = redact_typed_config::<TestConfig>(&raw, TEST_SECRET_FIELDS)
+            .expect("optional secret may be omitted");
+
+        assert_eq!(redacted["password"], REDACTED_VALUE);
+        assert!(redacted.get("optional_token").is_none());
+        assert_eq!(redacted["label"], "visible");
     }
 
-    #[derive(Deserialize, Serialize)]
-    struct SkippedSecretConfig {
-        #[serde(rename = "secret", skip_serializing)]
-        _secret: RedactedString,
-    }
-
-    /// Scenario: a typed secret is deliberately omitted by `Serialize`.
-    /// Guarantees: the deserialize/serialize count invariant refuses the result
-    /// before a cleartext secret can survive.
+    /// Scenario: a secret-bearing typed field is not declared by its component
+    /// registration.
+    /// Guarantees: the live typed-secret count fails closed before a partially
+    /// redacted snapshot can escape.
     #[test]
-    fn typed_redaction_rejects_skipped_secret() {
-        let error = redact_typed_config::<SkippedSecretConfig>(&serde_json::json!({
-            "secret": "skipped-secret"
-        }))
-        .expect_err("skipped secret must fail closed");
+    fn typed_redaction_rejects_undeclared_secret_field() {
+        let raw = serde_json::json!({
+            "password": "required-secret",
+            "label": "visible"
+        });
+
+        let error = redact_typed_config::<TestConfig>(&raw, &[])
+            .expect_err("undeclared typed secret must fail closed");
 
         assert_eq!(error, RedactionError::SecretCountMismatch);
-        assert!(!error.to_string().contains("skipped-secret"));
     }
 
     /// Scenario: raw config cannot deserialize into its registered type and
@@ -511,22 +405,75 @@ mod tests {
     /// embeds serde's value-bearing diagnostic.
     #[test]
     fn typed_redaction_sanitizes_deserialization_errors() {
-        let error = redact_typed_config::<TestConfig>(&serde_json::json!({
-            "password": {"secret": "diagnostic-secret"}
-        }))
+        let error = redact_typed_config::<TestConfig>(
+            &serde_json::json!({"password": {"secret": "diagnostic-secret"}}),
+            TEST_SECRET_FIELDS,
+        )
         .expect_err("invalid typed config must fail");
 
         assert_eq!(error, RedactionError::Deserialization);
         assert!(!error.to_string().contains("diagnostic-secret"));
     }
 
-    #[derive(Deserialize, Serialize)]
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    #[allow(dead_code)]
+    enum UntaggedConfig {
+        VariantA {
+            secret: RedactedString,
+            required_field: String,
+        },
+        VariantB {
+            other: String,
+        },
+    }
+
+    /// Scenario: an untagged enum tentatively deserializes a secret-bearing
+    /// variant before backtracking to a different variant.
+    /// Guarantees: dropped tentative secrets do not inflate the final secret
+    /// count or make a valid config unsnapshotable.
+    #[test]
+    fn typed_redaction_handles_untagged_enum_backtracking() {
+        let raw = serde_json::json!({
+            "secret": "tentative-secret",
+            "other": "selected"
+        });
+
+        let _ = redact_typed_config::<UntaggedConfig>(&raw, &[])
+            .expect("backtracked secret must not remain live");
+    }
+
+    #[derive(Deserialize, Clone)]
+    #[allow(dead_code)]
+    struct ClonedConfig {
+        secret: RedactedString,
+    }
+
+    /// Scenario: a typed config clones a `RedactedString` while deserialization
+    /// tracking is active.
+    /// Guarantees: clone and drop lifecycle accounting leaves exactly one live
+    /// secret in the final typed value.
+    #[test]
+    fn tracked_secret_clone_preserves_live_count() {
+        let raw = serde_json::json!({"secret": "clone-secret"});
+        let (_typed, count) = track_deserialized_secrets(|| {
+            let typed = ClonedConfig::deserialize(&raw).expect("config should deserialize");
+            let _cloned = typed.clone();
+            Ok(typed)
+        })
+        .expect("tracking should succeed");
+
+        assert_eq!(count, 1);
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
     struct RegisteredConfig {
         secret: RedactedString,
     }
 
     fn redact_registered_test_config(config: &mut Value) -> Result<(), RedactionError> {
-        redact_typed_config_in_place::<RegisteredConfig>(config)
+        redact_typed_config_in_place::<RegisteredConfig>(config, &[SecretField::required("secret")])
     }
 
     #[allow(unsafe_code)]
@@ -561,11 +508,12 @@ mod tests {
         assert_eq!(raw["secret"], "unregistered-secret");
     }
 
-    /// Scenario: two components register the same exact type URN.
-    /// Guarantees: dispatch rejects the ambiguity rather than choosing by link
-    /// order.
+    /// Scenario: a mixed registry contains a duplicate URN and an unrelated
+    /// unique URN.
+    /// Guarantees: only the duplicate entry is poisoned; the unrelated entry
+    /// remains callable.
     #[test]
-    fn duplicate_redaction_registration_fails() {
+    fn duplicate_redaction_registration_is_isolated() {
         let registrations = [
             ConfigRedactor::new(
                 "urn:test:exporter:duplicate-redaction",
@@ -590,112 +538,5 @@ mod tests {
             index.get("urn:test:exporter:unique-redaction"),
             Some(RedactorEntry::Redactor(_))
         ));
-    }
-
-    #[derive(Deserialize, Serialize)]
-    struct AsymmetricConfig {
-        #[serde(rename(serialize = "public", deserialize = "secret"))]
-        secret: RedactedString,
-        #[serde(rename(serialize = "secret", deserialize = "public"))]
-        public: String,
-    }
-
-    /// Scenario: asymmetric serde names swap a secret and non-secret field onto
-    /// existing raw paths.
-    /// Guarantees: a nonmatching raw value prevents redacting the public field
-    /// while leaving the real secret exposed.
-    #[test]
-    fn typed_redaction_rejects_asymmetric_path_collision() {
-        let raw = serde_json::json!({
-            "secret": "identity-bound-secret",
-            "public": "visible-label"
-        });
-
-        let error = redact_typed_config::<AsymmetricConfig>(&raw)
-            .expect_err("asymmetric secret mapping must fail closed");
-
-        assert_eq!(error, RedactionError::ShapeMismatch);
-        assert_eq!(raw["secret"], "identity-bound-secret");
-    }
-
-    #[derive(Deserialize, Serialize)]
-    struct RepeatedValueConfig {
-        primary: RedactedString,
-        secondary: RedactedString,
-        label: String,
-    }
-
-    /// Scenario: multiple symmetric secret fields and a public field share the
-    /// same string value.
-    /// Guarantees: both declared secret paths are redacted while the public
-    /// value remains unchanged.
-    #[test]
-    fn typed_redaction_accepts_repeated_values_on_symmetric_paths() {
-        let raw = serde_json::json!({
-            "primary": "same-value",
-            "secondary": "same-value",
-            "label": "same-value"
-        });
-
-        let redacted = redact_typed_config::<RepeatedValueConfig>(&raw)
-            .expect("symmetric repeated values should redact");
-
-        assert_eq!(redacted["primary"], REDACTED_VALUE);
-        assert_eq!(redacted["secondary"], REDACTED_VALUE);
-        assert_eq!(redacted["label"], "same-value");
-    }
-
-    #[derive(Deserialize, Serialize)]
-    #[serde(untagged)]
-    enum UntaggedConfig {
-        VariantA {
-            secret: RedactedString,
-            required_field: String,
-        },
-        VariantB {
-            other: String,
-        },
-    }
-
-    /// Scenario: an untagged enum tentatively deserializes a secret-bearing
-    /// variant before backtracking to a different variant.
-    /// Guarantees: dropped tentative secrets do not inflate the final secret
-    /// count or make a valid config unsnapshotable.
-    #[test]
-    fn typed_redaction_handles_untagged_enum_backtracking() {
-        let raw = serde_json::json!({
-            "secret": "my-secret",
-            "other": "val"
-        });
-
-        let result = redact_typed_config::<UntaggedConfig>(&raw);
-        assert!(
-            result.is_ok(),
-            "Backtracking should not cause a mismatch: {:?}",
-            result
-        );
-    }
-
-    #[derive(Deserialize, Serialize, Clone)]
-    struct ClonedConfig {
-        secret: RedactedString,
-    }
-
-    /// Scenario: a typed config clones a `RedactedString` while deserialization
-    /// tracking is active.
-    /// Guarantees: clone and drop lifecycle accounting leaves exactly one live
-    /// secret in the final typed value.
-    #[test]
-    fn tracked_secret_clone_preserves_live_count() {
-        let raw = serde_json::json!({
-            "secret": "my-secret"
-        });
-        let (_typed, count) = track_deserialized_secrets(|| {
-            let typed = ClonedConfig::deserialize(&raw).unwrap();
-            let _cloned = typed.clone();
-            Ok(typed)
-        })
-        .unwrap();
-        assert_eq!(count, 1);
     }
 }

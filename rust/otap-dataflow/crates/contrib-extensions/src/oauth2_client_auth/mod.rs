@@ -27,7 +27,7 @@ use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_config::redaction::{
-    CONFIG_REDACTORS, ConfigRedactor, RedactionError, redact_typed_config_in_place,
+    CONFIG_REDACTORS, ConfigRedactor, RedactionError, SecretField, redact_typed_config_in_place,
 };
 use otap_df_engine::ExtensionFactory;
 use otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
@@ -118,7 +118,13 @@ pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
 };
 
 fn redact_oauth2_client_auth_config(config: &mut serde_json::Value) -> Result<(), RedactionError> {
-    redact_typed_config_in_place::<Config>(config)
+    redact_typed_config_in_place::<Config>(
+        config,
+        &[
+            SecretField::optional("client_secret"),
+            SecretField::optional("client_certificate_key"),
+        ],
+    )
 }
 
 #[allow(unsafe_code)]

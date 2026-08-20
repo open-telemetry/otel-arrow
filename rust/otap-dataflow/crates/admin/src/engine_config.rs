@@ -92,7 +92,7 @@ mod tests {
     use otap_df_config::engine::OtelDataflowSpec;
     use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_config::redaction::{
-        CONFIG_REDACTORS, ConfigRedactor, RedactedString, RedactionError,
+        CONFIG_REDACTORS, ConfigRedactor, RedactedString, RedactionError, SecretField,
         redact_typed_config_in_place,
     };
     use otap_df_engine::memory_limiter::MemoryPressureState;
@@ -111,7 +111,10 @@ mod tests {
     }
 
     fn redact_admin_typed_config(config: &mut Value) -> Result<(), RedactionError> {
-        redact_typed_config_in_place::<AdminTypedConfig>(config)
+        redact_typed_config_in_place::<AdminTypedConfig>(
+            config,
+            &[SecretField::required("password")],
+        )
     }
 
     #[allow(unsafe_code)]
