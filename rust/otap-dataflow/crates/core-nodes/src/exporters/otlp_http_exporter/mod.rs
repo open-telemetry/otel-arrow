@@ -458,10 +458,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 // snapshot before admitting each batch, and drive the lookup as a
                 // select arm so control messages can cancel a slow provider call.
                 result = async {
-                    match agent_fed_auth.as_mut() {
-                        Some(a) => a.poll_credential().await,
-                        None => std::future::pending().await,
-                    }
+                    agent_fed_auth
+                        .as_mut()
+                        .expect("agent-fed auth must exist while its select guard is enabled")
+                        .poll_credential()
+                        .await
                 }, if agent_fed_auth.as_ref().is_some_and(|a| !a.is_ready()) => {
                     if let Err(error) = result {
                         otel_warn!(
@@ -1877,6 +1878,105 @@ mod test {
 
         let error = result.err().expect("conflicting providers must fail");
         assert!(error.to_string().contains("cannot bind both"));
+    }
+
+    /// Scenario: Zero or one dynamic authentication capability is available.
+    /// Guarantees: Each supported capability combination selects the corresponding auth mode.
+    #[test]
+    fn selects_each_supported_dynamic_auth_mode() {
+        assert!(select_dynamic_auth(None, None).unwrap().is_none());
+
+        let bearer =
+            select_dynamic_auth(Some(Box::new(MockTokenProvider::new("bearer"))), None).unwrap();
+        assert!(matches!(bearer, Some(DynamicAuthProvider::Bearer(_))));
+
+        let agent_fed = select_dynamic_auth(
+            None,
+            Some(Box::new(StaticAgentFedProvider::new("agent-fed"))),
+        )
+        .unwrap();
+        assert!(matches!(agent_fed, Some(DynamicAuthProvider::AgentFed(_))));
+    }
+
+    /// Scenario: A valid exporter configuration is built with each dynamic authentication mode.
+    /// Guarantees: `from_config` stores only the selected provider and preserves unauthenticated mode.
+    #[test]
+    fn from_config_assigns_each_dynamic_auth_mode() {
+        let config = serde_json::json!({
+            "endpoint": "http://127.0.0.1:4318",
+            "http": {},
+            "client_pool_size": 2
+        });
+        let make_pipeline = || {
+            let controller = ControllerContext::new(TelemetryRegistryHandle::new());
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)
+        };
+
+        let unauthenticated =
+            OtlpHttpExporter::from_config(make_pipeline(), &config, None).unwrap();
+        assert!(unauthenticated.token_provider.is_none());
+        assert!(unauthenticated.agent_fed_provider.is_none());
+
+        let bearer = OtlpHttpExporter::from_config(
+            make_pipeline(),
+            &config,
+            Some(DynamicAuthProvider::Bearer(Box::new(
+                MockTokenProvider::new("bearer"),
+            ))),
+        )
+        .unwrap();
+        assert!(bearer.token_provider.is_some());
+        assert!(bearer.agent_fed_provider.is_none());
+
+        let agent_fed = OtlpHttpExporter::from_config(
+            make_pipeline(),
+            &config,
+            Some(DynamicAuthProvider::AgentFed(Box::new(
+                StaticAgentFedProvider::new("agent-fed"),
+            ))),
+        )
+        .unwrap();
+        assert!(agent_fed.token_provider.is_none());
+        assert!(agent_fed.agent_fed_provider.is_some());
+    }
+
+    /// Scenario: The exporter factory is invoked without capability bindings.
+    /// Guarantees: Optional capability lookup preserves the unauthenticated configuration path.
+    #[test]
+    fn factory_create_preserves_unauthenticated_mode() {
+        let controller = ControllerContext::new(TelemetryRegistryHandle::new());
+        let pipeline = controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut node_config = NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN);
+        node_config.config = serde_json::json!({
+            "endpoint": "http://127.0.0.1:4318",
+            "http": {},
+            "client_pool_size": 2
+        });
+
+        let result = factory_create(
+            pipeline,
+            test_node("otlp-http-factory"),
+            Arc::new(node_config),
+            &ExporterConfig::new("otlp-http-factory"),
+            &otap_df_engine::capability::registry::Capabilities::empty(),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    /// Scenario: Response handling inspects each request authentication mode.
+    /// Guarantees: Dynamic detection and bearer generation extraction remain mode-specific.
+    #[test]
+    fn request_auth_helpers_cover_each_mode() {
+        assert!(!RequestAuth::None.is_dynamic());
+        assert_eq!(RequestAuth::None.bearer_generation(), None);
+
+        assert!(RequestAuth::AgentFed.is_dynamic());
+        assert_eq!(RequestAuth::AgentFed.bearer_generation(), None);
+
+        let bearer = RequestAuth::BearerProvider { generation: 42 };
+        assert!(bearer.is_dynamic());
+        assert_eq!(bearer.bearer_generation(), Some(42));
     }
 
     /// Scenario: Agent-fed credentials and a static Authorization header are configured.
