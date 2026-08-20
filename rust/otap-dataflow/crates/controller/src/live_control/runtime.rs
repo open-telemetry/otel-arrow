@@ -1187,7 +1187,7 @@ impl<
                 message = "Runtime recovery was fatal and coordinated shutdown dispatch failed.",
             );
         }
-        self.controller_thread.unpark();
+        self.release_instance_wait();
     }
 
     /// Waits for a specific deployed instance to report admitted plus ready.
@@ -1876,11 +1876,11 @@ impl<
     /// unconditionally, even if runtime instances are still active.
     ///
     /// This is a fatal-shutdown escape hatch: when a controller extension fails
-    /// at runtime the engine tears down regardless of whether the graceful drain
-    /// of pipeline instances completes, so the main controller thread must not
-    /// block forever if that drain stalls. The latch is one-way for the current
-    /// run -- `wait_until_all_instances_exit` is only entered once, after which
-    /// the controller proceeds to teardown.
+    /// or runtime recovery is exhausted, the engine tears down regardless of
+    /// whether the graceful drain of pipeline instances completes. The main
+    /// controller thread must not block forever if that drain stalls. The latch
+    /// is one-way for the current run, after which the controller proceeds to
+    /// teardown.
     pub(crate) fn release_instance_wait(&self) {
         let mut state = self
             .state

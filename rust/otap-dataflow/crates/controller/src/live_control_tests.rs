@@ -6322,9 +6322,10 @@ fn runtime_recovery_exhaustion_fails_process_after_bounded_attempts() {
 }
 
 /// Scenario: a regular pipeline disables in-process runtime recovery and its
-/// serving core exits unexpectedly.
-/// Guarantees: no replacement generation is allocated and the controller
-/// immediately requests fatal coordinated shutdown.
+/// serving core exits unexpectedly while another active instance never drains.
+/// Guarantees: no replacement generation is allocated, fatal coordinated
+/// shutdown is requested, and the global lifecycle wait is released without
+/// fabricating an exit for the non-draining instance.
 #[test]
 fn disabled_runtime_recovery_fails_without_launching_replacement() {
     let config = engine_config_with_pipeline(
@@ -6348,16 +6349,44 @@ fn disabled_runtime_recovery_fails_without_launching_replacement() {
     register_existing_pipeline(&runtime, &config);
     let _rx =
         register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let _non_draining =
+        register_runtime_instance(&runtime, "g2", "p2", 1, 0, RuntimeInstanceLifecycle::Active);
+
+    let waiter = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.wait_until_global_shutdown_drains_or_released())
+    };
+
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !waiter.is_finished(),
+        "global lifecycle wait should block before fatal recovery"
+    );
 
     runtime.note_instance_exit(
         deployed_key("g1", "p1", 0, 0),
         RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
     );
 
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !waiter.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "fatal runtime recovery did not release the global lifecycle wait"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    waiter.join().expect("lifecycle waiter should not panic");
+
     let state = runtime
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        state.active_instances, 1,
+        "fatal recovery must not fabricate an instance exit"
+    );
+    assert!(state.instance_wait_released);
     assert!(state.global_shutdown_requested);
     assert_eq!(
         state

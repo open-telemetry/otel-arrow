@@ -89,8 +89,6 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     telemetry_reporting_interval: Duration,
     /// Memory-pressure signal fanout shared with pipeline runtimes.
     memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
-    /// Main controller thread unparked when recovery becomes fatal.
-    controller_thread: thread::Thread,
     /// All mutable live-control state protected by a single mutex.
     state: Mutex<ControllerRuntimeState>,
     /// Wakes global shutdown waiters when runtime instance liveness changes.
@@ -152,7 +150,6 @@ impl<
             log_filter_handle,
             telemetry_reporting_interval,
             memory_pressure_tx,
-            controller_thread: thread::current(),
             state: Mutex::new(ControllerRuntimeState {
                 live_config,
                 config_revision: 0,
