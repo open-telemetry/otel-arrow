@@ -312,7 +312,7 @@ impl ControllerExtensionRegistry {
 }
 
 /// Optional runtime integrations used when starting the controller.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ControllerRunOptions {
     /// Controller extension factories available to configured controller extensions.
     pub extensions: ControllerExtensionRegistry,
@@ -323,16 +323,6 @@ pub struct ControllerRunOptions {
     /// Defaults to `false` so embedding hosts retain signal ownership. Standalone
     /// binaries that own the process can opt in explicitly.
     pub handle_os_signals: bool,
-}
-
-impl Default for ControllerRunOptions {
-    fn default() -> Self {
-        Self {
-            extensions: ControllerExtensionRegistry::default(),
-            build_info: BuildInfo::default(),
-            handle_os_signals: false,
-        }
-    }
 }
 
 /// Build-time identity of the collector binary.
