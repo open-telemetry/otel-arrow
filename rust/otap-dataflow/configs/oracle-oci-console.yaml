@@ -1,0 +1,29 @@
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          oracle:
+            type: urn:otel:receiver:oracle
+            config:
+              connect_string: //localhost:1521/FREEPDB1
+              username: PDBADMIN
+              password_env: ORACLE_PWD
+              query: SELECT SYSDATE AS CURRENT_TIME FROM DUAL
+              poll_interval: 30s
+              call_timeout: 10s
+              max_rows: 100
+          console:
+            type: exporter:console
+            config: {}
+
+        connections:
+          - from: oracle
+            to: console

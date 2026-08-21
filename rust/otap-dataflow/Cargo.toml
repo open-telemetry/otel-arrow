@@ -163,6 +163,7 @@ opentelemetry-proto = { version = "0.32", default-features = false, features = [
 # pulled in transitively until fixed upstream.
 opentelemetry = { version = "0.32.0", default-features = false }
 opentelemetry_sdk = { version = "0.32.1", default-features = false }
+oracle = "0.6.3"
 
 parking_lot = "0.12.5"
 paste = "1"
@@ -359,6 +360,7 @@ oauth2-client-auth-extension = ["otap-df-contrib-extensions/oauth2-client-auth-e
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
 kafka-receiver = ["otap-df-contrib-nodes/kafka-receiver"]
+oracle-receiver = ["otap-df-contrib-nodes/oracle-receiver"]
 user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
 user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
 clickhouse-exporter = ["otap-df-contrib-nodes/clickhouse-exporter"]

@@ -40,6 +40,7 @@ humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
+oracle = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 data_engine_expressions = { workspace = true, optional = true }
@@ -97,6 +98,10 @@ kafka-receiver = [
     "dep:regex",
     "dep:tokio-util",
 ]
+oracle-receiver = [
+    "dep:oracle",
+    "dep:humantime-serde",
+]
 kafka-exporter = [
     "dep:rdkafka",
     "dep:futures-channel",
@@ -112,6 +117,7 @@ aws = [
 contrib-receivers = [
     "etw-receiver",
     "kafka-receiver",
+    "oracle-receiver",
     "user_events-receiver",
 ]
 user_events-receiver = [
