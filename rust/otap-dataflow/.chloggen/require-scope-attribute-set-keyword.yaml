@@ -1,6 +1,0 @@
-change_type: enhancement
-component: observability
-note: "Require the `scope` keyword on scope `attribute_set` declarations and remove support for named measurement attribute sets."
-issues: [3513]
-subtext: |
-  As there is currently no published crate, this is considered an enhancement rather than a breaking change.

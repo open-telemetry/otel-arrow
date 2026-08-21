@@ -13,7 +13,6 @@ use azure_identity::{
     WorkloadIdentityCredentialOptions,
 };
 use otap_df_engine::capability::auth::BearerToken;
-use otap_df_telemetry::otel_warn;
 
 use super::config::{AuthMethod, Config};
 use super::error::Error;

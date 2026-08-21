@@ -1,6 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+otap_df_telemetry::otel_component_scope!(
+    urn = SYSLOG_CEF_RECEIVER_URN,
+    target = "otel.receiver.syslog_cef",
+);
+
 use self::arrow_records_encoder::ArrowRecordsBuilder;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -24,7 +29,6 @@ use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
@@ -38,7 +42,6 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use otap_df_config::tls::TlsServerConfig;
 use otap_df_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
-use otap_df_telemetry::otel_debug;
 
 /// Arrow records encoder for syslog messages
 pub mod arrow_records_encoder;
@@ -1102,7 +1105,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_pdata::OtapPayload;
+    use otap_df_pdata::PayloadData;
 
     // Test-only constructor, not compiled in production
     impl SyslogCefReceiver {
@@ -1312,7 +1315,8 @@ mod tests {
                     .payload();
 
                 // Extract arrow_records for further validation
-                let OtapPayload::OtapArrowRecords(arrow_records) = message1_received else {
+                let PayloadData::OtapArrowRecords(arrow_records) = message1_received.into_data()
+                else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -1382,7 +1386,8 @@ mod tests {
                     .payload();
 
                 // Extract arrow_records for further validation
-                let OtapPayload::OtapArrowRecords(arrow_records) = message1_received else {
+                let PayloadData::OtapArrowRecords(arrow_records) = message1_received.into_data()
+                else {
                     panic!("Expected OtapArrowRecords::Logs variant")
                 };
 
@@ -1452,7 +1457,8 @@ mod tests {
                 while total_records < 2 {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let OtapPayload::OtapArrowRecords(arrow_records) = message.payload()
+                            let PayloadData::OtapArrowRecords(arrow_records) =
+                                message.payload().into_data()
                             else {
                                 panic!("Expected OtapArrowRecords variant")
                             };
@@ -1664,7 +1670,8 @@ mod tests {
                 loop {
                     match timeout(Duration::from_secs(3), ctx.recv()).await {
                         Ok(Ok(message)) => {
-                            let OtapPayload::OtapArrowRecords(arrow_records) = message.payload()
+                            let PayloadData::OtapArrowRecords(arrow_records) =
+                                message.payload().into_data()
                             else {
                                 panic!("Expected OtapArrowRecords variant");
                             };

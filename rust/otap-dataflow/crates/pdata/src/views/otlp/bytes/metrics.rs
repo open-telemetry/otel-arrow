@@ -7,6 +7,7 @@
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
+use crate::error::Error;
 use crate::proto::consts::field_num::metrics::{
     EXEMPLAR_AS_DOUBLE, EXEMPLAR_AS_INT, EXEMPLAR_FILTERED_ATTRIBUTES, EXEMPLAR_SPAN_ID,
     EXEMPLAR_TIME_UNIX_NANO, EXEMPLAR_TRACE_ID, EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS,
@@ -37,7 +38,7 @@ use crate::views::otlp::bytes::common::{KeyValueIter, RawInstrumentationScope, R
 use crate::views::otlp::bytes::decode::{
     FieldRanges, ProtoBytesParser, RepeatedFieldEncodings, RepeatedFieldProtoBytesParser,
     RepeatedFixed64Iter, RepeatedVarintIter, decode_sint32, from_option_nonzero_range_to_primitive,
-    read_len_delim, read_varint, to_nonzero_range,
+    read_len_delim, read_varint, to_nonzero_range, validate_message_wire_format,
 };
 use crate::views::otlp::bytes::resource::RawResource;
 use otap_df_pdata_views::views::common::Str;
@@ -58,6 +59,12 @@ impl<'a> RawMetricsData<'a> {
     #[must_use]
     pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
+    }
+
+    /// Constructs a metrics view after validating top-level protobuf wire framing.
+    pub fn try_new(buf: &'a [u8]) -> Result<Self, Error> {
+        validate_message_wire_format(buf)?;
+        Ok(Self { buf })
     }
 }
 

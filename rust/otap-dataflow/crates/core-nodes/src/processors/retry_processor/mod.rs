@@ -14,6 +14,11 @@
 
 // ToDo: Consider adding a jitter mechanism.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = RETRY_PROCESSOR_URN,
+    target = "otel.processor.retry",
+);
+
 use otap_df_otap::pdata::OtapPdata;
 
 use async_trait::async_trait;
@@ -556,7 +561,7 @@ impl RetryProcessor {
             &mut rereq,
         );
 
-        // Requeue the data onto this node, we'll continue in the DelayedData branch next.
+        // Requeue the data onto this node, we'll continue in the ResumeData branch next.
         match effect_handler.requeue_later(next_retry_time_i, rereq) {
             Ok(_) => {
                 // "Scheduled" means the local scheduler accepted ownership.
@@ -572,7 +577,7 @@ impl RetryProcessor {
         }
     }
 
-    async fn handle_delayed(
+    async fn handle_resumed(
         &mut self,
         _when: Instant,
         data: Box<OtapPdata>,
@@ -640,10 +645,10 @@ impl Processor<OtapPdata> for RetryProcessor {
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
-                NodeControlMsg::DelayedData { when, data } => {
+                NodeControlMsg::ResumeData { when, data } => {
                     if let Some(calldata) = data.source_route() {
                         let _rstate: RetryState = calldata.calldata.try_into()?;
-                        self.handle_delayed(when, data, effect_handler).await?;
+                        self.handle_resumed(when, data, effect_handler).await?;
                     }
                     Ok(())
                 }
@@ -1306,7 +1311,7 @@ mod test {
                 // Verify the processor forwarded the data downstream
                 let mut output = ctx.drain_pdata().await;
                 assert_eq!(output.len(), 1);
-                let first_attempt = output.remove(0);
+                let mut first_attempt = output.remove(0);
                 assert_eq!(first_attempt.num_items(), 1);
 
                 // Simulate downstream failures and retry
@@ -1344,8 +1349,8 @@ mod test {
                             .take_due_local_control(when)
                             .expect("scheduled local control");
                         assert!(
-                            matches!(control, NodeControlMsg::DelayedData { .. }),
-                            "retry should requeue retained pdata as DelayedData"
+                            matches!(control, NodeControlMsg::ResumeData { .. }),
+                            "retry should requeue retained pdata as ResumeData"
                         );
                         ctx.process(Message::Control(control)).await.unwrap();
 
@@ -1387,7 +1392,7 @@ mod test {
 
                 match have_pmsg.expect("retry replied") {
                     PipelineCompletionMsg::DeliverAck { ack } => {
-                        let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
+                        let (node_id, mut ack) = next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
                             "expecting Nack {outcome_failure:?}, got Ack"
@@ -1402,7 +1407,8 @@ mod test {
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
                     PipelineCompletionMsg::DeliverNack { nack } => {
-                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                        let (node_id, mut nack) =
+                            next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason
                                 .contains(outcome_failure.as_deref().expect("expecting nack"))

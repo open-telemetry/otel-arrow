@@ -84,7 +84,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `processor.temporal_reaggregation.pdata`
+#### `processor.temporal_reaggregation`
 
 Three separate populations are tracked.
 
@@ -92,13 +92,13 @@ Three separate populations are tracked.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.temporal_reaggregation.pdata.operations` | `{operation}` | Number of input operations. Success means data was staged or passed through; failure means a permanent NACK was issued. |
+| `processor.temporal_reaggregation.operations` | `{operation}` | Number of input operations. Success means data was staged or passed through; failure means a permanent NACK was issued. |
 
 **`failures`** - one entry per failed input, with actionable cause:
 
 | Metric | Attributes | Description |
 | --- | --- | --- |
-| `processor.temporal_reaggregation.pdata.failures` | `error.type` | Number of failed input operations, broken down by cause. |
+| `processor.temporal_reaggregation.failures` | `error.type` | Number of failed input operations, broken down by cause. |
 
 | `error.type` value | Description |
 | --- | --- |
@@ -110,7 +110,7 @@ Three separate populations are tracked.
 
 | Metric | Attributes | Description |
 | --- | --- | --- |
-| `processor.temporal_reaggregation.pdata.flushes` | `outcome`, `reason` | Number of non-empty flushes and their result. Empty flushes are not counted. |
+| `processor.temporal_reaggregation.flushes` | `outcome`, `reason` | Number of non-empty flushes and their result. Empty flushes are not counted. |
 
 | `outcome` value | Description |
 | --- | --- |
@@ -123,7 +123,6 @@ Three separate populations are tracked.
 | `id_overflow` | ID counter overflow triggered an early flush. |
 | `stream_cardinality_exceeded` | Stream cardinality limit triggered an early flush. |
 | `shutdown` | Processor is shutting down; remaining data was flushed. |
-
 
 An input operation is counted as successful when the data is either staged in
 the aggregation buffer or passed through to the next node. Delayed downstream

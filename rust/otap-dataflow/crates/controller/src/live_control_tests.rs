@@ -22,11 +22,11 @@ use otap_df_engine::topology::NumaTopology;
 use otap_df_engine::wiring_contract::WiringContract;
 use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
 use otap_df_state::pipeline_status::PipelineStatus;
+use otap_df_telemetry::TracingSetup;
 use otap_df_telemetry::event::EngineEvent;
 use otap_df_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
 use otap_df_telemetry::metrics::MetricSetSnapshot;
 use otap_df_telemetry::tracing_init::ProviderSetup;
-use otap_df_telemetry::{TracingSetup, otel_info};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{Event, Subscriber};
@@ -798,6 +798,7 @@ fn terminal_shutdown_record(
         shutdown_id.to_owned(),
         pipeline_group_id.to_owned().into(),
         pipeline_id.to_owned().into(),
+        None,
         Vec::new(),
     );
     shutdown.state = ShutdownLifecycleState::Succeeded;
@@ -3743,6 +3744,46 @@ fn delete_pipeline_rejects_active_operation_conflict() {
     assert_eq!(err, ControlPlaneError::RolloutConflict);
 }
 
+/// Scenario: deletion drains an active pipeline before removing it.
+/// Guarantees: the nested engine-owned shutdown status has no external initiator.
+#[test]
+fn delete_pipeline_shutdown_has_no_external_initiator() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let mut notifications =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let delete_runtime = Arc::clone(&runtime);
+    let delete = thread::spawn(move || delete_runtime.request_delete_pipeline("g1", "p1", 5));
+
+    assert!(matches!(
+        wait_for_shutdown_message(&mut notifications),
+        RuntimeControlMsg::Shutdown { .. }
+    ));
+    runtime.note_instance_exit(
+        DeployedPipelineKey {
+            pipeline_group_id: "g1".into(),
+            pipeline_id: "p1".into(),
+            core_id: 0,
+            deployment_generation: 0,
+        },
+        RuntimeInstanceExit::Success,
+    );
+
+    let status = delete
+        .join()
+        .expect("delete worker should not panic")
+        .expect("pipeline should be deleted");
+    assert_eq!(status.state, "succeeded");
+    assert_eq!(
+        status
+            .shutdown
+            .expect("active pipeline delete should include shutdown status")
+            .initiator,
+        None
+    );
+}
+
 /// Scenario: an engine-scoped lifecycle operation is already active.
 /// Guarantees: public config mutation entry points reject instead of
 /// interleaving with the active full-engine operation.
@@ -4517,6 +4558,7 @@ fn request_shutdown_pipeline_rejects_active_shutdown() {
         "shutdown-0".to_owned(),
         "g1".into(),
         "p1".into(),
+        None,
         vec![ShutdownCoreProgress {
             core_id: 0,
             deployment_generation: 0,
@@ -4569,6 +4611,63 @@ fn request_shutdown_pipeline_rejects_already_stopped_pipeline() {
         }
         other => panic!("unexpected error: {other:?}"),
     }
+}
+
+/// Scenario: dfctl explicitly requests shutdown of an active logical pipeline.
+/// Guarantees: immediate, polled, and terminal shutdown status retain the dfctl initiator.
+#[test]
+fn explicit_shutdown_retains_initiator_in_status() {
+    let config = engine_config_with_pipeline(
+        r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let mut notifications =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let control_plane = runtime.control_plane();
+
+    let initial = control_plane
+        .shutdown_pipeline("g1", "p1", 5, PipelineShutdownInitiator::Dfctl)
+        .expect("shutdown request should be accepted");
+
+    assert_eq!(initial.initiator, Some(PipelineShutdownInitiator::Dfctl));
+    assert_eq!(
+        control_plane
+            .shutdown_status("g1", "p1", &initial.shutdown_id)
+            .expect("shutdown status lookup should succeed")
+            .expect("shutdown status should be retained")
+            .initiator,
+        Some(PipelineShutdownInitiator::Dfctl)
+    );
+    assert!(matches!(
+        wait_for_shutdown_message(&mut notifications),
+        RuntimeControlMsg::Shutdown { .. }
+    ));
+
+    runtime.note_instance_exit(
+        DeployedPipelineKey {
+            pipeline_group_id: "g1".into(),
+            pipeline_id: "p1".into(),
+            core_id: 0,
+            deployment_generation: 0,
+        },
+        RuntimeInstanceExit::Success,
+    );
+    assert_eq!(
+        wait_for_shutdown_state(&runtime, &initial.shutdown_id, "succeeded").initiator,
+        Some(PipelineShutdownInitiator::Dfctl)
+    );
 }
 
 /// Scenario: a shutdown request targets one logical pipeline while other

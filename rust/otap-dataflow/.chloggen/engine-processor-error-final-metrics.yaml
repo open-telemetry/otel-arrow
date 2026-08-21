@@ -1,7 +1,0 @@
-change_type: bug_fix
-component: engine
-note: "Report pending processor and flow metrics before returning a processing error."
-issues: [3632]
-subtext: |
-  Processor failures now flush pending flow metrics and processor-local telemetry
-  before shutdown. The original processing error remains the reported failure.

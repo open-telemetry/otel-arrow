@@ -76,7 +76,7 @@ pub struct FlushAttributes {
 /// Incremented exactly once per input, regardless of how many overflow flushes
 /// happen internally while processing it.
 #[metric_set(
-    name = "processor.temporal_reaggregation.pdata",
+    name = "processor.temporal_reaggregation",
     measurement_attributes = OutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -90,7 +90,7 @@ pub struct OperationMetrics {
 /// Always incremented alongside a corresponding `operations` failure so that
 /// `sum(failures)` == number of failed `operations`.
 #[metric_set(
-    name = "processor.temporal_reaggregation.pdata",
+    name = "processor.temporal_reaggregation",
     measurement_attributes = FailureAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -99,11 +99,11 @@ pub struct FailureMetrics {
     pub failures: Counter<u64>,
 }
 
-/// Counts non-empty flush attempts after their result is known.
+/// Counts non-empty flush attempts.
 ///
 /// Empty flushes (no data accumulated) are not recorded here.
 #[metric_set(
-    name = "processor.temporal_reaggregation.pdata",
+    name = "processor.temporal_reaggregation",
     measurement_attributes = FlushAttributes
 )]
 #[derive(Debug, Default, Clone)]
@@ -148,7 +148,7 @@ impl TemporalReaggregationMetrics {
             .inc();
     }
 
-    /// Record a non-empty flush attempt after the result is known.
+    /// Record a non-empty flush attempt.
     ///
     /// Do not call this for empty flushes (when `builder.finish()` returns
     /// nothing) - those are intentionally silent.

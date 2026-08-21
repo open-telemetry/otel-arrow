@@ -99,6 +99,7 @@ impl ControlPlane for MockControlPlane {
         _pipeline_group_id: &str,
         _pipeline_id: &str,
         _timeout_secs: u64,
+        _initiator: otap_df_admin::PipelineShutdownInitiator,
     ) -> Result<otap_df_admin::ShutdownStatus, ControlPlaneError> {
         Err(not_implemented())
     }

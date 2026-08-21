@@ -74,10 +74,10 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
 use arrow_array::builder::{
     FixedSizeBinaryBuilder, ListBuilder, StructBuilder, UInt16Builder, UInt32Builder, UInt64Builder,
 };
+use arrow_array::{ArrayRef, RecordBatch};
 use arrow_ipc::writer::FileWriter;
 use arrow_schema::{DataType, Field, Fields, Schema};
 use crc32fast::Hasher;
@@ -474,20 +474,24 @@ impl SegmentWriter {
             Field::new("chunk_index", ChunkIndex::arrow_data_type(), false),
         ]);
 
-        // Note: The list item field must be nullable to match what ListBuilder produces
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("bundle_index", DataType::UInt32, false),
-            Field::new("item_count", DataType::UInt64, false),
-            Field::new(
-                "slot_refs",
-                DataType::List(Arc::new(Field::new_struct(
-                    "item",
-                    slot_ref_fields.clone(),
-                    true,
-                ))),
-                false,
-            ),
-        ]));
+        let has_item_counts = entries
+            .iter()
+            .all(|entry| entry.exact_item_count().is_some());
+        let mut fields = vec![Field::new("bundle_index", DataType::UInt32, false)];
+        if has_item_counts {
+            fields.push(Field::new("item_count", DataType::UInt64, false));
+        }
+        // Note: The list item field must be nullable to match what ListBuilder produces.
+        fields.push(Field::new(
+            "slot_refs",
+            DataType::List(Arc::new(Field::new_struct(
+                "item",
+                slot_ref_fields.clone(),
+                true,
+            ))),
+            false,
+        ));
+        let schema = Arc::new(Schema::new(fields));
 
         let mut bundle_index_builder = UInt32Builder::with_capacity(entries.len());
         let mut item_count_builder = UInt64Builder::with_capacity(entries.len());
@@ -501,7 +505,9 @@ impl SegmentWriter {
 
         for entry in entries {
             bundle_index_builder.append_value(entry.bundle_index);
-            item_count_builder.append_value(entry.item_count());
+            if let Some(item_count) = entry.exact_item_count() {
+                item_count_builder.append_value(item_count);
+            }
 
             // Get the struct builder from the list builder
             let struct_builder = slot_refs_builder.values();
@@ -528,15 +534,13 @@ impl SegmentWriter {
             slot_refs_builder.append(true);
         }
 
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(bundle_index_builder.finish()),
-                Arc::new(item_count_builder.finish()),
-                Arc::new(slot_refs_builder.finish()),
-            ],
-        )
-        .map_err(|e| SegmentError::Arrow { source: e })?;
+        let mut columns: Vec<ArrayRef> = vec![Arc::new(bundle_index_builder.finish())];
+        if has_item_counts {
+            columns.push(Arc::new(item_count_builder.finish()));
+        }
+        columns.push(Arc::new(slot_refs_builder.finish()));
+        let batch = RecordBatch::try_new(schema.clone(), columns)
+            .map_err(|e| SegmentError::Arrow { source: e })?;
 
         encode_as_ipc(&batch)
     }
@@ -952,6 +956,25 @@ mod tests {
         let batches: Vec<_> = reader.map(|r| r.unwrap()).collect();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_rows(), 2);
+    }
+
+    /// Scenario: A segment contains a bundle whose logical item count is unknown.
+    /// Guarantees: The manifest omits the count column instead of persisting a zero estimate.
+    #[test]
+    fn encode_manifest_omits_unknown_item_counts() {
+        let entries = vec![
+            ManifestEntry::new(0, 10),
+            ManifestEntry::new_with_item_count(1, None),
+        ];
+
+        let ipc_bytes = SegmentWriter::encode_manifest(&entries).unwrap();
+
+        use arrow_ipc::reader::FileReader;
+        use std::io::Cursor;
+        let cursor = Cursor::new(&ipc_bytes);
+        let mut reader = FileReader::try_new(cursor, None).expect("valid IPC");
+        let batch = reader.next().expect("manifest batch").expect("valid batch");
+        assert!(batch.column_by_name("item_count").is_none());
     }
 
     #[test]

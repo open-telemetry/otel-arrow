@@ -69,6 +69,16 @@ The source keyword determines which signal types the pipeline processes:
 - `metrics` -- metric data points
 - `signals` -- all signal types
 
+The following sources can also be used to process only some specific type of
+metric. Non-metric batches (logs/traces) and rows containing unselected metric
+types will be ignored by the program:
+
+- `gauges` - gauge metrics
+- `sums` - sum metrics
+- `histograms`- histogram metrics
+- `exponential_histograms` - exponential histogram metrics
+- `summaries` - summary metrics
+
 ## Guide Overview
 
 This guide covers the currently implemented OPL operators and functions:

@@ -4,7 +4,6 @@
 use bytes::Bytes;
 
 use otap_df_telemetry::common_attributes::HttpResponse;
-use otap_df_telemetry::otel_debug;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use reqwest::{
     Client,
@@ -37,9 +36,6 @@ pub(super) fn url_encode_header_value(value: &str) -> String {
 pub struct LogsIngestionClient {
     http_client: Client,
     endpoint: String,
-
-    // Pre-formatted authorization header provider
-    auth_header: HeaderValue,
 
     /// Optional ARM resource ID header for Azure Monitor source tracking.
     resource_id_header: Option<HeaderValue>,
@@ -100,12 +96,6 @@ impl LogsIngestionClientPool {
         Ok(())
     }
 
-    pub fn update_auth(&mut self, header: HeaderValue) {
-        for client in &mut self.clients {
-            client.update_auth(header.clone());
-        }
-    }
-
     #[inline(always)]
     pub fn take(&mut self) -> LogsIngestionClient {
         self.clients.pop().expect("client pool is empty")
@@ -120,15 +110,14 @@ impl LogsIngestionClientPool {
 impl LogsIngestionClient {
     /// Creates a new Azure Monitor logs ingestion client instance from provided components.
     ///
-    /// Primarily used for testing. The auth header is initialized with a placeholder
-    /// and should be updated via `update_auth()` before making requests.
+    /// Primarily used for testing.
     ///
     /// # Arguments
     /// * `http_client` - The HTTP client to use for requests
     /// * `endpoint` - The full endpoint URL for the Azure Monitor ingestion API
     ///
     /// # Returns
-    /// A configured client instance with a placeholder auth header
+    /// A configured client instance
     #[must_use]
     pub fn from_parts(
         http_client: Client,
@@ -138,16 +127,12 @@ impl LogsIngestionClient {
         Self {
             http_client,
             endpoint,
-            auth_header: HeaderValue::from_static("Bearer "), // placeholder, will be updated on first use
             resource_id_header: None,
             metrics,
         }
     }
 
     /// Creates a new Azure Monitor logs ingestion client instance from the configuration.
-    ///
-    /// The auth header is initialized with a placeholder and should be updated
-    /// via `update_auth()` before making requests.
     ///
     /// # Arguments
     /// * `config` - The API configuration containing endpoint, DCR, and stream info
@@ -177,32 +162,34 @@ impl LogsIngestionClient {
         Ok(Self {
             http_client,
             endpoint,
-            auth_header: HeaderValue::from_static("Bearer "), // placeholder, will be updated on first use
             resource_id_header,
             metrics,
         })
-    }
-
-    /// Update the authorization header with a new access token.
-    pub fn update_auth(&mut self, header: HeaderValue) {
-        self.auth_header = header;
     }
 
     /// Export compressed data to Log Analytics ingestion API with automatic retry.
     ///
     /// Retries on:
     /// - Network errors
-    /// - 401 (after token refresh)
     /// - 429 (rate limiting) - uses Retry-After header if present
     /// - 5xx (server errors)
     ///
+    /// A 401 is not retried here: every attempt would replay `auth_header`, so
+    /// recovery belongs to the caller, which invalidates the rejected token and
+    /// re-dispatches once a fresh one is cached.
+    ///
     /// # Arguments
     /// * `body` - The gzip-compressed JSON data to send
+    /// * `auth_header` - The authorization header for this request
     ///
     /// # Returns
     /// * `Ok(Duration)` - Total time spent (including retries) if successful
-    /// * `Err(String)` - Error message if all retries exhausted or non-retryable error
-    pub async fn export(&mut self, body: Bytes) -> Result<Duration, Error> {
+    /// * `Err(Error)` - Error if all retries are exhausted or a non-retryable error is returned
+    pub async fn export(
+        &mut self,
+        body: Bytes,
+        auth_header: &HeaderValue,
+    ) -> Result<Duration, Error> {
         let mut attempt = 0u32;
         let mut rng = SmallRng::seed_from_u64(
             std::time::SystemTime::now()
@@ -213,7 +200,7 @@ impl LogsIngestionClient {
         );
 
         loop {
-            match self.try_export(body.clone()).await {
+            match self.try_export(body.clone(), auth_header).await {
                 Ok(duration) => return Ok(duration),
                 Err(e) if !e.is_retryable() => {
                     return Err(Error::ExportFailed {
@@ -256,7 +243,11 @@ impl LogsIngestionClient {
     }
 
     /// Single export attempt without retry logic.
-    async fn try_export(&mut self, body: Bytes) -> Result<Duration, Error> {
+    async fn try_export(
+        &mut self,
+        body: Bytes,
+        auth_header: &HeaderValue,
+    ) -> Result<Duration, Error> {
         let start = Instant::now();
 
         let mut request = self
@@ -264,7 +255,7 @@ impl LogsIngestionClient {
             .post(&self.endpoint)
             .header(CONTENT_TYPE, "application/json")
             .header(CONTENT_ENCODING, "gzip")
-            .header(AUTHORIZATION, &self.auth_header);
+            .header(AUTHORIZATION, auth_header);
 
         if let Some(ref resource_id) = self.resource_id_header {
             request = request.header(AZURE_MONITOR_SOURCE_RESOURCEID_HEADER, resource_id);
@@ -348,6 +339,8 @@ mod tests {
     use reqwest::header::HeaderValue;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use wiremock::matchers::{header, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // ==================== Test Helpers ====================
 
@@ -445,67 +438,170 @@ mod tests {
         );
 
         assert_eq!(client.endpoint, "https://example.com/endpoint");
-        // auth_header is placeholder
-        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
     }
 
-    #[test]
-    fn test_new_initial_state() {
-        let http_client = create_test_http_client();
-        let api_config = create_test_api_config();
+    // ==================== Export Tests ====================
 
-        let client =
-            LogsIngestionClient::new(&api_config, http_client, create_test_metrics()).unwrap();
+    /// Scenario: an export is dispatched with a caller-supplied bearer header.
+    /// Guarantees: that exact header reaches the ingestion endpoint, so the
+    /// credential a request carries is the one its caller stamped on it.
+    #[tokio::test]
+    async fn export_sends_the_supplied_authorization_header() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("authorization", "Bearer supplied-token"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
 
-        // Auth header is placeholder
-        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
-    }
-
-    // ==================== Auth Header Update Tests ====================
-
-    #[test]
-    fn test_update_auth_changes_header() {
         let mut client = LogsIngestionClient::from_parts(
             create_test_http_client(),
-            "https://example.com".to_string(),
+            mock_server.uri(),
             create_test_metrics(),
         );
 
-        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
+        let result = client
+            .export(
+                Bytes::from_static(b"payload"),
+                &HeaderValue::from_static("Bearer supplied-token"),
+            )
+            .await;
 
-        client.update_auth(HeaderValue::from_static("Bearer new_token"));
-
-        assert_eq!(
-            client.auth_header,
-            HeaderValue::from_static("Bearer new_token")
-        );
+        assert!(result.is_ok(), "expected success, got {result:?}");
     }
 
-    #[test]
-    fn test_update_auth_multiple_times() {
+    /// Scenario: one pooled client dispatches two exports carrying different
+    /// bearer headers.
+    /// Guarantees: each request sends its own header, so a client cannot leak a
+    /// credential from an earlier export into a later one.
+    #[tokio::test]
+    async fn export_uses_the_header_supplied_for_each_request() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("authorization", "Bearer first"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(header("authorization", "Bearer second"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
         let mut client = LogsIngestionClient::from_parts(
             create_test_http_client(),
-            "https://example.com".to_string(),
+            mock_server.uri(),
             create_test_metrics(),
         );
 
-        client.update_auth(HeaderValue::from_static("Bearer token1"));
-        assert_eq!(
-            client.auth_header,
-            HeaderValue::from_static("Bearer token1")
+        for token in ["Bearer first", "Bearer second"] {
+            let _ = client
+                .export(
+                    Bytes::from_static(b"payload"),
+                    &HeaderValue::from_str(token).unwrap(),
+                )
+                .await
+                .expect("export should succeed");
+        }
+    }
+
+    /// Scenario: the ingestion endpoint rejects an export with HTTP 401.
+    /// Guarantees: the client fails after a single attempt instead of replaying
+    /// the same rejected token, and reports the failure as an auth rejection so
+    /// the caller can invalidate that token.
+    #[tokio::test]
+    async fn unauthorized_export_is_not_retried() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("expired"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            mock_server.uri(),
+            create_test_metrics(),
         );
 
-        client.update_auth(HeaderValue::from_static("Bearer token2"));
-        assert_eq!(
-            client.auth_header,
-            HeaderValue::from_static("Bearer token2")
+        let error = client
+            .export(
+                Bytes::from_static(b"payload"),
+                &HeaderValue::from_static("Bearer stale"),
+            )
+            .await
+            .expect_err("401 should fail the export");
+
+        assert!(error.is_unauthorized());
+        assert!(matches!(error, Error::ExportFailed { attempts: 1, .. }));
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+    }
+
+    /// Scenario: the ingestion endpoint rejects an export with HTTP 403.
+    /// Guarantees: the client fails after a single attempt and does not report a
+    /// permission problem as an auth rejection, since refreshing the token
+    /// cannot resolve it.
+    #[tokio::test]
+    async fn forbidden_export_is_not_retried() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("denied"))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            mock_server.uri(),
+            create_test_metrics(),
         );
 
-        client.update_auth(HeaderValue::from_static("Bearer token3"));
-        assert_eq!(
-            client.auth_header,
-            HeaderValue::from_static("Bearer token3")
-        );
+        let error = client
+            .export(
+                Bytes::from_static(b"payload"),
+                &HeaderValue::from_static("Bearer scoped-out"),
+            )
+            .await
+            .expect_err("403 should fail the export");
+
+        assert!(!error.is_unauthorized());
+        assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+    }
+
+    /// Scenario: a client configured with an Azure Monitor source resource ID
+    /// exports a batch.
+    /// Guarantees: the resource ID header accompanies the request alongside the
+    /// per-request bearer header.
+    #[tokio::test]
+    async fn export_sends_the_configured_resource_id_header() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header(AZURE_MONITOR_SOURCE_RESOURCEID_HEADER, "sub%2Frg"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut api_config = create_test_api_config();
+        api_config.dcr_endpoint = mock_server.uri();
+        api_config.azure_monitor_source_resourceid = Some("sub/rg".to_string());
+        let mut client = LogsIngestionClient::new(
+            &api_config,
+            create_test_http_client(),
+            create_test_metrics(),
+        )
+        .unwrap();
+
+        let _ = client
+            .export(
+                Bytes::from_static(b"payload"),
+                &HeaderValue::from_static("Bearer token"),
+            )
+            .await
+            .expect("export should succeed");
     }
 
     // ==================== LogsIngestionClientPool Tests ====================
@@ -611,45 +707,6 @@ mod tests {
         let client2 = client1.clone();
 
         assert_eq!(client1.endpoint, client2.endpoint);
-    }
-
-    #[test]
-    fn test_client_clone_has_same_auth_header() {
-        let mut client1 = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            create_test_metrics(),
-        );
-
-        client1.update_auth(HeaderValue::from_static("Bearer test_token"));
-        let client2 = client1.clone();
-
-        assert_eq!(client1.auth_header, client2.auth_header);
-    }
-
-    #[test]
-    fn test_client_clone_has_independent_header() {
-        let mut client1 = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            create_test_metrics(),
-        );
-
-        client1.update_auth(HeaderValue::from_static("Bearer token1"));
-        let mut client2 = client1.clone();
-
-        // Modify client2's header
-        client2.update_auth(HeaderValue::from_static("Bearer token2"));
-
-        // client1's header should be unchanged
-        assert_eq!(
-            client1.auth_header,
-            HeaderValue::from_static("Bearer token1")
-        );
-        assert_eq!(
-            client2.auth_header,
-            HeaderValue::from_static("Bearer token2")
-        );
     }
 
     // ==================== Edge Cases ====================
