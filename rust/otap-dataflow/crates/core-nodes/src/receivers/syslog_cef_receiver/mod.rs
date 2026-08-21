@@ -2402,7 +2402,12 @@ mod telemetry_tests {
             if s.descriptor().name != "receiver.syslog_cef.forwards" {
                 continue;
             }
-            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "items") {
+            if let Some(idx) = s
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|f| f.name == "items")
+            {
                 if let Some(o) = outcome {
                     if s.measurement_attribute_value("outcome") == Some(o) {
                         total += s.get_metrics()[idx].to_u64_lossy();
@@ -2424,7 +2429,12 @@ mod telemetry_tests {
             if s.descriptor().name != "receiver.syslog_cef.rejections" {
                 continue;
             }
-            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "items") {
+            if let Some(idx) = s
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|f| f.name == "items")
+            {
                 if let Some(e) = error_type {
                     if s.measurement_attribute_value("error.type") == Some(e) {
                         total += s.get_metrics()[idx].to_u64_lossy();
@@ -2443,7 +2453,12 @@ mod telemetry_tests {
             if s.descriptor().name != "receiver.syslog_cef.truncations" {
                 continue;
             }
-            if let Some(idx) = s.descriptor().metrics.iter().position(|f| f.name == "items") {
+            if let Some(idx) = s
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|f| f.name == "items")
+            {
                 total += s.get_metrics()[idx].to_u64_lossy();
             }
         }
