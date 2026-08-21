@@ -3,8 +3,9 @@
 `live_control` owns the in-process runtime model used by the admin control
 plane to reconfigure and shut down logical pipelines while the engine is
 running. It is deliberately internal to the controller: public admin API
-shapes live in `otel-arrow-dfe-admin` and `otel-arrow-dfe-admin-types`, while this module
-tracks the mutable controller state required to execute those API requests.
+shapes live in `otel-arrow-dfe-admin` and `otel-arrow-dfe-admin-types`, while
+this module tracks the mutable controller state required to execute those API
+requests.
 
 ## Goals
 

@@ -18,9 +18,10 @@ compares it against a checked-in baseline to detect new or removed components.
 This enables automated component tracking for threat modeling, documentation
 coverage, and security review.
 
-The macro lands in the **existing `otel-arrow-dfe-engine-macros` crate** alongside the
-already-shipped `#[pipeline_factory]` and `#[capability]` attribute macros -- no
-new proc-macro crate is required. A small `ComponentMeta` struct + a
+The macro lands in the **existing `otel-arrow-dfe-engine-macros` crate**
+alongside the already-shipped `#[pipeline_factory]` and `#[capability]`
+attribute macros -- no new proc-macro crate is required. A small
+`ComponentMeta` struct + a
 `COMPONENT_INVENTORY` distributed slice in `otel-arrow-dfe-engine` is the only new
 runtime surface, mirroring the existing `#[capability]` -> `KNOWN_CAPABILITIES`
 mechanism.
@@ -340,10 +341,10 @@ automate comparison.
 
 ## Rationale and alternatives
 
-- **Why reuse `otel-arrow-dfe-engine-macros` and `linkme`?** The `#[capability]` ->
-  `KNOWN_CAPABILITIES` mechanism is the exact precedent, already accepted and
-  shipping. Reusing it means no new crates, no new dependency, and a pattern
-  maintainers already know.
+- **Why reuse `otel-arrow-dfe-engine-macros` and `linkme`?** The
+  `#[capability]` -> `KNOWN_CAPABILITIES` mechanism is the exact precedent,
+  already accepted and shipping. Reusing it means no new crates, no new
+  dependency, and a pattern maintainers already know.
 - **Why URN-as-id instead of a separate kebab-case id?** Every factory already
   has a unique, structured URN in its `name` field. Reusing it removes a whole
   class of "id does not match the component" bugs and means contributors write
@@ -354,8 +355,8 @@ automate comparison.
   misspellings (`Reciever`), and it can be cross-checked against the URN
   segment. Requested by maintainers to avoid silent bad entries.
 - **Rejected: two new crates** (`otel-arrow-dfe-component-inventory` +
-  `-macros`). Unnecessary: `otel-arrow-dfe-engine-macros` already exists as the home
-  for engine attribute macros.
+  `-macros`). Unnecessary: `otel-arrow-dfe-engine-macros` already exists as the
+  home for engine attribute macros.
 - **Rejected: a runtime registry/CLI-at-runtime.** The data is only needed by
   offline tooling; keeping it link-time and zero-cost avoids any runtime impact.
 - **Impact of not doing this:** component/threat-model drift stays a manual,
