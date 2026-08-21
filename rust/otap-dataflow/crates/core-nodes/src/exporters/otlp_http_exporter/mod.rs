@@ -417,14 +417,21 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
-            if token_margin_deadline != armed_margin_deadline {
-                if let Some(deadline) = token_margin_deadline {
+            let auth_margin_deadline = auth
+                .as_ref()
+                .and_then(BearerAuth::refresh_deadline)
+                .or_else(|| {
+                    agent_fed_auth
+                        .as_ref()
+                        .and_then(AgentFedAuth::refresh_deadline)
+                });
+            if auth_margin_deadline != armed_margin_deadline {
+                if let Some(deadline) = auth_margin_deadline {
                     margin_sleep
                         .as_mut()
                         .reset(tokio::time::Instant::from_std(deadline));
                 }
-                armed_margin_deadline = token_margin_deadline;
+                armed_margin_deadline = auth_margin_deadline;
             }
 
             let msg = tokio::select! {
@@ -435,7 +442,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 // left elapsed whenever nothing is armed; once it fires,
                 // `refresh_deadline` returns `None`, which closes the guard and
                 // keeps the arm from busy-looping.
-                () = &mut margin_sleep, if token_margin_deadline.is_some() => {
+                () = &mut margin_sleep, if auth_margin_deadline.is_some() => {
                     continue;
                 }
 
@@ -1169,7 +1176,7 @@ impl HttpClientPool {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::time::{Duration, Instant};
 
     use arrow::array::Int32Array;
@@ -1260,6 +1267,41 @@ mod test {
                 tokio::time::sleep(self.delay).await;
             }
             Ok(Arc::clone(&self.snapshot))
+        }
+    }
+
+    struct RotatingAgentFedProvider {
+        snapshots: std::sync::Mutex<VecDeque<Arc<AgentFedCredentialSnapshot>>>,
+    }
+
+    impl RotatingAgentFedProvider {
+        fn new(tokens: impl IntoIterator<Item = BearerToken>) -> Self {
+            Self {
+                snapshots: std::sync::Mutex::new(
+                    tokens
+                        .into_iter()
+                        .map(|token| {
+                            Arc::new(AgentFedCredentialSnapshot::new(
+                                token,
+                                Arc::new(serde_json::Map::new()),
+                            ))
+                        })
+                        .collect(),
+                ),
+            }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl AgentFedCredentialProvider for RotatingAgentFedProvider {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            let mut snapshots = self.snapshots.lock().expect("rotating snapshots");
+            let snapshot = if snapshots.len() > 1 {
+                snapshots.pop_front()
+            } else {
+                snapshots.front().cloned()
+            };
+            Ok(snapshot.expect("rotating provider must contain a snapshot"))
         }
     }
 
@@ -1834,7 +1876,15 @@ mod test {
     fn exporter_with_agent_fed_provider(
         test_runtime: &TestRuntime<OtapPdata>,
         config: Config,
-        provider: StaticAgentFedProvider,
+        provider: impl AgentFedCredentialProvider + 'static,
+    ) -> ExporterWrapper<OtapPdata> {
+        exporter_with_boxed_agent_fed_provider(test_runtime, config, Box::new(provider))
+    }
+
+    fn exporter_with_boxed_agent_fed_provider(
+        test_runtime: &TestRuntime<OtapPdata>,
+        config: Config,
+        provider: Box<dyn AgentFedCredentialProvider>,
     ) -> ExporterWrapper<OtapPdata> {
         otap_df_otap::crypto::ensure_crypto_provider();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
@@ -1853,7 +1903,7 @@ mod test {
                 config,
                 metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
                 token_provider: None,
-                agent_fed_provider: Some(Box::new(provider)),
+                agent_fed_provider: Some(provider),
             },
             node_id,
             node_config,
@@ -2049,6 +2099,72 @@ mod test {
         assert_eq!(
             headers.get(http::header::AUTHORIZATION).unwrap(),
             "Bearer agent-fed-token"
+        );
+    }
+
+    /// Scenario: An agent-fed credential crosses its usability margin while the exporter is idle.
+    /// Guarantees: The next request uses a refreshed snapshot instead of the stale cached header.
+    #[test]
+    fn test_agent_fed_idle_credential_is_refreshed_before_export() {
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::from(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+
+        let expires_on = Instant::now()
+            + otap_df_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN
+            + Duration::from_secs(1);
+        let provider = RotatingAgentFedProvider::new([
+            BearerToken::with_expiry("idle-token".to_owned(), Some(expires_on)),
+            BearerToken::without_expiry("refreshed-token".to_owned()),
+        ]);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter = exporter_with_agent_fed_provider(
+            &test_runtime,
+            default_test_config(endpoint),
+            provider,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(1200)).await;
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| Box::pin(async move { result.unwrap() }));
+
+        cancel.cancel();
+        let headers = captured
+            .lock()
+            .clone()
+            .expect("server did not capture request headers");
+        assert_eq!(
+            headers.get(http::header::AUTHORIZATION).unwrap(),
+            "Bearer refreshed-token"
         );
     }
 

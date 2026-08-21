@@ -16,8 +16,14 @@ const CREDENTIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
 /// Resolves and validates agent-fed credentials for an outbound request.
 pub(crate) struct AgentFedAuth {
     provider: Box<dyn AgentFedCredentialProvider>,
-    cached_header: Option<HeaderValue>,
+    cached_credential: Option<CachedCredential>,
     retry_at: Instant,
+}
+
+#[derive(Debug)]
+struct CachedCredential {
+    header: HeaderValue,
+    expires_on: Option<Instant>,
 }
 
 impl AgentFedAuth {
@@ -25,14 +31,29 @@ impl AgentFedAuth {
     pub(crate) fn new(provider: Box<dyn AgentFedCredentialProvider>) -> Self {
         Self {
             provider,
-            cached_header: None,
+            cached_credential: None,
             retry_at: Instant::now(),
         }
     }
 
     /// Whether a validated header is ready for one export attempt.
     pub(crate) fn is_ready(&self) -> bool {
-        self.cached_header.is_some()
+        self.cached_credential.as_ref().is_some_and(|credential| {
+            credential
+                .expires_on
+                .is_none_or(|expires_on| expires_on > Instant::now() + TOKEN_USABLE_MARGIN)
+        })
+    }
+
+    /// When the cached credential crosses the shared usability margin.
+    pub(crate) fn refresh_deadline(&self) -> Option<Instant> {
+        if !self.is_ready() {
+            return None;
+        }
+        self.cached_credential
+            .as_ref()
+            .and_then(|credential| credential.expires_on)
+            .and_then(|expires_on| expires_on.checked_sub(TOKEN_USABLE_MARGIN))
     }
 
     /// Waits until the next allowed lookup, then caches one current credential.
@@ -43,8 +64,8 @@ impl AgentFedAuth {
     pub(crate) async fn poll_credential(&mut self) -> Result<(), AgentFedAuthError> {
         tokio::time::sleep_until(tokio::time::Instant::from_std(self.retry_at)).await;
         match self.header_with_timeout(CREDENTIAL_LOOKUP_TIMEOUT).await {
-            Ok(header) => {
-                self.cached_header = Some(header);
+            Ok(credential) => {
+                self.cached_credential = Some(credential);
                 Ok(())
             }
             Err(error) => {
@@ -56,13 +77,19 @@ impl AgentFedAuth {
 
     /// Takes the credential reserved for the next export attempt.
     pub(crate) fn take_header(&mut self) -> Option<HeaderValue> {
-        self.cached_header.take()
+        if !self.is_ready() {
+            self.cached_credential = None;
+            return None;
+        }
+        self.cached_credential
+            .take()
+            .map(|credential| credential.header)
     }
 
     async fn header_with_timeout(
         &self,
         timeout: Duration,
-    ) -> Result<HeaderValue, AgentFedAuthError> {
+    ) -> Result<CachedCredential, AgentFedAuthError> {
         let snapshot = tokio::time::timeout(timeout, self.provider.get_credential())
             .await
             .map_err(|_| AgentFedAuthError::LookupTimeout)?
@@ -82,7 +109,10 @@ impl AgentFedAuth {
         let mut header = HeaderValue::from_str(&format!("Bearer {}", token.expose_token()))
             .map_err(AgentFedAuthError::InvalidToken)?;
         header.set_sensitive(true);
-        Ok(header)
+        Ok(CachedCredential {
+            header,
+            expires_on: token.expires_on(),
+        })
     }
 }
 
@@ -176,6 +206,29 @@ mod tests {
         assert_eq!(auth.take_header().unwrap(), "Bearer first");
         auth.poll_credential().await.unwrap();
         assert_eq!(auth.take_header().unwrap(), "Bearer second");
+    }
+
+    /// Scenario: A cached credential crosses its usability margin while no export is attempted.
+    /// Guarantees: The stale header is no longer ready and cannot be taken for a request.
+    #[tokio::test]
+    async fn expires_cached_credential_while_idle() {
+        let expires_on = Instant::now() + TOKEN_USABLE_MARGIN + Duration::from_secs(1);
+        let mut auth = AgentFedAuth::new(Box::new(MockProvider::with_tokens([
+            BearerToken::with_expiry("expiring".to_owned(), Some(expires_on)),
+        ])));
+
+        auth.poll_credential().await.unwrap();
+        assert!(auth.is_ready());
+        assert_eq!(
+            auth.refresh_deadline(),
+            expires_on.checked_sub(TOKEN_USABLE_MARGIN)
+        );
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        assert!(!auth.is_ready());
+        assert!(auth.refresh_deadline().is_none());
+        assert!(auth.take_header().is_none());
     }
 
     /// Scenario: The host supplies an empty, near-expiry, or malformed token.
