@@ -51,7 +51,7 @@ use otap_df_pdata_views::views::metrics::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::common_attributes::Outcome;
-use otap_df_telemetry::otel_warn;
+
 
 mod builder;
 mod config;
