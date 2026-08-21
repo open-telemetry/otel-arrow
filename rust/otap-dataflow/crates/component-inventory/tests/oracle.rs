@@ -33,14 +33,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use otap_df_engine::inventory::components;
+use otel_arrow_dfe_engine::inventory::components;
 
 // Pull the component-bearing crates into this test binary so their
 // `#[component_inventory]` link-time entries are present in COMPONENT_INVENTORY.
 // `use ... as _` keeps the dependency linked without importing any names.
-use otap_df_contrib_nodes as _;
-use otap_df_core_nodes as _;
-use otap_df_otap as _;
+use otel_arrow_dfe_contrib_nodes as _;
+use otel_arrow_dfe_core_nodes as _;
+use otel_arrow_dfe_otap as _;
 
 /// Minimal view of a `components-baseline.json` entry (id + category are what
 /// the oracle cross-checks; description/attributes are validated by the

@@ -14,19 +14,19 @@
 
 // ToDo: Consider adding a jitter mechanism.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = RETRY_PROCESSOR_URN,
     target = "otel.processor.retry",
 );
 
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::{
+use otel_arrow_dfe_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
     control::{AckMsg, CallData, NackMsg, NodeControlMsg},
@@ -36,12 +36,12 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -305,13 +305,13 @@ impl RetryMetrics {
 
 /// OTAP RetryProcessor
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
-#[distributed_slice(otap_df_otap::OTAP_PROCESSOR_FACTORIES)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
+#[distributed_slice(otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES)]
 pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RETRY_PROCESSOR_URN,
     create: create_retry_processor,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<RetryConfig>,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<RetryConfig>,
 };
 
 /// A processor that handles message retries with exponential backoff
@@ -337,7 +337,7 @@ pub fn create_retry_processor(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let config: RetryConfig = serde_json::from_value(node_config.config.clone()).map_err(|e| {
         ConfigError::InvalidUserConfig {
@@ -561,7 +561,7 @@ impl RetryProcessor {
             &mut rereq,
         );
 
-        // Requeue the data onto this node, we'll continue in the DelayedData branch next.
+        // Requeue the data onto this node, we'll continue in the ResumeData branch next.
         match effect_handler.requeue_later(next_retry_time_i, rereq) {
             Ok(_) => {
                 // "Scheduled" means the local scheduler accepted ownership.
@@ -577,7 +577,7 @@ impl RetryProcessor {
         }
     }
 
-    async fn handle_delayed(
+    async fn handle_resumed(
         &mut self,
         _when: Instant,
         data: Box<OtapPdata>,
@@ -645,10 +645,10 @@ impl Processor<OtapPdata> for RetryProcessor {
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
-                NodeControlMsg::DelayedData { when, data } => {
+                NodeControlMsg::ResumeData { when, data } => {
                     if let Some(calldata) = data.source_route() {
                         let _rstate: RetryState = calldata.calldata.try_into()?;
-                        self.handle_delayed(when, data, effect_handler).await?;
+                        self.handle_resumed(when, data, effect_handler).await?;
                     }
                     Ok(())
                 }
@@ -683,8 +683,9 @@ impl RetryProcessor {
     #[must_use]
     #[cfg(test)]
     pub fn with_config(config: RetryConfig) -> Self {
-        let telemetry_registry = otap_df_telemetry::registry::TelemetryRegistryHandle::default();
-        let controller = otap_df_engine::context::ControllerContext::new(telemetry_registry);
+        let telemetry_registry =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::default();
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry);
         let pipeline_ctx = controller.pipeline_context_with("test".into(), "retry".into(), 0, 1, 0);
         let metrics = RetryMetrics::new(&pipeline_ctx);
 
@@ -704,27 +705,27 @@ mod test {
         RETRY_PROCESSOR_URN, RetryConfig, RetryMessageMetrics, RetryOperationalMetrics,
         RetryTerminationAttributes, RetryTerminationReason, SignalAttributes,
     };
-    use otap_df_channel::mpsc::Channel;
-    use otap_df_config::{SignalType, node::NodeUserConfig};
-    use otap_df_engine::Interests;
-    use otap_df_engine::config::ProcessorConfig;
-    use otap_df_engine::context::{ControllerContext, PipelineContext};
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_channel::mpsc::Channel;
+    use otel_arrow_dfe_config::{SignalType, node::NodeUserConfig};
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::config::ProcessorConfig;
+    use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+    use otel_arrow_dfe_engine::control::{
         AckMsg, CallData, NackMsg, NodeControlMsg, PipelineCompletionMsg,
         pipeline_completion_msg_channel,
     };
-    use otap_df_engine::error::Error as EngineError;
-    use otap_df_engine::local::message::LocalReceiver;
-    use otap_df_engine::message::{Message, Receiver};
-    use otap_df_engine::node::NodeWithPDataReceiver;
-    use otap_df_engine::testing::liveness::next_completion;
-    use otap_df_engine::testing::node::test_node;
-    use otap_df_engine::testing::processor::{TestContext, TestRuntime};
-    use otap_df_engine::testing::setup_test_runtime;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_engine::error::Error as EngineError;
+    use otel_arrow_dfe_engine::local::message::LocalReceiver;
+    use otel_arrow_dfe_engine::message::{Message, Receiver};
+    use otel_arrow_dfe_engine::node::NodeWithPDataReceiver;
+    use otel_arrow_dfe_engine::testing::liveness::next_completion;
+    use otel_arrow_dfe_engine::testing::node::test_node;
+    use otel_arrow_dfe_engine::testing::processor::{TestContext, TestRuntime};
+    use otel_arrow_dfe_engine::testing::setup_test_runtime;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -1074,7 +1075,7 @@ mod test {
             node,
             Arc::new(node_config),
             rt.config(),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create processor");
 
@@ -1147,7 +1148,7 @@ mod test {
             node,
             Arc::new(node_config),
             rt.config(),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create processor");
 
@@ -1229,7 +1230,7 @@ mod test {
             node.clone(),
             Arc::new(node_config),
             &processor_config,
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create processor");
 
@@ -1285,7 +1286,7 @@ mod test {
             node,
             Arc::new(node_config),
             rt.config(),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create processor");
 
@@ -1311,7 +1312,7 @@ mod test {
                 // Verify the processor forwarded the data downstream
                 let mut output = ctx.drain_pdata().await;
                 assert_eq!(output.len(), 1);
-                let first_attempt = output.remove(0);
+                let mut first_attempt = output.remove(0);
                 assert_eq!(first_attempt.num_items(), 1);
 
                 // Simulate downstream failures and retry
@@ -1349,8 +1350,8 @@ mod test {
                             .take_due_local_control(when)
                             .expect("scheduled local control");
                         assert!(
-                            matches!(control, NodeControlMsg::DelayedData { .. }),
-                            "retry should requeue retained pdata as DelayedData"
+                            matches!(control, NodeControlMsg::ResumeData { .. }),
+                            "retry should requeue retained pdata as ResumeData"
                         );
                         ctx.process(Message::Control(control)).await.unwrap();
 
@@ -1392,7 +1393,7 @@ mod test {
 
                 match have_pmsg.expect("retry replied") {
                     PipelineCompletionMsg::DeliverAck { ack } => {
-                        let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
+                        let (node_id, mut ack) = next_ack(ack).expect("expected ack subscriber");
                         assert!(
                             outcome_failure.is_none(),
                             "expecting Nack {outcome_failure:?}, got Ack"
@@ -1407,7 +1408,8 @@ mod test {
                         assert_eq!(create_test_pdata().num_items(), ack.accepted.num_items());
                     }
                     PipelineCompletionMsg::DeliverNack { nack } => {
-                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                        let (node_id, mut nack) =
+                            next_nack(nack).expect("expected nack subscriber");
                         assert!(
                             nack.reason
                                 .contains(outcome_failure.as_deref().expect("expecting nack"))

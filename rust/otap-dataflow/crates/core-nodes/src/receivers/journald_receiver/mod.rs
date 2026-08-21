@@ -10,7 +10,7 @@
 //! platforms the factory rejects construction with a clear error.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = JOURNALD_RECEIVER_URN,
     target = "otel.receiver.journald",
 );
@@ -19,36 +19,36 @@ otap_df_telemetry::otel_component_scope!(
 use async_trait::async_trait;
 use linkme::distributed_slice;
 #[cfg(target_os = "linux")]
-use otap_df_channel::error::SendError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
 #[cfg(target_os = "linux")]
-use otap_df_engine::control::{CallData, Context8u8, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{CallData, Context8u8, NodeControlMsg};
 #[cfg(target_os = "linux")]
-use otap_df_engine::error::{Error, ReceiverErrorKind, TypedError};
+use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError};
 #[cfg(target_os = "linux")]
-use otap_df_engine::local::receiver as local;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::local::receiver as local;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 #[cfg(target_os = "linux")]
-use otap_df_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
 #[cfg(target_os = "linux")]
-use otap_df_engine::{
+use otel_arrow_dfe_engine::{
     Interests, MessageSourceLocalEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 #[cfg(target_os = "linux")]
-use otap_df_otap::pdata::Context;
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::Context;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 #[cfg(target_os = "linux")]
-use otap_df_pdata::OtapPayload;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
 #[cfg(target_os = "linux")]
-use otap_df_telemetry::metrics::MetricSetSnapshot;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde_json::Value;
 #[cfg(any(target_os = "linux", test))]
 use std::collections::BTreeMap;
@@ -139,19 +139,20 @@ pub struct JournaldReceiver {
 }
 
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the journald receiver as a local receiver factory.
 pub static JOURNALD_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: JOURNALD_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        create_journald_receiver(pipeline, node, node_config, receiver_config)
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            create_journald_receiver(pipeline, node, node_config, receiver_config)
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_journald_config,
 };
 
@@ -161,9 +162,9 @@ fn create_journald_receiver(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     receiver_config: &ReceiverConfig,
-) -> Result<ReceiverWrapper<OtapPdata>, otap_df_config::error::Error> {
+) -> Result<ReceiverWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
     if pipeline.num_cores() > 1 {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "journald must run in a one-core source pipeline; use \
                  receiver:journald -> exporter:topic and fan out downstream"
                 .to_owned(),
@@ -192,14 +193,14 @@ fn create_journald_receiver(
     _node: NodeId,
     _node_config: Arc<NodeUserConfig>,
     _receiver_config: &ReceiverConfig,
-) -> Result<ReceiverWrapper<OtapPdata>, otap_df_config::error::Error> {
+) -> Result<ReceiverWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
     Err(unsupported_platform_error())
 }
 
 #[cfg(target_os = "linux")]
-fn validate_journald_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
+fn validate_journald_config(config: &Value) -> Result<(), otel_arrow_dfe_config::error::Error> {
     let parsed: Config = serde_json::from_value(config.clone()).map_err(|e| {
-        otap_df_config::error::Error::InvalidUserConfig {
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: e.to_string(),
         }
     })?;
@@ -207,22 +208,22 @@ fn validate_journald_config(config: &Value) -> Result<(), otap_df_config::error:
 }
 
 #[cfg(not(target_os = "linux"))]
-fn validate_journald_config(_config: &Value) -> Result<(), otap_df_config::error::Error> {
+fn validate_journald_config(_config: &Value) -> Result<(), otel_arrow_dfe_config::error::Error> {
     Err(unsupported_platform_error())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn unsupported_platform_error() -> otap_df_config::error::Error {
-    otap_df_config::error::Error::InvalidUserConfig {
+fn unsupported_platform_error() -> otel_arrow_dfe_config::error::Error {
+    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
         error: "journald receiver is supported only on Linux".to_owned(),
     }
 }
 
 impl JournaldReceiver {
     /// Builds a receiver from a JSON config value.
-    fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    fn from_config(config: &Value) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let parsed: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -230,7 +231,7 @@ impl JournaldReceiver {
     }
 
     /// Builds a receiver from an already-deserialized `Config`.
-    fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
+    fn new(config: Config) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let runtime = RuntimeConfig::try_from(config)?;
         let lease = SourceLease::acquire(&runtime.lease_key)?;
         Ok(Self {
@@ -261,7 +262,7 @@ struct WorkerBatch {
     id: u64,
     first_cursor: String,
     last_cursor: String,
-    records: otap_df_pdata::otap::OtapArrowRecords,
+    records: otel_arrow_dfe_pdata::otap::OtapArrowRecords,
     record_count: usize,
     dropped_fields: u64,
 }
@@ -288,7 +289,7 @@ enum WorkerError {
     Journal(#[from] journal::JournalError),
     #[error("failed to encode journald batch: {source}")]
     Encode {
-        source: otap_df_pdata::encode::Error,
+        source: otel_arrow_dfe_pdata::encode::Error,
     },
     #[error("journald receiver event channel closed")]
     EventChannelClosed,
@@ -897,7 +898,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             }
                             let mut pdata = OtapPdata::new(
                                 Context::default(),
-                                OtapPayload::OtapArrowRecords(batch.records),
+                                OtapPayload::from(batch.records),
                             );
                             let mut calldata = CallData::new();
                             calldata.push(Context8u8::from(batch.id));
@@ -1134,14 +1135,14 @@ struct SourceLease {
 }
 
 impl SourceLease {
-    fn acquire(key: &str) -> Result<Self, otap_df_config::error::Error> {
+    fn acquire(key: &str) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let mut leases = JOURNALD_LEASES.lock().map_err(|_| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "journald lease registry is unavailable".to_owned(),
             }
         })?;
         if !leases.insert(key.to_owned()) {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!("another journald receiver already targets source `{key}`"),
             });
         }
@@ -1219,8 +1220,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn factory_rejects_multi_core_pipeline() {
-        let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
-        let controller = otap_df_engine::context::ControllerContext::new(registry);
+        let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
         let pipeline =
             controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 2, 0);
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(JOURNALD_RECEIVER_URN));

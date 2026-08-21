@@ -20,11 +20,11 @@ pub use backend::{InMemoryBackend, SubscriptionBackend, TopicBackend, TopicState
 pub use binding::PipelineTopicBinding;
 pub use broker::TopicBroker;
 pub use handle::{TopicHandle, TrackedTopicPublisher};
-pub use otap_df_config::topic::{
+pub use otel_arrow_dfe_config::topic::{
     TopicAckPropagationMode, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
     TopicQueueOnFullPolicy,
 };
-pub use otap_df_config::{SubscriptionGroupName, TopicName};
+pub use otel_arrow_dfe_config::{SubscriptionGroupName, TopicName};
 pub use subscription::{Delivery, RecvDelivery, Subscription};
 pub use topic_set::TopicSet;
 pub use types::{

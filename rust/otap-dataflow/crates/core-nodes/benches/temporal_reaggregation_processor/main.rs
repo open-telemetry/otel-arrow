@@ -10,32 +10,34 @@ use criterion::measurement::WallTime;
 use criterion::{
     BatchSize, BenchmarkGroup, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
 };
-use otap_df_channel::mpsc;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::Interests;
-use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::{NodeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel};
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::{Message, Receiver, Sender};
-use otap_df_engine::node::NodeWithPDataReceiver;
-use otap_df_engine::node::NodeWithPDataSender;
-use otap_df_engine::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
-use otap_df_engine::testing::node::test_node;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
-use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-use otap_df_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::Interests;
+use otel_arrow_dfe_engine::context::ControllerContext;
+use otel_arrow_dfe_engine::control::{
+    NodeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
+};
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::{Message, Receiver, Sender};
+use otel_arrow_dfe_engine::node::NodeWithPDataReceiver;
+use otel_arrow_dfe_engine::node::NodeWithPDataSender;
+use otel_arrow_dfe_engine::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
+use otel_arrow_dfe_engine::testing::node::test_node;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric, MetricsData,
     NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary, SummaryDataPoint,
 };
-use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-use otap_df_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
-use otap_df_pdata::{OtapPayload, proto::OtlpProtoMessage};
-use otap_df_telemetry::InternalTelemetrySystem;
+use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
+use otel_arrow_dfe_pdata::{OtapPayload, proto::OtlpProtoMessage};
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::json;
 
-use otap_df_core_nodes::processors::temporal_reaggregation_processor::{
+use otel_arrow_dfe_core_nodes::processors::temporal_reaggregation_processor::{
     TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY, TEMPORAL_REAGGREGATION_PROCESSOR_URN,
 };
 
@@ -133,7 +135,8 @@ fn create_processor() -> ProcessorState {
         NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
     node_config.config = json!({});
 
-    let config = otap_df_engine::config::ProcessorConfig::new("temporal_reaggregation_bench");
+    let config =
+        otel_arrow_dfe_engine::config::ProcessorConfig::new("temporal_reaggregation_bench");
 
     let mut wrapper: ProcessorWrapper<OtapPdata> = (TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY
         .create)(
@@ -141,7 +144,7 @@ fn create_processor() -> ProcessorState {
         test_node("temporal_reaggregation_bench"),
         Arc::new(node_config),
         &config,
-        &otap_df_engine::capability::registry::Capabilities::empty(),
+        &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
     )
     .expect("failed to create processor");
 
@@ -243,7 +246,7 @@ fn generate_bench_data() -> (Vec<OtapPdata>, Vec<OtapPdata>) {
         .map(|md| {
             let msg = OtlpProtoMessage::Metrics(md.clone());
             let otlp_bytes = otlp_message_to_bytes(&msg);
-            OtapPdata::new_default(OtapPayload::OtlpBytes(otlp_bytes))
+            OtapPdata::new_default(OtapPayload::from(otlp_bytes))
         })
         .collect();
 
@@ -252,7 +255,7 @@ fn generate_bench_data() -> (Vec<OtapPdata>, Vec<OtapPdata>) {
         .map(|md| {
             let msg = OtlpProtoMessage::Metrics(md.clone());
             let otap_records = otlp_to_otap(&msg);
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
+            OtapPdata::new_default(OtapPayload::from(otap_records))
         })
         .collect();
 

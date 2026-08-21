@@ -4,7 +4,7 @@
 //! Transform Processor for OTAP pipelines.
 //!
 //! This processor performs transformations on the OTAP batches using the
-//! [`otap_df_query_engine`] crate.
+//! [`otel_arrow_dfe_query_engine`] crate.
 //!
 //! Note: this processor and the query engine that it uses are still under active development.
 //! The configuration may change in the future and support for various transformation query is
@@ -12,7 +12,7 @@
 //!
 //! ToDo: Detect unsupported pipelines at config time instead of run time.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = TRANSFORM_PROCESSOR_URN,
     target = "otel.processor.transform",
 );
@@ -23,8 +23,8 @@ use async_trait::async_trait;
 use data_engine_expressions::Expression;
 use data_engine_kql_parser::{KqlParser, Parser};
 use linkme::distributed_slice;
-use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
-use otap_df_engine::{
+use otel_arrow_dfe_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
     ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
@@ -36,16 +36,16 @@ use otap_df_engine::{
     node::NodeId,
     processor::{ProcessorRuntimeRequirements, ProcessorWrapper},
 };
-use otap_df_otap::{
+use otel_arrow_dfe_otap::{
     OTAP_PROCESSOR_FACTORIES,
     accessory::{context::split_contexts::Contexts, slots::Key},
     pdata::{Context, OtapPdata},
 };
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::{
-    OtapArrowRecords, OtapPayload, otap::transform::sanitize::sanitize_otap_batch,
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::{
+    OtapArrowRecords, OtapPayload, PayloadData, otap::transform::sanitize::sanitize_otap_batch,
 };
-use otap_df_query_engine::{
+use otel_arrow_dfe_query_engine::{
     parser::default_parser_options,
     pipeline::{
         Pipeline, PipelineOptions,
@@ -53,7 +53,7 @@ use otap_df_query_engine::{
         state::{ExecutionCounters, ExecutionState},
     },
 };
-use otap_df_query_engine_languages::{opl::parser::OplParser, ottl::parser::OttlParser};
+use otel_arrow_dfe_query_engine_languages::{opl::parser::OplParser, ottl::parser::OttlParser};
 use serde_json::Value;
 use slotmap::Key as _;
 
@@ -402,7 +402,7 @@ impl TransformProcessor {
             }
 
             // setup the pdata with the new outbound context
-            let payload = OtapPayload::OtapArrowRecords(otap_batch);
+            let payload = OtapPayload::from(otap_batch);
             let mut pdata = OtapPdata::new(outbound_context.clone(), payload);
             let outbound_key = self
                 .contexts
@@ -476,7 +476,7 @@ fn create_transform_processor(
     node_id: NodeId,
     user_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let processor = TransformProcessor::from_config(&pipeline_ctx, &user_config.config)?;
     Ok(ProcessorWrapper::local(
@@ -489,13 +489,13 @@ fn create_transform_processor(
 
 /// Register TransformProcessor
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: TRANSFORM_PROCESSOR_URN,
     create: create_transform_processor,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
 
 #[async_trait(?Send)]
@@ -626,7 +626,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                     match result {
                         Ok(next_result) => {
                             // initialize payload for the next loop iteration
-                            payload = Some(OtapPayload::OtapArrowRecords(next_result));
+                            payload = Some(OtapPayload::from(next_result));
                         }
                         Err(e) => {
                             transform_error = Some(e);
@@ -641,8 +641,12 @@ impl Processor<OtapPdata> for TransformProcessor {
                         None => {
                             // safety: since error is `None`, we know payload must be `Some` based
                             // on the logic in the loop above, so it is safe to expect here
-                            match payload.take().expect("payload option initialized") {
-                                OtapPayload::OtapArrowRecords(otap_batch) => Ok(otap_batch),
+                            match payload
+                                .take()
+                                .expect("payload option initialized")
+                                .into_data()
+                            {
+                                PayloadData::OtapArrowRecords(otap_batch) => Ok(otap_batch),
                                 _ => {
                                     // safety: if any transform applied then we'll have converted
                                     // the payload the OTAP, so we know here that it must be this
@@ -700,11 +704,11 @@ mod test {
         compute::kernels::cmp::eq,
         datatypes::UInt8Type,
     };
-    use otap_df_channel::mpsc::Receiver;
+    use otel_arrow_dfe_channel::mpsc::Receiver;
     use serde_json::json;
 
-    use otap_df_config::{PortName, node::NodeUserConfig};
-    use otap_df_engine::{
+    use otel_arrow_dfe_config::{PortName, node::NodeUserConfig};
+    use otel_arrow_dfe_engine::{
         context::ControllerContext,
         control::{
             PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -718,7 +722,7 @@ mod test {
             test_node, test_nodes,
         },
     };
-    use otap_df_pdata::{
+    use otel_arrow_dfe_pdata::{
         TryFromWithOptions,
         otap::Logs,
         proto::{
@@ -738,12 +742,12 @@ mod test {
         testing::round_trip::{otap_to_otlp, otlp_to_otap, to_logs_data, to_otap_logs},
     };
 
-    use otap_df_otap::{
+    use otel_arrow_dfe_otap::{
         pdata::{Context, OtapPdata},
         testing::{TestCallData, next_ack, next_nack},
         transport_headers::{TransportHeader, TransportHeaders},
     };
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::net::SocketAddr;
 
     #[derive(Debug, PartialEq, Eq)]
@@ -872,7 +876,7 @@ mod test {
             node_id,
             Arc::new(node_config),
             runtime.config(),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
     }
 
@@ -1536,7 +1540,7 @@ mod test {
             index: 1,
             name: "test_node".into(),
         };
-        let (test_port_tx, test_port_rx) = otap_df_channel::mpsc::Channel::new(10);
+        let (test_port_tx, test_port_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(10);
         processor
             .set_pdata_sender(
                 test_node_id,
@@ -1592,8 +1596,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         assert_eq!(result, input)
                     }
                     _ => panic!("unexpected payload type"),
@@ -1792,8 +1796,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         // ensure the routed record was "sanitized"
                         let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
                         let severity_text_col = logs_batch
@@ -1820,8 +1824,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         assert_logs_records_equal(result, info_log_record);
                     }
                     _ => panic!("unexpected payload type"),
@@ -2028,7 +2032,7 @@ mod test {
             node_id,
             Arc::new(node_config),
             runtime.config(),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("created processor");
 
@@ -2843,8 +2847,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         // check sanitization was skipped on routed record
                         let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
                         let severity_text_col = logs_batch
@@ -2896,10 +2900,8 @@ mod test {
                         )],
                     )],
                 }));
-                let pdata_batch1 = OtapPdata::new(
-                    Context::default(),
-                    OtapPayload::OtapArrowRecords(otap_batch1),
-                );
+                let pdata_batch1 =
+                    OtapPdata::new(Context::default(), OtapPayload::from(otap_batch1));
                 ctx.process(Message::PData(pdata_batch1)).await.unwrap();
 
                 // check it still processes correctly metrics batches even if they don't have
@@ -2919,10 +2921,8 @@ mod test {
                         )],
                     )],
                 }));
-                let pdata_batch2 = OtapPdata::new(
-                    Context::default(),
-                    OtapPayload::OtapArrowRecords(otap_batch2),
-                );
+                let pdata_batch2 =
+                    OtapPdata::new(Context::default(), OtapPayload::from(otap_batch2));
                 ctx.process(Message::PData(pdata_batch2)).await.unwrap();
 
                 let output = ctx.drain_pdata().await;

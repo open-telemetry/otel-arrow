@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use ahash::{AHashMap as HashMap, AHashSet as HashSet};
-use otap_df_otap::pdata::Context;
-use otap_df_pdata::OtapPayload;
+use otel_arrow_dfe_otap::pdata::Context;
+use otel_arrow_dfe_pdata::OtapPayload;
 
 /// Tracks relationships between batches <-> messages + their data.
 /// High-perf: uses AHashMap/AHashSet (fastest hashing for u64 keys).
@@ -143,17 +143,18 @@ impl AzureMonitorExporterState {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use otap_df_otap::pdata::Context;
-    use otap_df_pdata::otlp::OtlpProtoBytes;
+    use otel_arrow_dfe_otap::pdata::Context;
+    use otel_arrow_dfe_pdata::PayloadData;
+    use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 
     /// Helper to create a test OtapPayload from bytes
     fn test_payload(data: &'static [u8]) -> OtapPayload {
-        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(data)))
+        OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(data)))
     }
 
     /// Helper to create an empty OtapPayload
     fn empty_payload() -> OtapPayload {
-        OtapPayload::empty(otap_df_config::SignalType::Logs)
+        OtapPayload::empty(otel_arrow_dfe_config::SignalType::Logs)
     }
 
     #[test]
@@ -194,8 +195,8 @@ mod tests {
         assert!(removed.is_some());
         // Verify the payload matches
         let (_, payload) = removed.unwrap();
-        match payload {
-            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
+        match payload.into_data() {
+            PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                 assert_eq!(bytes.as_ref(), b"test");
             }
             _ => panic!("Expected OtlpBytes::ExportLogsRequest"),
@@ -221,8 +222,8 @@ mod tests {
         let removed = state.delete_msg_data_if_orphaned(msg_id);
         assert!(removed.is_some());
         let (_, payload) = removed.unwrap();
-        match payload {
-            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
+        match payload.into_data() {
+            PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                 assert!(bytes.is_empty());
             }
             _ => panic!("Expected OtlpBytes::ExportLogsRequest"),

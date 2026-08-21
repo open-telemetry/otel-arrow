@@ -9,7 +9,7 @@
 //! This functionality may be useful for scenarios where attribute data needs to be simplified to match a specific output schema.
 //!
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = CONDENSE_ATTRIBUTES_PROCESSOR_URN,
     target = "otel.processor.condense_attributes",
 );
@@ -21,31 +21,31 @@ use arrow::array::{
 use arrow::datatypes::{UInt8Type, UInt16Type};
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NackMsg;
-use otap_df_engine::error::Error;
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::process_duration::ComputeDuration;
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
-use otap_df_pdata::otlp::attributes::AttributeValueType;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::NackMsg;
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::process_duration::ComputeDuration;
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 
 /// URN identifier for the Condense Attributes processor
 pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:condense_attributes";
@@ -193,22 +193,23 @@ pub fn create_condense_attributes_processor(
 
 /// Register CondenseAttributesProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
-        name: CONDENSE_ATTRIBUTES_PROCESSOR_URN,
-        create:
-            |pipeline_ctx: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-                create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
-            },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: |config| Config::from_config(config).map(|_| ()),
-    };
+pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<
+    OtapPdata,
+> = otel_arrow_dfe_engine::ProcessorFactory {
+    name: CONDENSE_ATTRIBUTES_PROCESSOR_URN,
+    create:
+        |pipeline_ctx: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: |config| Config::from_config(config).map(|_| ()),
+};
 
 impl CondenseAttributesProcessor {
     /// Creates a new CondenseAttributesProcessor instance from configuration
@@ -223,7 +224,7 @@ impl CondenseAttributesProcessor {
     /// Creates a new CondenseAttributesProcessor from configuration for testing.
     #[cfg(test)]
     fn from_config_for_test(config: &Value) -> Result<Self, ConfigError> {
-        let (pipeline_ctx, _) = otap_df_engine::testing::test_pipeline_ctx();
+        let (pipeline_ctx, _) = otel_arrow_dfe_engine::testing::test_pipeline_ctx();
         Self::from_config(pipeline_ctx, config)
     }
 
@@ -617,7 +618,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::Control(control_msg) => {
-                use otap_df_engine::control::NodeControlMsg;
+                use otel_arrow_dfe_engine::control::NodeControlMsg;
                 match control_msg {
                     NodeControlMsg::Config { config } => {
                         match Config::from_config(&config) {
@@ -707,25 +708,25 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 mod condense_tests {
     use super::*;
     use bytes::BytesMut;
-    use otap_df_engine::Interests;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::NodeControlMsg;
-    use otap_df_engine::control::PipelineCompletionMsg;
-    use otap_df_engine::control::pipeline_completion_msg_channel;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{TestCallData, next_nack};
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::otap::Logs;
-    use otap_df_pdata::proto::opentelemetry::{
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::NodeControlMsg;
+    use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+    use otel_arrow_dfe_engine::control::pipeline_completion_msg_channel;
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::testing::{node::test_node, processor::TestRuntime};
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::otap::Logs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         collector::metrics::v1::ExportMetricsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
 

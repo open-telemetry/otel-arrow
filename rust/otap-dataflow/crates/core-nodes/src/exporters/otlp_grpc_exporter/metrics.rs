@@ -3,15 +3,15 @@
 
 //! Bounded-cardinality metrics for the OTLP gRPC exporter.
 
-use otap_df_config::SignalType;
-use otap_df_engine::context::PipelineContext;
-use otap_df_otap::metrics::ExporterExportMetrics;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use std::time::Duration;
 use tonic::{Code, Status};
 
@@ -150,8 +150,8 @@ impl OtlpGrpcExporterMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     fn new_metrics() -> OtlpGrpcExporterMetrics {
         let registry = TelemetryRegistryHandle::new();

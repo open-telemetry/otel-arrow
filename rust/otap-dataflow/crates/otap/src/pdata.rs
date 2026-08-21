@@ -17,17 +17,20 @@ use std::net::SocketAddr;
 use std::num::NonZeroU64;
 
 use async_trait::async_trait;
-use otap_df_config::PortName;
-use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
-use otap_df_engine::error::{Error, TypedError};
-use otap_df_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
-use otap_df_engine::{
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::{SignalFormat, SignalType};
+use otel_arrow_dfe_engine::_private::AckNackRouting;
+use otel_arrow_dfe_engine::control::{
+    AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth,
+};
+use otel_arrow_dfe_engine::error::{Error, TypedError};
+use otel_arrow_dfe_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
     MessageSourceLocalEffectHandlerExtension, MessageSourceSharedEffectHandlerExtension,
     ProducerEffectHandlerExtension,
 };
-use otap_df_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::OtapPayload;
 
 use crate::transport_headers::TransportHeaders;
 
@@ -148,9 +151,8 @@ impl Context {
             .unwrap_or(false)
     }
 
-    /// Return the current source calldata. This is used with the
-    /// DelayedData message, in which a node delivers a message to
-    /// itself.
+    /// Return the current source calldata. This is used when a node resumes
+    /// retained data back to itself via the local scheduler.
     ///
     /// This is also useful in testing, it indicates the data that was
     /// sent by the source node.
@@ -449,7 +451,7 @@ impl Context {
     }
 }
 
-// Frame is defined in otap_df_engine::control (imported above).
+// Frame is defined in otel_arrow_dfe_engine::control (imported above).
 
 /// Incremental builder applying the same merge rule as
 /// [`Context::merge_peer_addr`] without allocating a `Vec` of intermediate
@@ -504,7 +506,7 @@ impl PeerAddrMerger {
     }
 }
 
-impl otap_df_engine::Unwindable for OtapPdata {
+impl otel_arrow_dfe_engine::Unwindable for OtapPdata {
     fn has_frames(&self) -> bool {
         self.context.has_context_frames()
     }
@@ -522,7 +524,7 @@ impl otap_df_engine::Unwindable for OtapPdata {
     }
 }
 
-impl otap_df_engine::StampOutputPort for OtapPdata {
+impl otel_arrow_dfe_engine::StampOutputPort for OtapPdata {
     fn stamp_output_port_index(&mut self, index: u16) {
         self.context.stamp_output_port_index(index);
     }
@@ -538,7 +540,7 @@ impl FlowMetricAccumulation for OtapPdata {
         // misconfigured pipeline is diagnosable instead of silently producing
         // truncated histograms.
         if self.context.flow_compute_ns.is_some() {
-            otap_df_telemetry::otel_warn!(
+            otel_arrow_dfe_telemetry::otel_warn!(
                 "flow_metrics.overlap",
                 "start_flow_metric called while another flow_metric is active; \
                  overlapping ranges are not supported \u{2014} previous accumulator discarded"
@@ -637,6 +639,11 @@ impl OtapPdata {
     }
 
     /// Take the payload
+    ///
+    /// The measurement cache stays with whichever `OtapPayload` value it
+    /// belongs to: the returned payload keeps this payload's cache intact,
+    /// while `self` is left holding a freshly emptied payload with its own
+    /// fresh cache.
     #[must_use]
     pub fn take_payload(&mut self) -> OtapPayload {
         self.payload.take_payload()
@@ -679,8 +686,14 @@ impl OtapPdata {
     /// Returns the number of items of the primary signal (spans, data
     /// points, log records).
     #[must_use]
-    pub fn num_items(&self) -> usize {
+    pub fn num_items(&mut self) -> usize {
         self.payload.num_items()
+    }
+
+    /// Returns the logical byte size of the current payload representation.
+    #[must_use]
+    pub fn num_bytes(&mut self) -> Option<usize> {
+        self.payload.num_bytes()
     }
 
     /// Enable testing Ack/Nack without an effect handler. Consumes,
@@ -720,9 +733,8 @@ impl OtapPdata {
     /// Return the source's calldata. Note that after a subscribe_to()
     /// has been called, the current node becomes the source.
     ///
-    /// Return the current source calldata. This is used with the
-    /// DelayedData message, in which a node delivers a message to
-    /// itself.
+    /// Return the current source calldata. This is used when a node resumes
+    /// retained data back to itself via the local scheduler.
     ///
     /// This is also useful in testing, it indicates the data that was
     /// sent by the source node.
@@ -842,19 +854,19 @@ macro_rules! impl_producer_ext {
 }
 
 impl_producer_ext!(
-    otap_df_engine::local::processor::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
     processor_id
 );
 impl_producer_ext!(
-    otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
     receiver_id
 );
 impl_producer_ext!(
-    otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
     processor_id
 );
 impl_producer_ext!(
-    otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
     receiver_id
 );
 
@@ -873,7 +885,6 @@ macro_rules! impl_consumer_ext {
         #[async_trait(?Send)]
         impl ConsumerEffectHandlerExtension<OtapPdata> for $handler {
             async fn notify_ack(&self, mut ack: AckMsg<OtapPdata>) -> Result<(), Error> {
-                use otap_df_engine::_private::AckNackRouting;
                 if ack.accepted.has_timing(Interests::ACKS) {
                     ack.unwind.return_time_ns = nanos_since_birth();
                 }
@@ -881,7 +892,6 @@ macro_rules! impl_consumer_ext {
             }
 
             async fn notify_nack(&self, mut nack: NackMsg<OtapPdata>) -> Result<(), Error> {
-                use otap_df_engine::_private::AckNackRouting;
                 if nack.refused.has_timing(Interests::NACKS) {
                     nack.unwind.return_time_ns = nanos_since_birth();
                 }
@@ -891,10 +901,10 @@ macro_rules! impl_consumer_ext {
     };
 }
 
-impl_consumer_ext!(otap_df_engine::local::processor::EffectHandler<OtapPdata>);
-impl_consumer_ext!(otap_df_engine::local::exporter::EffectHandler<OtapPdata>);
-impl_consumer_ext!(otap_df_engine::shared::processor::EffectHandler<OtapPdata>);
-impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otel_arrow_dfe_engine::local::exporter::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPdata>);
 
 /* --------  effect handler extensions (shared, local) -------- */
 
@@ -1015,35 +1025,35 @@ macro_rules! impl_message_source_ext {
 impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
-    otap_df_engine::local::processor::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
     processor_id,
     with_hook
 );
 impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
-    otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
     receiver_id,
     no_hook
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
-    otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
     processor_id,
     with_hook
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
-    otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
     receiver_id,
     no_hook
 );
 
 /* -------- ReceivedAtNode implementation -------- */
 
-impl otap_df_engine::ReceivedAtNode for OtapPdata {
+impl otel_arrow_dfe_engine::ReceivedAtNode for OtapPdata {
     fn received_at_node(&mut self, node_id: usize, node_interests: Interests) {
         self.context.push_entry_frame(node_id, node_interests);
         if node_interests.contains(Interests::CONSUMER_METRICS) {
@@ -1070,23 +1080,23 @@ mod test {
         TestCallData, create_empty_test_pdata, create_test_pdata, next_ack, next_nack,
     };
     use crate::transport_headers::TransportHeader;
-    use otap_df_channel::mpsc::Channel as LocalChannel;
-    use otap_df_engine::ConsumerEffectHandlerExtension;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_channel::mpsc::Channel as LocalChannel;
+    use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+    use otel_arrow_dfe_engine::control::{
         PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::effect_handler::SourceTagging;
-    use otap_df_engine::local::exporter::EffectHandler as LocalExporterEffectHandler;
-    use otap_df_engine::local::message::LocalSender;
-    use otap_df_engine::local::processor::EffectHandler as LocalProcessorEffectHandler;
-    use otap_df_engine::local::receiver::EffectHandler as LocalReceiverEffectHandler;
-    use otap_df_engine::message::Sender;
-    use otap_df_engine::node::NodeId;
-    use otap_df_engine::shared::exporter::EffectHandler as SharedExporterEffectHandler;
-    use otap_df_engine::shared::message::SharedSender;
-    use otap_df_engine::shared::processor::EffectHandler as SharedProcessorEffectHandler;
-    use otap_df_engine::shared::receiver::EffectHandler as SharedReceiverEffectHandler;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_engine::effect_handler::SourceTagging;
+    use otel_arrow_dfe_engine::local::exporter::EffectHandler as LocalExporterEffectHandler;
+    use otel_arrow_dfe_engine::local::message::LocalSender;
+    use otel_arrow_dfe_engine::local::processor::EffectHandler as LocalProcessorEffectHandler;
+    use otel_arrow_dfe_engine::local::receiver::EffectHandler as LocalReceiverEffectHandler;
+    use otel_arrow_dfe_engine::message::Sender;
+    use otel_arrow_dfe_engine::node::NodeId;
+    use otel_arrow_dfe_engine::shared::exporter::EffectHandler as SharedExporterEffectHandler;
+    use otel_arrow_dfe_engine::shared::message::SharedSender;
+    use otel_arrow_dfe_engine::shared::processor::EffectHandler as SharedProcessorEffectHandler;
+    use otel_arrow_dfe_engine::shared::receiver::EffectHandler as SharedReceiverEffectHandler;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use pretty_assertions::assert_eq;
     use std::cell::Cell;
     use std::collections::HashMap;
@@ -1094,6 +1104,14 @@ mod test {
 
     fn create_test() -> (TestCallData, OtapPdata) {
         (TestCallData::default(), create_test_pdata())
+    }
+
+    fn create_test_otap_pdata() -> OtapPdata {
+        use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
+
+        let payload = create_test_pdata().into_parts().1;
+        let records: OtapArrowRecords = payload.try_into_with_default().expect("OTAP conversion");
+        OtapPdata::new_default(records.into())
     }
 
     struct FakeFlowMetricHandler {
@@ -1222,6 +1240,23 @@ mod test {
         );
         assert_eq!(end_handler.stop_signals.get(), 0);
         assert!(end_handler.stop_total.get() > 0);
+    }
+
+    /// Scenario: a processor consumes an active zero-item flow message without forwarding it.
+    /// Guarantees: no-output completion records end-node duration and produced zero items.
+    #[test]
+    fn flow_hook_completes_without_output() {
+        let mut pdata = create_empty_test_pdata();
+        pdata.start_flow_metric();
+
+        let end_handler = FakeFlowMetricHandler::end(7);
+        pdata.complete_processor_without_output(&end_handler);
+
+        assert_eq!(end_handler.stop_total_calls.get(), 1);
+        assert_eq!(end_handler.stop_signals_calls.get(), 1);
+        assert_eq!(end_handler.stop_signals.get(), 0);
+        assert!(end_handler.stop_total.get() > 0);
+        assert!(!pdata.has_active_flow_metric());
     }
 
     #[tokio::test]
@@ -1738,7 +1773,7 @@ mod test {
     /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
     #[test]
     fn test_received_at_node_stamps_consumed_items() {
-        use otap_df_engine::{ReceivedAtNode, Unwindable};
+        use otel_arrow_dfe_engine::{ReceivedAtNode, Unwindable};
 
         // CONSUMER_METRICS + item counts: entry frame carries consumed count.
         let mut pdata = create_test_pdata();
@@ -1839,7 +1874,7 @@ mod test {
         let (test_data, pdata) = create_test();
 
         // Subscribe WITHOUT RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(Interests::ACKS, test_data.clone().into(), 1234);
+        let mut pdata = pdata.test_subscribe_to(Interests::ACKS, test_data.clone().into(), 1234);
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
@@ -1850,7 +1885,7 @@ mod test {
         let result = next_ack(ack);
         assert!(result.is_some());
 
-        let (node_id, ack_msg) = result.unwrap();
+        let (node_id, mut ack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
@@ -1866,7 +1901,7 @@ mod test {
         let (test_data, pdata) = create_test();
 
         // Subscribe WITH RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(
+        let mut pdata = pdata.test_subscribe_to(
             Interests::ACKS | Interests::RETURN_DATA,
             test_data.clone().into(),
             1234,
@@ -1881,7 +1916,7 @@ mod test {
         let result = next_ack(ack);
         assert!(result.is_some());
 
-        let (node_id, ack_msg) = result.expect("has");
+        let (node_id, mut ack_msg) = result.expect("has");
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
@@ -1897,7 +1932,7 @@ mod test {
         let (test_data, pdata) = create_test();
 
         // Subscribe WITHOUT RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(Interests::NACKS, test_data.clone().into(), 1234);
+        let mut pdata = pdata.test_subscribe_to(Interests::NACKS, test_data.clone().into(), 1234);
 
         assert_eq!(pdata.num_items(), 1);
         assert!(!pdata.is_empty());
@@ -1907,7 +1942,7 @@ mod test {
         let result = next_nack(nack);
         assert!(result.is_some());
 
-        let (node_id, nack_msg) = result.unwrap();
+        let (node_id, mut nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = nack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
@@ -1923,7 +1958,7 @@ mod test {
         let (test_data, pdata) = create_test();
 
         // Subscribe WITH RETURN_DATA interest
-        let pdata = pdata.test_subscribe_to(
+        let mut pdata = pdata.test_subscribe_to(
             Interests::NACKS | Interests::RETURN_DATA,
             test_data.clone().into(),
             1234,
@@ -1938,7 +1973,7 @@ mod test {
         let result = next_nack(nack);
         assert!(result.is_some());
 
-        let (node_id, nack_msg) = result.unwrap();
+        let (node_id, mut nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
         let recv_data: TestCallData = nack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv_data, test_data);
@@ -1976,7 +2011,7 @@ mod test {
 
         let result = next_ack(ack_msg);
         assert!(result.is_some());
-        let (node_id, ack_msg) = result.unwrap();
+        let (node_id, mut ack_msg) = result.unwrap();
         assert_eq!(node_id, 2);
 
         // Payload should be preserved because node 1 has RETURN_DATA
@@ -2099,7 +2134,7 @@ mod test {
 
         // Ack path: next_ack finds node 3 first
         let ack = AckMsg::new(pdata);
-        let (node_id, ack_msg) = next_ack(ack).expect("should find node 3");
+        let (node_id, mut ack_msg) = next_ack(ack).expect("should find node 3");
         assert_eq!(node_id, 3);
 
         // The payload must be preserved -- node 1 needs it for retry.
@@ -2111,7 +2146,7 @@ mod test {
         assert!(!ack_msg.accepted.is_empty());
 
         // Continue to node 1
-        let (node_id, ack_msg) = next_ack(ack_msg).expect("should find node 1");
+        let (node_id, mut ack_msg) = next_ack(ack_msg).expect("should find node 1");
         assert_eq!(node_id, 1);
         let recv: TestCallData = ack_msg.unwind.route.calldata.try_into().expect("has");
         assert_eq!(recv, test_data);
@@ -2403,7 +2438,7 @@ mod test {
     /// Helper: build a local processor EffectHandler wired to a completion channel.
     fn create_local_processor_with_completion_channel() -> (
         LocalProcessorEffectHandler<OtapPdata>,
-        otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+        otel_arrow_dfe_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
     ) {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh = LocalProcessorEffectHandler::new(
@@ -2423,7 +2458,7 @@ mod test {
     /// Helper: build a local exporter EffectHandler wired to a completion channel.
     fn create_local_exporter_with_completion_channel() -> (
         LocalExporterEffectHandler<OtapPdata>,
-        otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+        otel_arrow_dfe_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
     ) {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh = LocalExporterEffectHandler::new(
@@ -2441,7 +2476,7 @@ mod test {
     /// Helper: build a shared processor EffectHandler wired to a completion channel.
     fn create_shared_processor_with_completion_channel() -> (
         SharedProcessorEffectHandler<OtapPdata>,
-        otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+        otel_arrow_dfe_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
     ) {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh = SharedProcessorEffectHandler::new(
@@ -2461,7 +2496,7 @@ mod test {
     /// Helper: build a shared exporter EffectHandler wired to a completion channel.
     fn create_shared_exporter_with_completion_channel() -> (
         SharedExporterEffectHandler<OtapPdata>,
-        otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+        otel_arrow_dfe_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
     ) {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh = SharedExporterEffectHandler::new(
@@ -2771,5 +2806,149 @@ mod test {
         m.push(Some(b));
         m.push(Some(a));
         assert_eq!(m.finish(), None);
+    }
+
+    /// Scenario: OTLP PData is cloned before and after its item count is measured.
+    /// Guarantees: clones copy existing cached values but do not share later cache updates.
+    #[test]
+    fn otlp_item_count_cache_is_copied_across_clones() {
+        let mut pdata = create_test_pdata();
+        assert!(!pdata.payload_ref().test_has_cached_item_count());
+        let mut cloned_before_measurement = pdata.clone();
+        let expected_items = pdata.num_items();
+        assert!(pdata.payload_ref().test_has_cached_item_count());
+        assert!(
+            !cloned_before_measurement
+                .payload_ref()
+                .test_has_cached_item_count()
+        );
+
+        assert_eq!(cloned_before_measurement.num_items(), expected_items);
+        assert!(
+            cloned_before_measurement
+                .payload_ref()
+                .test_has_cached_item_count()
+        );
+
+        let detached_after_measurement = pdata.clone_without_context();
+        assert!(
+            detached_after_measurement
+                .payload_ref()
+                .test_has_cached_item_count()
+        );
+    }
+
+    /// Scenario: OTAP item count is requested without traversing individual records.
+    /// Guarantees: the direct Arrow row count leaves the OTLP item-count cache empty.
+    #[test]
+    fn otap_item_count_bypasses_cache() {
+        let mut otap = create_test_otap_pdata();
+        let expected_items = otap.payload.num_items();
+        assert_eq!(otap.num_items(), expected_items);
+        assert!(!otap.payload_ref().test_has_cached_item_count());
+    }
+
+    /// Scenario: an OTAP PData is cloned before and after its logical size is measured.
+    /// Guarantees: clones copy existing cached values but do not share later cache updates.
+    #[test]
+    fn otap_size_cache_is_copied_across_clones() {
+        let mut pdata = create_test_otap_pdata();
+        assert!(!pdata.payload_ref().test_has_cached_size());
+        let mut cloned_before_measurement = pdata.clone();
+        let expected_bytes = pdata.num_bytes();
+        assert!(expected_bytes.is_some());
+        assert!(pdata.payload_ref().test_has_cached_size());
+        assert!(
+            !cloned_before_measurement
+                .payload_ref()
+                .test_has_cached_size()
+        );
+
+        assert_eq!(cloned_before_measurement.num_bytes(), expected_bytes);
+        assert!(
+            cloned_before_measurement
+                .payload_ref()
+                .test_has_cached_size()
+        );
+
+        let detached_after_measurement = pdata.clone_without_context();
+        assert!(
+            detached_after_measurement
+                .payload_ref()
+                .test_has_cached_size()
+        );
+    }
+
+    /// Scenario: an OTLP payload's encoded byte length is requested.
+    /// Guarantees: the constant-time OTLP length bypasses the OTAP size cache.
+    #[test]
+    fn otlp_num_bytes_bypasses_size_cache() {
+        let mut pdata = create_test_pdata();
+
+        assert!(pdata.num_bytes().is_some());
+        assert!(!pdata.payload_ref().test_has_cached_size());
+    }
+
+    /// Scenario: a cached item count exists before the payload is taken from PData.
+    /// Guarantees: taking the payload replaces the cache so the empty payload cannot reuse the item count.
+    #[test]
+    fn take_payload_invalidates_cached_item_count() {
+        let mut pdata = create_test_pdata();
+        assert!(pdata.num_items() > 0);
+        let payload = pdata.take_payload();
+
+        assert!(!payload.is_empty());
+        assert!(payload.test_has_cached_item_count());
+        assert!(!pdata.payload_ref().test_has_cached_item_count());
+        assert_eq!(pdata.num_items(), 0);
+        assert!(pdata.payload_ref().test_has_cached_item_count());
+    }
+
+    /// Scenario: a cached OTAP size exists before the payload is taken.
+    /// Guarantees: the returned payload keeps the cached size and the empty replacement starts uncached.
+    #[test]
+    fn take_payload_invalidates_cached_size() {
+        let mut pdata = create_test_otap_pdata();
+        let expected_bytes = pdata.num_bytes();
+        assert!(expected_bytes.is_some());
+        let mut payload = pdata.take_payload();
+
+        assert!(!payload.is_empty());
+        assert!(payload.test_has_cached_size());
+        assert_eq!(payload.num_bytes(), expected_bytes);
+        assert!(!pdata.payload_ref().test_has_cached_size());
+        assert_eq!(pdata.num_bytes(), Some(0));
+        assert!(pdata.payload_ref().test_has_cached_size());
+    }
+
+    /// Scenario: an unchanged payload's cache is queried, split via `into_parts`, and the
+    /// resulting payload is used to rebuild a new `OtapPdata`.
+    /// Guarantees: cached values are preserved end-to-end across `into_parts()`
+    /// and reconstruction via `OtapPdata::new`.
+    #[test]
+    fn measurements_survive_into_parts_and_reconstruction() {
+        let mut pdata = create_test_pdata();
+        let expected_items = pdata.num_items();
+
+        let (context, payload) = pdata.into_parts();
+        assert!(payload.test_has_cached_item_count());
+
+        let mut rebuilt = OtapPdata::new(context, payload);
+        assert!(rebuilt.payload_ref().test_has_cached_item_count());
+        assert_eq!(rebuilt.num_items(), expected_items);
+    }
+
+    /// Scenario: a brand new `OtapPayload` is constructed from raw representation data,
+    /// distinct from any previously measured payload.
+    /// Guarantees: constructing a new logical payload starts with an empty
+    /// item-count cache and never reuses another payload's count.
+    #[test]
+    fn new_payload_construction_has_fresh_measurements() {
+        let mut measured = create_test_pdata();
+        assert!(measured.num_items() > 0);
+        assert!(measured.payload_ref().test_has_cached_item_count());
+
+        let (_, payload) = create_test_pdata().into_parts();
+        assert!(!payload.test_has_cached_item_count());
     }
 }

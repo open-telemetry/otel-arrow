@@ -13,7 +13,7 @@ use crate::commands::output::write_read_command_output;
 use crate::error::CliError;
 use crate::render::{render_engine_probe, render_engine_status};
 use crate::style::HumanStyle;
-use otap_df_admin_api::AdminClient;
+use otel_arrow_dfe_admin_api::AdminClient;
 use std::io::Write;
 
 /// Execute engine-scoped commands.

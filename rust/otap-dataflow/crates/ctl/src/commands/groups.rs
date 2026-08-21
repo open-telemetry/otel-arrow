@@ -29,8 +29,8 @@ use crate::troubleshoot::{
     diagnose_group_shutdown, extract_events_from_group_status, filter_logs, filter_metrics_compact,
     filter_metrics_full, tail_events,
 };
-use otap_df_admin_api::AdminClient;
-use otap_df_admin_api::telemetry::MetricsOptions;
+use otel_arrow_dfe_admin_api::AdminClient;
+use otel_arrow_dfe_admin_api::telemetry::MetricsOptions;
 use serde::Serialize;
 use std::io::Write;
 
@@ -202,10 +202,10 @@ pub(crate) async fn run(
                 Ok(render_groups_shutdown(&human_style, &response))
             })?;
             match response.status {
-                otap_df_admin_api::groups::ShutdownStatus::Accepted
-                | otap_df_admin_api::groups::ShutdownStatus::Completed => Ok(()),
-                otap_df_admin_api::groups::ShutdownStatus::Failed
-                | otap_df_admin_api::groups::ShutdownStatus::Timeout => {
+                otel_arrow_dfe_admin_api::groups::ShutdownStatus::Accepted
+                | otel_arrow_dfe_admin_api::groups::ShutdownStatus::Completed => Ok(()),
+                otel_arrow_dfe_admin_api::groups::ShutdownStatus::Failed
+                | otel_arrow_dfe_admin_api::groups::ShutdownStatus::Timeout => {
                     Err(CliError::outcome_failure(format!(
                         "groups shutdown ended with status {:?}",
                         response.status

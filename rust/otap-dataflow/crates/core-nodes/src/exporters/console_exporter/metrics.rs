@@ -4,27 +4,27 @@
 //! Metrics for the Console Exporter node.
 
 use super::ConsoleOutputFormat;
-use otap_df_config::SignalType;
-use otap_df_engine::context::PipelineContext;
-use otap_df_otap::metrics::ExporterExportMetrics;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use std::time::Duration;
 
 /// Actionable category for a failed console export operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub(super) enum ConsoleExportErrorType {
-    /// An OTLP byte payload could not be exposed as a logs view.
+    /// An OTLP byte payload could not be exposed as a signal view.
     OtlpViewCreation,
-    /// An OTAP Arrow payload could not be exposed as a logs view.
+    /// An OTAP Arrow payload could not be exposed as a signal view.
     OtapViewCreation,
     /// The exporter received a signal that it cannot render.
     UnsupportedSignal,
-    /// The selected output formatter could not encode the logs payload.
+    /// The selected output formatter could not encode the payload.
     Formatting,
     /// The rendered output could not be written to stdout.
     Write,
@@ -127,8 +127,8 @@ impl ConsoleExporterMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     fn new_test_metrics(format: ConsoleOutputFormat) -> ConsoleExporterMetrics {
         new_test_metrics_with_registry(format).1

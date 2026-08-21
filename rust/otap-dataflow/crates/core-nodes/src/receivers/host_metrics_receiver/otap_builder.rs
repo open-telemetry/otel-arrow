@@ -8,19 +8,19 @@
 //! directly into Arrow column buffers.
 
 use arrow::error::ArrowError;
-use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
-use otap_df_pdata::encode::record::metrics::{
+use otel_arrow_dfe_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
+use otel_arrow_dfe_pdata::encode::record::metrics::{
     MetricsRecordBatchBuilder, NumberDataPointsRecordBatchBuilder,
 };
-use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
-use otap_df_pdata::otlp::metrics::MetricType;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords};
+use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 #[cfg(target_os = "linux")]
 use crate::receivers::host_metrics_receiver::procfs::HostResource;
 use crate::receivers::host_metrics_receiver::semconv;
 
-const SCOPE_NAME: &[u8] = b"otap-df-core-nodes/host-metrics";
+const SCOPE_NAME: &[u8] = b"otel-arrow-dfe-core-nodes/host-metrics";
 const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
 
 // AggregationTemporality::Cumulative = 2 (OTLP proto enum value).

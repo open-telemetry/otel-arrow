@@ -13,7 +13,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
-use otap_df_pdata::otap::transform::util::sort_by_parent_then_id;
+use otel_arrow_dfe_pdata::otap::transform::util::sort_by_parent_then_id;
 
 const NUM_ROWS: usize = 1_000;
 const SEED: u64 = 42;

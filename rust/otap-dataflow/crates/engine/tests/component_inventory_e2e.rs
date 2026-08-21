@@ -4,12 +4,12 @@
 //! End-to-end test for `#[component_inventory]` (RFC 0001).
 //!
 //! Exercises the full link-time path: the macro emits `ComponentMeta` entries
-//! into `otap_df_engine::inventory::COMPONENT_INVENTORY`, which we then read
+//! into `otel_arrow_dfe_engine::inventory::COMPONENT_INVENTORY`, which we then read
 //! back and assert on. This validates the cross-crate emission
-//! (`::otap_df_engine::inventory::*` paths) and the `id`-from-`name` derivation.
+//! (`::otel_arrow_dfe_engine::inventory::*` paths) and the `id`-from-`name` derivation.
 
-use otap_df_engine::inventory::{Category, ComponentMeta, attrs, components};
-use otap_df_engine_macros::component_inventory;
+use otel_arrow_dfe_engine::inventory::{Category, ComponentMeta, attrs, components};
+use otel_arrow_dfe_engine_macros::component_inventory;
 
 /// A URN const, mirroring how real factory statics reference their URN.
 const TEST_RECEIVER_URN: &str = "urn:otel:receiver:component_inventory_test";

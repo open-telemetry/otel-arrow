@@ -26,36 +26,36 @@
 //!       # ... additional config
 //! ```
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = GENEVA_EXPORTER_URN,
     target = "microsoft.exporter.geneva",
 );
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::control::{AckMsg, NackMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::otap::OtapLogsView;
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+use otel_arrow_dfe_engine::ExporterFactory;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::{Deserialize, Deserializer};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,17 +74,17 @@ use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as ProstMessage;
 
 // Use crate-relative paths since we're now a module within otap
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterExportMetrics;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 
 mod agent_fed_source;
 
 use agent_fed_source::AgentFedGenevaSource;
-use otap_df_engine::capability::ExtensionCapability;
-use otap_df_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as AgentFedCredentialProviderCap;
-use otap_df_engine::capability::registry::Capabilities;
+use otel_arrow_dfe_engine::capability::ExtensionCapability;
+use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as AgentFedCredentialProviderCap;
+use otel_arrow_dfe_engine::capability::registry::Capabilities;
 
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:microsoft:exporter:geneva";
@@ -1117,7 +1117,7 @@ fn validate_agent_fed_capability_binding(node_config: &NodeUserConfig) -> Result
 }
 
 fn ensure_crypto_provider() -> Result<(), ConfigError> {
-    if otap_df_otap::crypto::is_crypto_provider_installed() {
+    if otel_arrow_dfe_otap::crypto::is_crypto_provider_installed() {
         return Ok(());
     }
 
@@ -1125,7 +1125,7 @@ fn ensure_crypto_provider() -> Result<(), ConfigError> {
         error: "Geneva exporter requires a rustls CryptoProvider, but none is installed. \
                 Build with exactly one of the crypto-* features \
                 (crypto-ring, crypto-aws-lc, crypto-openssl, crypto-symcrypt) and ensure \
-                otap_df_otap::crypto::install_crypto_provider() runs at startup."
+                otel_arrow_dfe_otap::crypto::install_crypto_provider() runs at startup."
             .to_string(),
     })
 }
@@ -1396,9 +1396,9 @@ impl GenevaExporter {
         }
 
         // Handle based on payload type
-        match payload {
+        match payload.into_data() {
             // OTAP Arrow path: encode logs through LogsDataView without converting back to OTLP.
-            OtapPayload::OtapArrowRecords(otap_records) => {
+            PayloadData::OtapArrowRecords(otap_records) => {
                 match otap_records {
                     mut otap_records @ OtapArrowRecords::Logs(_) => {
                         otel_info!(
@@ -1446,7 +1446,7 @@ impl GenevaExporter {
                         );
 
                         let otlp_bytes: OtlpProtoBytes =
-                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(otap_records))
+                            OtapPayload::from(OtapArrowRecords::Traces(otap_records))
                                 .try_into_with_default()
                                 .map_err(|e| {
                                     self.metrics.conversion_errors.inc();
@@ -1495,7 +1495,7 @@ impl GenevaExporter {
             }
 
             // OTLP path: Direct OTLP bytes from receivers without OTAP conversion (e.g., OTLP receiver -> Geneva exporter without batch processor)
-            OtapPayload::OtlpBytes(otlp_bytes) => {
+            PayloadData::OtlpBytes(otlp_bytes) => {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         otel_info!(
@@ -1586,7 +1586,7 @@ fn validate_geneva_config(config: &serde_json::Value) -> Result<(), ConfigError>
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static GENEVA_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: GENEVA_EXPORTER_URN,
@@ -1602,7 +1602,7 @@ pub static GENEVA_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_geneva_config,
 };
 
@@ -1726,28 +1726,28 @@ mod tests {
 
     use bytes::Bytes;
     use geneva_uploader::client::AgentFedCredentialSource;
-    use otap_df_engine::Interests;
-    use otap_df_engine::capability::auth::BearerToken;
-    use otap_df_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialSnapshot;
-    use otap_df_engine::capability::registry::CapabilityRegistry;
-    use otap_df_engine::capability::{
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::capability::auth::BearerToken;
+    use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialSnapshot;
+    use otel_arrow_dfe_engine::capability::registry::CapabilityRegistry;
+    use otel_arrow_dfe_engine::capability::{
         CapabilityError, ExtensionCapability, LocalInstanceFactory, SharedInstanceFactory,
     };
-    use otap_df_engine::control::PipelineCompletionMsg;
-    use otap_df_engine::extension_capabilities;
-    use otap_df_engine::local::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as LocalAgentFedCredentialProvider;
-    use otap_df_engine::shared::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as SharedAgentFedCredentialProvider;
-    use otap_df_engine::testing::capability::resolve_bindings_for_test;
-    use otap_df_engine::testing::exporter::{
+    use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+    use otel_arrow_dfe_engine::extension_capabilities;
+    use otel_arrow_dfe_engine::local::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as LocalAgentFedCredentialProvider;
+    use otel_arrow_dfe_engine::shared::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as SharedAgentFedCredentialProvider;
+    use otel_arrow_dfe_engine::testing::capability::resolve_bindings_for_test;
+    use otel_arrow_dfe_engine::testing::exporter::{
         TestRuntime, create_exporter_from_factory, create_test_pipeline_context,
     };
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
-    use otap_df_pdata::otap::OtapArrowRecords;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::schema::{FieldExt, consts};
-    use otap_df_pdata::views::otap::OtapLogsView;
-    use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::testing::{TestCallData, next_ack, next_nack};
+    use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
+    use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+    use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
     use std::any::Any;
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
@@ -1990,7 +1990,8 @@ mod tests {
         let mut registry = CapabilityRegistry::new();
         (extension_capabilities.register_shared)("agent".into(), instance_factory, &mut registry)
             .expect("register capabilities");
-        let known_extensions = HashSet::<otap_df_config::ExtensionId>::from(["agent".into()]);
+        let known_extensions =
+            HashSet::<otel_arrow_dfe_config::ExtensionId>::from(["agent".into()]);
         let capabilities =
             resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
                 .expect("resolve capabilities");
@@ -2006,7 +2007,8 @@ mod tests {
         let mut registry = CapabilityRegistry::new();
         (extension_capabilities.register_local)("agent".into(), instance_factory, &mut registry)
             .expect("register local capabilities");
-        let known_extensions = HashSet::<otap_df_config::ExtensionId>::from(["agent".into()]);
+        let known_extensions =
+            HashSet::<otel_arrow_dfe_config::ExtensionId>::from(["agent".into()]);
         resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
             .expect("resolve local-only capabilities")
     }
@@ -2017,7 +2019,7 @@ mod tests {
     fn geneva_exporter_emits_ack_for_empty_payload() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
         // process-wide crypto provider, which production installs at startup.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, test_config()).unwrap();
 
@@ -2042,7 +2044,8 @@ mod tests {
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
                         PipelineCompletionMsg::DeliverAck { ack } => {
-                            let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
+                            let (node_id, mut ack) =
+                                next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(node_id, 4242);
                             let got: TestCallData = ack.unwind.route.calldata.try_into().unwrap();
                             assert_eq!(TestCallData::default(), got);
@@ -2061,7 +2064,7 @@ mod tests {
     fn geneva_exporter_emits_nack_for_decode_failure() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
         // process-wide crypto provider, which production installs at startup.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, test_config()).unwrap();
 
@@ -2088,7 +2091,7 @@ mod tests {
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
                         PipelineCompletionMsg::DeliverNack { nack } => {
-                            let (node_id, nack) =
+                            let (node_id, mut nack) =
                                 next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(node_id, 777);
                             let got: TestCallData = nack.unwind.route.calldata.try_into().unwrap();
@@ -2498,7 +2501,7 @@ mod tests {
     /// Guarantees: The factory constructs an agent-fed exporter successfully.
     #[test]
     fn creates_agent_fed_exporter_with_bound_capabilities() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let node_config = agent_fed_node_config(Some("agent"));
         let (capabilities, _snapshot) = resolved_agent_fed_capabilities(&node_config);
         let exporter_config = ExporterConfig::new("test-exporter");
@@ -2586,7 +2589,7 @@ mod tests {
     fn create_exporter_with_user_managed_identity_by_arm_resource_id() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
         // process-wide crypto provider, which production installs at startup.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let config = serde_json::json!({
             "endpoint": "https://localhost",
             "environment": "test",

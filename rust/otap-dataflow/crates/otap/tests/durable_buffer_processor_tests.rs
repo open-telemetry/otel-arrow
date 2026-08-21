@@ -16,28 +16,28 @@ mod common;
 
 use common::counting_exporter::{self, COUNTING_EXPORTER_URN};
 use common::flaky_exporter::{self, FLAKY_EXPORTER_URN};
-use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
-use otap_df_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
-use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
-use otap_df_core_nodes::exporters::error_exporter::ERROR_EXPORTER_URN;
-use otap_df_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
-use otap_df_core_nodes::processors::durable_buffer_processor::DURABLE_BUFFER_URN;
-use otap_df_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
-use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+use otel_arrow_dfe_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
+use otel_arrow_dfe_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
+use otel_arrow_dfe_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
+use otel_arrow_dfe_core_nodes::exporters::error_exporter::ERROR_EXPORTER_URN;
+use otel_arrow_dfe_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
+use otel_arrow_dfe_core_nodes::processors::durable_buffer_processor::DURABLE_BUFFER_URN;
+use otel_arrow_dfe_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
+use otel_arrow_dfe_engine::context::ControllerContext;
+use otel_arrow_dfe_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
-use otap_df_engine::entity_context::set_pipeline_entity_key;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::InternalTelemetrySystem;
-use otap_df_telemetry::descriptor::Instrument;
-use otap_df_telemetry::metrics::MetricSetSnapshot;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::reporter::MetricsReporter;
-use quiver::segment::SegmentReader;
+use otel_arrow_dfe_engine::entity_context::set_pipeline_entity_key;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_quiver::segment::SegmentReader;
+use otel_arrow_dfe_state::store::ObservedStateStore;
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
+use otel_arrow_dfe_telemetry::descriptor::Instrument;
+use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -537,7 +537,7 @@ where
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
         let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
-            otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged::initial(),
         );
         runtime_pipeline.run_forever(
             pipeline_key,
@@ -589,11 +589,11 @@ where
 /// Only the closed-channel case is accepted; other `ChannelSendError`
 /// reasons (e.g. "full") would indicate a real bug.
 fn is_acceptable_shutdown_result(
-    run_result: &Result<Vec<()>, otap_df_engine::error::Error>,
+    run_result: &Result<Vec<()>, otel_arrow_dfe_engine::error::Error>,
 ) -> bool {
     matches!(
         run_result,
-        Ok(_) | Err(otap_df_engine::error::Error::ChannelSendError { closed: true, .. })
+        Ok(_) | Err(otel_arrow_dfe_engine::error::Error::ChannelSendError { closed: true, .. })
     )
 }
 
@@ -839,7 +839,7 @@ where
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
         let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
-            otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged::initial(),
         );
         runtime_pipeline.run_forever(
             pipeline_key,

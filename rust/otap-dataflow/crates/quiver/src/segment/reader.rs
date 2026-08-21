@@ -16,7 +16,7 @@
 //! for high-throughput replay scenarios.
 //!
 //! ```ignore
-//! use quiver::segment::SegmentReader;
+//! use otel_arrow_dfe_quiver::segment::SegmentReader;
 //!
 //! // Open with memory mapping (requires `mmap` feature)
 //! let reader = SegmentReader::open_mmap(&path)?;

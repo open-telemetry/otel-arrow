@@ -7,7 +7,7 @@
 //! This crate holds the **single** definition of the attribute-argument syntax
 //! so that the two consumers cannot drift:
 //!
-//! - the `#[component_inventory]` proc macro (`otap-df-engine-macros`), which
+//! - the `#[component_inventory]` proc macro (`otel-arrow-dfe-engine-macros`), which
 //!   parses its attribute tokens and emits a `COMPONENT_INVENTORY` entry; and
 //! - the `cargo xtask component-inventory` scanner, which parses the same
 //!   attribute out of a `syn`-parsed source file to build the inventory
@@ -35,7 +35,7 @@ use syn::{
 /// depends only on `syn`/`proc-macro2`) so that all three consumers reference
 /// the same type and cannot drift:
 ///
-/// - `otap-df-engine` re-exports it as `otap_df_engine::inventory::Category`,
+/// - `otel-arrow-dfe-engine` re-exports it as `otel_arrow_dfe_engine::inventory::Category`,
 ///   the runtime type stored in every `ComponentMeta`;
 /// - the `#[component_inventory]` proc macro validates the `category = <Ident>`
 ///   argument and emits `Category::<Variant>` referencing that re-export; and

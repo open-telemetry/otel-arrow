@@ -3,7 +3,7 @@
 
 //! Linux user_events receiver.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = USER_EVENTS_RECEIVER_URN,
     target = "otel.receiver.user_events",
 );
@@ -21,21 +21,21 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::memory_limiter::LocalReceiverAdmissionState;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::memory_limiter::LocalReceiverAdmissionState;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{
     MessageSourceLocalEffectHandlerExtension, ReceiverFactory,
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -44,7 +44,7 @@ use self::decoder::DecodedUserEventsRecord;
 use self::metrics::UserEventsReceiverMetrics;
 use self::session::SessionInitError;
 use self::session::{RawUserEventsRecord, SessionDrainStats, UserEventsSession};
-use otap_df_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
 use tokio::time::{self, MissedTickBehavior};
 
 const DEFAULT_PER_CPU_BUFFER_SIZE: usize = 1024 * 1024;
@@ -267,10 +267,10 @@ impl UserEventsReceiver {
     fn from_config(
         pipeline: PipelineContext,
         config: &Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let mut config: UserEventsReceiverConfig =
             serde_json::from_value(config.clone()).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: e.to_string(),
                 }
             })?;
@@ -312,9 +312,9 @@ impl UserEventsReceiver {
 
     fn normalize_subscriptions(
         subscriptions: &mut [SubscriptionConfig],
-    ) -> Result<(), otap_df_config::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_config::error::Error> {
         if subscriptions.is_empty() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "user_events receiver requires at least one subscription".to_owned(),
             });
         }
@@ -325,10 +325,12 @@ impl UserEventsReceiver {
         Ok(())
     }
 
-    fn normalize_tracepoint(tracepoint: &str) -> Result<String, otap_df_config::error::Error> {
+    fn normalize_tracepoint(
+        tracepoint: &str,
+    ) -> Result<String, otel_arrow_dfe_config::error::Error> {
         let tracepoint = tracepoint.trim();
         if tracepoint.is_empty() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "user_events receiver tracepoint must not be empty".to_owned(),
             });
         }
@@ -336,7 +338,7 @@ impl UserEventsReceiver {
             if group == "user_events" && !event_name.is_empty() {
                 return Ok(tracepoint.to_owned());
             }
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!(
                     "user_events receiver tracepoint `{tracepoint}` must be an event name or `user_events:<event>`"
                 ),
@@ -345,16 +347,18 @@ impl UserEventsReceiver {
         Ok(format!("user_events:{tracepoint}"))
     }
 
-    fn validate_session(session: &SessionConfig) -> Result<(), otap_df_config::error::Error> {
+    fn validate_session(
+        session: &SessionConfig,
+    ) -> Result<(), otel_arrow_dfe_config::error::Error> {
         if session.limits.max_pending_events == 0 {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error:
                     "user_events receiver `session.limits.max_pending_events` must be greater than zero"
                         .to_owned(),
             });
         }
         if session.limits.max_pending_bytes == 0 {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "user_events receiver `session.limits.max_pending_bytes` must be greater than zero"
                     .to_owned(),
             });
@@ -363,7 +367,7 @@ impl UserEventsReceiver {
             .late_registration_poll_interval
             .is_some_and(|poll_interval| poll_interval.is_zero())
         {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "user_events receiver `session.late_registration_poll_interval` must be greater than zero"
                     .to_owned(),
             });
@@ -374,26 +378,26 @@ impl UserEventsReceiver {
     fn validate_subscription_limits(
         tracepoint: &str,
         limits: &Option<SubscriptionLimitsConfig>,
-    ) -> Result<(), otap_df_config::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_config::error::Error> {
         let Some(limits) = limits else {
             return Ok(());
         };
         if !limits.has_effective_pending_limit() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!(
                     "user_events receiver subscription `{tracepoint}` `limits` must set at least one pending limit"
                 ),
             });
         }
         if limits.max_pending_events == Some(0) {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!(
                     "user_events receiver subscription `{tracepoint}` `limits.max_pending_events` must be greater than zero"
                 ),
             });
         }
         if limits.max_pending_bytes == Some(0) {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!(
                     "user_events receiver subscription `{tracepoint}` `limits.max_pending_bytes` must be greater than zero"
                 ),
@@ -402,22 +406,22 @@ impl UserEventsReceiver {
         Ok(())
     }
 
-    fn validate_drain(drain: &DrainConfig) -> Result<(), otap_df_config::error::Error> {
+    fn validate_drain(drain: &DrainConfig) -> Result<(), otel_arrow_dfe_config::error::Error> {
         if drain.max_records_per_turn == 0 {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error:
                     "user_events receiver `drain.max_records_per_turn` must be greater than zero"
                         .to_owned(),
             });
         }
         if drain.max_bytes_per_turn == 0 {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "user_events receiver `drain.max_bytes_per_turn` must be greater than zero"
                     .to_owned(),
             });
         }
         if drain.max_drain_ns.is_zero() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "user_events receiver `drain.max_drain_ns` must be greater than zero; \
                         a zero budget would starve either parsing or the pending-queue \
                         pop phase under continuous load"
@@ -427,9 +431,11 @@ impl UserEventsReceiver {
         Ok(())
     }
 
-    fn validate_batching(batching: &BatchConfig) -> Result<(), otap_df_config::error::Error> {
+    fn validate_batching(
+        batching: &BatchConfig,
+    ) -> Result<(), otel_arrow_dfe_config::error::Error> {
         if batching.max_duration.is_zero() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "user_events receiver `batching.max_duration` must be greater than zero"
                     .to_owned(),
             });
@@ -565,25 +571,28 @@ async fn process_drained_records(
 }
 
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the Linux user_events receiver as a local receiver factory.
 pub static USER_EVENTS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: USER_EVENTS_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ReceiverWrapper::local(
-            UserEventsReceiver::from_config(pipeline, &node_config.config)?,
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<UserEventsReceiverConfig>,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ReceiverWrapper::local(
+                UserEventsReceiver::from_config(pipeline, &node_config.config)?,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+        UserEventsReceiverConfig,
+    >,
 };
 
 #[async_trait(?Send)]
@@ -962,7 +971,7 @@ mod linux_integration_tests {
             return;
         }
 
-        let tracefs_event_name = format!("otap_df_tracefs_ci_{}", std::process::id());
+        let tracefs_event_name = format!("otel_arrow_dfe_tracefs_ci_{}", std::process::id());
         let tracefs_tracepoint = format!("user_events:{tracefs_event_name}");
         let tracefs_definition = CString::new(format!(
             "{tracefs_event_name} u32 ci_answer; char ci_message[14]"
@@ -1032,7 +1041,7 @@ mod linux_integration_tests {
 
         #[cfg(feature = "user_events-eventheader")]
         {
-            let provider_name = format!("otap_df_ci_{}", std::process::id());
+            let provider_name = format!("otel_arrow_dfe_ci_{}", std::process::id());
             let tracepoint = format!("user_events:{provider_name}_L4K1");
             let mut provider = Provider::new(&provider_name, &Provider::new_options());
             let event_set = provider.register_set(Level::Informational, 1);
@@ -1126,17 +1135,17 @@ mod config_tests {
     use std::collections::HashMap;
 
     use super::session::TracefsField;
-    use otap_df_channel::mpsc;
-    use otap_df_config::SignalType;
-    use otap_df_engine::control::runtime_ctrl_msg_channel;
-    use otap_df_engine::local::message::LocalSender;
-    use otap_df_engine::memory_limiter::{
+    use otel_arrow_dfe_channel::mpsc;
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+    use otel_arrow_dfe_engine::local::message::LocalSender;
+    use otel_arrow_dfe_engine::memory_limiter::{
         MemoryPressureChanged, MemoryPressureLevel, MemoryPressureState,
     };
-    use otap_df_engine::message::Sender;
-    use otap_df_engine::testing::{test_node, test_pipeline_ctx};
-    use otap_df_pdata::OtapPayload;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_engine::message::Sender;
+    use otel_arrow_dfe_engine::testing::{test_node, test_pipeline_ctx};
+    use otel_arrow_dfe_pdata::OtapPayload;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     fn test_metrics() -> Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>> {
         let (pipeline_ctx, _) = test_pipeline_ctx();
@@ -1275,12 +1284,12 @@ mod config_tests {
                 _ = time::sleep(Duration::from_millis(10)) => {}
             }
 
-            let prefilled = rx.recv().await.expect("prefilled item received");
+            let mut prefilled = rx.recv().await.expect("prefilled item received");
             assert_eq!(prefilled.num_items(), 0);
             flush.await.expect("flush completed after capacity opened");
         }
 
-        let pdata = rx.recv().await.expect("flushed batch received");
+        let mut pdata = rx.recv().await.expect("flushed batch received");
         assert_eq!(pdata.num_items(), 1);
 
         let metrics = metrics.borrow();
@@ -1354,7 +1363,7 @@ mod config_tests {
         .await
         .expect("drained records processed");
 
-        let pdata = rx.recv().await.expect("flushed batch received");
+        let mut pdata = rx.recv().await.expect("flushed batch received");
         assert_eq!(pdata.num_items(), 1);
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
@@ -1434,7 +1443,7 @@ mod config_tests {
             .await
             .expect("partial batch flushed");
 
-        let pdata = rx.recv().await.expect("flushed batch received");
+        let mut pdata = rx.recv().await.expect("flushed batch received");
         assert_eq!(pdata.num_items(), 1);
         let metrics = metrics.borrow();
         assert!(builder.is_empty());

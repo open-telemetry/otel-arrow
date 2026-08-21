@@ -9,7 +9,7 @@
 )]
 
 use data_engine_recordset::*;
-use otap_df_contrib_nodes::processors::recordset_kql_processor::otlp_bridge::BridgePipeline;
+use otel_arrow_dfe_contrib_nodes::processors::recordset_kql_processor::otlp_bridge::BridgePipeline;
 
 pub(crate) fn process_records<'a, TRecords, TRecord>(
     pipeline: &'a BridgePipeline,

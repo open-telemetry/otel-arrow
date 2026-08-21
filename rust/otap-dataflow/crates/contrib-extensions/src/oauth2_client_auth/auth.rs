@@ -18,8 +18,8 @@ use oauth2::{
     AccessToken, AsyncHttpClient, Client, ClientId, ClientSecret, EndpointNotSet, HttpRequest,
     HttpResponse, RefreshToken, Scope, StandardRevocableToken, TokenResponse, TokenUrl,
 };
-use otap_df_engine::capability::auth::BearerToken;
-use otap_df_otap::tls_utils::{read_file_with_limit_async, read_file_with_limit_sync};
+use otel_arrow_dfe_engine::capability::auth::BearerToken;
+use otel_arrow_dfe_otap::tls_utils::{read_file_with_limit_async, read_file_with_limit_sync};
 use rand::RngExt;
 use reqwest::{Certificate, Identity};
 use secrecy::{ExposeSecret, SecretString};
@@ -85,7 +85,7 @@ impl Auth {
     pub fn new(config: &Config) -> Result<Self, Error> {
         // The reqwest/rustls HTTP client needs a process-wide crypto provider
         // installed before any TLS request is made.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         // The JWT-bearer grant signs an assertion on every acquisition. Fail
         // here rather than letting `jsonwebtoken` panic at the first signature
@@ -525,7 +525,7 @@ async fn read_pem_credential(
 /// collector. A custom executor (rather than the oauth2 crate's built-in
 /// reqwest integration) keeps a single reqwest version in the token path.
 ///
-/// [`TlsClientConfig`]: otap_df_config::tls::TlsClientConfig
+/// [`TlsClientConfig`]: otel_arrow_dfe_config::tls::TlsClientConfig
 #[derive(Clone)]
 struct HttpExecutor {
     client: reqwest::Client,

@@ -4,7 +4,9 @@
 //! Implementation of the configuration of the filter processor
 //!
 
-use otap_df_pdata::otap::filter::{logs::LogFilter, metrics::MetricFilter, traces::TraceFilter};
+use otel_arrow_dfe_pdata::otap::filter::{
+    logs::LogFilter, metrics::MetricFilter, traces::TraceFilter,
+};
 
 use serde::Deserialize;
 

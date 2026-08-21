@@ -16,18 +16,18 @@
 
 use super::*;
 use chrono::Utc;
-use otap_df_admin::{
+use otel_arrow_dfe_admin::{
     ConfigChangeAction, ConfigChangeStatus, ControlPlane, ControlPlaneError,
     EngineConfigReconcileRequest, EngineConfigReconcileState, EngineConfigReconcileStatus,
     GroupDeleteStatus, PipelineDeleteStatus, PipelineDetails,
     PipelineRolloutState as ApiPipelineRolloutState,
-    PipelineRolloutSummary as ApiPipelineRolloutSummary, ReconfigureRequest, RolloutCoreStatus,
-    RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
+    PipelineRolloutSummary as ApiPipelineRolloutSummary, PipelineShutdownInitiator,
+    ReconfigureRequest, RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
-use otap_df_engine::topology::NumaTopology;
-use otap_df_state::conditions::ConditionStatus;
-use otap_df_state::phase::PipelinePhase;
-use otap_df_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
+use otel_arrow_dfe_engine::topology::NumaTopology;
+use otel_arrow_dfe_state::conditions::ConditionStatus;
+use otel_arrow_dfe_state::phase::PipelinePhase;
+use otel_arrow_dfe_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
 use std::any::Any;
 use std::backtrace::Backtrace;
 use std::collections::VecDeque;
@@ -487,9 +487,14 @@ impl<
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
+        initiator: PipelineShutdownInitiator,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
-        self.runtime
-            .request_shutdown_pipeline(pipeline_group_id, pipeline_id, timeout_secs)
+        self.runtime.request_shutdown_pipeline_with_initiator(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            initiator,
+        )
     }
 
     fn reconfigure_pipeline(

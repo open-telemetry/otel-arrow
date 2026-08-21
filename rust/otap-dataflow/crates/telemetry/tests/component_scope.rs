@@ -28,7 +28,7 @@ where
 mod scoped_component {
     const COMPONENT_URN: &str = "urn:otel:processor:scope_test";
 
-    otap_df_telemetry::otel_component_scope!(
+    otel_arrow_dfe_telemetry::otel_component_scope!(
         urn = COMPONENT_URN,
         target = "otel.processor.scope_test",
     );
@@ -59,7 +59,7 @@ mod scoped_component {
 mod second_scoped_component {
     const COMPONENT_URN: &str = "urn:otel:processor:second_scope_test";
 
-    otap_df_telemetry::otel_component_scope!(
+    otel_arrow_dfe_telemetry::otel_component_scope!(
         urn = COMPONENT_URN,
         target = "otel.processor.second_scope_test",
     );
@@ -72,7 +72,7 @@ mod second_scoped_component {
 mod prefix_collision_component {
     const COMPONENT_URN: &str = "urn:otel:processor:scope_test_extra";
 
-    otap_df_telemetry::otel_component_scope!(
+    otel_arrow_dfe_telemetry::otel_component_scope!(
         urn = COMPONENT_URN,
         target = "otel.processor.scope_test_extra",
     );
@@ -85,7 +85,7 @@ mod prefix_collision_component {
 mod namespaced_component {
     const COMPONENT_URN: &str = "urn:microsoft:processor:scope_test";
 
-    otap_df_telemetry::otel_component_scope!(
+    otel_arrow_dfe_telemetry::otel_component_scope!(
         urn = COMPONENT_URN,
         target = "microsoft.processor.scope_test",
     );
@@ -146,15 +146,15 @@ fn base_macros_support_explicit_and_default_targets() {
     let subscriber = tracing_subscriber::registry().with(capture);
 
     tracing::subscriber::with_default(subscriber, || {
-        otap_df_telemetry::otel_info!(target: "test::explicit", "test.explicit");
-        otap_df_telemetry::otel_info!("test.default");
+        otel_arrow_dfe_telemetry::otel_info!(target: "test::explicit", "test.explicit");
+        otel_arrow_dfe_telemetry::otel_info!("test.default");
     });
 
     assert_eq!(
         *targets
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        ["test::explicit", "otap-df-telemetry"]
+        ["test::explicit", "otel-arrow-dfe-telemetry"]
     );
 }
 
@@ -173,7 +173,7 @@ fn component_targets_support_hierarchical_prefix_filtering() {
     tracing::subscriber::with_default(kind_subscriber, || {
         scoped_component::emit_from_root();
         second_scoped_component::emit();
-        otap_df_telemetry::otel_info!("test.unscoped");
+        otel_arrow_dfe_telemetry::otel_info!("test.unscoped");
     });
 
     assert_eq!(
@@ -217,20 +217,20 @@ fn component_targets_support_hierarchical_prefix_filtering() {
 fn package_filter_does_not_match_component_targets() {
     let capture = TargetCapture::default();
     let targets = Arc::clone(&capture.targets);
-    let filter =
-        EnvFilter::try_new("off,otap-df-telemetry=info").expect("package filter should parse");
+    let filter = EnvFilter::try_new("off,otel-arrow-dfe-telemetry=info")
+        .expect("package filter should parse");
     let subscriber = tracing_subscriber::registry().with(capture).with(filter);
 
     tracing::subscriber::with_default(subscriber, || {
         scoped_component::emit_from_root();
-        otap_df_telemetry::otel_info!("test.unscoped");
+        otel_arrow_dfe_telemetry::otel_info!("test.unscoped");
     });
 
     assert_eq!(
         *targets
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        ["otap-df-telemetry"]
+        ["otel-arrow-dfe-telemetry"]
     );
 }
 

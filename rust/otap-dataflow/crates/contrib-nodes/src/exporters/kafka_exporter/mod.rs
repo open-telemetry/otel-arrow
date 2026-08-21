@@ -64,7 +64,7 @@
 //!       linger_ms: 5
 //! ```
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = exporter::KAFKA_EXPORTER_URN,
     target = "otel.exporter.kafka",
 );

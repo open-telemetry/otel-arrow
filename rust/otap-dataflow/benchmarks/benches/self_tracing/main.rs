@@ -33,15 +33,17 @@
 //! event and removes the cached-interest floor for every callsite.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_config::observed_state::SendPolicy;
-use otap_df_config::settings::telemetry::logs::LogLevel;
-use otap_df_pdata::otlp::ProtoBuffer;
-use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-use otap_df_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
-use otap_df_telemetry::log_filter::RuntimeLogFilter;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::self_tracing::{
+use otel_arrow_dfe_config::observed_state::SendPolicy;
+use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
+use otel_arrow_dfe_pdata::otlp::ProtoBuffer;
+use otel_arrow_dfe_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+use otel_arrow_dfe_telemetry::descriptor::{
+    AttributeField, AttributeValueType, AttributesDescriptor,
+};
+use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
+use otel_arrow_dfe_telemetry::log_filter::RuntimeLogFilter;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::self_tracing::{
     DirectLogRecordEncoder, LogContext, LogRecord, ScopeToBytesMap, encode_export_logs_request,
     format_log_record_to_string,
 };
@@ -422,11 +424,11 @@ fn log_level(value: &str) -> LogLevel {
 }
 
 fn emit_enabled() {
-    otap_df_telemetry::otel_info!("benchmark.enabled", value = std::hint::black_box(42));
+    otel_arrow_dfe_telemetry::otel_info!("benchmark.enabled", value = std::hint::black_box(42));
 }
 
 fn emit_disabled() {
-    otap_df_telemetry::otel_info!("benchmark.disabled", value = std::hint::black_box(42));
+    otel_arrow_dfe_telemetry::otel_info!("benchmark.disabled", value = std::hint::black_box(42));
 }
 
 enum EmissionFilter {

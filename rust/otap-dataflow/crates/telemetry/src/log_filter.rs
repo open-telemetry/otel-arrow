@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use arc_swap::ArcSwap;
-use otap_df_config::settings::telemetry::logs::LogLevel;
+use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use tracing::span::{Attributes, Id, Record};
 use tracing::subscriber::Interest;
 use tracing::{Metadata, Subscriber};

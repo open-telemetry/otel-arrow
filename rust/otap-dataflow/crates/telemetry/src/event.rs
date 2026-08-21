@@ -5,7 +5,9 @@
 
 use crate::log_tap::InternalLogTapDropCounter;
 use crate::self_tracing::{LogRecord, format_log_record_to_string};
-use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind, observed_state::SendPolicy};
+use otel_arrow_dfe_config::{
+    DeployedPipelineKey, NodeId, node::NodeKind, observed_state::SendPolicy,
+};
 use serde::Serialize;
 use serde::ser::Serializer;
 use std::fmt;

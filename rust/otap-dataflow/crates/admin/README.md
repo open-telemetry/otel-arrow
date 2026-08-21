@@ -1,6 +1,6 @@
 # Admin Interface
 
-`otap-df-admin` provides:
+`otel-arrow-dfe-admin` provides:
 
 - admin, health, status, and telemetry HTTP endpoints;
 - live pipeline mutation endpoints for create, replace, resize, rollout
