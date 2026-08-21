@@ -13,7 +13,7 @@ use toml::{Table, Value};
 /// This procedure checks that the following rules are properly followed for
 /// each crate in the cargo workspace.
 /// - Each crate must have a README.md file.
-/// - Each crate package name must start with "otap-df-" to avoid conflicts with other
+/// - Each crate package name must start with "otel-arrow-dfe-" to avoid conflicts with other
 ///   crates.
 /// - Each Cargo.toml must contain \[lints\] workspace = true and few other fields
 ///   in the \[package\] section.
@@ -160,9 +160,9 @@ fn check_package<P: AsRef<Path>>(cargo_toml_path: P, toml: &Table) -> anyhow::Re
             )
         })?;
 
-    if !package_name.starts_with("otap-df-") {
+    if !package_name.starts_with("otel-arrow-dfe-") {
         return Err(anyhow::anyhow!(
-            "\u{274C} `package.name` must start with `otap-df-` in {}",
+            "\u{274C} `package.name` must start with `otel-arrow-dfe-` in {}",
             cargo_toml_path.as_ref().display()
         ));
     }

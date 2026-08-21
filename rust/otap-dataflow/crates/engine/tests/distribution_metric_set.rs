@@ -6,10 +6,10 @@
 
 #![allow(missing_docs)]
 
-use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
-use otap_df_telemetry::instrument::HistogramNormal;
-use otap_df_telemetry::metrics::{MetricSetHandler, MetricValue};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
+use otel_arrow_dfe_telemetry::instrument::HistogramNormal;
+use otel_arrow_dfe_telemetry::metrics::{MetricSetHandler, MetricValue};
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
 #[metric_set(name = "test.distribution_set")]
 #[derive(Debug, Default, Clone)]

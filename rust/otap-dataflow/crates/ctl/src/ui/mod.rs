@@ -61,11 +61,11 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use humantime::format_duration;
-use otap_df_admin_api::{
+use otel_arrow_dfe_admin_api::{
     AdminClient, HttpAdminClientSettings, engine, groups, operations::OperationOptions, pipelines,
     telemetry,
 };
-use otap_df_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::pipeline::PipelineConfig;
 use ratatui::layout::Rect;
 use serde::Serialize;
 use serde_json::json;

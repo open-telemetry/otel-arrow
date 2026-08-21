@@ -8,15 +8,15 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
-use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::OtapPayload;
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::proto::opentelemetry::common::v1::*;
-use otap_df_pdata::proto::opentelemetry::logs::v1::*;
-use otap_df_pdata::proto::opentelemetry::resource::v1::*;
-use otap_df_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::*;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
+use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::*;
+use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;

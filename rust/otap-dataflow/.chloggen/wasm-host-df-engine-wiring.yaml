@@ -20,6 +20,6 @@ issues: [2973, 3227]
 # characters and subtext to 300 characters.
 subtext: |
   The `wasm` cargo feature is still off by default; enabling it force-links
-  `otap-df-wasm-host` into `df_engine` and registers the `wasm_processor`
+  `otel-arrow-dfe-wasm-host` into `df_engine` and registers the `wasm_processor`
   factory (URN `urn:otel:processor:wasm_processor`). No wasmtime dependency
   is pulled into the default build.

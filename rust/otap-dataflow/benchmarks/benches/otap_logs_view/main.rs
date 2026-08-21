@@ -17,13 +17,13 @@
 //! Direct Arrow is fastest but unrealistic (baseline only, no hierarchical access).
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-use otap_df_pdata::views::otap::OtapLogsView;
-use otap_df_pdata_views::views::common::AttributeView;
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+use otel_arrow_dfe_pdata_views::views::common::AttributeView;
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 use prost::Message;
@@ -32,8 +32,8 @@ use arrow::array::Array;
 use arrow::array::DictionaryArray;
 use arrow::datatypes::UInt8Type;
 use arrow::error::ArrowError;
-use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
-use otap_df_pdata::encode::record::logs::LogsRecordBatchBuilder;
+use otel_arrow_dfe_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
+use otel_arrow_dfe_pdata::encode::record::logs::LogsRecordBatchBuilder;
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;

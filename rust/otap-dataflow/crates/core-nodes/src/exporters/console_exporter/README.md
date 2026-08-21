@@ -153,7 +153,7 @@ config:
 ```
 
 ```json
-{"timestamp":"2025-01-15T10:30:00.000000000Z","severity_number":9,"body":"Starting OTLP gRPC receiver","event_name":"otlp.receiver.grpc.start","attributes":{"endpoint":"0.0.0.0:4317"},"scope":{"name":"otap-df-core-nodes","attributes":{}}}
+{"timestamp":"2025-01-15T10:30:00.000000000Z","severity_number":9,"body":"Starting OTLP gRPC receiver","event_name":"otlp.receiver.grpc.start","attributes":{"endpoint":"0.0.0.0:4317"},"scope":{"name":"otel-arrow-dfe-core-nodes","attributes":{}}}
 ```
 
 With both resource and scope context disabled:
@@ -183,7 +183,7 @@ config:
 ```
 
 ```json
-{"timestamp":"2025-01-15T10:30:00.000000000Z","severity_number":9,"body":"Starting OTLP gRPC receiver","event_name":"otlp.receiver.grpc.start","attributes":{"endpoint":"0.0.0.0:4317"},"resource":{"service.name":"otap_engine"},"scope":{"name":"otap-df-core-nodes","attributes":{}}}
+{"timestamp":"2025-01-15T10:30:00.000000000Z","severity_number":9,"body":"Starting OTLP gRPC receiver","event_name":"otlp.receiver.grpc.start","attributes":{"endpoint":"0.0.0.0:4317"},"resource":{"service.name":"otap_engine"},"scope":{"name":"otel-arrow-dfe-core-nodes","attributes":{}}}
 ```
 
 The top-level `attributes` object is always present. Enabled resource and scope

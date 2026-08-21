@@ -3,8 +3,8 @@
 
 //! Unbounded styled writer for data-plane console output.
 
-use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
-use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode};
+use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+use otel_arrow_dfe_telemetry::self_tracing::{AnsiCode, ColorMode};
 use std::io::{self, Write};
 
 /// Styled writer that delegates capacity and failure behavior to its output.

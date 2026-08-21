@@ -45,18 +45,18 @@ use std::time::SystemTime;
 use arrow::array::{BinaryArray, RecordBatch};
 use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Schema};
-use quiver::record_bundle::{
+use otel_arrow_dfe_quiver::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };
-use quiver::segment::ReconstructedBundle;
+use otel_arrow_dfe_quiver::segment::ReconstructedBundle;
 
-use otap_df_config::SignalType;
-use otap_df_pdata::otap::schema::SchemaIdBuilder;
-use otap_df_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::otap::schema::SchemaIdBuilder;
+use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 
 // -----------------------------------------------------------------------------
 // Slot ID Constants
@@ -675,8 +675,8 @@ where
 #[allow(unused_imports)]
 mod tests {
     use super::*;
-    use otap_df_pdata::otap::OtapBatchStore;
-    use otap_df_pdata::{logs, metrics, record_batch, traces};
+    use otel_arrow_dfe_pdata::otap::OtapBatchStore;
+    use otel_arrow_dfe_pdata::{logs, metrics, record_batch, traces};
 
     /// Helper to extract a single batch from an OtapArrowRecords.
     fn extract_batch(records: &OtapArrowRecords, payload_type: ArrowPayloadType) -> RecordBatch {

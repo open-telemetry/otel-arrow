@@ -25,11 +25,11 @@ use crate::clock;
 use crate::control::{NodeControlMsg, WakeupRevision, WakeupSlot};
 use crate::entity_context::current_node_telemetry_handle;
 use crate::indexed_min_heap::IndexedMinHeap;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -788,9 +788,9 @@ mod tests {
     /// rejected, canceled, missed, and popped wakeup operation.
     #[test]
     fn scheduler_metrics_count_wakeup_lifecycle() {
-        let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::default();
+        let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::default();
         let metrics: MetricSet<NodeLocalWakeupSchedulerMetrics> =
-            registry.register_metric_set(otap_df_telemetry::testing::EmptyAttributes());
+            registry.register_metric_set(otel_arrow_dfe_telemetry::testing::EmptyAttributes());
         let mut scheduler = NodeLocalScheduler::<i32>::new_with_metrics(1, 1, Some(metrics));
         let now = Instant::now();
         let later = now + Duration::from_secs(1);

@@ -1,4 +1,4 @@
-# otap-df-pdata-views
+# otel-arrow-dfe-pdata-views
 
 Zero-dependency, backend-agnostic view traits for OTLP/OTAP telemetry data.
 
@@ -8,7 +8,7 @@ This crate provides read-only view traits for traversing hierarchical
 telemetry data structures (logs, traces, resources) without any external
 dependencies. It is designed to be consumed both within the
 `otap-dataflow` workspace and by external crates that need a lightweight
-integration point without pulling in the full `otap-df-pdata` stack.
+integration point without pulling in the full `otel-arrow-dfe-pdata` stack.
 
 ## Traits
 

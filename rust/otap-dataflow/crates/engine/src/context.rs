@@ -16,16 +16,16 @@ use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
 use data_encoding::BASE32_NOPAD;
-use otap_df_config::node::NodeKind;
-use otap_df_config::pipeline::telemetry::TelemetryAttribute;
-use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
-use otap_df_telemetry::InternalTelemetrySettings;
-use otap_df_telemetry::metrics::MetricSetRegistrar;
-use otap_df_telemetry::metrics::{
+use otel_arrow_dfe_config::node::NodeKind;
+use otel_arrow_dfe_config::pipeline::telemetry::TelemetryAttribute;
+use otel_arrow_dfe_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
+use otel_arrow_dfe_telemetry::InternalTelemetrySettings;
+use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
+use otel_arrow_dfe_telemetry::metrics::{
     MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetHandler,
     RegistrationMetricSetHandler,
 };
-use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
+use otel_arrow_dfe_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
 use std::any::Any;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -33,7 +33,7 @@ use std::fmt::Debug;
 use std::sync::{Arc, LazyLock};
 use uuid::Uuid;
 
-/// A shared, immutable mapping from otap_df_config node names
+/// A shared, immutable mapping from otel_arrow_dfe_config node names
 /// (without index numbers) to their engine-specific pipeline indices.
 pub type NodeNameIndex = Arc<HashMap<ConfigNodeId, EngineNodeId>>;
 
@@ -1025,8 +1025,8 @@ impl ExtensionContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline::telemetry::AttributeValue;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::collections::HashMap;
 
     /// Scenario: explicit process, host, and container identities are available.

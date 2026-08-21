@@ -66,7 +66,7 @@ pub struct LocalRetainedSnapshot {
 /// runtime.
 ///
 /// ```compile_fail
-/// use otap_df_engine::retained_work::LocalRetainedAccount;
+/// use otel_arrow_dfe_engine::retained_work::LocalRetainedAccount;
 ///
 /// let account = LocalRetainedAccount::new();
 /// std::thread::spawn(move || drop(account));

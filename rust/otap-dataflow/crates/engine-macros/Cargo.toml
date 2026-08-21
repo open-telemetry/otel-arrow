@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-engine-macros"
+name = "otel-arrow-dfe-engine-macros"
 description = "Proc macros for the async pipeline engine"
 version.workspace = true
 authors.workspace = true
@@ -16,7 +16,7 @@ proc-macro = true
 workspace = true
 
 [dependencies]
-otap-df-component-inventory-syntax = { workspace = true }
+otel-arrow-dfe-component-inventory-syntax = { workspace = true }
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }

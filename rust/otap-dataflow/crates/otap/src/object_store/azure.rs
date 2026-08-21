@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use object_store::{CredentialProvider, azure::AzureCredential};
-use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider;
 use tokio::sync::Mutex;
 
 /// Bridges the engine's bearer token capability to object_store Azure credentials.
@@ -75,9 +75,9 @@ impl CredentialProvider for AzureTokenCredentialProvider {
 #[cfg(test)]
 mod test {
     use super::*;
-    use otap_df_engine::capability::auth::BearerToken;
-    use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
-    use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
+    use otel_arrow_dfe_engine::capability::auth::BearerToken;
+    use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TokenStream;
+    use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
 
     /// Scenario: The bound capability cannot produce a token.
     /// Guarantees: The failure is reported to object_store instead of surfacing an unauthenticated request.
@@ -227,7 +227,7 @@ mod test {
             match self.tokens.lock().await.pop() {
                 Some(token) => Ok(BearerToken::without_expiry(token)),
                 None => Err(CapabilityErrorSource::<
-                    otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider,
+                    otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider,
                 >::new("test_extension".into())
                 .error("no token available")),
             }

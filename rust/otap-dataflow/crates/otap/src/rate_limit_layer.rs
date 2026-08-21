@@ -6,8 +6,8 @@
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use futures::future::Either;
 use http::{Request, Response};
-use otap_df_engine::admission::SharedAdmissionGate;
-use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
+use otel_arrow_dfe_engine::admission::SharedAdmissionGate;
+use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use std::future::{Ready, ready};
 use std::sync::Arc;
@@ -139,17 +139,17 @@ where
 mod tests {
     use super::*;
     use futures::future;
-    use otap_df_config::policy::{
+    use otel_arrow_dfe_config::policy::{
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
         RateLimiterPolicy, TokenBucketPolicy,
     };
-    use otap_df_engine::admission::{
+    use otel_arrow_dfe_engine::admission::{
         AdmissionBinder, AdmissionContext, AdmissionDecision, AdmissionDimension,
     };
-    use otap_df_engine::memory_limiter::{
+    use otel_arrow_dfe_engine::memory_limiter::{
         MemoryPressureLevel, MemoryPressureState, SharedReceiverAdmissionState,
     };
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Waker;
@@ -217,7 +217,7 @@ mod tests {
     fn new_metrics() -> Arc<Mutex<OtlpReceiverMetrics>> {
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)))
@@ -349,7 +349,7 @@ mod tests {
 
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
@@ -401,7 +401,7 @@ mod tests {
 
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));

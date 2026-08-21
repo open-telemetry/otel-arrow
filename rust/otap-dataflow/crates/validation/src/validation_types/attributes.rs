@@ -7,12 +7,12 @@
 //! pairs) appear for each attribute list or do **not** appear within configured domains (resource,
 //! scope, or the signal itself).
 
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::proto::opentelemetry::common::v1 as proto_common;
-use otap_df_pdata::proto::opentelemetry::common::v1::{
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1 as proto_common;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
     AnyValue as ProtoValue, KeyValue as ProtoKeyValue, any_value::Value as ProtoAnyValue,
 };
-use otap_df_pdata::proto::opentelemetry::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::{
     logs::v1 as proto_logs, metrics::v1 as proto_metrics, trace::v1 as proto_trace,
 };
 use serde::{Deserialize, Serialize};
@@ -301,13 +301,13 @@ fn anyvalue_to_proto(val: &AnyValue) -> Option<ProtoValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 
     #[test]
     fn collect_log_attributes_includes_all_domains() {
-        use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
 
         fn proto_kv(key: &str, val: &str) -> ProtoKeyValue {
             ProtoKeyValue {
@@ -371,8 +371,8 @@ mod tests {
 
     #[test]
     fn require_keys_must_be_present_in_each_domain() {
-        use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
         fn proto_kv(key: &str, val: &str) -> ProtoKeyValue {
             ProtoKeyValue {
                 key: key.into(),
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn deny_keys_blocks_presence() {
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
         fn proto_kv(key: &str, val: &str) -> ProtoKeyValue {
             ProtoKeyValue {
                 key: key.into(),

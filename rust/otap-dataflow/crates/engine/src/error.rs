@@ -7,13 +7,13 @@
 //! ensure these errors can be emitted in both `Send` and `!Send` contexts.
 
 use crate::node::{NodeId, NodeName};
-use otap_df_channel::error::SendError;
-use otap_df_config::node::NodeKind;
-use otap_df_config::{NodeUrn, PortName, TopicName};
-use otap_df_telemetry::event::ErrorSummary;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_config::node::NodeKind;
+use otel_arrow_dfe_config::{NodeUrn, PortName, TopicName};
+use otel_arrow_dfe_telemetry::event::ErrorSummary;
 use std::fmt;
 
-use otap_df_config::ExtensionId;
+use otel_arrow_dfe_config::ExtensionId;
 
 /// High-level classification for exporter failures to aid troubleshooting.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -177,11 +177,11 @@ impl<T: Sized> From<TypedError<T>> for Error {
 pub enum Error {
     /// A wrapper for the config errors.
     #[error("A config error occurred: {0}")]
-    ConfigError(#[from] Box<otap_df_config::error::Error>),
+    ConfigError(#[from] Box<otel_arrow_dfe_config::error::Error>),
 
     /// A wrapper for the channel errors.
     #[error("A channel error occurred: {0}")]
-    ChannelRecvError(#[from] otap_df_channel::error::RecvError),
+    ChannelRecvError(#[from] otel_arrow_dfe_channel::error::RecvError),
 
     /// A wrapper for the channel errors.
     #[error("A data channel error occurred: {error}")]
@@ -480,12 +480,12 @@ pub enum Error {
     TooManyNodes {},
 
     /// Error in pipeline data (e.g., translation)
-    /// Note: this is not a specific type such as otap_df_pdata::error::Error
+    /// Note: this is not a specific type such as otel_arrow_dfe_pdata::error::Error
     /// because this crate does not specifically depend on that crate.  We
     /// could use a dyn Error, maybe.
     #[error("Pipeline data error: {}", reason)]
     PDataError {
-        /// otap_df_pdata error string
+        /// otel_arrow_dfe_pdata error string
         reason: String,
     },
 
@@ -685,16 +685,16 @@ pub fn error_summary_from(err: &Error) -> ErrorSummary {
     }
 }
 
-impl From<otap_df_pdata::error::Error> for Error {
-    fn from(e: otap_df_pdata::error::Error) -> Self {
+impl From<otel_arrow_dfe_pdata::error::Error> for Error {
+    fn from(e: otel_arrow_dfe_pdata::error::Error) -> Self {
         Self::PDataError {
             reason: e.to_string(),
         }
     }
 }
 
-impl From<otap_df_pdata::encode::Error> for Error {
-    fn from(e: otap_df_pdata::encode::Error) -> Self {
+impl From<otel_arrow_dfe_pdata::encode::Error> for Error {
+    fn from(e: otel_arrow_dfe_pdata::encode::Error) -> Self {
         Self::PDataError {
             reason: e.to_string(),
         }

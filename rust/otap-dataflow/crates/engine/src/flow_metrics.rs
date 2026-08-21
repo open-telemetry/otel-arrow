@@ -19,15 +19,15 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry_macros::{attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
 
 use crate::attributes::PipelineAttributeSet;
 use crate::context::PipelineContext;
-use otap_df_config::SignalType;
-use otap_df_config::policy::{FlowMetric, TelemetryPolicy};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::policy::{FlowMetric, TelemetryPolicy};
 
 /// Metric set emitted by the start node of a flow range.
 #[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
@@ -486,9 +486,9 @@ pub(crate) fn build_flow_metric_state(
 }
 
 fn invalid_flow_metric_config(error: String) -> crate::error::Error {
-    crate::error::Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-        error,
-    }))
+    crate::error::Error::ConfigError(Box::new(
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig { error },
+    ))
 }
 
 /// Compute the "active range" of a flow metric: the set of node indices
@@ -630,7 +630,7 @@ impl PipelineFlowMetricState {
 mod tests {
     use super::*;
     use crate::testing::test_pipeline_ctx;
-    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+    use otel_arrow_dfe_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 
     fn one_flow_metric_state() -> PipelineFlowMetricState {
         let (ctx, _) = test_pipeline_ctx();
@@ -764,7 +764,9 @@ mod tests {
 
     // -- build_flow_metric_state validation tests --
 
-    use otap_df_config::policy::{FlowBounds, FlowMetric, FlowMetricConfig, TelemetryPolicy};
+    use otel_arrow_dfe_config::policy::{
+        FlowBounds, FlowMetric, FlowMetricConfig, TelemetryPolicy,
+    };
 
     fn policy_with(flow_metrics: Vec<FlowMetricConfig>) -> TelemetryPolicy {
         TelemetryPolicy {
@@ -790,7 +792,7 @@ mod tests {
     fn assert_invalid_user_config(err: &crate::error::Error, sw_name: &str) {
         match err {
             crate::error::Error::ConfigError(boxed) => match boxed.as_ref() {
-                otap_df_config::error::Error::InvalidUserConfig { error } => {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig { error } => {
                     assert!(
                         error.contains(sw_name),
                         "expected error to mention `{sw_name}`, got: {error}"

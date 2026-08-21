@@ -10,8 +10,8 @@
 
 use crate::args::ConnectionArgs;
 use crate::error::CliError;
-use otap_df_admin_api::config::tls::{TlsClientConfig, TlsConfig};
-use otap_df_admin_api::{AdminEndpoint, AdminScheme, HttpAdminClientSettings};
+use otel_arrow_dfe_admin_api::config::tls::{TlsClientConfig, TlsConfig};
+use otel_arrow_dfe_admin_api::{AdminEndpoint, AdminScheme, HttpAdminClientSettings};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -19,10 +19,10 @@
 //! Run with:
 //!
 //! ```text
-//! cargo bench -p otap-df-expohisto --bench hot
+//! cargo bench -p otel-arrow-dfe-expohisto --bench hot
 //! ```
 
-use otap_df_expohisto::{HistogramNN, Scale, Width, table_scale};
+use otel_arrow_dfe_expohisto::{HistogramNN, Scale, Width, table_scale};
 use std::hint::black_box;
 use std::time::Instant;
 

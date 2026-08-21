@@ -1,7 +1,7 @@
 # dfctl
 
 `dfctl` is the OTAP Dataflow Engine command-line client built on top of
-the public Rust admin SDK, `otap-df-admin-api`.
+the public Rust admin SDK, `otel-arrow-dfe-admin-api`.
 
 It is intended to be:
 
@@ -14,7 +14,7 @@ It is intended to be:
 `dfctl` is designed as the operator-facing control surface for the admin API.
 These principles guide command design, output contracts, and TUI behavior:
 
-- The public `otap-df-admin-api` SDK is the source of truth. The CLI should
+- The public `otel-arrow-dfe-admin-api` SDK is the source of truth. The CLI should
   expose SDK capabilities directly and avoid duplicating protocol logic.
 - Local and remote engines should have the same user experience. Target URL,
   TLS, profile, and environment resolution should be consistent for every

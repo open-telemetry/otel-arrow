@@ -8,11 +8,11 @@ use crate::event::LogEvent;
 use crate::registry::EntityKey;
 use crate::registry::TelemetryRegistryHandle;
 use bytes::Bytes;
-use otap_df_config::pipeline::telemetry::{
+use otel_arrow_dfe_config::pipeline::telemetry::{
     AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
 };
-use otap_df_pdata::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer};
-use otap_df_pdata::proto::consts::{
+use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer};
+use otel_arrow_dfe_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
 use std::collections::HashMap;
@@ -290,7 +290,7 @@ impl<'a, B: BoundedBuf> BoundedBufFmt<'a, B> {
     /// is left at `content_start` (empty content) and the caller should treat
     /// this as a hard drop.
     fn truncate_with_suffix(&mut self) {
-        use otap_df_pdata::otlp::common::TRUNCATION_SUFFIX;
+        use otel_arrow_dfe_pdata::otlp::common::TRUNCATION_SUFFIX;
 
         let suffix_len = TRUNCATION_SUFFIX.len();
         let cur = self.buf.len();
@@ -809,18 +809,18 @@ mod tests {
     use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
     use crate::event::LogEvent;
     use crate::self_tracing::formatter::format_log_record_to_string;
-    use otap_df_config::pipeline::telemetry::{
+    use otel_arrow_dfe_config::pipeline::telemetry::{
         AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
     };
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::ScopeLogs;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ScopeLogs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use prost::Message;
     use std::collections::{BTreeMap, HashMap};
     use std::time::{Duration, SystemTime};
@@ -993,13 +993,13 @@ mod tests {
         // is conveyed via InstrumentationScope.name. See
         // encode_event_name + encode_export_logs_request.
         assert_eq!(event_name, "test.scope.encoding");
-        assert_eq!(scope.name, "otap-df-telemetry");
+        assert_eq!(scope.name, "otel-arrow-dfe-telemetry");
 
         let expected = ExportLogsServiceRequest::new([ResourceLogs::new(
             Resource::build().finish(),
             [ScopeLogs::new(
                 InstrumentationScope::build()
-                    .name("otap-df-telemetry")
+                    .name("otel-arrow-dfe-telemetry")
                     .attributes([
                         KeyValue::new("pipeline.name", AnyValue::new_string("my-pipeline")),
                         KeyValue::new("cpu.id", AnyValue::new_int(3)),
@@ -1018,7 +1018,7 @@ mod tests {
         assert_eq!(
             format_log_record_to_string(None, &log_event.record),
             format!(
-                "INFO  otap-df-telemetry::{event_name} entity={:?}\n",
+                "INFO  otel-arrow-dfe-telemetry::{event_name} entity={:?}\n",
                 entity_key
             ),
         );
@@ -1095,14 +1095,14 @@ mod tests {
             .expect("scope present");
         let event_name = &decoded.resource_logs[0].scope_logs[0].log_records[0].event_name;
         assert_eq!(event_name, "test.map.encoding");
-        assert_eq!(scope.name, "otap-df-telemetry");
+        assert_eq!(scope.name, "otel-arrow-dfe-telemetry");
 
         // BTreeMap iterates in sorted key order: "priority" before "region".
         let expected = ExportLogsServiceRequest::new([ResourceLogs::new(
             Resource::build().finish(),
             [ScopeLogs::new(
                 InstrumentationScope::build()
-                    .name("otap-df-telemetry")
+                    .name("otel-arrow-dfe-telemetry")
                     .attributes([KeyValue::new(
                         "custom",
                         AnyValue::new_kvlist(vec![
@@ -1131,9 +1131,9 @@ mod tests {
     #[test]
     fn record_str_halves_remaining_budget_across_attributes() {
         use crate::self_tracing::encoder::DirectFieldVisitor;
-        use otap_df_pdata::otlp::common::TRUNCATION_SUFFIX;
-        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
-        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use otel_arrow_dfe_pdata::otlp::common::TRUNCATION_SUFFIX;
+        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
         use prost::Message;
         use tracing::field::Visit;
 
@@ -1191,7 +1191,7 @@ mod tests {
                 .as_ref()
                 .and_then(|v| v.value.as_ref())
                 .map(|v| match v {
-                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
+                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
                     _ => panic!("expected string value"),
                 })
                 .unwrap();
@@ -1250,8 +1250,8 @@ mod tests {
     /// when the value comfortably fits.
     #[test]
     fn record_debug_writes_fmt_output_without_intermediate_string() {
-        use otap_df_pdata::otlp::common::StackProtoBuffer;
-        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use otel_arrow_dfe_pdata::otlp::common::StackProtoBuffer;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
         use prost::Message;
         use tracing::field::Visit;
 
@@ -1288,7 +1288,7 @@ mod tests {
         let kv = ProtoKeyValue::decode(&cursor[..len as usize]).unwrap();
         assert_eq!(kv.key, "dbg");
         let s = match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
-            otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
+            otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
                 s.clone()
             }
             other => panic!("expected StringValue, got {other:?}"),
@@ -1302,8 +1302,8 @@ mod tests {
     /// encoded KeyValue is decodable with the suffix at the end.
     #[test]
     fn record_debug_overflow_truncates_with_suffix() {
-        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer, TRUNCATION_SUFFIX};
-        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer, TRUNCATION_SUFFIX};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
         use prost::Message;
         use tracing::field::Visit;
 
@@ -1350,7 +1350,7 @@ mod tests {
         let kv = ProtoKeyValue::decode(&cursor[..len as usize]).unwrap();
         assert_eq!(kv.key, "dbg");
         let s = match kv.value.as_ref().unwrap().value.as_ref().unwrap() {
-            otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
+            otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
                 s.clone()
             }
             other => panic!("expected StringValue, got {other:?}"),
@@ -1373,7 +1373,7 @@ mod tests {
     /// pre-call length) and `dropped_count` is incremented.
     #[test]
     fn record_debug_hard_drop_when_budget_too_small() {
-        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
         use tracing::field::Visit;
 
         struct Tiny;
@@ -1412,9 +1412,9 @@ mod tests {
     /// does not exceed the inline limit.
     #[test]
     fn record_debug_halves_remaining_budget_across_attributes() {
-        use otap_df_pdata::otlp::common::TRUNCATION_SUFFIX;
-        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
-        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use otel_arrow_dfe_pdata::otlp::common::TRUNCATION_SUFFIX;
+        use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
         use prost::Message;
         use tracing::field::Visit;
 
@@ -1476,7 +1476,7 @@ mod tests {
                 .as_ref()
                 .and_then(|v| v.value.as_ref())
                 .map(|v| match v {
-                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
+                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => s.clone(),
                     _ => panic!("expected string value"),
                 })
                 .unwrap();
@@ -1516,7 +1516,7 @@ mod tests {
 
     static DEBUG_TEST_METADATA: tracing::Metadata<'static> = tracing::Metadata::new(
         "debug_test",
-        "otap-df-telemetry",
+        "otel-arrow-dfe-telemetry",
         Level::INFO,
         Some(file!()),
         Some(line!()),
@@ -1555,7 +1555,7 @@ mod tests {
 
     static BUDGET_TEST_METADATA: tracing::Metadata<'static> = tracing::Metadata::new(
         "budget_test",
-        "otap-df-telemetry",
+        "otel-arrow-dfe-telemetry",
         Level::INFO,
         Some(file!()),
         Some(line!()),

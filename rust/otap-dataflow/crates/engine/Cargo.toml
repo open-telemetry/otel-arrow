@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-engine"
+name = "otel-arrow-dfe-engine"
 description = "Async pipeline engine"
 version.workspace = true
 authors.workspace = true
@@ -19,14 +19,14 @@ jemalloc-testing = ["jemalloc"]
 test-utils = []
 
 [dependencies]
-otap-df-channel = { workspace = true }
-otap-df-pdata = { workspace = true }
-otap-df-config = { workspace = true }
-otap-df-engine-macros = { workspace = true }
-otap-df-component-inventory-syntax = { workspace = true }
-otap-df-state = { workspace = true }
-otap-df-telemetry = { workspace = true }
-otap-df-telemetry-macros = { workspace = true }
+otel-arrow-dfe-channel = { workspace = true }
+otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-engine-macros = { workspace = true }
+otel-arrow-dfe-component-inventory-syntax = { workspace = true }
+otel-arrow-dfe-state = { workspace = true }
+otel-arrow-dfe-telemetry = { workspace = true }
+otel-arrow-dfe-telemetry-macros = { workspace = true }
 
 thiserror = { workspace = true }
 serde_json = { workspace = true }
@@ -54,7 +54,7 @@ tikv-jemalloc-ctl = { workspace = true, optional = true }
 tikv-jemalloc-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
-otap-df-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

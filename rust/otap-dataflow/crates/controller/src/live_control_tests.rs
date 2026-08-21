@@ -3,30 +3,30 @@
 
 use super::*;
 use async_trait::async_trait;
-use otap_df_config::engine::ResolvedPipelineRole;
-use otap_df_config::observed_state::ObservedStateSettings;
-use otap_df_config::settings::telemetry::logs::LogLevel;
-use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::engine::ResolvedPipelineRole;
+use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
+use otel_arrow_dfe_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
+use otel_arrow_dfe_engine::control::{
     NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
 };
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::listener_group::ListenerProtocol;
-use otap_df_engine::local::{exporter, receiver};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::topology::NumaTopology;
-use otap_df_engine::wiring_contract::WiringContract;
-use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
-use otap_df_state::pipeline_status::PipelineStatus;
-use otap_df_telemetry::TracingSetup;
-use otap_df_telemetry::event::EngineEvent;
-use otap_df_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
-use otap_df_telemetry::metrics::MetricSetSnapshot;
-use otap_df_telemetry::tracing_init::ProviderSetup;
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::listener_group::ListenerProtocol;
+use otel_arrow_dfe_engine::local::{exporter, receiver};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::topology::NumaTopology;
+use otel_arrow_dfe_engine::wiring_contract::WiringContract;
+use otel_arrow_dfe_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
+use otel_arrow_dfe_state::pipeline_status::PipelineStatus;
+use otel_arrow_dfe_telemetry::TracingSetup;
+use otel_arrow_dfe_telemetry::event::EngineEvent;
+use otel_arrow_dfe_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
+use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
+use otel_arrow_dfe_telemetry::tracing_init::ProviderSetup;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{Event, Subscriber};
@@ -54,37 +54,39 @@ fn available_core_ids() -> Vec<CoreId> {
     ]
 }
 
-fn test_validate_config(_config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+fn test_validate_config(
+    _config: &serde_json::Value,
+) -> Result<(), otel_arrow_dfe_config::error::Error> {
     Ok(())
 }
 
 fn test_receiver_create(
     _pipeline_ctx: PipelineContext,
-    _node: otap_df_engine::node::NodeId,
+    _node: otel_arrow_dfe_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _receiver_config: &ReceiverConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     panic!("test receiver factory should not be constructed")
 }
 
 fn test_exporter_create(
     _pipeline_ctx: PipelineContext,
-    _node: otap_df_engine::node::NodeId,
+    _node: otel_arrow_dfe_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _exporter_config: &ExporterConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
     panic!("test exporter factory should not be constructed")
 }
 
 fn test_processor_create(
     _pipeline_ctx: PipelineContext,
-    _node: otap_df_engine::node::NodeId,
+    _node: otel_arrow_dfe_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _processor_config: &ProcessorConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ProcessorWrapper<()>, otel_arrow_dfe_config::error::Error> {
     panic!("test processor factory should not be constructed")
 }
 
@@ -133,11 +135,11 @@ impl exporter::Exporter<()> for RecoveryTestExporter {
 
 fn recovery_test_receiver_create(
     _pipeline_ctx: PipelineContext,
-    node: otap_df_engine::node::NodeId,
+    node: otel_arrow_dfe_engine::node::NodeId,
     node_config: Arc<NodeUserConfig>,
     receiver_config: &ReceiverConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     Ok(ReceiverWrapper::local(
         RecoveryTestReceiver,
         node,
@@ -148,11 +150,11 @@ fn recovery_test_receiver_create(
 
 fn recovery_test_exporter_create(
     _pipeline_ctx: PipelineContext,
-    node: otap_df_engine::node::NodeId,
+    node: otel_arrow_dfe_engine::node::NodeId,
     node_config: Arc<NodeUserConfig>,
     exporter_config: &ExporterConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
     Ok(ExporterWrapper::local(
         RecoveryTestExporter,
         node,
