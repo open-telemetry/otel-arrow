@@ -554,10 +554,6 @@ impl FanoutProcessor {
     }
 
     /// Dispatch ready destinations and return any new deadlines for the heap.
-    #[allow(
-        clippy::result_large_err,
-        reason = "TypedError intentionally retains ownership of payloads that fail to send"
-    )]
     async fn dispatch_ready(
         request_id: u64,
         inflight: &mut Inflight,
