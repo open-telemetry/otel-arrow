@@ -271,13 +271,16 @@ pub(super) fn join_and_eval_value(
                     // data as "no match"/false). For the common 2-child case we can skip the join
                     // entirely: evaluate the remaining child and return its result directly.
                     if num_children == 2 {
+                        // The other child is either already evaluated (in
+                        // child_results) or is the next child to evaluate.
+                        let other = child_results.into_iter().next().or(children
+                            [i + 1]
+                            .execute_as_value(otap_batch, session_ctx)?);
                         return resolve_or_with_absent_child(
-                            &mut children[i + 1..],
-                            child_results,
+                            other,
                             align_children_to_root,
                             strategy,
                             otap_batch,
-                            session_ctx,
                         );
                     }
                     // For N > 2 children, fall back to substituting the identity
@@ -366,32 +369,19 @@ pub(super) fn join_and_eval_value(
 /// When one child of a 2-child OR/NotOr `JoinAndEval` is absent (returns `None`), the
 /// join can be skipped entirely. The absent side is the OR identity (`false`), so the
 /// non-absent child's result alone determines the outcome.
-///
-/// Either the other child was already evaluated (passed in `already_evaluated`) or it
-/// still needs evaluation (passed in `unevaluated`). Exactly one of these will contain
-/// the surviving child.
 fn resolve_or_with_absent_child(
-    unevaluated: &mut [ScopedExpr],
-    already_evaluated: Vec<ScopedValue>,
+    other: Option<ScopedValue>,
     align_children_to_root: bool,
     strategy: &ShortCircuitStrategy,
     otap_batch: &OtapArrowRecords,
-    session_ctx: &SessionContext,
 ) -> Result<Option<ScopedValue>> {
-    // Get the surviving child's result: either already computed or evaluate now.
-    let other_result = already_evaluated.into_iter().next().or(unevaluated
-        .first_mut()
-        .and_then(|child| child.execute_as_value(otap_batch, session_ctx).transpose())
-        .transpose()?);
-
-    match other_result {
+    match other {
         None => Ok(None), // both children absent -- no match
         Some(mut sv) => {
             if align_children_to_root && matches!(sv.values, ColumnarValue::Array(_)) {
                 sv = align_value_to_root(sv, otap_batch)?;
             }
             // For NotOr (NOT(A OR B)), with A absent: NOT(false OR B) = NOT(B).
-            // Invert the surviving child's boolean result.
             if matches!(strategy, ShortCircuitStrategy::NotOr) {
                 sv = invert_boolean_scoped_value(sv)?;
             }
