@@ -4821,14 +4821,14 @@ groups:
         let topic = global_topic_handle(&declared, "broadcast_topic");
         let mut sub1 = topic
             .subscribe(
-                otap_df_engine::topic::SubscriptionMode::Broadcast,
-                otap_df_engine::topic::SubscriberOptions::default(),
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
             )
             .expect("first broadcast subscriber should be created");
         let mut sub2 = topic
             .subscribe(
-                otap_df_engine::topic::SubscriptionMode::Broadcast,
-                otap_df_engine::topic::SubscriberOptions::default(),
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
             )
             .expect("second broadcast subscriber should be created");
         let receipt = topic
@@ -4837,14 +4837,14 @@ groups:
             .await
             .expect("tracked publish should succeed");
         let message_id = match sub1.recv().await.expect("first delivery should arrive") {
-            otap_df_engine::topic::RecvItem::Message(envelope) => envelope.id,
-            otap_df_engine::topic::RecvItem::Lagged { missed } => {
+            otel_arrow_dfe_engine::topic::RecvItem::Message(envelope) => envelope.id,
+            otel_arrow_dfe_engine::topic::RecvItem::Lagged { missed } => {
                 panic!("first subscriber unexpectedly lagged by {missed} messages")
             }
         };
         let second_message_id = match sub2.recv().await.expect("second delivery should arrive") {
-            otap_df_engine::topic::RecvItem::Message(envelope) => envelope.id,
-            otap_df_engine::topic::RecvItem::Lagged { missed } => {
+            otel_arrow_dfe_engine::topic::RecvItem::Message(envelope) => envelope.id,
+            otel_arrow_dfe_engine::topic::RecvItem::Lagged { missed } => {
                 panic!("second subscriber unexpectedly lagged by {missed} messages")
             }
         };
@@ -4861,7 +4861,7 @@ groups:
         sub2.ack(message_id).expect("second Ack should succeed");
         assert_eq!(
             outcome.await,
-            otap_df_engine::topic::TrackedPublishOutcome::Ack
+            otel_arrow_dfe_engine::topic::TrackedPublishOutcome::Ack
         );
     }
 
