@@ -383,19 +383,27 @@ fn resolve_or_with_absent_child(
     strategy: &ShortCircuitStrategy,
     otap_batch: &OtapArrowRecords,
 ) -> Result<Option<ScopedValue>> {
-    match other {
-        None => Ok(None), // both children absent -- no match
+    let mut sv = match other {
+        // Both children absent. The result is the OR identity (false).
+        None => strategy.absent_child_default().expect(
+            "resolve_or_with_absent_child called with strategy lacking absent_child_default",
+        ),
         Some(mut sv) => {
             if align_children_to_root && matches!(sv.values, ColumnarValue::Array(_)) {
                 sv = align_value_to_root(sv, otap_batch)?;
             }
-            // For NotOr (NOT(A OR B)), with A absent: NOT(false OR B) = NOT(B).
-            if matches!(strategy, ShortCircuitStrategy::NotOr) {
-                sv = invert_boolean_scoped_value(sv)?;
-            }
-            Ok(Some(sv))
+            sv
         }
+    };
+
+    // For NotOr (NOT(A OR B)): invert the result.
+    // - one child absent:  NOT(false OR B) = NOT(B)
+    // - both absent:       NOT(false OR false) = NOT(false) = true
+    if matches!(strategy, ShortCircuitStrategy::NotOr) {
+        sv = invert_boolean_scoped_value(sv)?;
     }
+
+    Ok(Some(sv))
 }
 
 /// Invert a boolean `ScopedValue` (flip true/false, preserve scope and ids).
