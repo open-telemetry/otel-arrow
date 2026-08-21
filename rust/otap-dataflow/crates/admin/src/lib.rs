@@ -65,6 +65,16 @@ pub enum ControlPlaneError {
         /// Human-readable validation failure detail.
         message: String,
     },
+    /// The requested change is valid but cannot be applied to the running process.
+    RestartRequired {
+        /// Human-readable unsupported capability detail.
+        message: String,
+    },
+    /// The requested change must be expressed through a supported live-mutation scope.
+    UnsupportedMutation {
+        /// Human-readable guidance for rewriting the request.
+        message: String,
+    },
     /// The requested rollout could not be found.
     RolloutNotFound,
     /// The requested shutdown could not be found.
@@ -87,6 +97,14 @@ impl ControlPlaneError {
             Self::RolloutConflict => OperationError::new(OperationErrorKind::Conflict),
             Self::InvalidRequest { message } => {
                 OperationError::new(OperationErrorKind::InvalidRequest)
+                    .with_message(message.clone())
+            }
+            Self::RestartRequired { message } => {
+                OperationError::new(OperationErrorKind::RestartRequired)
+                    .with_message(message.clone())
+            }
+            Self::UnsupportedMutation { message } => {
+                OperationError::new(OperationErrorKind::UnsupportedMutation)
                     .with_message(message.clone())
             }
             Self::RolloutNotFound => OperationError::new(OperationErrorKind::RolloutNotFound),
