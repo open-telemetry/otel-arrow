@@ -2869,11 +2869,15 @@ mod test {
         assert_eq!(result_records[1].event_name, "3");
     }
 
+    /// Scenario: Evaluate an OR-with-absent-attrs predicate using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
     #[tokio::test]
     async fn test_filter_or_with_absent_attrs_payload_opl_parser() {
         test_filter_or_with_absent_attrs_payload::<OplParser>().await;
     }
 
+    /// Scenario: Evaluate an OR-with-absent-attrs predicate using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
     #[tokio::test]
     async fn test_filter_or_with_absent_attrs_payload_kql_parser() {
         test_filter_or_with_absent_attrs_payload::<KqlParser>().await;
@@ -2899,11 +2903,15 @@ mod test {
         assert_eq!(result_records[1].event_name, "3");
     }
 
+    /// Scenario: Evaluate a reversed OR-with-absent-attrs predicate using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
     #[tokio::test]
     async fn test_filter_or_with_absent_attrs_payload_reversed_opl_parser() {
         test_filter_or_with_absent_attrs_payload_reversed::<OplParser>().await;
     }
 
+    /// Scenario: Evaluate a reversed OR-with-absent-attrs predicate using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
     #[tokio::test]
     async fn test_filter_or_with_absent_attrs_payload_reversed_kql_parser() {
         test_filter_or_with_absent_attrs_payload_reversed::<KqlParser>().await;
@@ -2930,11 +2938,15 @@ mod test {
         assert_eq!(result_records[0].event_name, "2");
     }
 
+    /// Scenario: Evaluate a NOT(OR)-with-absent-attrs predicate using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
     #[tokio::test]
     async fn test_filter_not_or_with_absent_attrs_payload_opl_parser() {
         test_filter_not_or_with_absent_attrs_payload::<OplParser>().await;
     }
 
+    /// Scenario: Evaluate a NOT(OR)-with-absent-attrs predicate using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
     #[tokio::test]
     async fn test_filter_not_or_with_absent_attrs_payload_kql_parser() {
         test_filter_not_or_with_absent_attrs_payload::<KqlParser>().await;
