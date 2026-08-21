@@ -1,23 +1,26 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-otap_df_telemetry::otel_component_scope!(urn = NOOP_EXPORTER_URN, target = "otel.exporter.noop",);
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = NOOP_EXPORTER_URN,
+    target = "otel.exporter.noop",
+);
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NodeControlMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 use std::sync::Arc;
 
 /// The URN for the noop exporter.
@@ -28,24 +31,25 @@ pub struct NoopExporter;
 
 /// Declare the Noop Exporter as a local exporter factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: NOOP_EXPORTER_URN,
-    create: |_pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ExporterWrapper::local(
-            NoopExporter {},
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::no_config,
+    create:
+        |_pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ExporterWrapper::local(
+                NoopExporter {},
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 #[async_trait(?Send)]
@@ -74,8 +78,10 @@ impl Exporter<OtapPdata> for NoopExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::Interests;
-    use otap_df_otap::testing::{test_exporter_no_subscription, test_exporter_with_subscription};
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_otap::testing::{
+        test_exporter_no_subscription, test_exporter_with_subscription,
+    };
     use serde_json::json;
 
     #[test]

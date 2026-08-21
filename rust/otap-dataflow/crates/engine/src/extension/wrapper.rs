@@ -26,11 +26,11 @@ use crate::message::Sender;
 use crate::shared::extension as shared_ext;
 use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;
-use otap_df_channel::error::RecvError;
-use otap_df_config::ExtensionId;
-use otap_df_config::extension::ExtensionUserConfig;
-use otap_df_telemetry::otel_debug;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::RecvError;
+use otel_arrow_dfe_config::ExtensionId;
+use otel_arrow_dfe_config::extension::ExtensionUserConfig;
+use otel_arrow_dfe_telemetry::otel_debug;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -829,6 +829,6 @@ impl ExtensionBundle {
 /// Entity keys assigned to each variant in a wired [`ExtensionBundle`].
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ExtensionEntityKeys {
-    pub local: Option<otap_df_telemetry::registry::EntityKey>,
-    pub shared: Option<otap_df_telemetry::registry::EntityKey>,
+    pub local: Option<otel_arrow_dfe_telemetry::registry::EntityKey>,
+    pub shared: Option<otel_arrow_dfe_telemetry::registry::EntityKey>,
 }

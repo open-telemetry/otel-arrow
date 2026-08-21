@@ -2,7 +2,7 @@
 
 The otap-dataflow engine tracks all security-relevant components using
 link-time metadata registered via the `#[component_inventory]` attribute
-macro (defined in otap-df-engine-macros).
+macro (defined in otel-arrow-dfe-engine-macros).
 
 This metadata is read by offline tooling (cargo xtask component-inventory)
 and checked against a baseline to detect component additions, removals, or
@@ -51,7 +51,7 @@ derived automatically from the factory's name field (its URN), so you do not
 need to provide an explicit id.
 
 ```rust
-use otap_df_engine::component_inventory;
+use otel_arrow_dfe_engine::component_inventory;
 
 #[component_inventory(
     category = Receiver,
@@ -95,7 +95,7 @@ pub struct AdminServer { /* ... */ }
 
 ## Standard Attribute Keys
 
-Use well-known attribute key constants from otap_df_engine::inventory::attrs.
+Use well-known attribute key constants from otel_arrow_dfe_engine::inventory::attrs.
 The values shown are illustrative examples, not defaults: the attribute map is
 free-form and each component supplies its own value.
 
@@ -115,7 +115,7 @@ free-form and each component supplies its own value.
 
 The `protocol` and `auth` attributes carry security-relevant properties, so
 their values are drawn from a controlled vocabulary defined once in the
-`otap-df-component-inventory-syntax` crate (`Protocol` and `Auth` enums). This
+`otel-arrow-dfe-component-inventory-syntax` crate (`Protocol` and `Auth` enums). This
 keeps values consistent across components and catches typos.
 
 Matching is case-insensitive and ignores a trailing parenthetical qualifier, so

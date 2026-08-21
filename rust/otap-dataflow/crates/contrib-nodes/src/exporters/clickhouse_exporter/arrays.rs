@@ -3,7 +3,7 @@
 
 //! Minimal Arrow array accessors used by the ClickHouse transform stage.
 //!
-//! This is a deliberately small subset of [`otap_df_pdata::arrays`], kept local so the exporter's
+//! This is a deliberately small subset of [`otel_arrow_dfe_pdata::arrays`], kept local so the exporter's
 //! accessor surface stays explicit (the upstream module is broader and mostly unused here). If those
 //! accessors are ever stabilized as public `pdata` API, we can replace this file with re-exports. Keep it
 //! limited to what `transform_attributes`/`transform_column`/`transform_batch` actually use.
@@ -14,7 +14,7 @@ use arrow::array::{
     StructArray, UInt8Array, UInt16Array,
 };
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
-use otap_df_pdata::error::{Error, Result};
+use otel_arrow_dfe_pdata::error::{Error, Result};
 use paste::paste;
 
 pub trait NullableArrayAccessor {

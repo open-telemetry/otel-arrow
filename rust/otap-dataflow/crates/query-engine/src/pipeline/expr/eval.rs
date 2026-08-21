@@ -28,12 +28,12 @@ use datafusion::logical_expr::{ColumnarValue, Expr};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::{
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_array,
 };
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::bitmap::combine_scope;
@@ -48,7 +48,7 @@ use crate::pipeline::project::anyval::{
     find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
 };
 use crate::pipeline::project::{Projection, ProjectionOptions};
-use otap_df_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 
 impl ScopedExpr {
     /// Produce a full `ScopedValue` (array + scope + IDs).

@@ -118,12 +118,12 @@ pub enum Error {
     LogsViewCreationFailed {
         /// The underlying error.
         #[source]
-        source: otap_df_pdata::error::Error,
+        source: otel_arrow_dfe_pdata::error::Error,
     },
 
     /// Channel receive error.
     #[error("Channel receive error")]
-    ChannelRecv(#[source] otap_df_channel::error::RecvError),
+    ChannelRecv(#[source] otel_arrow_dfe_channel::error::RecvError),
 
     /// Client pool initialization failed.
     #[error("Client pool initialization failed")]
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn test_logs_view_creation_failed_message() {
         let error = Error::LogsViewCreationFailed {
-            source: otap_df_pdata::error::Error::ColumnNotFound {
+            source: otel_arrow_dfe_pdata::error::Error::ColumnNotFound {
                 name: "test_column".to_string(),
             },
         };
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_channel_recv_message() {
-        let recv_error = otap_df_channel::error::RecvError::Closed;
+        let recv_error = otel_arrow_dfe_channel::error::RecvError::Closed;
         let error = Error::ChannelRecv(recv_error);
         assert_eq!(error.to_string(), "Channel receive error");
         assert!(error.source().is_some());

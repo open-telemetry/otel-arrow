@@ -1,4 +1,4 @@
-# otap-df-wasm-host
+# otel-arrow-dfe-wasm-host
 
 WASM host-kernel runtime for OTAP dataflow processor plugins.
 
@@ -29,7 +29,7 @@ generated bindings, native kernels, the `OtapPdata` bridge, and the
 which is **off by default**:
 
 ```toml
-otap-df-wasm-host = { workspace = true, features = ["wasm"] }
+otel-arrow-dfe-wasm-host = { workspace = true, features = ["wasm"] }
 ```
 
 With the feature off, the crate compiles to an empty shell and pulls in no
@@ -79,7 +79,7 @@ Current experimental behavior is intentionally narrow:
 
 The shipping `df_engine` binary (`rust/otap-dataflow`) does not currently link
 this crate by default. Opt in with the top-level `wasm` cargo feature, which
-force-links `otap-df-wasm-host` (registering the `wasm_processor` factory)
+force-links `otel-arrow-dfe-wasm-host` (registering the `wasm_processor` factory)
 and pulls in wasmtime:
 
 ```sh

@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-expohisto"
+name = "otel-arrow-dfe-expohisto"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

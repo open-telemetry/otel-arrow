@@ -58,7 +58,7 @@ pattern used by receivers under `crates/core-nodes/src/receivers`.
 Metric emission should use the existing OTAP metric batch infrastructure:
 
 - `OtapArrowRecords::Metrics`
-- `otap_df_pdata::otap::Metrics`
+- `otel_arrow_dfe_pdata::otap::Metrics`
 - `MetricsRecordBatchBuilder`
 - `NumberDataPointsRecordBatchBuilder`
 - metric, resource, scope, and datapoint attribute record batches
@@ -671,7 +671,7 @@ Unexpected errors during startup validation should fail startup in
 
 Use the repo telemetry macros for logs. Do not use `println!` or raw tracing
 macros. Use `otel_info!`, `otel_warn!`, and `otel_debug!` from
-`otap_df_telemetry`.
+`otel_arrow_dfe_telemetry`.
 
 ## Receiver Metrics
 

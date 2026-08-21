@@ -3,18 +3,18 @@
 
 //! Metrics for the Kafka receiver node.
 
-use otap_df_config::SignalType;
-use otap_df_engine::context::PipelineContext;
-use otap_df_otap::metrics::ReceiverMessageMetrics;
-use otap_df_telemetry::common_attributes::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_otap::metrics::ReceiverMessageMetrics;
+use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, OutcomeAttributes, ReceiverRejectionErrorType, SignalAttributes,
     SignalOutcomeAttributes,
 };
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge, ObserveUpDownCounter};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, ObserveUpDownCounter};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use rdkafka::error::KafkaError;
 use rdkafka::types::RDKafkaErrorCode;
 
@@ -375,8 +375,8 @@ impl KafkaReceiverMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     fn new_test_metrics() -> KafkaReceiverMetrics {
         let registry = TelemetryRegistryHandle::new();

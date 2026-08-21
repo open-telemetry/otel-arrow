@@ -34,25 +34,25 @@ use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use futures_channel::oneshot::Canceled;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::validation::validate_typed_config;
-use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::Producer as PdataProducer;
-use otap_df_telemetry::common_attributes::Outcome;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::validation::validate_typed_config;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+use otel_arrow_dfe_engine::ExporterFactory;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::Producer as PdataProducer;
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::FromClientConfigAndContext;
 use rdkafka::message::{Header, OwnedHeaders};
@@ -316,24 +316,25 @@ pub struct KafkaExporter {
 
 /// Factory registration for the Kafka exporter.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory {
     name: KAFKA_EXPORTER_URN,
-    create: |pipeline_ctx: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ExporterWrapper::local(
-            KafkaExporter::from_config(pipeline_ctx, &node_config.config)?,
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
+    create:
+        |pipeline_ctx: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ExporterWrapper::local(
+                KafkaExporter::from_config(pipeline_ctx, &node_config.config)?,
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
     validate_config: validate_typed_config::<KafkaExporterConfig>,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 impl KafkaExporter {
@@ -481,7 +482,7 @@ impl KafkaExporter {
     fn build_kafka_headers(
         encoding: MessageFormat,
         format_header_key: &str,
-        context: &otap_df_otap::pdata::Context,
+        context: &otel_arrow_dfe_otap::pdata::Context,
         effect_handler: Option<&EffectHandler<OtapPdata>>,
     ) -> OwnedHeaders {
         let mut headers = OwnedHeaders::new();
@@ -825,7 +826,7 @@ impl KafkaExporter {
         let permanent = is_permanent_send_error(&kafka_err);
         // `topic` may be a client-supplied (header-routed) value, so
         // bound/escape it before logging to avoid log injection.
-        otap_df_telemetry::otel_warn!(
+        otel_arrow_dfe_telemetry::otel_warn!(
             "kafka.exporter.send.failed",
             topic = %crate::common::kafka::sanitize_for_log(&topic),
             signal_type = ?signal_type,
@@ -1241,9 +1242,9 @@ pub mod test_support {
     use super::*;
     use crate::exporters::kafka_exporter::config::KafkaExporterConfigBuilder;
     use bytes::Bytes;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_otap::pdata::Context;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_otap::pdata::Context;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::sync::{Arc, Mutex};
 
     /// Creates a deterministic pipeline context for tests.
@@ -1293,11 +1294,13 @@ pub mod test_support {
     pub fn sample_pdata(signal_type: SignalType) -> OtapPdata {
         let bytes = Bytes::from_static(b"payload");
         let proto = match signal_type {
-            SignalType::Traces => otap_df_pdata::OtlpProtoBytes::ExportTracesRequest(bytes.clone()),
-            SignalType::Metrics => {
-                otap_df_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes.clone())
+            SignalType::Traces => {
+                otel_arrow_dfe_pdata::OtlpProtoBytes::ExportTracesRequest(bytes.clone())
             }
-            SignalType::Logs => otap_df_pdata::OtlpProtoBytes::ExportLogsRequest(bytes),
+            SignalType::Metrics => {
+                otel_arrow_dfe_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes.clone())
+            }
+            SignalType::Logs => otel_arrow_dfe_pdata::OtlpProtoBytes::ExportLogsRequest(bytes),
         };
         OtapPdata::new(Context::default(), proto.into())
     }
@@ -1309,15 +1312,19 @@ pub mod test_support {
         header_wire_name: &str,
         header_value: &str,
     ) -> OtapPdata {
-        use otap_df_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+        use otel_arrow_dfe_config::transport_headers::{
+            TransportHeader, TransportHeaders, ValueKind,
+        };
 
         let bytes = Bytes::from_static(b"payload");
         let proto = match signal_type {
-            SignalType::Traces => otap_df_pdata::OtlpProtoBytes::ExportTracesRequest(bytes.clone()),
-            SignalType::Metrics => {
-                otap_df_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes.clone())
+            SignalType::Traces => {
+                otel_arrow_dfe_pdata::OtlpProtoBytes::ExportTracesRequest(bytes.clone())
             }
-            SignalType::Logs => otap_df_pdata::OtlpProtoBytes::ExportLogsRequest(bytes),
+            SignalType::Metrics => {
+                otel_arrow_dfe_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes.clone())
+            }
+            SignalType::Logs => otel_arrow_dfe_pdata::OtlpProtoBytes::ExportLogsRequest(bytes),
         };
 
         let mut headers = TransportHeaders::new();
@@ -1481,13 +1488,15 @@ pub mod test_support {
         use crate::exporters::kafka_exporter::config::{CompressionType, RequiredAcks};
         use crate::exporters::kafka_exporter::partitioner::partition_key_from_transport_headers;
         use bytes::Bytes;
-        use otap_df_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
-        use otap_df_config::transport_headers_policy::{
+        use otel_arrow_dfe_config::transport_headers::{
+            TransportHeader, TransportHeaders, ValueKind,
+        };
+        use otel_arrow_dfe_config::transport_headers_policy::{
             HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
             PropagationSelectorType,
         };
-        use otap_df_otap::pdata::Context;
-        use otap_df_pdata::OtlpProtoBytes;
+        use otel_arrow_dfe_otap::pdata::Context;
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
         use prost::Message as _;
         use std::time::Duration;
 
@@ -1500,9 +1509,9 @@ pub mod test_support {
         use crate::common::kafka::test::{run_on_local_set, with_cluster};
 
         // Engine/telemetry helpers used by the header-propagation unit tests.
-        use otap_df_engine::local::exporter::EffectHandler;
-        use otap_df_engine::testing::test_node;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_engine::local::exporter::EffectHandler;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
         // rdkafka helpers used across integration tests.
         use rdkafka::message::Headers;
@@ -1510,18 +1519,22 @@ pub mod test_support {
 
         // OTLP/OTAP proto types used by the payload builders (superset across
         // all builders so no builder needs a local import).
-        use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
-        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-        use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-        use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-        use otap_df_pdata::proto::opentelemetry::common::v1::{
+        use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
             AnyValue, ArrayValue, KeyValue, any_value,
         };
-        use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-        use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+            LogRecord, ResourceLogs, ScopeLogs,
+        };
+        use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
             Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric,
         };
-        use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+        use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
+            ResourceSpans, ScopeSpans, Span,
+        };
 
         /// Tests that payload is properly cloned for both OTLP and OTAP serialization formats.
         /// This ensures no borrow-after-move errors occur when the encoder consumes the payload.
@@ -1860,7 +1873,7 @@ pub mod test_support {
                     .metrics
                     .exports
                     .get(
-                        otap_df_telemetry::common_attributes::SignalOutcomeAttributes {
+                        otel_arrow_dfe_telemetry::common_attributes::SignalOutcomeAttributes {
                             signal: SignalType::Traces,
                             outcome: Outcome::Failure,
                         }
@@ -2087,8 +2100,8 @@ pub mod test_support {
         /// pdata has a subscriber frame. This models the pdata a real upstream
         /// `processor:retry` would have subscribed to before the exporter.
         fn logs_pdata_subscribed(bytes: Vec<u8>, header: Option<(&str, &str)>) -> OtapPdata {
-            use otap_df_engine::Interests;
-            use otap_df_otap::testing::TestCallData;
+            use otel_arrow_dfe_engine::Interests;
+            use otel_arrow_dfe_otap::testing::TestCallData;
             // RETURN_DATA so the refused pdata retains its payload when it
             // unwinds, mirroring a retry processor that must re-send the batch.
             logs_pdata(bytes, header).test_subscribe_to(
@@ -2316,7 +2329,7 @@ pub mod test_support {
         /// if that set/field was not emitted). Underscores in `field` are
         /// normalized to dots before lookup.
         fn metric_unit<'a>(
-            snapshots: &'a [otap_df_telemetry::metrics::MetricSetSnapshot],
+            snapshots: &'a [otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot],
             set_name: &str,
             field: &str,
         ) -> Option<&'a str> {

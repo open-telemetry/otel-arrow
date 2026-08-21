@@ -3,9 +3,9 @@
 
 //! Shared test helpers for sampler unit tests.
 
-use otap_df_pdata::encode::encode_logs_otap_batch;
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
+use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 
 /// Create an [`OtapArrowRecords`] containing `n` log records.
 pub fn make_log_records(n: usize) -> OtapArrowRecords {

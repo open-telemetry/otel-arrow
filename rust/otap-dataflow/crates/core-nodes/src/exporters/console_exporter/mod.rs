@@ -6,7 +6,7 @@
 mod metrics;
 mod pretty_metrics;
 mod pretty_writer;
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = CONSOLE_EXPORTER_URN,
     target = "otel.exporter.console",
 );
@@ -15,33 +15,35 @@ mod record_json;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NodeControlMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::views::otap::{OtapLogsView, OtapMetricsView};
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otap_df_pdata::{OtapPayload, PayloadData};
-use otap_df_pdata_views::views::common::InstrumentationScopeView;
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView};
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
+use otel_arrow_dfe_pdata::{OtapPayload, PayloadData};
+use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
-use otap_df_pdata_views::views::metrics::MetricsView;
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
-use otap_df_telemetry_macros::AttributeEnum;
+use otel_arrow_dfe_pdata_views::views::metrics::MetricsView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_telemetry::self_tracing::{
+    AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter,
+};
+use otel_arrow_dfe_telemetry_macros::AttributeEnum;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -226,28 +228,31 @@ impl ConsoleExporter {
 
 /// Declare the Console Exporter as a local exporter factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: CONSOLE_EXPORTER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        let config: ConsoleExporterConfig = serde_json::from_value(node_config.config.clone())
-            .map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!("Failed to parse console exporter config: {}", e),
-            })?;
-        Ok(ExporterWrapper::local(
-            ConsoleExporter::new(&pipeline, config),
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<ConsoleExporterConfig>,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            let config: ConsoleExporterConfig = serde_json::from_value(node_config.config.clone())
+                .map_err(|e| ConfigError::InvalidUserConfig {
+                    error: format!("Failed to parse console exporter config: {}", e),
+                })?;
+            Ok(ExporterWrapper::local(
+                ConsoleExporter::new(&pipeline, config),
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+        ConsoleExporterConfig,
+    >,
 };
 
 #[async_trait(?Send)]
@@ -323,7 +328,7 @@ impl ConsoleExporter {
         match payload.data() {
             PayloadData::OtlpBytes(bytes) => {
                 let metrics_bytes = match bytes {
-                    otap_df_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes,
+                    otel_arrow_dfe_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes,
                     _ => unreachable!("metrics payload must contain metrics OTLP bytes"),
                 };
                 match RawMetricsData::try_new(metrics_bytes) {
@@ -677,9 +682,9 @@ fn nanos_to_time(nanos: u64) -> SystemTime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::encode::{encode_logs_otap_batch, encode_metrics_otap_batch};
-    use otap_df_pdata::proto::opentelemetry::{
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::encode::{encode_logs_otap_batch, encode_metrics_otap_batch};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
         common::v1::{
             AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
         },
@@ -693,8 +698,8 @@ mod tests {
         },
         resource::v1::Resource,
     };
-    use otap_df_pdata::testing::fixtures::logs_with_full_resource_and_scope;
-    use otap_df_pdata::views::otap::OtapLogsView;
+    use otel_arrow_dfe_pdata::testing::fixtures::logs_with_full_resource_and_scope;
+    use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
     use prost::Message;
     use serde_json::{Value, json};
 

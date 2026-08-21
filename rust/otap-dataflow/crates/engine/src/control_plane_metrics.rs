@@ -26,15 +26,15 @@
 //! counter deltas.
 
 use crate::context::PipelineContext;
-use otap_df_config::MetricLevel;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otel_arrow_dfe_config::MetricLevel;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, Mmsc};
+use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 #[cfg(test)]
-use otap_df_telemetry::registry::MetricSetKey;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::reporter::{MetricsReporter, ReportOutcome};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::registry::MetricSetKey;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::fmt::Debug;
 use std::time::Instant;
 

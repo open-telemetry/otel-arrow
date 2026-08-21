@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use arrow_array::RecordBatch;
 use arrow_array::builder::{Float64Builder, Int64Builder, StringBuilder};
 use arrow_schema::{DataType, Field, Schema};
-use quiver::record_bundle::{
+use otel_arrow_dfe_quiver::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };
 use rand::RngExt;

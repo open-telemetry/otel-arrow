@@ -25,10 +25,10 @@
 use std::cell::Cell;
 
 use crate::Interests;
-use otap_df_telemetry::instrument::{Mmsc, Timer};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::{Mmsc, Timer};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
 use crate::context::PipelineContext;
 
@@ -122,7 +122,7 @@ impl ComputeDuration {
 mod tests {
     use super::*;
     use crate::testing::test_pipeline_ctx;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     /// timed() routes duration into success/failed accumulators based on outcome.
     #[test]

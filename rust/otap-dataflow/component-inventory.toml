@@ -20,6 +20,6 @@ skip_dirs = [
     "telemetry-macros",
     "validation",
     "otap-test-net",
-    "otap-test-tls-certs",
+    "otel-arrow-dfe-test-tls-certs",
     "quiver-e2e",
 ]

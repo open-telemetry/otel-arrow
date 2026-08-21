@@ -16,7 +16,7 @@ an OTAP pipeline likely leveraging DataFusion for query execution.
 
 The implementation of a query engine that can process OTAP data is underway
 and can be found in the otap-dataflow
-[`otap-df-query-engine`](../../otap-dataflow/crates/query-engine/)
+[`otel-arrow-dfe-query-engine`](../../otap-dataflow/crates/query-engine/)
 crate. The implementation depends on crates from this workspace.
 
 ## Folder structure

@@ -29,25 +29,25 @@ use arrow::array::{
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Float64Type, Int64Type, Schema, TimeUnit};
-use otap_df_pdata::encode::Error as EncodeError;
-use otap_df_pdata::encode::append_attribute_value;
-use otap_df_pdata::encode::record::attributes::{
+use otel_arrow_dfe_pdata::encode::Error as EncodeError;
+use otel_arrow_dfe_pdata::encode::append_attribute_value;
+use otel_arrow_dfe_pdata::encode::record::attributes::{
     AttributesRecordBatchBuilder, AttributesRecordBatchBuilderConstructorHelper,
 };
-use otap_df_pdata::encode::record::metrics::{
+use otel_arrow_dfe_pdata::encode::record::metrics::{
     ExemplarsRecordBatchBuilder, MetricsRecordBatchBuilder,
 };
-use otap_df_pdata::otap::{Metrics, OtapArrowRecords};
-use otap_df_pdata::otlp::attributes::parent_id::ParentId;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::{FieldExt, consts};
-use otap_df_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords};
+use otel_arrow_dfe_pdata::otlp::attributes::parent_id::ParentId;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
+use otel_arrow_dfe_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
+use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, ExemplarView, ExponentialHistogramDataPointView,
     HistogramDataPointView, MetricView, NumberDataPointView, SummaryDataPointView, Value,
     ValueAtQuantileView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 
 use super::telemetry;
 
@@ -1368,10 +1368,12 @@ pub(super) struct StreamMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_pdata::otap::OtapBatchStore;
-    use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, Str, ValueType};
-    use otap_df_pdata_views::views::metrics::{DataPointFlags, ExemplarView, NumberDataPointView};
-    use otap_df_pdata_views::views::resource::ResourceView;
+    use otel_arrow_dfe_pdata::otap::OtapBatchStore;
+    use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, Str, ValueType};
+    use otel_arrow_dfe_pdata_views::views::metrics::{
+        DataPointFlags, ExemplarView, NumberDataPointView,
+    };
+    use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 
     /// A flexible mock AnyValueView that can represent different value types.
     /// Used to test CBOR encoding failures with invalid UTF-8 in nested structures.

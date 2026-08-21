@@ -23,7 +23,7 @@ source for metric and attribute-set design:
 
 ## Macro API
 
-- Import instrument types from otap-df-telemetry and the macro from this crate.
+- Import instrument types from otel-arrow-dfe-telemetry and the macro from this crate.
 - Annotate your struct with `#[metric_set(name = "<metrics.group.name>")]`.
 - For each metric field, choose one of the supported instruments and add
   `#[metric(unit = "<unit>")]`.

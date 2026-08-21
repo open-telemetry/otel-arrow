@@ -3,14 +3,14 @@
 
 //! Metrics for the TransformProcessor node.
 
-use otap_df_config::SignalType;
-use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 /// Query language configured for the transform processor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -140,11 +140,11 @@ impl TransformMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     fn new_test_metrics(language: TransformLanguage) -> TransformMetrics {
         let registry = TelemetryRegistryHandle::new();
-        let controller = otap_df_engine::context::ControllerContext::new(registry);
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         TransformMetrics::register(&pipeline_ctx, language)

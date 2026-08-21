@@ -11,7 +11,7 @@
 //! impl below mirrors what the macro emits.
 
 use super::*;
-use otap_df_config::ExtensionId;
+use otel_arrow_dfe_config::ExtensionId;
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 
@@ -167,7 +167,7 @@ fn register_local(registry: &mut CapabilityRegistry, ext_id: &'static str, val: 
 fn bindings(
     cap: &'static str,
     ext: &'static str,
-) -> HashMap<otap_df_config::CapabilityId, ExtensionId> {
+) -> HashMap<otel_arrow_dfe_config::CapabilityId, ExtensionId> {
     let mut m = HashMap::new();
     let _ = m.insert(cap.into(), ext.into());
     m
@@ -779,7 +779,7 @@ fn test_end_to_end_shared_only_via_bundle() {
     use crate::capability::ExtensionCapabilities;
     use crate::config::ExtensionConfig;
     use crate::extension::ExtensionWrapper;
-    use otap_df_config::extension::ExtensionUserConfig;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
 
     // 1. Build a passive-cloned shared bundle around SharedImpl.
@@ -851,7 +851,7 @@ fn test_end_to_end_local_only_via_bundle() {
     use crate::capability::ExtensionCapabilities;
     use crate::config::ExtensionConfig;
     use crate::extension::ExtensionWrapper;
-    use otap_df_config::extension::ExtensionUserConfig;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
 
     let name: ExtensionId = "kv".into();
@@ -907,7 +907,7 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
     use crate::capability::ExtensionCapabilities;
     use crate::config::ExtensionConfig;
     use crate::extension::ExtensionWrapper;
-    use otap_df_config::extension::ExtensionUserConfig;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1006,7 +1006,7 @@ fn test_register_into_rejects_metadata_vs_bundle_mismatch() {
     use crate::capability::ExtensionCapabilities;
     use crate::config::ExtensionConfig;
     use crate::extension::ExtensionWrapper;
-    use otap_df_config::extension::ExtensionUserConfig;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
 
     let name: ExtensionId = "drifty".into();
@@ -1325,7 +1325,7 @@ fn test_register_into_background_no_op() {
     use crate::shared::extension as shared_ext;
     use crate::terminal_state::TerminalState;
     use async_trait::async_trait;
-    use otap_df_config::extension::ExtensionUserConfig;
+    use otel_arrow_dfe_config::extension::ExtensionUserConfig;
     use std::sync::Arc;
 
     // A minimal shared bg-task type. The body of `start()` is irrelevant

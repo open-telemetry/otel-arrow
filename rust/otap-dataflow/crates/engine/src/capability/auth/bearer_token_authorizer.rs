@@ -41,7 +41,7 @@
 
 use super::{AuthzDecision, BearerToken};
 use crate::capability::error::CapabilityError;
-use otap_df_engine_macros::capability;
+use otel_arrow_dfe_engine_macros::capability;
 
 /// Authenticates and admits an inbound bearer token against a configured
 /// policy.

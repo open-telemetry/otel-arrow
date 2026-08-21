@@ -96,7 +96,7 @@ path free of authentication plumbing.
 
 | Decision | Choice |
 | --- | --- |
-| Component shape | Standalone extension in the `otap-df-contrib-extensions` crate; the Azure SDK dependency is isolated behind a feature flag. |
+| Component shape | Standalone extension in the `otel-arrow-dfe-contrib-extensions` crate; the Azure SDK dependency is isolated behind a feature flag. |
 | Capability surface | `BearerTokenProvider`: `get_token()` (cached fast path / single coalesced slow path) + `token_stream()` (refresh subscription). A single purpose-built capability trait, not a general framework. |
 | Execution model | `Active + Shared`. Shared serves both `require_shared()` and `require_local()` consumers; Active drives the background refresh loop. |
 | Startup gating | Opt into the engine readiness probe; `signal_ready()` after the first token publish so the engine holds data-path node startup until a token exists (bounded by the probe timeout). |
@@ -485,11 +485,11 @@ azure_identity = { workspace = true, optional = true }
 
 **Crypto provider prerequisite.** The Azure SDK's `reqwest`/`rustls` HTTP client
 requires a process-wide `rustls` crypto provider. `Auth::new()` calls
-`otap_df_otap::crypto::ensure_crypto_provider()` before constructing any
+`otel_arrow_dfe_otap::crypto::ensure_crypto_provider()` before constructing any
 credential, and the deployed binary **must** enable exactly one `crypto-*`
 feature (`crypto-ring`, `crypto-aws-lc`, `crypto-openssl`, or `crypto-symcrypt`);
 otherwise all token requests panic at runtime with "No provider set". Tests
-enable a `crypto-*` feature via `otap-df-otap`.
+enable a `crypto-*` feature via `otel-arrow-dfe-otap`.
 
 ### Factory registration
 
@@ -514,7 +514,7 @@ pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
 
 The URN follows the [URN format](../../../../docs/urns.md): `urn:microsoft:extension:azure_identity_auth`
 (`microsoft` namespace, `extension` kind). The main binary links the crate with
-a side-effect import (`use otap_df_contrib_extensions as _;`) so the
+a side-effect import (`use otel_arrow_dfe_contrib_extensions as _;`) so the
 registration takes effect.
 
 ## Security Considerations

@@ -15,8 +15,8 @@ use crate::testing::dst::common::{
     recv_controls, recv_until, setup_dst_runtime, yield_cycles,
 };
 use crate::testing::test_nodes;
-use otap_df_config::policy::TelemetryPolicy;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_config::policy::TelemetryPolicy;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::timeout;

@@ -23,8 +23,8 @@ mod pipeline_factory;
 ///
 /// Simply declare a XYZ_FACTORY_PIPELINE static and annotate it with a prefix and data type:
 /// ```rust,ignore
-/// use otap_df_engine::{PipelineFactory, build_factory};
-/// use otap_df_engine_macros::pipeline_factory;
+/// use otel_arrow_dfe_engine::{PipelineFactory, build_factory};
+/// use otel_arrow_dfe_engine_macros::pipeline_factory;
 ///
 /// // Define your data type (this would be defined elsewhere)
 /// struct MyData;
@@ -134,7 +134,7 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 /// Each capability must be defined in its own file under `capability/` to
 /// avoid `mod local` / `mod shared` name collisions. The macro generates
 /// `crate::capability::*` paths, so it can only be invoked from within the
-/// `otap-df-engine` crate.
+/// `otel-arrow-dfe-engine` crate.
 #[proc_macro_attribute]
 pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as capability::CapabilityArgs);
@@ -148,7 +148,7 @@ pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
 /// Apply it to a factory `static` (the common case) or, for non-factory
 /// components, to a `struct`/`enum`/`fn`. The macro re-emits the annotated item
 /// unchanged and appends one `ComponentMeta` entry into the
-/// `otap_df_engine::inventory::COMPONENT_INVENTORY` distributed slice at link
+/// `otel_arrow_dfe_engine::inventory::COMPONENT_INVENTORY` distributed slice at link
 /// time, mirroring the `#[capability]` -> `KNOWN_CAPABILITIES` mechanism. It is
 /// zero-cost: the data is read only by offline tooling
 /// (`cargo xtask component-inventory`), never at runtime.
@@ -156,7 +156,7 @@ pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
 /// # Usage
 ///
 /// ```rust,ignore
-/// use otap_df_engine_macros::component_inventory;
+/// use otel_arrow_dfe_engine_macros::component_inventory;
 ///
 /// // Factory static: `id` is derived from the factory's `name` (URN) field.
 /// #[component_inventory(
@@ -180,11 +180,12 @@ pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// `category` is a bare identifier validated at compile time (a misspelling is
 /// a compile error). Unlike `#[capability]`, this macro can be invoked from any
-/// crate: it emits fully-qualified `::otap_df_engine::inventory::*` paths.
+/// crate: it emits fully-qualified `::otel_arrow_dfe_engine::inventory::*` paths.
 #[proc_macro_attribute]
 pub fn component_inventory(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args =
-        parse_macro_input!(args as otap_df_component_inventory_syntax::ComponentInventoryArgs);
+    let args = parse_macro_input!(
+        args as otel_arrow_dfe_component_inventory_syntax::ComponentInventoryArgs
+    );
     let item = parse_macro_input!(input as Item);
     component_inventory::expand_component_inventory(args, item).into()
 }
