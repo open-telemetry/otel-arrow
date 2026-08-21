@@ -27,50 +27,63 @@ Universal node metrics describe internal PData delivery, while receivers and
 exporters own the external boundaries:
 
 ```text
-wire -> receiver.ingress -> node.producer -> ... -> node.consumer -> exporter.egress -> wire
+wire -> receiver.received -> node.producer -> ... -> node.consumer -> exporter.attempted -> wire
 ```
 
 The shared contracts are:
 
 ```text
-receiver.ingress.{messages,wire_bytes,duration}{signal,outcome}
-exporter.egress.{messages,items,wire_bytes,duration}{signal,outcome}
+receiver.received.{messages,payload.size,duration}{signal,outcome}
+exporter.attempted.{messages,items,payload.size,duration}{signal,outcome}
 ```
 
-### Receiver ingress
+### Receiver received
 
 One observation represents one external message after signal classification.
-`success` means receiver-local handoff completed, `refused` means the classified
-message was rejected, and `failure` means receiver-local processing failed.
+`success` means receiver-local handoff was accepted and completed. `refused`
+means validation, policy, admission, capacity, or pipeline handoff explicitly
+rejected the message. `failure` means receiver-local processing was attempted
+but did not complete because of an internal error.
 Duration ends at that receiver-local result and excludes downstream processing
 and Ack/Nack completion. Rejections before signal classification remain
 component-specific diagnostics.
 
-Receiver ingress omits `items` because decoded items are measured by
+Receiver received omits `items` because decoded items are measured by
 `node.producer.produced.items`.
 
-### Exporter egress
+### Exporter attempted
 
-One observation represents one exporter dequeue or invocation through one
-terminal external result. Component-internal retries belong to the same
-observation, while redelivery by a retry processor is a new observation.
-Duration excludes Ack/Nack notification propagation. Items inherit the
-whole-message terminal outcome.
+One observation represents one attempt to submit an encoded application
+payload to an external backend or storage boundary. Component-internal retries
+produce additional observations, as does redelivery by a retry processor.
+`success` means the attempt was accepted or completed by the external boundary,
+`refused` means validation, policy, admission, or capacity at that boundary
+explicitly rejected it, and `failure` means an encoding, transport, timeout,
+backend, or other processing error prevented completion. Retryability is
+independent of the outcome.
 
-### Wire bytes and internal size
+Messages and duration are recorded for every attempt. Payload size and items
+use separately registered optional metric sets under the same
+`exporter.attempted` namespace. Components register payload size only when an
+encoded application payload exists and its size is naturally available at the
+attempt boundary. They register items only when cached item counts are enabled.
+Instrumentation must not encode, parse, or traverse PData solely to populate
+either optional metric.
 
-`wire_bytes` means encoded application payload bytes visible at the external
-boundary. It excludes protocol headers, TLS overhead, and storage amplification.
-Exporter wire bytes accumulate the bytes submitted across every attempt within
-the logical export and are attributed to its terminal outcome. An export that
-fails before submitting bytes records zero. Component-specific diagnostics may
-add per-attempt protocol details.
+The legacy `exporter.exports` set remains during migration but will be
+deprecated. Attempt-level external behavior belongs to `exporter.attempted`,
+while `node.consumer` owns the logical message's terminal pipeline outcome.
 
-Instrumentation must not serialize PData solely to populate `wire_bytes`.
+### Payload size and internal size
 
-The internal `size` measurement is separate: it describes the PData
-representation at `node.producer` and `node.consumer`, not the external encoded
-representation.
+`payload.size` means encoded application payload bytes visible immediately
+before receiver decoding or submitted by an exporter attempt. It excludes
+protocol headers, framing, TLS overhead, and storage amplification. Exporters
+without an encoded application payload, or whose encoder does not expose its
+size, omit the optional metric set rather than reporting zero.
+
+The internal `size` measurement remains separate: it describes the PData
+representation at `node.producer` and `node.consumer`.
 
 ## Node Implementations Using This Crate
 
