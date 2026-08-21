@@ -720,7 +720,7 @@ mod tests {
 
         let shape = create_shape(&cfg);
         let mut generator = synthetic_generator();
-        let payloads =
+        let mut payloads =
             create_fresh_payloads(&mut generator, &shape).expect("pre-generation should succeed");
         let expected_count = payloads.len();
 
@@ -736,7 +736,7 @@ mod tests {
             produced_count: 0,
         };
 
-        let results: Vec<GenerateResult> = producer
+        let mut results: Vec<GenerateResult> = producer
             .next_run()
             .expect("generation should succeed")
             .expect("should get a run")
@@ -744,8 +744,8 @@ mod tests {
         assert_eq!(results.len(), expected_count);
 
         // Each replayed payload should match the original pre-generated payload.
-        for (i, (result, original)) in results.iter().zip(payloads.iter()).enumerate() {
-            let payload = result.as_ref().expect("replay should always succeed");
+        for (i, (result, original)) in results.iter_mut().zip(payloads.iter_mut()).enumerate() {
+            let payload = result.as_mut().expect("replay should always succeed");
             assert_eq!(
                 payload.num_bytes(),
                 original.num_bytes(),
@@ -851,10 +851,10 @@ mod tests {
         // synthetic_generator() has empty entries and rotation -- no custom resource attrs.
         let mut generator = synthetic_generator();
 
-        let batch_1 = generator
+        let mut batch_1 = generator
             .generate_logs(1)
             .expect("batch 1 with empty attrs");
-        let batch_2 = generator
+        let mut batch_2 = generator
             .generate_logs(1)
             .expect("batch 2 with empty attrs");
 
