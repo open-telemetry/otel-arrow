@@ -24,12 +24,14 @@ use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::ExporterFactory;
+use otap_df_engine::capability::auth::http_client_authentication_provider::HttpClientAuthenticationProviderEvents;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otap_df_engine::local::capability::auth::http_client_authentication_provider::HttpClientAuthenticationProvider;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
@@ -58,7 +60,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 
-use otap_df_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
+use otap_df_otap::bearer_auth::BearerAuth;
 
 mod metrics;
 
@@ -68,18 +70,19 @@ use metrics::{OtlpGrpcExporterErrorType, OtlpGrpcExporterMetrics};
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
 
 /// Raises the shared bearer-auth warnings under this exporter's event namespace.
-const GRPC_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
-    invalid_token: |error| {
-        otel_warn!("otlp.exporter.grpc.invalid_bearer_token", error = %error);
-    },
-    token_stream_closed: || {
-        otel_warn!(
-            "otlp.exporter.grpc.token_stream_closed",
-            message = "bearer token provider closed its stream; \
+const GRPC_BEARER_AUTH_EVENTS: HttpClientAuthenticationProviderEvents =
+    HttpClientAuthenticationProviderEvents {
+        invalid: || {
+            otel_warn!("otlp.exporter.grpc.invalid_bearer_token");
+        },
+        stream_closed: || {
+            otel_warn!(
+                "otlp.exporter.grpc.token_stream_closed",
+                message = "bearer token provider closed its stream; \
                 no further token refreshes will arrive"
-        );
-    },
-};
+            );
+        },
+    };
 
 /// Configuration for the OTLP Exporter
 #[derive(Debug, Deserialize)]
@@ -110,11 +113,7 @@ pub(crate) const fn default_num_connections() -> usize {
 pub struct OTLPExporter {
     config: Config,
     metrics: OtlpGrpcExporterMetrics,
-    /// Optional bearer token provider resolved from the
-    /// `bearer_token_provider` capability. When bound, a fresh
-    /// `authorization: Bearer <token>` is injected on every outgoing request;
-    /// when absent, the exporter behaves exactly as before.
-    token_provider: Option<Box<dyn BearerTokenProvider>>,
+    auth_provider: Option<Box<dyn HttpClientAuthenticationProvider>>,
 }
 
 /// Declare the OTLP Exporter as a local exporter factory
@@ -128,6 +127,11 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig,
              capabilities: &otap_df_engine::capability::registry::Capabilities| {
+        let auth_provider = capabilities
+            .optional_local::<otap_df_engine::capability::auth::http_client_authentication_provider::HttpClientAuthenticationProvider>()
+            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            })?;
         // Optionally resolve a bound bearer token provider. Absent binding keeps
         // the default (no-auth) behavior; a bound provider (e.g. the
         // `oauth2_client_auth` extension) supplies refreshed OAuth tokens.
@@ -137,7 +141,12 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 error: e.to_string(),
             })?;
         Ok(ExporterWrapper::local(
-            OTLPExporter::from_config(pipeline, &node_config.config, token_provider)?,
+            OTLPExporter::from_config(
+                pipeline,
+                &node_config.config,
+                auth_provider,
+                token_provider,
+            )?,
             node,
             node_config,
             exporter_config,
@@ -171,6 +180,7 @@ impl OTLPExporter {
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
+        mut auth_provider: Option<Box<dyn HttpClientAuthenticationProvider>>,
         token_provider: Option<Box<dyn BearerTokenProvider>>,
     ) -> Result<Self, otap_df_config::error::Error> {
         let metrics = OtlpGrpcExporterMetrics::register(&pipeline_ctx);
@@ -181,11 +191,27 @@ impl OTLPExporter {
             }
         })?;
 
+        if auth_provider.is_none() {
+            auth_provider = create_auth_provider_from_token_provider(token_provider);
+        }
+
         Ok(Self {
             config,
             metrics,
-            token_provider,
+            auth_provider,
         })
+    }
+}
+
+fn create_auth_provider_from_token_provider(
+    token_provider: Option<Box<dyn BearerTokenProvider>>,
+) -> Option<Box<dyn HttpClientAuthenticationProvider>> {
+    match token_provider {
+        None => None,
+        Some(p) => {
+            let a: Box<dyn HttpClientAuthenticationProvider> = Box::new(BearerAuth::new(p));
+            Some(a)
+        }
     }
 }
 
@@ -266,15 +292,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut inflight_exports = InFlightExports::new();
         let mut pending_msg: Option<(OtapPdata, Instant)> = None;
 
-        // Consumer-side bearer-token adapter, if a provider is bound. It owns
-        // the token subscription, the cached `authorization` header, and token
-        // usability; the loop below stays auth-agnostic -- it only asks whether
-        // it may send and stamps the header the adapter hands back.
-        let mut auth = self
-            .token_provider
-            .take()
-            .map(|provider| BearerAuth::new(provider, GRPC_BEARER_AUTH_EVENTS));
-
         // Timer that fires when the cached token crosses its usability margin.
         // Hoisted out of the loop and re-armed only when the deadline actually
         // moves (i.e. when a refresh is cached), so a busy exporter does not pay
@@ -295,7 +312,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     let (client, rejected_generation) =
                         finalize_completed_export(completed, &effect_handler, &mut self.metrics)
                             .await;
-                    apply_auth_rejection(&mut auth, rejected_generation);
+                    if let (Some(auth), Some(generation)) =
+                        (self.auth_provider.as_mut(), rejected_generation)
+                    {
+                        auth.invalidate(generation);
+                    }
                     grpc_clients.release(client);
                 }
                 continue;
@@ -306,7 +327,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
             {
                 let (client, rejected_generation) =
                     finalize_completed_export(completed, &effect_handler, &mut self.metrics).await;
-                apply_auth_rejection(&mut auth, rejected_generation);
+                if let (Some(auth), Some(generation)) =
+                    (self.auth_provider.as_mut(), rejected_generation)
+                {
+                    auth.invalidate(generation);
+                }
                 grpc_clients.release(client);
             }
 
@@ -317,13 +342,16 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // the extension's readiness probe holds data-path startup until the
             // first publish, and its watch stream stays live while we hold the
             // provider handle -- so waiting (not dropping) is always correct here.
-            let accepting_pdata = auth.as_ref().is_none_or(BearerAuth::is_ready);
+            let accepting_pdata = self.auth_provider.as_ref().is_none_or(|a| a.is_ready());
 
             // Instant at which a currently-usable token crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
+            let token_margin_deadline = self
+                .auth_provider
+                .as_ref()
+                .and_then(|a| a.refresh_deadline());
             if token_margin_deadline != armed_margin_deadline {
                 if let Some(deadline) = token_margin_deadline {
                     margin_sleep
@@ -370,11 +398,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // `None` when no provider is bound. The `None` arm is unreachable
                     // while the guard holds; it pends rather than panics.
                     () = async {
-                        match auth.as_mut() {
-                            Some(a) => a.poll_refresh().await,
+                        match self.auth_provider.as_mut() {
+                            Some(a) => a.poll_refresh(&GRPC_BEARER_AUTH_EVENTS).await,
                             None => std::future::pending().await,
                         }
-                    }, if auth.as_ref().is_some_and(BearerAuth::is_active) => {
+                    }, if self.auth_provider.as_ref().is_some_and(|a| a.is_active()) => {
                         // A refresh was drained (the adapter caches it and logs any
                         // anomaly); loop to re-evaluate intake readiness.
                         continue;
@@ -397,7 +425,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             // and the retry never reuses the rejected token. A stale
                             // rejection (a newer token was already cached) is ignored by
                             // the generation guard.
-                            apply_auth_rejection(&mut auth, rejected_generation);
+                            if let (Some(auth), Some(generation)) = (self.auth_provider.as_mut(), rejected_generation) {
+                                auth.invalidate(generation);
+                            }
                             grpc_clients.release(client);
                         }
                         continue;
@@ -427,12 +457,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // would be dropped silently.
                     if let Some((pdata, export_started_at)) = pending_msg.take() {
                         debug_assert!(
-                            auth.as_ref().is_some_and(|a| !a.is_ready()),
+                            self.auth_provider.as_ref().is_some_and(|a| !a.is_ready()),
                             "a batch stays parked only while a bound token is unusable"
                         );
-                        let reason = auth
+                        let reason = self
+                            .auth_provider
                             .as_ref()
-                            .map_or("no usable bearer token", BearerAuth::not_ready_reason);
+                            .map_or("no usable bearer token", |a| a.not_ready_reason());
                         nack_without_usable_token(
                             pdata,
                             reason,
@@ -452,7 +483,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             .await;
                             // Honor a rejection even while draining, so a later
                             // force-drained request cannot reuse the rejected token.
-                            apply_auth_rejection(&mut auth, rejected_generation);
+                            if let (Some(auth), Some(generation)) =
+                                (self.auth_provider.as_mut(), rejected_generation)
+                            {
+                                auth.invalidate(generation);
+                            }
                             grpc_clients.release(client);
                         }
                     }
@@ -486,7 +521,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // force-drains buffered pdata even while auth is pending: with no
                     // usable token we cannot send, so NACK it as retryable -- a token
                     // may yet arrive, so nothing is dropped.
-                    if let Some(a) = auth.as_ref() {
+                    if let Some(a) = self.auth_provider.as_ref() {
                         if !a.is_ready() {
                             let reason = a.not_ready_reason();
                             nack_without_usable_token(
@@ -509,7 +544,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // completion so an UNAUTHENTICATED response can be matched to the
                     // exact token used and a stale rejection ignored.
                     let (auth_header, token_generation) =
-                        match auth.as_ref().and_then(BearerAuth::header) {
+                        match self.auth_provider.as_ref().and_then(|a| a.header()) {
                             Some((header, generation)) => (Some(header), Some(generation)),
                             None => (None, None),
                         };
@@ -1676,7 +1711,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider: None,
+                auth_provider: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1801,7 +1836,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider: None,
+                auth_provider: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1930,7 +1965,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider: Some(Box::new(provider)),
+                auth_provider: create_auth_provider_from_token_provider(Some(Box::new(provider))),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2080,7 +2115,9 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider: Some(Box::new(MockTokenProvider::never_publishes())),
+                auth_provider: create_auth_provider_from_token_provider(Some(Box::new(
+                    MockTokenProvider::never_publishes(),
+                ))),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2198,7 +2235,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider: None,
+                auth_provider: None,
             },
             node_id.clone(),
             node_config,
@@ -2783,7 +2820,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider,
+                auth_provider: create_auth_provider_from_token_provider(token_provider),
             },
             node_id.clone(),
             node_config,
