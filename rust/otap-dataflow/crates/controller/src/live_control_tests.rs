@@ -5466,6 +5466,86 @@ fn register_launched_instance_reconciles_early_exit_without_leaking_active_count
     assert!(!state.runtime_instances.contains_key(&deployed_key));
 }
 
+/// Scenario: a controller extension fails at runtime while a pipeline instance
+/// is still active and never drains (e.g. the graceful shutdown request stalls).
+/// Guarantees: `release_instance_wait` unblocks `wait_until_all_instances_exit`
+/// unconditionally, so the main controller thread proceeds to teardown instead
+/// of hanging. Regression test for the removed `thread::park`/`unpark` escape
+/// hatch -- the condvar wait is now the only wake path and must honor the latch.
+#[test]
+fn release_instance_wait_unblocks_wait_with_active_instances() {
+    let runtime = test_runtime(&empty_engine_config());
+
+    // Simulate a launched, still-active pipeline instance that never exits.
+    runtime.register_launched_instance(launched_runtime_instance("g1", "p1", 0, 0));
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active_instances,
+        1
+    );
+
+    let waiter = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.wait_until_all_instances_exit())
+    };
+
+    // The waiter must stay blocked while the instance is active and unreleased.
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !waiter.is_finished(),
+        "waiter should block while an instance is active"
+    );
+
+    // Fatal-shutdown escape hatch: release the wait without the instance draining.
+    runtime.release_instance_wait();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !waiter.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "release_instance_wait did not unblock wait_until_all_instances_exit"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    waiter.join().expect("waiter thread should not panic");
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        state.active_instances, 1,
+        "release must not fabricate an instance exit"
+    );
+    assert!(state.instance_wait_released);
+}
+
+/// Scenario: standard engine mode has no active pipeline instances and has not received shutdown.
+/// Guarantees: the lifecycle wait remains blocked until an explicit global shutdown is requested.
+#[test]
+fn global_shutdown_wait_keeps_an_empty_engine_alive() {
+    let runtime = test_runtime(&empty_engine_config());
+
+    let waiter = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.wait_until_global_shutdown_drains_or_released())
+    };
+
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !waiter.is_finished(),
+        "an empty engine should remain alive before global shutdown"
+    );
+
+    runtime
+        .request_shutdown_all(1)
+        .expect("empty engine should accept global shutdown");
+    waiter.join().expect("lifecycle waiter should not panic");
+}
+
 /// Scenario: a completed rollout has advanced the committed active generation,
 /// but observed state still contains the older generation for the same core.
 /// Guarantees: controller cleanup compacts observed state to the selected
@@ -6343,9 +6423,10 @@ fn runtime_recovery_exhaustion_fails_process_after_bounded_attempts() {
 }
 
 /// Scenario: a regular pipeline disables in-process runtime recovery and its
-/// serving core exits unexpectedly.
-/// Guarantees: no replacement generation is allocated and the controller
-/// immediately requests fatal coordinated shutdown.
+/// serving core exits unexpectedly while another active instance never drains.
+/// Guarantees: no replacement generation is allocated, fatal coordinated
+/// shutdown is requested, and the global lifecycle wait is released without
+/// fabricating an exit for the non-draining instance.
 #[test]
 fn disabled_runtime_recovery_fails_without_launching_replacement() {
     let config = engine_config_with_pipeline(
@@ -6369,16 +6450,44 @@ fn disabled_runtime_recovery_fails_without_launching_replacement() {
     register_existing_pipeline(&runtime, &config);
     let _rx =
         register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let _non_draining =
+        register_runtime_instance(&runtime, "g2", "p2", 1, 0, RuntimeInstanceLifecycle::Active);
+
+    let waiter = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.wait_until_global_shutdown_drains_or_released())
+    };
+
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !waiter.is_finished(),
+        "global lifecycle wait should block before fatal recovery"
+    );
 
     runtime.note_instance_exit(
         deployed_key("g1", "p1", 0, 0),
         RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
     );
 
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !waiter.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "fatal runtime recovery did not release the global lifecycle wait"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    waiter.join().expect("lifecycle waiter should not panic");
+
     let state = runtime
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        state.active_instances, 1,
+        "fatal recovery must not fabricate an instance exit"
+    );
+    assert!(state.instance_wait_released);
     assert!(state.global_shutdown_requested);
     assert_eq!(
         state
