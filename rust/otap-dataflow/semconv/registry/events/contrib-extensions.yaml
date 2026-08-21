@@ -12,7 +12,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: azure_identity_auth.token_refresh_failed
         scope_names:
         - microsoft.extension.azure_identity_auth
         severity_levels:
@@ -33,7 +32,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.access_review_failed
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -51,7 +49,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.access_review_no_status
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -72,7 +69,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.access_review_timeout
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -95,7 +91,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.admission_denied
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -116,7 +111,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.audience_unbound
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -139,7 +133,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.authorized
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -160,7 +153,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.client_init_failed
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -178,7 +170,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.credential_missing
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -199,7 +190,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.not_service_account
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -220,7 +210,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.token_review_failed
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -238,7 +227,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.token_review_no_status
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -259,7 +247,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.token_review_timeout
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -280,7 +267,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: k8s_service_account_token_auth.token_unauthenticated
         scope_names:
         - otap-df-contrib-extensions
         severity_levels:
@@ -301,7 +287,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: oauth2_client_auth.insecure_token_url
         scope_names:
         - otel.extension.oauth2_client_auth
         severity_levels:
@@ -322,7 +307,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: oauth2_client_auth.token_refresh_failed
         scope_names:
         - otel.extension.oauth2_client_auth
         severity_levels:

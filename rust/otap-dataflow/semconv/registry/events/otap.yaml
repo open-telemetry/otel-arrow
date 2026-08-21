@@ -11,7 +11,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: flow_metrics.overlap
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -35,7 +34,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: grpc.client.static_header_collision
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -59,7 +57,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: grpc.client.static_header_skip
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -81,7 +78,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap.batch.decode_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -103,7 +99,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap.batch.validation_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -122,7 +117,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap.mutex.poisoned
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -144,7 +138,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap.pipeline.send_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -163,7 +156,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap.request.concurrency_limit
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -182,7 +174,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap.request.memory_pressure
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -204,7 +195,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap.response.channel_closed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -226,7 +216,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap.response.send_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -267,7 +256,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap.stream.memory_pressure
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -291,7 +279,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.bypass
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -315,7 +302,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.configured
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -343,7 +329,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.connect_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -367,7 +352,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.connect_request
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -389,7 +373,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.connect_response
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -413,7 +396,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.connected
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -437,7 +419,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.connecting
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -459,7 +440,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.invalid_cidr
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -481,7 +461,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.none
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -503,7 +482,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.tls.native_cert.add_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -525,7 +503,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.tls.native_cert.load_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -547,7 +524,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.tls.provider.install
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -571,7 +547,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_grpc_exporter.proxy.using
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -593,7 +568,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp_http_receiver.body_collection_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -615,7 +589,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp_http_receiver.connection_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -639,7 +612,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp_http_receiver.pipeline_send_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -663,7 +635,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp_http_receiver.request_nacked
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -699,7 +670,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp_http_receiver.request_rejected
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -726,7 +696,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp_http_receiver.request_timeout
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -750,7 +719,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp_http_receiver.semaphore_closed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -772,7 +740,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp_http_receiver.shutdown_timeout
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -796,7 +763,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp_http_receiver.socket_options_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -818,7 +784,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.ca.initial_load
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -840,7 +805,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.ca.reloaded
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -862,7 +826,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.ca.verifier_built
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -886,7 +849,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.ca_file.read_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -909,7 +871,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.cert.mtime_check_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -933,7 +894,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.cert_file.read_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -956,7 +916,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.cert_reload_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -980,7 +939,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.cert_reloaded
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1004,7 +962,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.client_cert_file.read_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1028,7 +985,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.client_key_file.read_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1047,7 +1003,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.debounce
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1069,7 +1024,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1091,7 +1045,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.event
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1115,7 +1068,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.identity_changed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1137,7 +1089,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.identity_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1156,7 +1107,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.identity_unchanged
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1175,7 +1125,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.match
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1199,7 +1148,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.no_match
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1221,7 +1169,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.reload_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1240,7 +1187,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.reload_in_progress
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1262,7 +1208,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.reload_start
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1281,7 +1226,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.reload_success
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1305,7 +1249,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.file_watcher.setup
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1327,7 +1270,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.handshake.failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1346,7 +1288,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.handshake.timeout
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1368,7 +1309,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.key.mtime_check_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1392,7 +1332,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.key_file.read_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1412,7 +1351,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.mtls.configure_static_pem
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1431,7 +1369,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.mtls.configure_system_cas
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1450,7 +1387,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.mtls.disabled
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1472,7 +1408,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.native_cert.add_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1494,7 +1429,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.native_cert.load_error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1518,7 +1452,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.native_cert.load_errors
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1542,7 +1475,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.native_cert.loaded
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1564,7 +1496,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.poll_watcher.error
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1586,7 +1517,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.poll_watcher.event
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1608,7 +1538,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.poll_watcher.reload_failed
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1627,7 +1556,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.poll_watcher.reload_success
         scope_names:
         - otap-df-otap
         severity_levels:
@@ -1651,7 +1579,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tls.poll_watcher.setup
         scope_names:
         - otap-df-otap
         severity_levels:

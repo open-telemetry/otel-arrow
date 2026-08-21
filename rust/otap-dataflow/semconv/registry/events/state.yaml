@@ -12,7 +12,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: state.mutex_poisoned
         scope_names:
         - otap-df-state
         severity_levels:
@@ -48,7 +47,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: state.observed_error
         scope_names:
         - otap-df-state
         severity_levels:
@@ -74,7 +72,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: state.observed_event
         scope_names:
         - otap-df-state
         severity_levels:
@@ -94,7 +91,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: state.report_failed
         scope_names:
         - otap-df-state
         severity_levels:

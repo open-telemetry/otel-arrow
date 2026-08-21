@@ -14,7 +14,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: console.format_failed
         scope_names:
         - otel.exporter.console
         severity_levels:
@@ -36,7 +35,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: console.logs_view.otap_create_failed
         scope_names:
         - otel.exporter.console
         severity_levels:
@@ -58,7 +56,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: console.logs_view.otlp_create_failed
         scope_names:
         - otel.exporter.console
         severity_levels:
@@ -80,7 +77,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: console.message.unsupported_signal
         scope_names:
         - otel.exporter.console
         severity_levels:
@@ -102,7 +98,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: console.write_failed
         scope_names:
         - otel.exporter.console
         severity_levels:
@@ -126,7 +121,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.ack.unknown_bundle
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -150,7 +144,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.bundle.acked
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -172,7 +165,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.bundle.conversion_failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -196,7 +188,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.bundle.duplicate
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -222,7 +213,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.bundle.forwarded
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -252,7 +242,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.bundle.nacked
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -278,7 +267,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.bundle.rejected_permanent
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -300,7 +288,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.config.update
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -319,7 +306,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.delayed_data.unexpected
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -345,7 +331,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.drain.all_blocked
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -371,7 +356,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.drain.at_capacity
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -393,7 +377,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.drain.backpressure
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -417,7 +400,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.drain.budget_exhausted
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -449,7 +431,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.engine.init
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -473,7 +454,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.engine.ready
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -495,7 +475,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.engine.unavailable
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -517,7 +496,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.flush.failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -539,7 +517,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.ingest.backpressure
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -561,7 +538,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.ingest.failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -583,7 +559,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.maintenance.failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -607,7 +582,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.nack.unknown_bundle
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -629,7 +603,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.otlp.adapter_failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -651,7 +624,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.otlp.conversion_failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -673,7 +645,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.poll.failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -699,7 +670,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.queued.bundle_index_overflow
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -725,7 +695,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.queued.metadata_skip
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -749,7 +718,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.queued.recompute_error
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -773,7 +741,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.retry.backpressure
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -799,7 +766,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.retry.claim_failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -827,7 +793,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.retry.deferred
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -846,7 +811,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.retry.rearm_failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -865,7 +829,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.retry.reschedule_failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -889,7 +852,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.retry.schedule_failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -915,7 +877,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.retry.sent
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -939,7 +900,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.retry.skipped
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -963,7 +923,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.retry.unknown_wakeup
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -982,7 +941,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.backpressure
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1004,7 +962,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.bundle_error
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1023,7 +980,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.complete
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1042,7 +998,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.deadline_exceeded
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1064,7 +1019,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.drain_deadline
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1086,7 +1040,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.drained
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1108,7 +1061,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.engine_failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1130,7 +1082,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.flush_failed
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1149,7 +1100,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.flushing
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1171,7 +1121,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.poll_error
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1193,7 +1142,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.shutdown.start
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1215,7 +1163,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: durable_buffer.timer.started
         scope_names:
         - otel.processor.durable_buffer
         severity_levels:
@@ -1234,7 +1181,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: host_metrics.dropped_backpressure
         scope_names:
         - otel.receiver.host_metrics
         severity_levels:
@@ -1257,7 +1203,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: host_metrics.scrape_failed
         scope_names:
         - otel.receiver.host_metrics
         severity_levels:
@@ -1277,7 +1222,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: host_metrics.scrape_timeout
         scope_names:
         - otel.receiver.host_metrics
         severity_levels:
@@ -1297,7 +1241,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: host_metrics.scraper_busy
         scope_names:
         - otel.receiver.host_metrics
         severity_levels:
@@ -1317,7 +1260,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: host_metrics.scraper_stopped
         scope_names:
         - otel.receiver.host_metrics
         severity_levels:
@@ -1337,7 +1279,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: host_metrics_receiver.drain_ingress
         scope_names:
         - otel.receiver.host_metrics
         severity_levels:
@@ -1357,7 +1298,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: host_metrics_receiver.shutdown
         scope_names:
         - otel.receiver.host_metrics
         severity_levels:
@@ -1388,7 +1328,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: journald_receiver.batch_sent
         scope_names:
         - otel.receiver.journald
         severity_levels:
@@ -1415,7 +1354,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: journald_receiver.checkpoint_failed
         scope_names:
         - otel.receiver.journald
         severity_levels:
@@ -1442,7 +1380,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: journald_receiver.cursor_committed
         scope_names:
         - otel.receiver.journald
         severity_levels:
@@ -1465,7 +1402,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: journald_receiver.drain_ingress
         scope_names:
         - otel.receiver.journald
         severity_levels:
@@ -1492,7 +1428,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: journald_receiver.drain_timeout
         scope_names:
         - otel.receiver.journald
         severity_levels:
@@ -1515,7 +1450,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: journald_receiver.shutdown
         scope_names:
         - otel.receiver.journald
         severity_levels:
@@ -1540,7 +1474,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: journald_receiver.source_failed
         scope_names:
         - otel.receiver.journald
         severity_levels:
@@ -1565,7 +1498,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: journald_receiver.start
         scope_names:
         - otel.receiver.journald
         severity_levels:
@@ -1590,7 +1522,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: journald_receiver.start_at_end_head_recovery
         scope_names:
         - otel.receiver.journald
         severity_levels:
@@ -1617,7 +1548,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_exporter.batch_status_failed
         scope_names:
         - otel.exporter.otap
         severity_levels:
@@ -1643,7 +1573,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_exporter.batch_status_unmatched
         scope_names:
         - otel.exporter.otap
         severity_levels:
@@ -1667,7 +1596,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_exporter.request_failed
         scope_names:
         - otel.exporter.otap
         severity_levels:
@@ -1689,7 +1617,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_exporter.response_stream_failed
         scope_names:
         - otel.exporter.otap
         severity_levels:
@@ -1708,7 +1635,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_exporter.shutdown
         scope_names:
         - otel.exporter.otap
         severity_levels:
@@ -1730,7 +1656,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_exporter.start
         scope_names:
         - otel.exporter.otap
         severity_levels:
@@ -1754,7 +1679,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_exporter.static_headers
         scope_names:
         - otel.exporter.otap
         severity_levels:
@@ -1773,7 +1697,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_receiver.drain_ingress
         scope_names:
         - otel.receiver.otap
         severity_levels:
@@ -1792,7 +1715,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_receiver.shutdown
         scope_names:
         - otel.receiver.otap
         severity_levels:
@@ -1814,7 +1736,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otap_receiver.start
         scope_names:
         - otel.receiver.otap
         severity_levels:
@@ -1840,7 +1761,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otelcol.node.file.operation.fail
         scope_names:
         - otap-df-core-nodes
         severity_levels:
@@ -1868,7 +1788,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otelcol.node.file.rollback.fail
         scope_names:
         - otap-df-core-nodes
         severity_levels:
@@ -1900,7 +1819,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otelcol.node.file.start
         scope_names:
         - otap-df-core-nodes
         severity_levels:
@@ -1922,7 +1840,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otelcol.node.file.stop
         scope_names:
         - otap-df-core-nodes
         severity_levels:
@@ -1946,7 +1863,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otelcol.node.file.tail.recover
         scope_names:
         - otap-df-core-nodes
         severity_levels:
@@ -1968,7 +1884,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otelcol.node.file.writer.start
         scope_names:
         - otap-df-core-nodes
         severity_levels:
@@ -1992,7 +1907,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.grpc.channels
         scope_names:
         - otel.exporter.otlp_grpc
         severity_levels:
@@ -2020,7 +1934,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.grpc.export_error
         scope_names:
         - otel.exporter.otlp_grpc
         severity_levels:
@@ -2044,7 +1957,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.grpc.header_skip
         scope_names:
         - otel.exporter.otlp_grpc
         severity_levels:
@@ -2066,7 +1978,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.grpc.invalid_bearer_token
         scope_names:
         - otel.exporter.otlp_grpc
         severity_levels:
@@ -2087,7 +1998,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.grpc.receive
         scope_names:
         - otel.exporter.otlp_grpc
         severity_levels:
@@ -2106,7 +2016,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.grpc.shutdown
         scope_names:
         - otel.exporter.otlp_grpc
         severity_levels:
@@ -2128,7 +2037,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.grpc.start
         scope_names:
         - otel.exporter.otlp_grpc
         severity_levels:
@@ -2147,7 +2055,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.grpc.token_stream_closed
         scope_names:
         - otel.exporter.otlp_grpc
         severity_levels:
@@ -2169,7 +2076,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.http.export_error
         scope_names:
         - otel.exporter.otlp_http
         severity_levels:
@@ -2191,7 +2097,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.http.invalid_bearer_token
         scope_names:
         - otel.exporter.otlp_http
         severity_levels:
@@ -2213,7 +2118,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.http.notification_error
         scope_names:
         - otel.exporter.otlp_http
         severity_levels:
@@ -2232,7 +2136,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.http.receive
         scope_names:
         - otel.exporter.otlp_http
         severity_levels:
@@ -2254,7 +2157,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.http.shutdown
         scope_names:
         - otel.exporter.otlp_http
         severity_levels:
@@ -2280,7 +2182,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.http.start
         scope_names:
         - otel.exporter.otlp_http
         severity_levels:
@@ -2299,7 +2200,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.http.token_stream_closed
         scope_names:
         - otel.exporter.otlp_http
         severity_levels:
@@ -2318,7 +2218,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.http.validate_insecure_flag
         scope_names:
         - otel.exporter.otlp_http
         severity_levels:
@@ -2340,7 +2239,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.exporter.http.zero_partial_rejected
         scope_names:
         - otel.exporter.otlp_http
         severity_levels:
@@ -2359,7 +2257,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.receiver.drain_ingress
         scope_names:
         - otel.receiver.otlp
         severity_levels:
@@ -2381,7 +2278,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.receiver.grpc.start
         scope_names:
         - otel.receiver.otlp
         severity_levels:
@@ -2403,7 +2299,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.receiver.http.start
         scope_names:
         - otel.receiver.otlp
         severity_levels:
@@ -2422,7 +2317,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: otlp.receiver.shutdown
         scope_names:
         - otel.receiver.otlp
         severity_levels:
@@ -2441,7 +2335,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: parquet.exporter.retry_ignored_for_file_storage
         scope_names:
         - otel.exporter.parquet
         severity_levels:
@@ -2463,7 +2356,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: perf_exporter.start
         scope_names:
         - otel.exporter.perf
         severity_levels:
@@ -2485,7 +2377,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: syslog_cef_receiver.arrow_records.build_failed
         scope_names:
         - otel.receiver.syslog_cef
         severity_levels:
@@ -2507,7 +2398,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: syslog_cef_receiver.drain_ingress.timeout
         scope_names:
         - otel.receiver.syslog_cef
         severity_levels:
@@ -2529,7 +2419,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: syslog_cef_receiver.memory_pressure.disconnect
         scope_names:
         - otel.receiver.syslog_cef
         severity_levels:
@@ -2551,7 +2440,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: syslog_cef_receiver.rate_limit.drop
         scope_names:
         - otel.receiver.syslog_cef
         severity_levels:
@@ -2575,7 +2463,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: syslog_cef_receiver.start
         scope_names:
         - otel.receiver.syslog_cef
         severity_levels:
@@ -2599,7 +2486,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: syslog_cef_receiver.tls.handshake.failed
         scope_names:
         - otel.receiver.syslog_cef
         severity_levels:
@@ -2621,7 +2507,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: syslog_cef_receiver.tls.handshake.success
         scope_names:
         - otel.receiver.syslog_cef
         severity_levels:
@@ -2640,7 +2525,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: syslog_cef_receiver.tls_enabled
         scope_names:
         - otel.receiver.syslog_cef
         severity_levels:
@@ -2659,7 +2543,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: temporal_reaggregation.ack.erroneous
         scope_names:
         - otel.processor.temporal_reaggregation
         severity_levels:
@@ -2683,7 +2566,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: temporal_reaggregation.attribute.encode_failed
         scope_names:
         - otel.processor.temporal_reaggregation
         severity_levels:
@@ -2702,7 +2584,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: temporal_reaggregation.calldata.invalid
         scope_names:
         - otel.processor.temporal_reaggregation
         severity_levels:
@@ -2724,7 +2605,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: temporal_reaggregation.view.creation_failed
         scope_names:
         - otel.processor.temporal_reaggregation
         severity_levels:
@@ -2748,7 +2628,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_exporter.drop_newest
         scope_names:
         - otel.exporter.topic
         severity_levels:
@@ -2772,7 +2651,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_exporter.outcome_capacity_full
         scope_names:
         - otel.exporter.topic
         severity_levels:
@@ -2800,7 +2678,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_exporter.start
         scope_names:
         - otel.exporter.topic
         severity_levels:
@@ -2826,7 +2703,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.bridge_ack_failed
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -2850,7 +2726,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.bridge_ack_missing_calldata
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -2876,7 +2751,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.bridge_ack_untracked_or_invalid_id
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -2902,7 +2776,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.bridge_nack_failed
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -2926,7 +2799,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.bridge_nack_missing_calldata
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -2952,7 +2824,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.bridge_nack_untracked_or_invalid_id
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -2978,7 +2849,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.downstream_backpressure
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -3004,7 +2874,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.drain_ingress.timeout
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -3032,7 +2901,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.drain_ingress_drop_pending_forward
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -3058,7 +2926,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.drain_ingress_force_nack_failed
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -3084,7 +2951,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.drain_ingress_pending_forward_nack_failed
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -3110,7 +2976,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.forward_failed
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -3134,7 +2999,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.lag_disconnect
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -3158,7 +3022,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.lagged
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -3186,7 +3049,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic_receiver.start
         scope_names:
         - otel.receiver.topic
         severity_levels:
@@ -3205,7 +3067,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: traffic_generator.drain_ingress
         scope_names:
         - otel.receiver.traffic_generator
         severity_levels:
@@ -3228,7 +3089,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: traffic_generator.open_run_behind
         scope_names:
         - otel.receiver.traffic_generator
         severity_levels:
@@ -3248,7 +3108,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: traffic_generator.shutdown
         scope_names:
         - otel.receiver.traffic_generator
         severity_levels:
@@ -3271,7 +3130,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: traffic_generator.smooth_fallback_open
         scope_names:
         - otel.receiver.traffic_generator
         severity_levels:
@@ -3296,7 +3154,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: traffic_generator.smooth_run_behind
         scope_names:
         - otel.receiver.traffic_generator
         severity_levels:

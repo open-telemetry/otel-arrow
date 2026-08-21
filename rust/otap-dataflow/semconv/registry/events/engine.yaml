@@ -18,7 +18,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: admission.binding.summary
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -42,7 +41,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: admission.metrics.reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -66,7 +64,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: channel.metrics.partial_wrap_skip
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -88,7 +85,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: channel.metrics.reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -118,7 +114,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: exporter.create.complete
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -148,7 +143,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: exporter.create.start
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -172,7 +166,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.builder.build
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -194,7 +187,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.collect_telemetry.try_send_failed
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -214,7 +206,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.lifecycle.metrics.final_reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -236,7 +227,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.lifecycle.metrics.reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -258,7 +248,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.metrics.flush.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -282,7 +271,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.readiness.timeout_override
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -302,7 +290,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.shutdown.receiver_dropped
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -322,7 +309,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.shutdown.task.error
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -346,7 +332,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.shutdown.task.join_error
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -368,7 +353,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.shutdown.timeout
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -388,7 +372,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.start.local
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -408,7 +391,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.start.shared
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -430,7 +412,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.task.error
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -454,7 +435,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.task.join_error.unknown_task
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -480,7 +460,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.unbound
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -506,7 +485,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: extension.unconsumed
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -532,7 +510,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: metrics.collection.flush.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -556,7 +533,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: metrics.terminal.reporting.deferred
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -582,7 +558,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: metrics.terminal.reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -606,7 +581,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: node.metrics.reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -636,7 +610,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pdata.receiver.set
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -668,7 +641,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pdata.sender.set
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -696,7 +668,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.build.unconnected_node.removed
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -722,7 +693,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.build.unconnected_nodes
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -742,7 +712,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.completion.metrics.final_reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -762,7 +731,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.completion.metrics.reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -782,7 +750,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.ctrl.pending_sends.high
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -802,7 +769,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.draining.ignored_start_telemetry_timer
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -822,7 +788,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.draining.ignored_start_timer
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -842,7 +807,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.metrics.final_collection.flush.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -862,7 +826,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.metrics.final_reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -882,7 +845,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.metrics.reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -902,7 +864,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.return.pending_sends.high
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -922,7 +883,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.runtime_control.metrics.final_reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -942,7 +902,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: pipeline.runtime_control.metrics.reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -972,7 +931,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: processor.create.complete
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -1002,7 +960,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: processor.create.start
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -1026,7 +983,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: processor.flow_metrics.final_reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -1050,7 +1006,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: processor.metrics.final_reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -1080,7 +1035,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: receiver.create.complete
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -1110,7 +1064,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: receiver.create.start
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -1130,7 +1083,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tokio.metrics.final_reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -1150,7 +1102,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tokio.metrics.reporting.fail
         scope_names:
         - otap-df-engine
         severity_levels:
@@ -1172,7 +1123,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: topic.tracked_publish.duplicate_message_id
         scope_names:
         - otap-df-engine
         severity_levels:

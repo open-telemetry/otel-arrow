@@ -20,7 +20,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.dict.key_widened
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -46,7 +45,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.dict.native_fallback
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -82,7 +80,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.engine.init
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -114,7 +111,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.engine.stop
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -144,7 +140,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.engine.tick
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -170,7 +165,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.segment.cleanup
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -207,7 +201,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.segment.drop
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -239,7 +232,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.segment.drop_metadata_failed
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -269,7 +261,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.segment.flush
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -304,7 +295,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.segment.scan
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -330,7 +320,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.subscriber.activate
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -352,7 +341,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.subscriber.deactivate
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -378,7 +366,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.subscriber.progress.flush
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -404,7 +391,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.subscriber.progress.load
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -430,7 +416,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.subscriber.progress.scan
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -452,7 +437,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.subscriber.register
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -474,7 +458,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.subscriber.unregister
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -512,7 +495,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.backpressure
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -543,7 +525,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.cursor.load
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -569,7 +550,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.drop
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -595,7 +575,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.drop.flush
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -627,7 +606,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.entry.decode
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -655,7 +633,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.expiry.accounting
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -685,7 +662,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.file.init
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -734,7 +710,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.init
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -779,7 +754,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.replay
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -808,7 +782,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.replay.accounting
         scope_names:
         - otap-df-quiver
         severity_levels:
@@ -836,7 +809,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: quiver.wal.rotate
         scope_names:
         - otap-df-quiver
         severity_levels:

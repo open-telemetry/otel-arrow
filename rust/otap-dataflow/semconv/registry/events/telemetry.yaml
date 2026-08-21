@@ -12,7 +12,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: engine.channel.disconnected
         scope_names:
         - otap-df-telemetry
         severity_levels:
@@ -32,7 +31,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: observed.channel.disconnected
         scope_names:
         - otap-df-telemetry
         severity_levels:
@@ -52,7 +50,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: observed.channel.full
         scope_names:
         - otap-df-telemetry
         severity_levels:
@@ -72,7 +69,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: observed.channel.timeout
         scope_names:
         - otap-df-telemetry
         severity_levels:
@@ -94,7 +90,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: registry.define_entity
         scope_names:
         - otap-df-telemetry
         severity_levels:
@@ -114,7 +109,6 @@ events:
   annotations:
     otap_dataflow:
       wire:
-        event_name: tracing.subscriber.init
         scope_names:
         - otap-df-telemetry
         severity_levels:
