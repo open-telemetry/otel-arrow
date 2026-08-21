@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-telemetry"
+name = "otel-arrow-dfe-telemetry"
 description = "Type-safe and NUMA-aware internal telemetry system (ITS)"
 version.workspace = true
 authors.workspace = true
@@ -19,11 +19,11 @@ unchecked-index = []
 unchecked-arithmetic = []
 
 [dependencies]
-otap-df-pdata = { workspace = true }
-otap-df-config = { workspace = true }
-otap-df-pdata-views = { workspace = true }
-otap-df-telemetry-macros = { workspace = true }
-otap-df-expohisto = { workspace = true }
+otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-pdata-views = { workspace = true }
+otel-arrow-dfe-telemetry-macros = { workspace = true }
+otel-arrow-dfe-expohisto = { workspace = true }
 
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -48,7 +48,7 @@ opentelemetry-resource-detectors = { workspace = true }
 criterion = { workspace = true }
 temp-env = { workspace = true }
 tempfile = { workspace = true }
-otap-df-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 prost = { workspace = true }
 
 [[bench]]

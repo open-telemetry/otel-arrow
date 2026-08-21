@@ -22,8 +22,8 @@ use base64::Engine;
 use base64::prelude::*;
 use http::Uri;
 use ipnet::IpNet;
-use otap_df_config::tls::TlsClientConfig;
-use otap_df_telemetry::{otel_debug, otel_warn};
+use otel_arrow_dfe_config::tls::TlsClientConfig;
+use otel_arrow_dfe_telemetry::{otel_debug, otel_warn};
 use rustls::RootCertStore;
 use rustls_native_certs::load_native_certs;
 use rustls_pki_types::pem::PemObject;
@@ -392,7 +392,7 @@ impl ProxyConfig {
                         }
                     }
                 } else {
-                    otap_df_telemetry::otel_warn!(
+                    otel_arrow_dfe_telemetry::otel_warn!(
                         "otap_grpc_exporter.proxy.invalid_cidr",
                         pattern = pattern_host
                     );
@@ -1007,7 +1007,7 @@ mod tests {
 
     async fn start_tls_proxy_for_handshake_failure()
     -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-        use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
+        use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca};
         use rustls_pki_types::pem::PemObject;
         use rustls_pki_types::{CertificateDer, PrivateKeyDer};
         use std::sync::Arc;
@@ -1302,8 +1302,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_proxy_tls_connector_rejects_partial_mtls_config() {
-        use otap_df_config::tls::TlsConfig;
-        use otap_test_tls_certs::generate_ca;
+        use otel_arrow_dfe_config::tls::TlsConfig;
+        use otel_arrow_dfe_test_tls_certs::generate_ca;
 
         let ca = generate_ca("Proxy Config Test CA");
         let tls = TlsClientConfig {
@@ -1342,8 +1342,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_tcp_stream_with_proxy_config_maps_tls_handshake_error() {
-        use otap_df_config::tls::TlsConfig;
-        use otap_test_tls_certs::generate_ca;
+        use otel_arrow_dfe_config::tls::TlsConfig;
+        use otel_arrow_dfe_test_tls_certs::generate_ca;
 
         let (proxy_addr, proxy_task) = start_tls_proxy_for_handshake_failure().await;
         let wrong_ca = generate_ca("Wrong Proxy Trust CA");

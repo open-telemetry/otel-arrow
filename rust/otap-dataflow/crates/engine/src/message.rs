@@ -9,8 +9,8 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::{Interests, ReceivedAtNode};
-use otap_df_channel::error::{RecvError, SendError};
-use otap_df_channel::mpsc;
+use otel_arrow_dfe_channel::error::{RecvError, SendError};
+use otel_arrow_dfe_channel::mpsc;
 use std::future::Future;
 use std::ops::Add;
 use std::time::{Duration, Instant};
@@ -888,7 +888,7 @@ mod tests {
     use crate::WakeupError;
     use crate::local::message::LocalReceiver;
     use crate::testing::TestMsg;
-    use otap_df_channel::mpsc;
+    use otel_arrow_dfe_channel::mpsc;
     use std::time::Duration;
 
     fn local_processor_inbox(

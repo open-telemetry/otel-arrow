@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-state"
+name = "otel-arrow-dfe-state"
 description = "Internal state management for OTAP pipelines"
 version.workspace = true
 authors.workspace = true
@@ -13,8 +13,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-otap-df-config = { workspace = true }
-otap-df-telemetry = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-telemetry = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

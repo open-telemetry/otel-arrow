@@ -15,5 +15,5 @@ embedded admin UI.
 When updating these files, prefer replacing them in place and validating with:
 
 ```bash
-cargo check -p otap-df-admin
+cargo check -p otel-arrow-dfe-admin
 ```

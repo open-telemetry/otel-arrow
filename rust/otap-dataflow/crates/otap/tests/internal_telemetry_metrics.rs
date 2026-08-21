@@ -6,36 +6,36 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::DeployedPipelineKey;
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-use otap_df_core_nodes::receivers::internal_telemetry_receiver::INTERNAL_TELEMETRY_RECEIVER;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::{ControllerContext, PipelineContext};
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::DeployedPipelineKey;
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+use otel_arrow_dfe_core_nodes::receivers::internal_telemetry_receiver::INTERNAL_TELEMETRY_RECEIVER;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+use otel_arrow_dfe_engine::control::{
     AckMsg, NodeControlMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
     runtime_ctrl_msg_channel,
 };
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_otap::{OTAP_EXPORTER_FACTORIES, OTAP_PIPELINE_FACTORY};
-use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::{OTAP_EXPORTER_FACTORIES, OTAP_PIPELINE_FACTORY};
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     AggregationTemporality, metric, number_data_point,
 };
-use otap_df_pdata::{OtlpProtoBytes, PayloadData};
-use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::{InternalTelemetrySystem, LogContext};
-use otap_df_telemetry_macros::{attribute_set, metric_set};
+use otel_arrow_dfe_pdata::{OtlpProtoBytes, PayloadData};
+use otel_arrow_dfe_state::store::ObservedStateStore;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
+use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
 use parking_lot::Mutex;
 use prost::Message as _;
 use std::sync::mpsc::{SyncSender, sync_channel};
@@ -84,10 +84,10 @@ fn create_capture_exporter(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     exporter_config: &ExporterConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ExporterWrapper<OtapPdata>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ExporterWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
     let sender = CAPTURE_SENDER.lock().take().ok_or_else(|| {
-        otap_df_config::error::Error::InvalidUserConfig {
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "internal telemetry test capture sender was not registered".to_owned(),
         }
     })?;
@@ -104,8 +104,8 @@ fn create_capture_exporter(
 static CAPTURE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: CAPTURE_EXPORTER_URN,
     create: create_capture_exporter,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::no_config,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 #[metric_set(name = "test.its.pipeline")]
@@ -341,9 +341,9 @@ groups: {{}}
         deployment_generation: 0,
     };
     let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
-        otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+        otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged::initial(),
     );
-    let _pipeline_entity_guard = otap_df_engine::entity_context::set_pipeline_entity_key(
+    let _pipeline_entity_guard = otel_arrow_dfe_engine::entity_context::set_pipeline_entity_key(
         pipeline_context.metrics_registry(),
         pipeline_entity_key,
     );

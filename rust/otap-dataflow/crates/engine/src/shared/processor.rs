@@ -51,12 +51,12 @@ use crate::processor::ProcessorRuntimeRequirements;
 use crate::shared::message::SharedSender;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
-use otap_df_config::{PortName, SignalType};
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Mmsc;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_config::{PortName, SignalType};
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Mmsc;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -724,9 +724,9 @@ mod tests {
     use crate::flow_metrics::{FlowAttributeSet, FlowProducedItemsMetrics};
     use crate::shared::message::SharedSender;
     use crate::testing::{test_node, test_pipeline_ctx};
-    use otap_df_channel::error::SendError;
-    use otap_df_telemetry::metrics::MetricValue;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_channel::error::SendError;
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
 
     // Note: `impl FlowMetricHook for u64` lives in `crate::local::processor`
@@ -1023,9 +1023,9 @@ mod tests {
             .try_recv()
             .expect("flow duration metric should be reported");
         let [
-            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
-                duration_snapshot,
-            )),
+            MetricValue::Distribution(
+                otel_arrow_dfe_telemetry::instrument::DistributionValue::Basic(duration_snapshot),
+            ),
         ] = snapshot.get_metrics()
         else {
             panic!("expected flow duration MMSC metric");

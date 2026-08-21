@@ -22,7 +22,7 @@ use arrow::array::{
     StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Fields};
-use otap_df_config::ConversionOptions;
+use otel_arrow_dfe_config::ConversionOptions;
 
 use bytes::Bytes;
 use std::cmp::Ordering;

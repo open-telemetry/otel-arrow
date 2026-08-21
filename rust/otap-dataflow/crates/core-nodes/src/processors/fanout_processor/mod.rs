@@ -18,7 +18,7 @@
 //!
 //! See `processors/fanout_processor/README.md` for detailed diagrams and examples.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = FANOUT_PROCESSOR_URN,
     target = "otel.processor.fanout",
 );
@@ -27,18 +27,22 @@ mod metrics;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::PortName;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, UnwindData};
-use otap_df_engine::error::{Error, TypedError};
-use otap_df_engine::local::processor::{EffectHandler, Processor};
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::{ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension};
-use otap_df_engine::{ProcessorFactory, processor::ProcessorWrapper};
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{
+    AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, UnwindData,
+};
+use otel_arrow_dfe_engine::error::{Error, TypedError};
+use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::{
+    ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
+};
+use otel_arrow_dfe_engine::{ProcessorFactory, processor::ProcessorWrapper};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::{SmallVec, smallvec};
@@ -48,7 +52,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use metrics::FanoutMetrics;
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 
 /// URN for the fan-out processor.
 pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:processor:fanout";
@@ -652,7 +656,7 @@ impl FanoutProcessor {
             unwind: UnwindData::default(),
             refused: Box::new(inflight.original_pdata.clone()),
             permanent: false, // Timeout is retriable
-            cause: otap_df_engine::control::NackCause::Unspecified,
+            cause: otel_arrow_dfe_engine::control::NackCause::Unspecified,
         })
     }
 
@@ -1163,43 +1167,44 @@ pub fn create_fanout_processor(
 
 /// Register the fan-out processor as an OTAP processor factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: FANOUT_PROCESSOR_URN,
-    create: |pipeline_ctx: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
+    create:
+        |pipeline_ctx: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract {
+        output_fanout: otel_arrow_dfe_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
     },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract {
-        output_fanout: otap_df_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
-    },
-    validate_config: otap_df_config::validation::validate_typed_config::<FanoutConfig>,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<FanoutConfig>,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::SignalType;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{
         NodeControlMsg, PipelineCompletionMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
         runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::local::processor::EffectHandler;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::message::Sender;
-    use otap_df_engine::testing::processor::TEST_OUT_PORT_NAME;
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::Context;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-    use otap_df_telemetry::InternalTelemetrySystem;
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+    use otel_arrow_dfe_engine::local::processor::EffectHandler;
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::message::Sender;
+    use otel_arrow_dfe_engine::testing::processor::TEST_OUT_PORT_NAME;
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::Context;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
     use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::time::Duration;
@@ -1226,9 +1231,10 @@ mod tests {
         effect: EffectHandler<OtapPdata>,
         outputs: HashMap<String, LocalReceiver<OtapPdata>>,
         _runtime_ctrl_rx:
-            otap_df_engine::shared::message::SharedReceiver<RuntimeControlMsg<OtapPdata>>,
-        pipeline_completion_rx:
-            otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+            otel_arrow_dfe_engine::shared::message::SharedReceiver<RuntimeControlMsg<OtapPdata>>,
+        pipeline_completion_rx: otel_arrow_dfe_engine::shared::message::SharedReceiver<
+            PipelineCompletionMsg<OtapPdata>,
+        >,
     }
 
     fn build_harness(destinations: Value, mode: &str, await_ack: &str) -> FanoutHarness {
@@ -1268,7 +1274,7 @@ mod tests {
         let mut outputs = HashMap::new();
         let mut senders = HashMap::new();
         for port in &node_cfg.outputs {
-            let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
+            let (tx, rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
             let _ = senders.insert(port.clone(), Sender::Local(LocalSender::mpsc(tx)));
             let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
         }
@@ -2388,7 +2394,7 @@ mod tests {
     /// 4. Fanout should propagate the ack to the original receiver (not to itself)
     #[tokio::test]
     async fn upstream_ack_routes_to_receiver_not_fanout() {
-        use otap_df_otap::testing::TestCallData;
+        use otel_arrow_dfe_otap::testing::TestCallData;
 
         let mut h = build_harness(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
@@ -2461,7 +2467,7 @@ mod tests {
     /// Test that verifies upstream nack is routed to the correct node with correct calldata.
     #[tokio::test]
     async fn upstream_nack_routes_to_receiver_not_fanout() {
-        use otap_df_otap::testing::TestCallData;
+        use otel_arrow_dfe_otap::testing::TestCallData;
 
         let mut h = build_harness(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
@@ -2578,7 +2584,7 @@ mod tests {
         let mut outputs = HashMap::new();
         let mut senders = HashMap::new();
         for port in &node_cfg.outputs {
-            let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
+            let (tx, rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
             let _ = senders.insert(port.clone(), Sender::Local(LocalSender::mpsc(tx)));
             let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
         }

@@ -138,7 +138,7 @@ jobs:
             --locked \
             --no-default-features \
             --features=crypto-ring,jemalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations \
-            --workspace --exclude otap-df-validation --exclude benchmarks \
+            --workspace --exclude otel-arrow-dfe-validation --exclude benchmarks \
             --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload nextest archive
@@ -217,7 +217,7 @@ jobs:
       - name: Run user_events Linux smoke test when supported
         env:
           OTAP_DF_RUN_USEREVENTS_E2E: "1"
-        run: cargo test --locked -p otap-df-contrib-nodes user_events_linux_e2e_smoke_when_available --features user_events-receiver,otap-df-otap/crypto-ring
+        run: cargo test --locked -p otel-arrow-dfe-contrib-nodes user_events_linux_e2e_smoke_when_available --features user_events-receiver,otel-arrow-dfe-otap/crypto-ring
         working-directory: ./rust/otap-dataflow
 
   etw_windows_smoke:
@@ -237,7 +237,7 @@ jobs:
           cache-bin: false
           save-if: false
       - name: Run ETW Windows smoke test
-        run: cargo test --locked -p otap-df-contrib-nodes etw_receiver_decodes_tracelogging_events_end_to_end --features etw-receiver -- --ignored
+        run: cargo test --locked -p otel-arrow-dfe-contrib-nodes etw_receiver_decodes_tracelogging_events_end_to_end --features etw-receiver -- --ignored
         working-directory: ./rust/otap-dataflow
 
   fmt:
@@ -483,13 +483,13 @@ jobs:
         run: cargo check --locked --no-default-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run cargo check validation --no-default-features
-        run: cargo check --locked -p otap-df-validation --lib --no-default-features
+        run: cargo check --locked -p otel-arrow-dfe-validation --lib --no-default-features
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run cargo check benchmarks --no-default-features
         run: cargo check --locked -p benchmarks --benches --no-default-features
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run cargo test for otap integration targets
-        run: cargo test --locked -p otap-df-otap --tests --no-run
+        run: cargo test --locked -p otel-arrow-dfe-otap --tests --no-run
         working-directory: ./rust/${{ matrix.folder }}
 
   # Required Linux build: compile once and create a nextest archive.
@@ -611,6 +611,7 @@ jobs:
         run: make otelarrowcol
       - name: Install wasm32-wasip2 target
         run: rustup target add wasm32-wasip2
+        working-directory: ./rust/otap-dataflow
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -713,6 +714,7 @@ jobs:
         run: make otelarrowcol
       - name: Install wasm32-wasip2 target
         run: rustup target add wasm32-wasip2
+        working-directory: ./rust/otap-dataflow
       - name: Run tests with coverage
         run: cargo llvm-cov nextest --locked --profile ci --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/otap-dataflow
@@ -806,8 +808,8 @@ jobs:
         env:
           OTAP_HOST_METRICS_SEMCONV_REGISTRY: ${{ github.workspace }}/semantic-conventions/model
         run: |
-          cargo test --locked -p otap-df-core-nodes \
-            --features dev-tools,otap-df-otap/crypto-ring \
+          cargo test --locked -p otel-arrow-dfe-core-nodes \
+            --features dev-tools,otel-arrow-dfe-otap/crypto-ring \
             emitted_phase1_metric_shapes_match_weaver_semconv --lib -- --ignored
         working-directory: ./rust/otap-dataflow
 

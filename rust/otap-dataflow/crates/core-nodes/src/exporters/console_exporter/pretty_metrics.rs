@@ -4,15 +4,15 @@
 //! Human-readable metrics formatting for the console exporter.
 
 use super::{HierarchicalFormatter, PrettyHistogramMode, pretty_writer::PrettyWriter};
-use otap_df_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
+use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, DataType, DataView, ExemplarView,
     ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
     HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
     ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::self_tracing::AnsiCode;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_telemetry::self_tracing::AnsiCode;
 use std::io::{self, Write};
 
 type MetricsWriter<'a> = PrettyWriter<'a, dyn Write + 'a>;

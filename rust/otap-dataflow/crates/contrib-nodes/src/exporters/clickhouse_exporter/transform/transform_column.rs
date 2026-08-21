@@ -28,11 +28,11 @@ use arrow_array::{
     ListArray, MapArray, PrimitiveArray, StringArray, StructArray, UInt16Array, UInt32Array,
 };
 use base64::Engine;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::proto::opentelemetry::trace::v1::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
     span::SpanKind, status::StatusCode as SpanStatusCode,
 };
-use otap_df_pdata::{otlp::attributes::AttributeValueType, schema::consts};
+use otel_arrow_dfe_pdata::{otlp::attributes::AttributeValueType, schema::consts};
 
 use crate::exporters::clickhouse_exporter::arrays::{NullableArrayAccessor, StructColumnAccessor};
 

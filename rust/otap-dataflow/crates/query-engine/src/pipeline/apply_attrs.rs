@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionContext;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::Result;
 use crate::pipeline::PipelineStage;
@@ -95,7 +95,7 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
 mod test {
     use arrow::{array::UInt8Array, datatypes::DataType};
     use data_engine_kql_parser::Parser;
-    use otap_df_pdata::{
+    use otel_arrow_dfe_pdata::{
         OtapArrowRecords,
         otap::Logs,
         otlp::attributes::AttributeValueType,
@@ -114,7 +114,7 @@ mod test {
             round_trip::{otap_to_otlp, otlp_to_otap, to_logs_data},
         },
     };
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
 

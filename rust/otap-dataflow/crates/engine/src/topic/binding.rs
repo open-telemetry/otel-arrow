@@ -6,7 +6,7 @@
 use std::ops::Deref;
 
 use crate::topic::handle::TopicHandle;
-use otap_df_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPolicy};
+use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPolicy};
 
 /// Pipeline-scoped topic binding with resolved wiring defaults.
 ///

@@ -3,12 +3,12 @@
 
 //! Telemetry definitions for the temporal reaggregation processor.
 
-use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::common_attributes::{Outcome, OutcomeAttributes};
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 /// Emitted when creating a view fails so we cannot process the data
 pub const VIEW_CREATION_FAILED_EVENT: &str = "temporal_reaggregation.view.creation_failed";
@@ -166,7 +166,7 @@ impl TemporalReaggregationMetrics {
     pub fn report(
         &mut self,
         reporter: &mut MetricsReporter,
-    ) -> Result<(), otap_df_telemetry::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
         reporter.report_measurement(&mut self.operations)?;
         reporter.report_measurement(&mut self.failures)?;
         reporter.report_measurement(&mut self.flushes)

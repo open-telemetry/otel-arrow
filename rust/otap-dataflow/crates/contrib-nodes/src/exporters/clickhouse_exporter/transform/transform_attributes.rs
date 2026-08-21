@@ -32,7 +32,7 @@ use arrow::compute::cast;
 use arrow::datatypes::DataType;
 use arrow_array::MapArray;
 use base64::Engine;
-use otap_df_pdata::{otlp::attributes::AttributeValueType, schema::consts};
+use otel_arrow_dfe_pdata::{otlp::attributes::AttributeValueType, schema::consts};
 
 use crate::exporters::clickhouse_exporter::arrays::{
     ByteArrayAccessor, Int64ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
@@ -165,7 +165,7 @@ fn parent_ids_as_u16(batch: &RecordBatch) -> Result<Option<UInt16Array>, Clickho
         }
         other => {
             return Err(ClickhouseExporterError::Child(
-                otap_df_pdata::error::Error::ColumnDataTypeMismatch {
+                otel_arrow_dfe_pdata::error::Error::ColumnDataTypeMismatch {
                     name: consts::PARENT_ID.into(),
                     expect: DataType::UInt16,
                     actual: other.clone(),

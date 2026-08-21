@@ -621,13 +621,13 @@ impl CompiledFilter {
     pub(super) fn compile(
         match_type: MatchType,
         values: Vec<String>,
-    ) -> Result<Option<Self>, otap_df_config::error::Error> {
+    ) -> Result<Option<Self>, otel_arrow_dfe_config::error::Error> {
         if values.is_empty() {
             return Ok(None);
         }
         let regex_set = if match_type == MatchType::Regexp {
             Some(RegexSet::new(&values).map_err(|err| {
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!("invalid host metrics regexp filter: {err}"),
                 }
             })?)
@@ -684,38 +684,38 @@ fn glob_matches(pattern: &[u8], value: &[u8]) -> bool {
     p == pattern.len()
 }
 
-pub(super) fn validate_config(config: &Config) -> Result<(), otap_df_config::error::Error> {
+pub(super) fn validate_config(config: &Config) -> Result<(), otel_arrow_dfe_config::error::Error> {
     if config.collection_interval.is_zero() {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "collection_interval must be greater than zero".to_owned(),
         });
     }
     if config.families.enabled_count() == 0 {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "at least one host metrics family must be enabled".to_owned(),
         });
     }
     if config.families.network.include_connection_count {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "network include_connection_count is not supported in v1".to_owned(),
         });
     }
     if config.families.cpu.per_cpu {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "cpu per_cpu is not supported in v1".to_owned(),
         });
     }
     if config.families.processes.mode == ProcessMode::SummaryAndPerProcess
         && config.families.processes.process.max_processes == 0
     {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "processes.process.max_processes must be greater than zero when processes.mode=summary_and_per_process".to_owned(),
         });
     }
     let process_labels = &config.families.processes.process.labels;
     if config.families.processes.mode == ProcessMode::SummaryAndPerProcess {
         if !process_labels.pid {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "processes.process.labels.pid must be true when processes.mode=summary_and_per_process".to_owned(),
             });
         }
@@ -733,7 +733,7 @@ pub(super) fn validate_config(config: &Config) -> Result<(), otap_df_config::err
             unsupported_labels.push("cgroup");
         }
         if !unsupported_labels.is_empty() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!(
                     "process labels are not supported yet: {}",
                     unsupported_labels.join(", ")
@@ -790,11 +790,13 @@ pub(super) fn validate_config(config: &Config) -> Result<(), otap_df_config::err
     Ok(())
 }
 
-pub(super) fn effective_root_path(config: &Config) -> Result<&Path, otap_df_config::error::Error> {
+pub(super) fn effective_root_path(
+    config: &Config,
+) -> Result<&Path, otel_arrow_dfe_config::error::Error> {
     if let Some(root_path) = config.root_path.as_deref() {
         let host_view_root = config.host_view.root_path.as_path();
         if host_view_root != Path::new("/") && root_path != host_view_root {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "root_path and host_view.root_path cannot both be set to different values"
                     .to_owned(),
             });
@@ -809,9 +811,9 @@ fn validate_family_interval(
     family: &'static str,
     enabled: bool,
     interval: Option<Duration>,
-) -> Result<(), otap_df_config::error::Error> {
+) -> Result<(), otel_arrow_dfe_config::error::Error> {
     if enabled && interval.is_some_and(|interval| interval.is_zero()) {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: format!("{family} interval must be greater than zero"),
         });
     }
@@ -819,7 +821,7 @@ fn validate_family_interval(
 }
 
 impl TryFrom<Config> for RuntimeConfig {
-    type Error = otap_df_config::error::Error;
+    type Error = otel_arrow_dfe_config::error::Error;
 
     fn try_from(config: Config) -> Result<Self, Self::Error> {
         validate_config(&config)?;
@@ -1026,11 +1028,11 @@ impl RuntimeFamily {
 
 pub(super) fn normalized_root_path(
     root_path: Option<&Path>,
-) -> Result<PathBuf, otap_df_config::error::Error> {
+) -> Result<PathBuf, otel_arrow_dfe_config::error::Error> {
     let path = root_path.unwrap_or_else(|| Path::new("/"));
     let path_text = path.to_string_lossy();
     if !path.is_absolute() && !path_text.starts_with('/') {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: format!("root_path must be absolute: {}", path.display()),
         });
     }
@@ -1041,7 +1043,7 @@ pub(super) fn normalized_root_path(
             Component::RootDir => {}
             Component::Normal(part) => normalized.push(part),
             Component::CurDir | Component::ParentDir => {
-                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!(
                         "root_path must not contain . or .. components: {}",
                         path.display()
@@ -1049,7 +1051,7 @@ pub(super) fn normalized_root_path(
                 });
             }
             Component::Prefix(_) => {
-                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!("root_path must be a Unix absolute path: {}", path.display()),
                 });
             }

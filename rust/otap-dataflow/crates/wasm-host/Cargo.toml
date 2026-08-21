@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-wasm-host"
+name = "otel-arrow-dfe-wasm-host"
 description = "WASM host-kernel runtime for OTAP dataflow processor plugins (experimental)"
 version.workspace = true
 authors.workspace = true
@@ -18,12 +18,12 @@ default = []
 wasm = ["dep:wasmtime"]
 
 [dependencies]
-otap-df-config.workspace = true
-otap-df-engine.workspace = true
-otap-df-otap.workspace = true
-otap-df-pdata.workspace = true
-otap-df-telemetry.workspace = true
-otap-df-telemetry-macros.workspace = true
+otel-arrow-dfe-config.workspace = true
+otel-arrow-dfe-engine.workspace = true
+otel-arrow-dfe-otap.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+otel-arrow-dfe-telemetry.workspace = true
+otel-arrow-dfe-telemetry-macros.workspace = true
 arrow.workspace = true
 arrow-cast.workspace = true
 arrow-select.workspace = true
@@ -35,8 +35,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-otap-df-engine = { workspace = true, features = ["test-utils"] }
-otap-df-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 tokio.workspace = true
 
 # The end-to-end integration test drives the wasmtime runtime, so it only

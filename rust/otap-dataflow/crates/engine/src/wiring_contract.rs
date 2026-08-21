@@ -5,7 +5,7 @@
 
 use crate::error::Error;
 use crate::node::NodeName;
-use otap_df_config::PortName;
+use otel_arrow_dfe_config::PortName;
 
 /// Per-output fanout rule for a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
