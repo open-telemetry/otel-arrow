@@ -286,6 +286,7 @@ pub(super) fn join_and_eval_value(
                         };
                         return resolve_or_with_absent_child(
                             other,
+                            default,
                             align_children_to_root,
                             strategy,
                             otap_batch,
@@ -379,15 +380,13 @@ pub(super) fn join_and_eval_value(
 /// non-absent child's result alone determines the outcome.
 fn resolve_or_with_absent_child(
     other: Option<ScopedValue>,
+    absent_default: ScopedValue,
     align_children_to_root: bool,
     strategy: &ShortCircuitStrategy,
     otap_batch: &OtapArrowRecords,
 ) -> Result<Option<ScopedValue>> {
     let mut sv = match other {
-        // Both children absent. The result is the OR identity (false).
-        None => strategy.absent_child_default().expect(
-            "resolve_or_with_absent_child called with strategy lacking absent_child_default",
-        ),
+        None => absent_default,
         Some(mut sv) => {
             if align_children_to_root && matches!(sv.values, ColumnarValue::Array(_)) {
                 sv = align_value_to_root(sv, otap_batch)?;
@@ -396,9 +395,7 @@ fn resolve_or_with_absent_child(
         }
     };
 
-    // For NotOr (NOT(A OR B)): invert the result.
-    // - one child absent:  NOT(false OR B) = NOT(B)
-    // - both absent:       NOT(false OR false) = NOT(false) = true
+    // For NotOr, invert the result.
     if matches!(strategy, ShortCircuitStrategy::NotOr) {
         sv = invert_boolean_scoped_value(sv)?;
     }
