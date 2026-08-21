@@ -3887,6 +3887,7 @@ mod tests {
                     total += s.get_metrics()[idx].to_u64_lossy();
                 }
             }
+        }
         total
     }
 
