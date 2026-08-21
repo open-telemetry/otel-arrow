@@ -69,15 +69,21 @@ fn operation_error_response(status: StatusCode, error: crate::ControlPlaneError)
 
 /// Returns the committed configuration for one pipeline group.
 ///
-/// Credential header values are redacted from the response (see
-/// [`PipelineGroupConfig::redacted_for_snapshot`]) so secrets configured in
-/// node and extension `headers` are not exposed in cleartext.
+/// Registered type-owned secrets and credential header values are redacted
+/// from the response (see
+/// [`PipelineGroupConfig::try_redacted_for_snapshot`]).
 pub async fn show_group(
     Path(pipeline_group_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<PipelineGroupConfig>, StatusCode> {
     match state.controller.group_details(&pipeline_group_id) {
-        Ok(Some(group)) => Ok(Json(group.redacted_for_snapshot())),
+        Ok(Some(group)) => group
+            .try_redacted_for_snapshot()
+            .map(Json)
+            .map_err(|error| {
+                let _ = crate::snapshot_redaction_error(error);
+                StatusCode::INTERNAL_SERVER_ERROR
+            }),
         Ok(None) | Err(crate::ControlPlaneError::GroupNotFound) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
@@ -95,7 +101,13 @@ pub async fn create_group(
     );
 
     match state.controller.create_group(&pipeline_group_id, group) {
-        Ok(group) => (StatusCode::CREATED, Json(group.redacted_for_snapshot())).into_response(),
+        Ok(group) => match group.try_redacted_for_snapshot() {
+            Ok(redacted) => (StatusCode::CREATED, Json(redacted)).into_response(),
+            Err(error) => operation_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::snapshot_redaction_error(error),
+            ),
+        },
         Err(error @ crate::ControlPlaneError::GroupAlreadyExists)
         | Err(error @ crate::ControlPlaneError::RolloutConflict) => {
             operation_error_response(StatusCode::CONFLICT, error)
@@ -401,9 +413,10 @@ mod tests {
         assert_eq!(decoded, group);
     }
 
-    /// Scenario: a pipeline group contains a node with credential headers.
-    /// Guarantees: `show_group` redacts them so the raw credential never
-    /// appears in the response body.
+    /// Scenario: a pipeline group contains a node with typed and header
+    /// credential values.
+    /// Guarantees: `show_group` redacts both secret classes before returning
+    /// the response.
     #[tokio::test]
     async fn show_group_redacts_credential_header_values() {
         let group: PipelineGroupConfig = serde_json::from_value(serde_json::json!({
@@ -412,8 +425,9 @@ mod tests {
                     "nodes": {
                         "receiver": { "type": "urn:test:receiver:example", "config": null },
                         "exporter": {
-                            "type": "urn:test:exporter:example",
+                            "type": "urn:test:exporter:typed-redaction",
                             "config": {
+                                "password": "group-password-secret",
                                 "headers": { "authorization": "Bearer super-secret-token" }
                             }
                         }
@@ -423,6 +437,13 @@ mod tests {
             }
         }))
         .expect("group should deserialize");
+        let cleartext_password = group
+            .pipelines
+            .get("main")
+            .and_then(|pipeline| pipeline.nodes().get("exporter"))
+            .and_then(|node| node.config["password"].as_str())
+            .expect("fixture password should be a string")
+            .to_owned();
 
         let response = show_group(
             Path("default".to_string()),
@@ -441,12 +462,59 @@ mod tests {
             .expect("body should collect");
         let text = String::from_utf8(body.to_vec()).expect("group body is utf-8");
         assert!(
+            !text.contains(&cleartext_password),
+            "typed password must not appear in the group response: {text}"
+        );
+        assert!(
             !text.contains("Bearer super-secret-token"),
             "raw credential must not appear in the group response: {text}"
         );
         assert!(
             text.contains("[REDACTED]"),
             "redaction placeholder should appear in the group response: {text}"
+        );
+    }
+
+    /// Scenario: a group detail contains malformed config for a registered
+    /// typed redactor.
+    /// Guarantees: `show_group` returns HTTP 500 and never serializes the raw
+    /// group snapshot.
+    #[tokio::test]
+    async fn show_group_fails_closed_when_typed_redaction_fails() {
+        let group: PipelineGroupConfig = serde_json::from_value(serde_json::json!({
+            "pipelines": {
+                "main": {
+                    "nodes": {
+                        "exporter": {
+                            "type": "urn:test:exporter:typed-redaction",
+                            "config": {
+                                "password": {"nested": "group-diagnostic-secret"}
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("group should deserialize");
+
+        let response = show_group(
+            Path("default".to_string()),
+            State(test_app_state(stub(
+                Ok(Some(group.clone())),
+                Ok(group),
+                Ok(delete_status("succeeded")),
+            ))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        assert!(
+            body.is_empty(),
+            "bare-status endpoint must not emit raw config"
         );
     }
 
@@ -477,10 +545,10 @@ mod tests {
         assert_eq!(decoded, group);
     }
 
-    /// Scenario: a created group's nodes carry credential headers.
-    /// Guarantees: `create_group` redacts them in its echoed response so the
-    /// raw credential never appears in the response body (responses are often
-    /// logged by clients/proxies).
+    /// Scenario: a created group's nodes carry typed and header credential
+    /// values.
+    /// Guarantees: `create_group` redacts both secret classes in its echoed
+    /// response before clients or proxies can log them.
     #[tokio::test]
     async fn create_group_redacts_credential_header_values() {
         let group: PipelineGroupConfig = serde_json::from_value(serde_json::json!({
@@ -488,8 +556,9 @@ mod tests {
                 "main": {
                     "nodes": {
                         "exporter": {
-                            "type": "urn:test:exporter:example",
+                            "type": "urn:test:exporter:typed-redaction",
                             "config": {
+                                "password": "create-password-secret",
                                 "headers": { "authorization": "Bearer super-secret-token" }
                             }
                         }
@@ -498,6 +567,13 @@ mod tests {
             }
         }))
         .expect("group should deserialize");
+        let cleartext_password = group
+            .pipelines
+            .get("main")
+            .and_then(|pipeline| pipeline.nodes().get("exporter"))
+            .and_then(|node| node.config["password"].as_str())
+            .expect("fixture password should be a string")
+            .to_owned();
 
         let response = create_group(
             Path("default".to_string()),
@@ -517,6 +593,10 @@ mod tests {
             .expect("body should collect");
         let text = String::from_utf8(body.to_vec()).expect("group body is utf-8");
         assert!(
+            !text.contains(&cleartext_password),
+            "typed password must not appear in the create response: {text}"
+        );
+        assert!(
             !text.contains("Bearer super-secret-token"),
             "raw credential must not appear in the create response: {text}"
         );
@@ -524,6 +604,54 @@ mod tests {
             text.contains("[REDACTED]"),
             "redacted placeholder should appear in the create response: {text}"
         );
+    }
+
+    /// Scenario: the control plane commits a group whose returned config cannot
+    /// be redacted for the response.
+    /// Guarantees: `create_group` fails closed with the existing internal error
+    /// envelope instead of echoing an unredacted committed group.
+    #[tokio::test]
+    async fn create_group_fails_closed_for_unredactable_committed_group() {
+        let committed: PipelineGroupConfig = serde_json::from_value(serde_json::json!({
+            "pipelines": {
+                "main": {
+                    "nodes": {
+                        "exporter": {
+                            "type": "urn:test:exporter:typed-redaction",
+                            "config": {
+                                "password": {"nested": "create-diagnostic-secret"}
+                            }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("committed group fixture should deserialize");
+
+        let response = create_group(
+            Path("default".to_string()),
+            State(test_app_state(stub(
+                Ok(None),
+                Ok(committed),
+                Ok(delete_status("succeeded")),
+            ))),
+            Json(PipelineGroupConfig::new()),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let text = String::from_utf8(body.to_vec()).expect("error body should be utf-8");
+        assert!(
+            !text.contains("create-diagnostic-secret") && !text.contains("\"password\""),
+            "fail-closed response must not echo committed config: {text}"
+        );
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::Internal);
     }
 
     /// Scenario: the control plane rejects group creation as invalid.

@@ -35,6 +35,8 @@ pub mod observed_state;
 pub mod pipeline;
 pub mod pipeline_group;
 pub mod policy;
+/// Type-owned secret redaction for config snapshots.
+pub mod redaction;
 /// Engine telemetry settings.
 pub mod settings;
 /// TLS configuration.

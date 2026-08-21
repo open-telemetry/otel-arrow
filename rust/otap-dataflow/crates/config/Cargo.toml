@@ -21,10 +21,13 @@ miette = { workspace = true }
 schemars = { workspace = true }
 byte-unit = { workspace = true }
 humantime-serde = { workspace = true }
+linkme = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
+secrecy = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
+dhat = { workspace = true }
 k8s-openapi = { workspace = true }
 kube = { workspace = true }
 schemars = { workspace = true }
@@ -32,3 +35,7 @@ tempfile = { workspace = true }
 wiremock = { workspace = true }
 tokio = { workspace = true }
 rustls = { workspace = true, features = ["ring"] }
+
+[[bench]]
+name = "config_snapshot_redaction"
+harness = false

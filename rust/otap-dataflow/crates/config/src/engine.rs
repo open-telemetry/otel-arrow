@@ -61,22 +61,22 @@ pub struct OtelDataflowSpec {
 }
 
 impl OtelDataflowSpec {
-    /// Returns a clone of this engine config with every node's and
-    /// extension's credential header values redacted, for safe exposure
-    /// through the admin config snapshot API (`GET /api/v1/config`). This
-    /// covers both pipeline groups and engine-scoped config. See
-    /// [`PipelineConfig::redacted_for_snapshot`] and
-    /// [`EngineConfig::redacted_for_snapshot`] (the latter enumerates the
-    /// engine subtrees). The stored config is left
-    /// unchanged.
-    #[must_use]
-    pub fn redacted_for_snapshot(&self) -> OtelDataflowSpec {
+    /// Returns a shape-preserving snapshot using registered type redactors and
+    /// the compatibility header policy.
+    pub fn try_redacted_for_snapshot(
+        &self,
+    ) -> Result<OtelDataflowSpec, crate::redaction::RedactionError> {
         let mut redacted = self.clone();
-        redacted.engine = redacted.engine.redacted_for_snapshot();
-        for group in redacted.groups.values_mut() {
-            *group = group.redacted_for_snapshot();
+        redacted.engine = redacted
+            .engine
+            .try_redacted_for_snapshot()
+            .map_err(|error| error.at("engine"))?;
+        for (group_id, group) in &mut redacted.groups {
+            *group = group
+                .try_redacted_for_snapshot()
+                .map_err(|error| error.at(format!("group `{group_id}`")))?;
         }
-        redacted
+        Ok(redacted)
     }
 }
 
@@ -118,57 +118,29 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    /// Returns a clone of this engine config with credential header values
-    /// redacted from the engine-scoped config that the admin/config snapshot
-    /// API (`GET /api/v1/config`) exposes. Three engine subtrees carry raw,
-    /// header-bearing config and are redacted with the same policy as pipeline
-    /// nodes/extensions:
-    ///
-    /// - `controller.extensions` -- controller-owned extensions whose `config`
-    ///   is the same opaque [`Value`] as a node's. See
-    ///   [`ControllerExtensions::redacted_for_snapshot`].
-    /// - `observability.pipeline.nodes` -- the engine observability pipeline's
-    ///   node set. See [`PipelineNodes::redacted_for_snapshot`].
-    /// - `custom` -- opaque, freeform metadata the engine never interprets, but
-    ///   the most likely place an embedder stashes arbitrary config (including
-    ///   auth `headers`). The whole map is walked with the same
-    ///   [`redact_secret_headers`](crate::node::redact_secret_headers) helper
-    ///   used by the structured arms, so any value under a `headers` key -- map
-    ///   or `[{key, value}]` list form, at any depth, including a top-level
-    ///   `custom.headers` -- is masked. Matching is on the conventional
-    ///   lowercase `headers` key only.
-    ///
-    /// The remaining strongly-typed engine settings (`telemetry`,
-    /// `observed_state`, `topics`) have no opaque `headers`-bearing config, so
-    /// none are touched. Metric exporter credentials that previously lived
-    /// under `telemetry` now belong to `observability.pipeline.nodes` and are
-    /// covered by that subtree's redaction above.
-    /// This masks credential *header* values only; other secret classes that can
-    /// appear in raw config (inline TLS keys, proxy URLs with embedded
-    /// passwords, component-specific secrets, and credentials hidden under
-    /// non-`headers` or case-variant keys) are out of scope here and tracked in
-    /// #3347. The stored config is left unchanged.
-    #[must_use]
-    pub fn redacted_for_snapshot(&self) -> EngineConfig {
+    /// Returns a shape-preserving snapshot using registered type redactors and
+    /// the compatibility header policy.
+    pub fn try_redacted_for_snapshot(
+        &self,
+    ) -> Result<EngineConfig, crate::redaction::RedactionError> {
         let mut redacted = self.clone();
-        redacted.controller.extensions = redacted.controller.extensions.redacted_for_snapshot();
+        redacted.controller.extensions =
+            redacted.controller.extensions.try_redacted_for_snapshot()?;
         redacted.observability.pipeline.nodes = redacted
             .observability
             .pipeline
             .nodes
-            .redacted_for_snapshot();
-        // Redact `headers` anywhere in the freeform `custom` metadata. Wrap the
-        // whole map into one `Value::Object` so a top-level key literally named
-        // `headers` is matched the same way it is in the structured arms: the
-        // helper only masks a `headers` key found as a *child* of the object it
-        // is handed, so walking each value individually would drop that
-        // top-level key layer and leak `custom.headers.*`.
-        let mut custom = Value::Object(std::mem::take(&mut redacted.custom).into_iter().collect());
-        crate::node::redact_secret_headers(&mut custom);
-        if let Value::Object(map) = custom {
-            redacted.custom = map.into_iter().collect();
-        }
-        redacted
+            .try_redacted_for_snapshot()?;
+        redact_custom_headers(&mut redacted.custom);
+        Ok(redacted)
+    }
+}
+
+fn redact_custom_headers(custom: &mut HashMap<String, Value>) {
+    let mut value = Value::Object(std::mem::take(custom).into_iter().collect());
+    crate::node::redact_secret_headers(&mut value);
+    if let Value::Object(map) = value {
+        *custom = map.into_iter().collect();
     }
 }
 
@@ -285,18 +257,20 @@ impl ControllerExtensions {
         self.0.keys()
     }
 
-    /// Returns a clone of these controller extensions with every extension's
-    /// credential header values redacted, for safe exposure through the
-    /// admin/config snapshot APIs. See
-    /// [`ExtensionUserConfig::redacted_for_snapshot`]. The stored config is left
-    /// unchanged.
-    #[must_use]
-    pub fn redacted_for_snapshot(&self) -> ControllerExtensions {
+    /// Returns a shape-preserving snapshot using registered type redactors and
+    /// the compatibility header policy.
+    pub fn try_redacted_for_snapshot(
+        &self,
+    ) -> Result<ControllerExtensions, crate::redaction::RedactionError> {
         let mut redacted = self.clone();
-        for extension in redacted.0.values_mut() {
-            *extension = Arc::new(extension.redacted_for_snapshot());
+        for (extension_id, extension) in &mut redacted.0 {
+            *extension = Arc::new(
+                extension
+                    .try_redacted_for_snapshot()
+                    .map_err(|error| error.at(format!("extension `{extension_id}`")))?,
+            );
         }
-        redacted
+        Ok(redacted)
     }
 }
 
@@ -524,7 +498,9 @@ groups:
             to: exporter
 "#;
         let spec = OtelDataflowSpec::from_yaml(yaml).expect("spec should parse and validate");
-        let redacted = spec.redacted_for_snapshot();
+        let redacted = spec
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
 
         let redacted_json = serde_json::to_string(&redacted).expect("redacted spec serializes");
         assert!(
@@ -572,7 +548,9 @@ engine:
               authorization: "Bearer observability-super-secret"
 "#;
         let spec: OtelDataflowSpec = serde_yaml::from_str(yaml).expect("spec should deserialize");
-        let redacted = spec.redacted_for_snapshot();
+        let redacted = spec
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
 
         let redacted_json = serde_json::to_string(&redacted).expect("redacted spec serializes");
         assert!(
@@ -623,7 +601,9 @@ engine:
     schema_version: 3
 "#;
         let spec: OtelDataflowSpec = serde_yaml::from_str(yaml).expect("spec should deserialize");
-        let redacted = spec.redacted_for_snapshot();
+        let redacted = spec
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
 
         let redacted_json = serde_json::to_string(&redacted).expect("redacted spec serializes");
         // Top-level (map form), nested, and list-form `headers` under `custom`

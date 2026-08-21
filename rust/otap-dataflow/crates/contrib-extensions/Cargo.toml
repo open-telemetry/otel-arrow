@@ -38,7 +38,6 @@ openssl = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["form"] }
 ring = { workspace = true, optional = true }
-secrecy = { workspace = true, optional = true }
 kube = { workspace = true, optional = true }
 k8s-openapi = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
@@ -52,7 +51,7 @@ azure-identity-auth-extension = ["dep:azure_core", "dep:azure_identity", "dep:hu
 # capability) validating tokens via the Kubernetes TokenReview API.
 k8s-service-account-token-auth-extension = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde", "dep:sha2"]
 # OAuth 2.0 Client Auth extension (BearerTokenProvider capability).
-oauth2-client-auth-extension = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:jsonwebtoken", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
+oauth2-client-auth-extension = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:jsonwebtoken", "dep:humantime-serde", "dep:rand"]
 
 # JWT assertion-signing backend for the OAuth 2.0 client auth extension. These
 # mirror the workspace `crypto-*` features so a build signs assertions with the

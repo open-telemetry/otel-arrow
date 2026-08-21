@@ -36,6 +36,9 @@ use async_trait::async_trait;
 use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::redaction::{
+    CONFIG_REDACTORS, ConfigRedactor, RedactionError, redact_typed_config_in_place,
+};
 use otap_df_config::validation::validate_typed_config;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::ExporterFactory;
@@ -237,6 +240,21 @@ pub static CLICKHOUSE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     validate_config: validate_typed_config::<ConfigPatch>,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
+
+fn redact_clickhouse_config(config: &mut serde_json::Value) -> Result<(), RedactionError> {
+    redact_typed_config_in_place::<ConfigPatch>(
+        config,
+        &[otap_df_config::required_secret_field!(
+            ConfigPatch,
+            password
+        )],
+    )
+}
+
+#[allow(unsafe_code)]
+#[distributed_slice(CONFIG_REDACTORS)]
+static CLICKHOUSE_CONFIG_REDACTOR: ConfigRedactor =
+    ConfigRedactor::new(CLICKHOUSE_EXPORTER_URN, redact_clickhouse_config);
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for ClickhouseExporter {

@@ -378,17 +378,19 @@ impl PipelineNodes {
         self.0.contains_key(id)
     }
 
-    /// Returns a clone of this node set with every node's credential header
-    /// values redacted, for safe exposure through the admin/config snapshot
-    /// APIs. See [`NodeUserConfig::redacted_for_snapshot`]. The stored config is
-    /// left unchanged.
-    #[must_use]
-    pub fn redacted_for_snapshot(&self) -> PipelineNodes {
+    /// Returns a shape-preserving snapshot using registered type redactors and
+    /// the compatibility header policy.
+    pub fn try_redacted_for_snapshot(
+        &self,
+    ) -> Result<PipelineNodes, crate::redaction::RedactionError> {
         let mut redacted = self.clone();
-        for node in redacted.0.values_mut() {
-            *node = Arc::new(node.redacted_for_snapshot());
+        for (node_id, node) in &mut redacted.0 {
+            *node = Arc::new(
+                node.try_redacted_for_snapshot()
+                    .map_err(|error| error.at(format!("node `{node_id}`")))?,
+            );
         }
-        redacted
+        Ok(redacted)
     }
 
     /// Returns an iterator visiting all nodes.
@@ -642,22 +644,26 @@ impl PipelineConfig {
         &self.nodes
     }
 
-    /// Returns a clone of this pipeline config with every node's and
-    /// extension's credential header values redacted, for safe exposure through
-    /// the admin/config snapshot APIs. See
-    /// [`NodeUserConfig::redacted_for_snapshot`] and
-    /// [`ExtensionUserConfig::redacted_for_snapshot`]. The stored config is left
-    /// unchanged.
-    #[must_use]
-    pub fn redacted_for_snapshot(&self) -> PipelineConfig {
+    /// Returns a shape-preserving snapshot using registered type redactors and
+    /// the compatibility header policy.
+    pub fn try_redacted_for_snapshot(
+        &self,
+    ) -> Result<PipelineConfig, crate::redaction::RedactionError> {
         let mut redacted = self.clone();
-        for node in redacted.nodes.0.values_mut() {
-            *node = Arc::new(node.redacted_for_snapshot());
+        for (node_id, node) in &mut redacted.nodes.0 {
+            *node = Arc::new(
+                node.try_redacted_for_snapshot()
+                    .map_err(|error| error.at(format!("node `{node_id}`")))?,
+            );
         }
-        for extension in redacted.extensions.0.values_mut() {
-            *extension = Arc::new(extension.redacted_for_snapshot());
+        for (extension_id, extension) in &mut redacted.extensions.0 {
+            *extension = Arc::new(
+                extension
+                    .try_redacted_for_snapshot()
+                    .map_err(|error| error.at(format!("extension `{extension_id}`")))?,
+            );
         }
-        redacted
+        Ok(redacted)
     }
 
     /// Returns a reference to the pipeline extensions.
@@ -3216,7 +3222,9 @@ extensions:
         "#;
         let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
             .expect("pipeline should parse and validate");
-        let redacted = config.redacted_for_snapshot();
+        let redacted = config
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
 
         let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
         assert!(
@@ -3251,7 +3259,9 @@ extensions:
         "#;
         let config: super::PipelineConfig =
             serde_yaml::from_str(yaml).expect("pipeline should deserialize");
-        let redacted = config.redacted_for_snapshot();
+        let redacted = config
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
 
         let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
         assert!(

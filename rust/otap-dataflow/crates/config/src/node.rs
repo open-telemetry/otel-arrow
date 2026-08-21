@@ -380,29 +380,26 @@ impl NodeUserConfig {
         self.r#type.kind()
     }
 
-    /// Returns a clone of this node config with credential header values
-    /// redacted, for safe exposure through the admin/config snapshot APIs
-    /// (e.g. `GET /api/v1/config`).
+    /// Returns a shape-preserving snapshot that applies an exact component
+    /// redactor before the compatibility header walk.
     ///
-    /// Static request `headers` values are credentials (an `Authorization`
-    /// token, a tenant API key). The typed exporter settings wrap them in
-    /// `secrecy::SecretString`, but the raw [`Self::config`] retains the
-    /// original cleartext. This produces a redacted *copy*: every value under
-    /// any `headers` object in `config` is replaced with
-    /// [`REDACTED_HEADER_VALUE`] while the keys are preserved, so operators can
-    /// still see which headers are set without seeing their values. The stored
-    /// config is left unchanged.
-    #[must_use]
-    pub fn redacted_for_snapshot(&self) -> NodeUserConfig {
+    /// Components without a registration receive header redaction only.
+    /// Component owners must register every non-header type-owned secret;
+    /// schema-wide and untyped redaction remains tracked by #3347.
+    pub fn try_redacted_for_snapshot(
+        &self,
+    ) -> Result<NodeUserConfig, crate::redaction::RedactionError> {
         let mut redacted = self.clone();
+        let _ =
+            crate::redaction::redact_registered_config(self.r#type.as_str(), &mut redacted.config)?;
         redact_secret_headers(&mut redacted.config);
-        redacted
+        Ok(redacted)
     }
 }
 
 /// Placeholder substituted for credential values that have been redacted from a
 /// config snapshot exposed through the admin/config APIs.
-pub const REDACTED_HEADER_VALUE: &str = "[REDACTED]";
+pub const REDACTED_HEADER_VALUE: &str = crate::redaction::REDACTED_VALUE;
 
 /// Recursively redacts credential values held under any `headers` field,
 /// replacing them with [`REDACTED_HEADER_VALUE`].
@@ -421,7 +418,7 @@ pub const REDACTED_HEADER_VALUE: &str = "[REDACTED]";
 ///
 /// Other subtrees are traversed so a `headers` field is redacted regardless of
 /// nesting depth. Shared with
-/// [`ExtensionUserConfig::redacted_for_snapshot`](crate::extension::ExtensionUserConfig::redacted_for_snapshot).
+/// [`ExtensionUserConfig::try_redacted_for_snapshot`](crate::extension::ExtensionUserConfig::try_redacted_for_snapshot).
 pub(crate) fn redact_secret_headers(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -868,7 +865,9 @@ capabilities:
             }
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
-        let redacted = cfg.redacted_for_snapshot();
+        let redacted = cfg
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
 
         let headers = &redacted.config["http"]["headers"];
         assert_eq!(
@@ -893,6 +892,53 @@ capabilities:
         );
     }
 
+    /// Scenario: a config mixes omitted fields, nulls, arrays, ordinary values,
+    /// and a non-secret string equal to the redaction marker.
+    /// Guarantees: snapshot redaction changes only credential header values and
+    /// preserves the exact raw config shape without mutating the source.
+    #[test]
+    fn redacted_for_snapshot_preserves_exact_non_secret_shape() {
+        let original_config = serde_json::json!({
+            "endpoint": "https://backend.example/v1/logs",
+            "headers": {
+                "authorization": "secret-token"
+            },
+            "metadata": {
+                "literal_marker": REDACTED_HEADER_VALUE,
+                "null_value": null,
+                "items": [1, "two", false]
+            }
+        });
+        let cfg: NodeUserConfig = serde_json::from_value(serde_json::json!({
+            "type": "urn:otel:exporter:shape-test",
+            "config": original_config.clone()
+        }))
+        .expect("shape fixture should deserialize");
+
+        let redacted = cfg
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
+
+        assert_eq!(
+            redacted.config,
+            serde_json::json!({
+                "endpoint": "https://backend.example/v1/logs",
+                "headers": {
+                    "authorization": REDACTED_HEADER_VALUE
+                },
+                "metadata": {
+                    "literal_marker": REDACTED_HEADER_VALUE,
+                    "null_value": null,
+                    "items": [1, "two", false]
+                }
+            })
+        );
+        assert_eq!(
+            cfg.config, original_config,
+            "redaction must not mutate stored config"
+        );
+    }
+
     #[test]
     fn redacted_for_snapshot_masks_flattened_grpc_headers() {
         // OTAP/gRPC exporter shape: `headers` is flattened to `config.headers.*`.
@@ -906,7 +952,9 @@ capabilities:
             }
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
-        let redacted = cfg.redacted_for_snapshot();
+        let redacted = cfg
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
 
         assert_eq!(
             redacted.config["headers"]["authorization"],
@@ -926,7 +974,9 @@ capabilities:
             "config": { "send_batch_size": 1024, "timeout": "5s" }
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
-        let redacted = cfg.redacted_for_snapshot();
+        let redacted = cfg
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
         assert_eq!(cfg, redacted, "config without headers must be unchanged");
     }
 
@@ -944,7 +994,9 @@ capabilities:
             }
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
-        let redacted = cfg.redacted_for_snapshot();
+        let redacted = cfg
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
         assert_eq!(
             redacted.config["backends"][0]["headers"]["authorization"],
             REDACTED_HEADER_VALUE
@@ -970,7 +1022,9 @@ capabilities:
             }
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
-        let redacted = cfg.redacted_for_snapshot();
+        let redacted = cfg
+            .try_redacted_for_snapshot()
+            .expect("snapshot redaction should succeed");
 
         let entries = redacted.config["headers"].as_array().unwrap();
         assert_eq!(entries[0]["value"], REDACTED_HEADER_VALUE);

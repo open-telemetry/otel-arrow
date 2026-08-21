@@ -527,7 +527,6 @@ oauth2-client-auth-extension = [
     "dep:jsonwebtoken",
     "dep:humantime-serde",
     "dep:rand",
-    "dep:secrecy",
 ]
 
 # Assertion-signing backend, mirroring the workspace `crypto-*` selection.

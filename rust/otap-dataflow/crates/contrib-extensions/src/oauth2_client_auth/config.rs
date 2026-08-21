@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use otap_df_config::redaction::RedactedString;
 use otap_df_config::tls::TlsClientConfig;
-use secrecy::SecretString;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use otap_df_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
 
@@ -56,7 +56,7 @@ fn default_startup_timeout() -> Duration {
 }
 
 /// OAuth 2.0 grant used to acquire tokens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum GrantType {
     /// Client-credentials grant (RFC 6749 section 4.4): the client
     /// authenticates with a client id + secret and receives an access token.
@@ -87,7 +87,7 @@ impl std::fmt::Display for GrantType {
 }
 
 /// RSA algorithm used to sign the JWT-bearer assertion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SignatureAlgorithm {
     /// RSASSA-PKCS1-v1_5 using SHA-256.
     #[serde(rename = "RS256")]
@@ -125,11 +125,9 @@ pub struct Config {
     /// Client secret. Required for `client_credentials` unless
     /// `client_secret_file` is set.
     ///
-    /// Held as a [`SecretString`] so it is redacted from `Debug` output.
-    /// Note that the raw pipeline config retains the cleartext;
-    /// prefer `client_secret_file`.
+    /// Held as a [`RedactedString`] so Debug and config snapshots mask it.
     #[serde(default)]
-    pub client_secret: Option<SecretString>,
+    pub client_secret: Option<RedactedString>,
 
     /// Path to a file holding the client secret. Re-read on each acquisition
     /// and takes precedence over `client_secret`.
@@ -185,11 +183,9 @@ pub struct Config {
     /// Private key (PEM) used to sign the JWT-bearer assertion. Required for
     /// the `jwt-bearer` grant unless `client_certificate_key_file` is set.
     ///
-    /// Held as a [`SecretString`] so it is redacted from `Debug` output.
-    /// Note that the raw pipeline config retains the cleartext;
-    /// prefer `client_certificate_key_file`.
+    /// Held as a [`RedactedString`] so Debug and config snapshots mask it.
     #[serde(default)]
-    pub client_certificate_key: Option<SecretString>,
+    pub client_certificate_key: Option<RedactedString>,
 
     /// Path to a file holding the signing key. Re-read on each acquisition and
     /// takes precedence over `client_certificate_key`.

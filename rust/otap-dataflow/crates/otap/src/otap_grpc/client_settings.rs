@@ -9,6 +9,7 @@ use crate::tls_utils;
 use http::header::HeaderValue;
 use hyper_util::rt::TokioIo;
 use otap_df_config::byte_units;
+use otap_df_config::redaction::REDACTED_VALUE;
 use otap_df_config::tls::TlsClientConfig;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
@@ -273,6 +274,14 @@ impl GrpcClientSettings {
 
         let mut metadata = MetadataMap::with_capacity(self.headers.len());
         for (name, value) in &self.headers {
+            if value.expose_secret() == REDACTED_VALUE {
+                otap_df_telemetry::otel_debug!(
+                    "grpc.client.static_header_skip",
+                    reason = "display-only redaction placeholder",
+                    header_name = name.as_str()
+                );
+                continue;
+            }
             let Ok(key) = name.parse::<MetadataKey<tonic::metadata::Ascii>>() else {
                 otap_df_telemetry::otel_debug!(
                     "grpc.client.static_header_skip",
@@ -338,6 +347,12 @@ impl GrpcClientSettings {
 
         let mut seen_names = HashSet::new();
         for (name, value) in &self.headers {
+            if value.expose_secret() == REDACTED_VALUE {
+                return Err(GrpcEndpointError::InvalidConfig(format!(
+                    "header \"{name}\" contains the display-only redaction placeholder; provide \
+                     the secret again"
+                )));
+            }
             let key = name
                 .parse::<MetadataKey<tonic::metadata::Ascii>>()
                 .map_err(|_| {
@@ -853,6 +868,25 @@ mod tests {
         ));
     }
 
+    /// Scenario: a config snapshot's metadata redaction marker is submitted as
+    /// a runtime credential.
+    /// Guarantees: validation rejects the display-only marker before any gRPC
+    /// call can send it as authorization metadata.
+    #[test]
+    fn validate_rejects_redacted_header_placeholder() {
+        let mut headers = HashMap::new();
+        let _ = headers.insert("authorization".to_string(), REDACTED_VALUE.into());
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+
+        let error = settings
+            .validate()
+            .expect_err("redaction placeholder must be rejected");
+        assert!(error.to_string().contains("provide the secret again"));
+    }
+
     #[test]
     fn validate_accepts_valid_headers() {
         let mut headers = HashMap::new();
@@ -954,6 +988,28 @@ mod tests {
             .build_static_metadata()
             .expect("the valid header should remain");
         assert_eq!(metadata.len(), 1);
+        assert_eq!(metadata.get("x-valid").unwrap().to_str().unwrap(), "ok");
+    }
+
+    /// Scenario: a programmatic caller bypasses validation with the display-only
+    /// redaction marker as a static credential.
+    /// Guarantees: metadata construction drops the marker so it cannot be sent
+    /// as an authorization value.
+    #[test]
+    fn build_static_metadata_skips_redaction_placeholder() {
+        let mut headers = HashMap::new();
+        let _ = headers.insert("authorization".to_string(), REDACTED_VALUE.into());
+        let _ = headers.insert("x-valid".to_string(), "ok".into());
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+
+        let metadata = settings
+            .build_static_metadata()
+            .expect("the valid metadata entry should remain");
+        assert_eq!(metadata.len(), 1);
+        assert!(metadata.get("authorization").is_none());
         assert_eq!(metadata.get("x-valid").unwrap().to_str().unwrap(), "ok");
     }
 

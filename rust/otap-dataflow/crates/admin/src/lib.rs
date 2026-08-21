@@ -98,6 +98,17 @@ impl ControlPlaneError {
     }
 }
 
+fn snapshot_redaction_error(error: otap_df_config::redaction::RedactionError) -> ControlPlaneError {
+    otel_warn!(
+        "admin.config_snapshot.redaction_failed",
+        error = error.to_string(),
+        message = "Config snapshot redaction failed"
+    );
+    ControlPlaneError::Internal {
+        message: "config snapshot redaction failed".to_owned(),
+    }
+}
+
 /// Classifies the best-effort, unauthenticated initiator of an admin HTTP request.
 pub(crate) fn pipeline_shutdown_initiator(
     headers: &axum::http::HeaderMap,

@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: engine
+note: "Redact inline ClickHouse and OAuth credentials from admin and OpAMP configuration snapshots."
+issues: [3354, 3347]
+subtext: "Snapshot markers are display-only; re-enter inline secrets before applying a snapshot. Inline TLS keys and untyped custom data remain tracked by #3347."

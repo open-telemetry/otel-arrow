@@ -124,7 +124,7 @@ and secret. At least one of the secret fields must be set:
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `client_secret` | string | *none* | Client secret. Required unless `client_secret_file` is set. Redacted from logs, but the rendered pipeline config still holds it in cleartext -- prefer `client_secret_file`. |
+| `client_secret` | string | *none* | Client secret. Required unless `client_secret_file` is set. Redacted from logs and config snapshots; prefer `client_secret_file`. |
 | `client_secret_file` | path | *none* | File holding the client secret. Re-read on each acquisition; takes precedence over `client_secret`. |
 
 ```yaml
@@ -153,7 +153,7 @@ rejected here):
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `client_certificate_key` | string | *none* | PEM private key used to sign the assertion. Required unless `client_certificate_key_file` is set. Redacted from logs; prefer the file form. |
+| `client_certificate_key` | string | *none* | PEM private key used to sign the assertion. Required unless `client_certificate_key_file` is set. Redacted from logs and config snapshots; prefer the file form. |
 | `client_certificate_key_file` | path | *none* | File holding the signing key. Re-read on each acquisition; takes precedence over `client_certificate_key`. |
 | `signature_algorithm` | enum | `RS256` | RSA algorithm used to sign the assertion: `RS256`, `RS384`, or `RS512`. |
 | `client_certificate_key_id` | string | *none* | Optional `kid` header placed on the assertion. |
