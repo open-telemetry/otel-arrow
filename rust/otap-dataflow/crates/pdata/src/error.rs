@@ -10,7 +10,7 @@ use crate::{
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use num_enum::TryFromPrimitiveError;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use std::num::TryFromIntError;
 
 /// Result type
@@ -136,6 +136,9 @@ pub enum Error {
 
     #[error("Failed to batch OTAP data: {}", source)]
     Batching { source: ArrowError },
+
+    #[error("Failed to measure logical Arrow bytes: {}", source)]
+    LogicalArrowSize { source: ArrowError },
 
     #[error("Batch is empty")]
     EmptyBatch,

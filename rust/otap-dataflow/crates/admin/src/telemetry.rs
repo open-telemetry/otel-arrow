@@ -18,17 +18,19 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use otap_df_admin_types::telemetry as api;
-use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
-use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
-use otap_df_telemetry::event::LogEvent;
-use otap_df_telemetry::instrument::DistributionValue;
-use otap_df_telemetry::log_tap::{LogQuery, LogQueryResult, RetainedLogEvent};
-use otap_df_telemetry::metrics::{MetricValue, MetricsIterator};
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::self_tracing::format_log_record_to_string;
-use otap_df_telemetry::semconv::SemConvRegistry;
+use otel_arrow_dfe_admin_types::telemetry as api;
+use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
+use otel_arrow_dfe_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+use otel_arrow_dfe_telemetry::descriptor::{
+    Instrument, MetricValueType, MetricsDescriptor, MetricsField,
+};
+use otel_arrow_dfe_telemetry::event::LogEvent;
+use otel_arrow_dfe_telemetry::instrument::DistributionValue;
+use otel_arrow_dfe_telemetry::log_tap::{LogQuery, LogQueryResult, RetainedLogEvent};
+use otel_arrow_dfe_telemetry::metrics::{MetricValue, MetricsIterator};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::self_tracing::format_log_record_to_string;
+use otel_arrow_dfe_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -2080,12 +2082,12 @@ fn level_severity(level: &str) -> u8 {
 
 /// Map a `tracing::Level` to the same severity scale used by [`level_severity`].
 #[cfg_attr(not(feature = "live-logs-ws"), allow(dead_code))]
-fn tracing_level_severity(level: &otap_df_telemetry::Level) -> u8 {
+fn tracing_level_severity(level: &otel_arrow_dfe_telemetry::Level) -> u8 {
     match *level {
-        otap_df_telemetry::Level::ERROR => 4,
-        otap_df_telemetry::Level::WARN => 3,
-        otap_df_telemetry::Level::INFO => 2,
-        otap_df_telemetry::Level::DEBUG => 1,
+        otel_arrow_dfe_telemetry::Level::ERROR => 4,
+        otel_arrow_dfe_telemetry::Level::WARN => 3,
+        otel_arrow_dfe_telemetry::Level::INFO => 2,
+        otel_arrow_dfe_telemetry::Level::DEBUG => 1,
         _ => 0, // TRACE
     }
 }
@@ -2533,17 +2535,17 @@ mod tests {
         ShutdownStatus,
     };
     use axum::body::{Body, to_bytes};
-    use otap_df_config::SignalType;
-    use otap_df_config::observed_state::ObservedStateSettings;
-    use otap_df_engine::memory_limiter::MemoryPressureState;
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-    use otap_df_telemetry::descriptor::{
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+    use otel_arrow_dfe_engine::memory_limiter::MemoryPressureState;
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+    use otel_arrow_dfe_telemetry::descriptor::{
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsField,
         Temporality,
     };
-    use otap_df_telemetry::instrument::{HistogramDetailed, HistogramNormal, Mmsc};
-    use otap_df_telemetry::metrics::MetricSetHandler;
+    use otel_arrow_dfe_telemetry::instrument::{HistogramDetailed, HistogramNormal, Mmsc};
+    use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -2562,6 +2564,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _timeout_secs: u64,
+            _initiator: crate::PipelineShutdownInitiator,
         ) -> Result<ShutdownStatus, ControlPlaneError> {
             Err(ControlPlaneError::Internal {
                 message: "not used in telemetry tests".to_string(),
@@ -2887,13 +2890,13 @@ mod tests {
 
         // Build registry with two entries for the same metric set but different attributes
         let telemetry_registry = TelemetryRegistryHandle::new();
-        let _m1: otap_df_telemetry::metrics::MetricSet<MetricSetA> =
+        let _m1: otel_arrow_dfe_telemetry::metrics::MetricSet<MetricSetA> =
             telemetry_registry.register_metric_set(MockAttrSet::new("prod", "us"));
-        let _m2: otap_df_telemetry::metrics::MetricSet<MetricSetB> =
+        let _m2: otel_arrow_dfe_telemetry::metrics::MetricSet<MetricSetB> =
             telemetry_registry.register_metric_set(MockAttrSet::new("dev", "eu"));
-        let _m3: otap_df_telemetry::metrics::MetricSet<MetricSetC> =
+        let _m3: otel_arrow_dfe_telemetry::metrics::MetricSet<MetricSetC> =
             telemetry_registry.register_metric_set(MockAttrSet::new("prod", "us"));
-        let _m4: otap_df_telemetry::metrics::MetricSet<MetricSetD> =
+        let _m4: otel_arrow_dfe_telemetry::metrics::MetricSet<MetricSetD> =
             telemetry_registry.register_metric_set(MockAttrSet::new("dev", "us"));
 
         // Group by the "env" attribute and do not reset
@@ -3809,11 +3812,11 @@ mod tests {
     // End-to-end integration test: format_prometheus_text with real metrics
     // -------------------------------------------------------------------
 
-    use otap_df_telemetry::descriptor::MetricValueType;
-    use otap_df_telemetry::instrument::Counter;
-    use otap_df_telemetry::metrics::MetricValue;
-    use otap_df_telemetry::reporter::MetricsReporter;
-    use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+    use otel_arrow_dfe_telemetry::descriptor::MetricValueType;
+    use otel_arrow_dfe_telemetry::instrument::Counter;
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
     #[derive(Debug)]
     struct E2eMetricSet {
@@ -4203,7 +4206,7 @@ mod tests {
         let _ = attrs.insert(
             "service.tags".into(),
             ResourceAttributeValue::Array(
-                otap_df_config::pipeline::telemetry::AttributeValueArray::String(vec![
+                otel_arrow_dfe_config::pipeline::telemetry::AttributeValueArray::String(vec![
                     "edge".into(),
                     "us-west".into(),
                 ]),

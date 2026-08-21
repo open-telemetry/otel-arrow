@@ -18,28 +18,31 @@
 //!
 //! See `processors/fanout_processor/README.md` for detailed diagrams and examples.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = FANOUT_PROCESSOR_URN,
     target = "otel.processor.fanout",
 );
 
+mod metrics;
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::PortName;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, UnwindData};
-use otap_df_engine::error::{Error, TypedError};
-use otap_df_engine::local::processor::{EffectHandler, Processor};
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::{ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension};
-use otap_df_engine::{ProcessorFactory, processor::ProcessorWrapper};
-use otap_df_telemetry::instrument::{Counter, Gauge};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{
+    AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, UnwindData,
+};
+use otel_arrow_dfe_engine::error::{Error, TypedError};
+use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::{
+    ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
+};
+use otel_arrow_dfe_engine::{ProcessorFactory, processor::ProcessorWrapper};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::{SmallVec, smallvec};
@@ -48,7 +51,8 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use metrics::FanoutMetrics;
+use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 
 /// URN for the fan-out processor.
 pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:processor:fanout";
@@ -367,35 +371,6 @@ struct Inflight {
     next_send_queue: DestinationIndexQueue,
 }
 
-#[metric_set(name = "processor.fanout")]
-#[derive(Debug, Default, Clone)]
-struct FanoutMetrics {
-    /// Requests dispatched. Note: This is a convenience metric that overlaps with
-    /// channel-level send metrics. Consider removing if metric bloat is a concern.
-    #[metric(unit = "{item}")]
-    pub sent: Counter<u64>,
-    /// Requests acked upstream (after await_ack/fallback aggregation).
-    #[metric(unit = "{item}")]
-    pub acked: Counter<u64>,
-    /// Requests nacked upstream (after await_ack/fallback aggregation).
-    #[metric(unit = "{item}")]
-    pub nacked: Counter<u64>,
-    #[metric(unit = "{item}")]
-    pub timed_out: Counter<u64>,
-    /// Current number of in-flight requests tracked by the processor.
-    #[metric(unit = "{item}")]
-    pub in_flight: Gauge<u64>,
-    /// Configured max_inflight value (0 means unlimited).
-    #[metric(unit = "{item}")]
-    pub max_inflight_config: Gauge<u64>,
-    /// 1 when fanout is currently refusing new pdata via accept_pdata(), else 0.
-    #[metric(unit = "1")]
-    pub throttled: Gauge<u64>,
-    /// Increments on transition from not-throttled to throttled.
-    #[metric(unit = "{episode}")]
-    pub throttle_episodes: Counter<u64>,
-}
-
 /// Entry in the deadline min-heap for efficient timeout checking.
 /// Wrapped in Reverse<> when inserted to make BinaryHeap a min-heap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -408,7 +383,7 @@ struct Deadline {
 /// Fan-out processor implementation.
 pub struct FanoutProcessor {
     config: ValidatedConfig,
-    metrics: MetricSet<FanoutMetrics>,
+    metrics: FanoutMetrics,
     /// Full inflight tracking for complex scenarios (sequential, await_all, fallback, timeout).
     inflight: HashMap<u64, Inflight>,
     /// Slim inflight for primary-only fast path: just request_id -> original_pdata.
@@ -444,8 +419,14 @@ fn now() -> Instant {
 
 impl FanoutProcessor {
     fn new(pipeline_ctx: PipelineContext, config: ValidatedConfig) -> Self {
-        let mut metrics = pipeline_ctx.register_metrics::<FanoutMetrics>();
-        metrics.max_inflight_config.set(config.max_inflight as u64);
+        let metrics = FanoutMetrics::register(
+            &pipeline_ctx,
+            config.max_inflight,
+            config
+                .destinations
+                .iter()
+                .map(|destination| destination.port.to_string()),
+        );
         Self {
             config,
             metrics,
@@ -479,12 +460,12 @@ impl FanoutProcessor {
         } else {
             self.inflight.len()
         };
-        self.metrics.in_flight.set(current_inflight as u64);
+        self.metrics.set_active(current_inflight);
 
         let throttled = !self.accept_pdata();
-        self.metrics.throttled.set(u64::from(throttled));
+        self.metrics.set_throttled(throttled);
         if throttled && !self.was_throttled {
-            self.metrics.throttle_episodes.add(1);
+            self.metrics.record_throttle_episode();
         }
         self.was_throttled = throttled;
     }
@@ -582,7 +563,7 @@ impl FanoutProcessor {
         inflight: &mut Inflight,
         destinations: &[DestinationConfig],
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<DeadlineVec, TypedError<OtapPdata>> {
+    ) -> Result<DeadlineVec, Box<TypedError<OtapPdata>>> {
         let mut to_send = DestinationIndexQueue::new();
         let mut new_deadlines = DeadlineVec::new();
         match inflight.mode {
@@ -613,7 +594,8 @@ impl FanoutProcessor {
                 }
                 effect_handler
                     .send_message_to(destinations[idx].port.clone(), payload)
-                    .await?;
+                    .await
+                    .map_err(Box::new)?;
             }
         }
         Ok(new_deadlines)
@@ -674,7 +656,7 @@ impl FanoutProcessor {
             unwind: UnwindData::default(),
             refused: Box::new(inflight.original_pdata.clone()),
             permanent: false, // Timeout is retriable
-            cause: otap_df_engine::control::NackCause::Unspecified,
+            cause: otel_arrow_dfe_engine::control::NackCause::Unspecified,
         })
     }
 
@@ -697,7 +679,7 @@ impl FanoutProcessor {
             let idx = deadline.dest_index;
 
             // Validate the deadline is still relevant (request exists, destination still InFlight).
-            let (await_ack, primary, origin, is_valid) = {
+            let (await_ack, primary, origin, signal, is_valid) = {
                 let Some(inflight) = self.inflight.get(&req) else {
                     continue; // Request already completed.
                 };
@@ -708,14 +690,20 @@ impl FanoutProcessor {
                 // Only process if still InFlight and deadline matches (guards against stale heap entries).
                 let is_valid = matches!(ep.status, DestinationStatus::InFlight)
                     && ep.timeout_at == Some(deadline.at);
-                (inflight.await_ack, inflight.primary, ep.origin, is_valid)
+                (
+                    inflight.await_ack,
+                    inflight.primary,
+                    ep.origin,
+                    inflight.original_pdata.signal_type(),
+                    is_valid,
+                )
             };
 
             if !is_valid {
                 continue;
             }
 
-            self.metrics.timed_out.add(1);
+            self.metrics.record_timeout(idx, signal);
             match self.handle_failure(
                 req,
                 idx,
@@ -743,7 +731,8 @@ impl FanoutProcessor {
             if let Some(inflight) = self.inflight.get_mut(&req) {
                 let deadlines =
                     Self::dispatch_ready(req, inflight, &self.config.destinations, effect_handler)
-                        .await?;
+                        .await
+                        .map_err(|error| *error)?;
                 for d in deadlines {
                     self.deadline_heap.push(Reverse(d));
                 }
@@ -821,7 +810,6 @@ impl FanoutProcessor {
         // Await primary: if this ack corresponds to primary origin (or its fallback) we can finish.
         if matches!(await_ack, AwaitAck::Primary) && origin == primary {
             let entry = self.inflight.remove(&request_id);
-            self.metrics.acked.add(1);
             if let Some(inflight) = entry {
                 // Use original_pdata for correct upstream routing
                 let ack_to_return = AckMsg {
@@ -841,7 +829,8 @@ impl FanoutProcessor {
                     &self.config.destinations,
                     effect_handler,
                 )
-                .await?;
+                .await
+                .map_err(|error| *error)?;
                 for d in deadlines {
                     self.deadline_heap.push(Reverse(d));
                 }
@@ -851,7 +840,6 @@ impl FanoutProcessor {
         if matches!(await_ack, AwaitAck::All) {
             let maybe_ack = self.mark_complete(request_id, origin);
             if let Some(original_pdata) = maybe_ack {
-                self.metrics.acked.add(1);
                 // Use original_pdata for correct upstream routing
                 let ackmsg = AckMsg {
                     accepted: Box::new(original_pdata),
@@ -900,7 +888,6 @@ impl FanoutProcessor {
         if let Some(nackmsg) =
             self.handle_failure(request_id, dest_index, nack.reason.clone(), false)
         {
-            self.metrics.nacked.add(1);
             let _ = self.inflight.remove(&request_id);
             effect_handler.notify_nack(nackmsg).await?;
             return Ok(());
@@ -914,7 +901,8 @@ impl FanoutProcessor {
                 &self.config.destinations,
                 effect_handler,
             )
-            .await?;
+            .await
+            .map_err(|error| *error)?;
             for d in deadlines {
                 self.deadline_heap.push(Reverse(d));
             }
@@ -948,10 +936,7 @@ impl FanoutProcessor {
                 .send_message_to(dest.port.clone(), dest_data)
                 .await?;
         }
-        self.metrics.sent.add(1);
-
         // Ack upstream immediately with original pdata.
-        self.metrics.acked.add(1);
         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
         Ok(())
     }
@@ -995,7 +980,6 @@ impl FanoutProcessor {
                 .send_message_to(dest.port.clone(), dest_data)
                 .await?;
         }
-        self.metrics.sent.add(1);
         Ok(())
     }
 
@@ -1015,7 +999,6 @@ impl FanoutProcessor {
 
         // Primary acked - forward upstream and clean up.
         if let Some(original_pdata) = self.slim_inflight.remove(&request_id) {
-            self.metrics.acked.add(1);
             effect_handler
                 .notify_ack(AckMsg::new(original_pdata))
                 .await?;
@@ -1039,7 +1022,6 @@ impl FanoutProcessor {
 
         // Primary nacked - forward upstream and clean up.
         if let Some(original_pdata) = self.slim_inflight.remove(&request_id) {
-            self.metrics.nacked.add(1);
             let nackmsg = NackMsg {
                 reason: nack.reason,
                 unwind: UnwindData::default(),
@@ -1109,7 +1091,7 @@ impl Processor<OtapPdata> for FanoutProcessor {
             Message::Control(NodeControlMsg::CollectTelemetry {
                 mut metrics_reporter,
             }) => {
-                _ = metrics_reporter.report(&mut self.metrics);
+                _ = self.metrics.report(&mut metrics_reporter);
                 return Ok(());
             }
             // Shutdown and other control messages are ignored: we drop inflight state on drop,
@@ -1152,11 +1134,11 @@ impl Processor<OtapPdata> for FanoutProcessor {
                         &self.config.destinations,
                         effect_handler,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| *error)?;
                     for d in deadlines {
                         self.deadline_heap.push(Reverse(d));
                     }
-                    self.metrics.sent.add(1);
                     Ok(())
                 }
             }
@@ -1185,43 +1167,44 @@ pub fn create_fanout_processor(
 
 /// Register the fan-out processor as an OTAP processor factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: FANOUT_PROCESSOR_URN,
-    create: |pipeline_ctx: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
+    create:
+        |pipeline_ctx: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract {
+        output_fanout: otel_arrow_dfe_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
     },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract {
-        output_fanout: otap_df_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
-    },
-    validate_config: otap_df_config::validation::validate_typed_config::<FanoutConfig>,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<FanoutConfig>,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::SignalType;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{
         NodeControlMsg, PipelineCompletionMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
         runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::local::processor::EffectHandler;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::message::Sender;
-    use otap_df_engine::testing::processor::TEST_OUT_PORT_NAME;
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::Context;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-    use otap_df_telemetry::InternalTelemetrySystem;
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+    use otel_arrow_dfe_engine::local::processor::EffectHandler;
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::message::Sender;
+    use otel_arrow_dfe_engine::testing::processor::TEST_OUT_PORT_NAME;
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::Context;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
     use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::time::Duration;
@@ -1248,9 +1231,10 @@ mod tests {
         effect: EffectHandler<OtapPdata>,
         outputs: HashMap<String, LocalReceiver<OtapPdata>>,
         _runtime_ctrl_rx:
-            otap_df_engine::shared::message::SharedReceiver<RuntimeControlMsg<OtapPdata>>,
-        pipeline_completion_rx:
-            otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+            otel_arrow_dfe_engine::shared::message::SharedReceiver<RuntimeControlMsg<OtapPdata>>,
+        pipeline_completion_rx: otel_arrow_dfe_engine::shared::message::SharedReceiver<
+            PipelineCompletionMsg<OtapPdata>,
+        >,
     }
 
     fn build_harness(destinations: Value, mode: &str, await_ack: &str) -> FanoutHarness {
@@ -1290,7 +1274,7 @@ mod tests {
         let mut outputs = HashMap::new();
         let mut senders = HashMap::new();
         for port in &node_cfg.outputs {
-            let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
+            let (tx, rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
             let _ = senders.insert(port.clone(), Sender::Local(LocalSender::mpsc(tx)));
             let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
         }
@@ -1348,7 +1332,7 @@ mod tests {
     const TEST_UPSTREAM_NODE_ID: usize = 12345;
 
     fn make_pdata() -> OtapPdata {
-        let payload = OtapPayload::OtlpBytes(OtlpProtoBytes::empty(SignalType::Logs));
+        let payload = OtapPayload::from(OtlpProtoBytes::empty(SignalType::Logs));
         // Simulate an upstream subscriber (e.g., receiver) so acks/nacks route correctly.
         OtapPdata::new(Context::default(), payload).test_subscribe_to(
             Interests::ACKS | Interests::NACKS,
@@ -2410,7 +2394,7 @@ mod tests {
     /// 4. Fanout should propagate the ack to the original receiver (not to itself)
     #[tokio::test]
     async fn upstream_ack_routes_to_receiver_not_fanout() {
-        use otap_df_otap::testing::TestCallData;
+        use otel_arrow_dfe_otap::testing::TestCallData;
 
         let mut h = build_harness(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
@@ -2483,7 +2467,7 @@ mod tests {
     /// Test that verifies upstream nack is routed to the correct node with correct calldata.
     #[tokio::test]
     async fn upstream_nack_routes_to_receiver_not_fanout() {
-        use otap_df_otap::testing::TestCallData;
+        use otel_arrow_dfe_otap::testing::TestCallData;
 
         let mut h = build_harness(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
@@ -2600,7 +2584,7 @@ mod tests {
         let mut outputs = HashMap::new();
         let mut senders = HashMap::new();
         for port in &node_cfg.outputs {
-            let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
+            let (tx, rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
             let _ = senders.insert(port.clone(), Sender::Local(LocalSender::mpsc(tx)));
             let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
         }

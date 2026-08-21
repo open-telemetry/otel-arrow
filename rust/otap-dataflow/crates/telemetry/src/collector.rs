@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use otap_df_config::pipeline::telemetry::TelemetryConfig;
+use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
 use tokio::sync::{RwLock, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -217,7 +217,7 @@ impl InternalCollector {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::settings::telemetry::logs::LogsConfig;
+    use otel_arrow_dfe_config::settings::telemetry::logs::LogsConfig;
 
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};

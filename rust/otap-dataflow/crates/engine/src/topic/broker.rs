@@ -17,7 +17,7 @@ use crate::error::Error;
 use crate::topic::backend::{InMemoryBackend, TopicBackend, TopicState};
 use crate::topic::handle::TopicHandle;
 use crate::topic::types::TopicOptions;
-use otap_df_config::TopicName;
+use otel_arrow_dfe_config::TopicName;
 use parking_lot::RwLock;
 
 /// The central topic broker. Create/open topics and obtain handles for publish/subscribe.

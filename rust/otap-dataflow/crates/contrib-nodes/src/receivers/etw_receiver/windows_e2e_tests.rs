@@ -14,20 +14,20 @@
 //! PowerShell:
 //!
 //! ```pwsh
-//! cargo test -p otap-df-contrib-nodes --features etw-receiver `
+//! cargo test -p otel-arrow-dfe-contrib-nodes --features etw-receiver `
 //!     etw_receiver_decodes_tracelogging_events_end_to_end `
 //!     -- --ignored --nocapture
 //! ```
 
 use super::*;
 use arrow::array::Array;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::testing::{receiver::TestRuntime, test_node, test_pipeline_ctx};
-use otap_df_pdata::OtapPayload;
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node, test_pipeline_ctx};
+use otel_arrow_dfe_pdata::PayloadData;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
@@ -121,7 +121,7 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
 fn producer_scenario(
     dynamic_provider_name: String,
 ) -> impl FnOnce(
-    otap_df_engine::testing::receiver::TestContext<OtapPdata>,
+    otel_arrow_dfe_engine::testing::receiver::TestContext<OtapPdata>,
 ) -> Pin<Box<dyn Future<Output = ()>>> {
     use futures::FutureExt;
     use std::panic::AssertUnwindSafe;
@@ -337,7 +337,7 @@ fn emit_static_event() {
 /// Drain downstream pdata until we have batches containing BOTH events,
 /// then run comprehensive assertions on each.
 fn producer_validation() -> impl FnOnce(
-    otap_df_engine::testing::receiver::NotSendValidateContext<OtapPdata>,
+    otel_arrow_dfe_engine::testing::receiver::NotSendValidateContext<OtapPdata>,
 ) -> Pin<Box<dyn Future<Output = ()>>> {
     move |mut ctx| {
         Box::pin(async move {
@@ -362,7 +362,8 @@ fn producer_validation() -> impl FnOnce(
                 }
                 match time::timeout(Duration::from_millis(500), ctx.recv()).await {
                     Ok(Ok(pdata)) => {
-                        let OtapPayload::OtapArrowRecords(records) = pdata.payload() else {
+                        let PayloadData::OtapArrowRecords(records) = pdata.payload().into_data()
+                        else {
                             panic!("Expected OtapArrowRecords payload from ETW receiver");
                         };
                         batches.push(records);

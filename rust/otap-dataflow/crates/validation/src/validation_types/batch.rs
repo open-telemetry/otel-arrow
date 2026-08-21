@@ -5,7 +5,7 @@
 //!
 //! Validates that each message in a collection meets configured batch size bounds.
 
-use otap_df_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use std::time::Duration;
 
 /// Ensure every message size is within `[min_items, max_items]` (if provided).
@@ -71,7 +71,7 @@ pub(crate) fn validate_batch_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
 

@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-quiver"
+name = "otel-arrow-dfe-quiver"
 description = "Embeddable Arrow-based segment store"
 version.workspace = true
 edition.workspace = true
@@ -12,7 +12,7 @@ keywords = ["opentelemetry", "arrow", "persistence", "quiver"]
 categories = ["database", "data-structures"]
 
 [lib]
-name = "quiver"
+name = "otel_arrow_dfe_quiver"
 path = "src/lib.rs"
 
 [features]

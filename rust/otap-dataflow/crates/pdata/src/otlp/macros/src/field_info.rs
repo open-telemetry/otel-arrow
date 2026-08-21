@@ -3,8 +3,8 @@
 
 //! Field analysis and metadata extraction for OTLP code generation.
 
-use otap_df_pdata_otlp_model::OneofCase;
-use otap_df_pdata_otlp_model::OneofMapping;
+use otel_arrow_dfe_pdata_otlp_model::OneofCase;
+use otel_arrow_dfe_pdata_otlp_model::OneofMapping;
 use quote::ToTokens;
 
 /// Comprehensive information about a struct field for OTLP code generation.
@@ -141,7 +141,7 @@ impl FieldInfo {
         field_path: &str,
         _inner_type: &syn::Type,
     ) -> (Option<syn::Type>, Option<syn::Type>) {
-        otap_df_pdata_otlp_model::FIELD_TYPE_OVERRIDES
+        otel_arrow_dfe_pdata_otlp_model::FIELD_TYPE_OVERRIDES
             .get(field_path)
             .and_then(|over| {
                 // Parse datatype and fieldtype with proper error handling

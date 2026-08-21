@@ -5,18 +5,18 @@
 
 #![allow(missing_docs)]
 
-use otap_df_config::tls::{TlsClientConfig, TlsConfig};
-use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
-use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
+use otel_arrow_dfe_config::tls::{TlsClientConfig, TlsConfig};
+use otel_arrow_dfe_otap::otap_grpc::client_settings::GrpcClientSettings;
+use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 
 use bytes::Bytes;
-use otap_df_otap::otap_grpc::otlp::client::LogsServiceClient;
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::{
+use otel_arrow_dfe_otap::otap_grpc::otlp::client::LogsServiceClient;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::{
     LogsService, LogsServiceServer,
 };
 use prost::Message;
@@ -45,7 +45,7 @@ impl LogsService for LogsServiceMock {
 
 #[tokio::test]
 async fn otlp_exporter_connects_with_mtls() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     // Generate CA, server cert, client cert.
     let ca = generate_ca("Test CA");
@@ -132,7 +132,7 @@ async fn otlp_exporter_connects_with_mtls() {
 
 #[tokio::test]
 async fn otlp_exporter_fails_with_invalid_ca_pem() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     // Generate CA and server cert.
     let ca = generate_ca("Test CA");
@@ -189,7 +189,7 @@ async fn otlp_exporter_fails_with_invalid_ca_pem() {
 
 #[tokio::test]
 async fn otlp_exporter_allows_http_with_tls_config() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let settings = GrpcClientSettings {
         grpc_endpoint: "http://localhost:4317".to_string(),
         tls: Some(TlsClientConfig {
@@ -208,7 +208,7 @@ async fn otlp_exporter_allows_http_with_tls_config() {
 
 #[tokio::test]
 async fn otlp_exporter_fails_partial_mtls() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let settings = GrpcClientSettings {
         grpc_endpoint: "https://localhost:4317".to_string(),
         tls: Some(TlsClientConfig {
@@ -238,7 +238,7 @@ async fn otlp_exporter_fails_partial_mtls() {
 
 #[tokio::test]
 async fn otlp_exporter_connects_with_tls_only() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     // Generate CA and server cert (no client cert needed for TLS-only).
     let ca = generate_ca("Test CA");

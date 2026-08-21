@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use bytes::{BufMut, Bytes, BytesMut};
-use otap_df_pdata_views::views::common::{
+use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType,
 };
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -911,7 +911,7 @@ mod tests {
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
         resource::v1::Resource,
     };
-    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+    use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
     use prost::Message;
     use serde_json::json;
     use std::collections::HashMap;

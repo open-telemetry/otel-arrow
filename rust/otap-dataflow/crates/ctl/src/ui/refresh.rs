@@ -93,7 +93,7 @@ pub(crate) fn build_command_context(
     }
 }
 
-fn canonical_target_url(endpoint: &otap_df_admin_api::AdminEndpoint) -> String {
+fn canonical_target_url(endpoint: &otel_arrow_dfe_admin_api::AdminEndpoint) -> String {
     let mut url = format!(
         "{}://{}:{}",
         endpoint.scheme.as_str(),

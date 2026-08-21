@@ -60,9 +60,9 @@ are the major aspects of its design:
   we choose single-threaded `local` components when possible.
 
 The basic unit of data in an OTAP Dataflow pipeline is the OTAP
-pipeline data object, `otap_df_otap::pdata::OtapPdata`. In the
+pipeline data object, `otel_arrow_dfe_otap::pdata::OtapPdata`. In the
 hierarchy of types a pipeline component interacts with, this crate
-`otap_df_otap::pdata` crate is a focal point. The `OtapPdata` data
+`otel_arrow_dfe_otap::pdata` crate is a focal point. The `OtapPdata` data
 type is a struct consisting of "context" and "payload", where context
 is used for routing "Ack" and "Nack" responses, and payload has two
 equivalent, signal-specific representations:
@@ -92,7 +92,7 @@ See the controller and engine crate READMEs:
 - [controller](./crates/controller/README.md).
 - [engine](./crates/engine/README.md),
 
-The `otap_df_engine` crate is located in `crates/engine`, here we
+The `otel_arrow_dfe_engine` crate is located in `crates/engine`, here we
 find the engine's overall architecture expressed:
 
 - Local (unsynchronized) and shared (`Sync + Send`) code paths
@@ -101,7 +101,7 @@ find the engine's overall architecture expressed:
 - Effect handler for interacting with pipeline.
 
 The engine's main entry point,
-`otap_df_engine::PipelineFactory<PData>`, supports building a
+`otel_arrow_dfe_engine::PipelineFactory<PData>`, supports building a
 single-thread pipeline for generic type `PData`. Generally, users do
 not construct these, as they are managed by a controller instance.
 Here are the key files to know about:
@@ -127,7 +127,7 @@ crates/engine/lib.rs:    Effect handler extensions, pipeline factory
 [See crate README.](./crates/otap/README.md)
 The OTAP pipeline data type is defined here, therefore all of our
 built-in components are provided here as well.  The main entry point
-into this crate is the `otap_df_otap::pdata::OtapPdata` type with its
+into this crate is the `otel_arrow_dfe_otap::pdata::OtapPdata` type with its
 two alternate representations, OTAP records and OTLP bytes, specific
 by signal type.
 
@@ -158,7 +158,7 @@ All gRPC services are implemented using
 
 The major OTAP Dataflow components related to OTAP/OTLP pipeline transport are
 listed next. Their concrete core-node implementations now live in
-`otap-df-core-nodes`.
+`otel-arrow-dfe-core-nodes`.
 
 #### Attributes processor
 
@@ -187,7 +187,7 @@ A simple component to produce synthetic data from semantic convention registries
 #### Batch processor
 
 A batching processor that works directly with OTAP records. This is
-[based on lower-level support in the `otap-df-pdata`
+[based on lower-level support in the `otel-arrow-dfe-pdata`
 crate](./crates/pdata/src/otap/batching.rs).
 
 #### OTAP exporter
@@ -267,7 +267,7 @@ establish the performance of the OTAP Dataflow system.
 
 [See crate README.](./crates/contrib-nodes/README.md)
 
-The `otap-df-contrib-nodes` crate contains optional, feature-gated
+The `otel-arrow-dfe-contrib-nodes` crate contains optional, feature-gated
 exporters and processors that are registered into the OTAP pipeline
 factory maps when enabled.
 
@@ -284,9 +284,9 @@ Contrib feature model:
 
 [See crate README.](./crates/controller/README.md)
 
-The `otap_df_controller` crate is located in `crates/controller` and is
+The `otel_arrow_dfe_controller` crate is located in `crates/controller` and is
 the main entry point to construct an OTAP Dataflow pipeline instance. The
-controller type, `otap_df_controller::Controller<PData>`, manages building,
+controller type, `otel_arrow_dfe_controller::Controller<PData>`, manages building,
 running, and supervising one or more pipelines.
 
 This component is responsible for making the assignment between OTAP
@@ -309,14 +309,14 @@ exact field semantics, defaults, precedence rules, and validation behavior.
 
 A number of example configurations are listed in
 [`./configs`](./configs). These are deserialized into the
-`otap_df_config::engine::OtelDataflowSpec` structs, defined in this crate.
+`otel_arrow_dfe_config::engine::OtelDataflowSpec` structs, defined in this crate.
 
 ### Channel
 
 [See crate README.](./crates/channel/README.md)
 
 Defines the low-level queues used in the OTAP dataflow pipeline,
-`otap_df_channel::mpsc` and `otap_df_channel::mpmc`.
+`otel_arrow_dfe_channel::mpsc` and `otel_arrow_dfe_channel::mpmc`.
 
 Defines a standard `SendError<T>` used to return failures throughout
 the codebase to enable recovering from `try_send()`.
@@ -362,7 +362,7 @@ The engine crates are designed as reusable libraries. A custom binary can
 link the same controller, factory, and node crates and register its own
 components via `linkme` distributed slices -- exactly how `src/main.rs` works.
 
-The `otap_df_controller::startup` module provides common helpers that every
+The `otel_arrow_dfe_controller::startup` module provides common helpers that every
 embedding binary typically needs:
 
 - **`validate_engine_components`** -- Checks that every node URN in a
@@ -380,19 +380,19 @@ embedding binary typically needs:
 A minimal custom binary looks like this:
 
 ```rust
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_controller::{Controller, ControllerRunOptions, startup};
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_controller::{Controller, ControllerRunOptions, startup};
 
 // Side-effect imports to register components via linkme.
-use otap_df_core_nodes as _;
+use otel_arrow_dfe_core_nodes as _;
 // Bring your own contrib/custom nodes as needed.
 // Bring your own controller extension crates the same way.
 
 // Reference the pipeline factory (or define your own).
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    otap_df_otap::crypto::install_crypto_provider()?;
+    otel_arrow_dfe_otap::crypto::install_crypto_provider()?;
 
     let mut cfg = OtelDataflowSpec::from_file("pipeline.yaml")?;
 
@@ -437,12 +437,12 @@ A downstream extension crate registers a statically linked factory with the
 controller's `linkme` distributed slice:
 
 ```rust
-use otap_df_controller::{
+use otel_arrow_dfe_controller::{
     CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionContext,
     ControllerExtensionError, ControllerExtensionFactory,
     ControllerExtensionTaskFactory, distributed_slice,
 };
-use otap_df_config::validation::validate_typed_config;
+use otel_arrow_dfe_config::validation::validate_typed_config;
 
 pub const REMOTE_CONTROL_URN: &str = "urn:example:extension:remote_control";
 
@@ -464,7 +464,7 @@ pub static REMOTE_CONTROL_EXTENSION: ControllerExtensionFactory =
 
 fn validate_remote_control_config(
     config: &serde_json::Value,
-) -> Result<(), otap_df_config::error::Error> {
+) -> Result<(), otel_arrow_dfe_config::error::Error> {
     validate_typed_config::<RemoteControlConfig>(config)
 }
 

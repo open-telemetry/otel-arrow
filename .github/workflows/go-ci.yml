@@ -1,4 +1,5 @@
 name: Go-CI
+# See README.md in this directory for CI event, status, and cache strategy.
 permissions:
   contents: read
 
@@ -6,6 +7,9 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "go/**"
+      - ".github/workflows/go-ci.yml"
   pull_request:
     branches:
       - main
@@ -19,6 +23,7 @@ concurrency:
 jobs:
 
   test_and_coverage:
+    if: github.event_name != 'push'
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +51,7 @@ jobs:
           fail_ci_if_error: true
 
   codeql:
+    # Keep the default-branch code-scanning baseline current after merges.
     permissions:
       # needed for codeql
       security-events: write
@@ -66,7 +72,7 @@ jobs:
   # to simplify maintenance - add/remove jobs from the needs list as needed
   go-required-status-check:
     runs-on: ubuntu-latest
-    if: always()
+    if: github.event_name != 'push' && !cancelled()
     needs:
       - test_and_coverage
       - codeql

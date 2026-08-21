@@ -10,7 +10,7 @@
 use crate::receivers::traffic_generator::fake_data::{
     current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
 };
-use otap_df_pdata::proto::opentelemetry::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue},
     logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
     metrics::v1::{
@@ -1149,7 +1149,7 @@ mod tests {
         assert_eq!(metric_list.len(), 22);
 
         // Verify we have all metric types
-        use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data;
         let mut has_sum = false;
         let mut has_gauge = false;
         let mut has_histogram = false;
@@ -1188,7 +1188,7 @@ mod tests {
         let metric_list = &metrics.resource_metrics[0].scope_metrics[0].metrics;
         assert_eq!(metric_list.len(), 3);
         // First metric is a counter (Sum), check it has 4 data points
-        use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data;
         if let Some(Data::Sum(sum)) = &metric_list[0].data {
             assert_eq!(sum.data_points.len(), 4);
         } else {
@@ -1217,7 +1217,7 @@ mod tests {
     ///
     /// Run with:
     /// ```sh
-    /// cargo test -p otap-df-core-nodes --features dev-tools -- test_metrics_compression_ratio --nocapture
+    /// cargo test -p otel-arrow-dfe-core-nodes --features dev-tools -- test_metrics_compression_ratio --nocapture
     /// ```
     #[test]
     fn test_metrics_compression_ratio_is_realistic() {
@@ -1273,7 +1273,7 @@ mod tests {
         if let Some(body) = &records[0].body {
             if let Some(ref value) = body.value {
                 match value {
-                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
+                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
                         assert_eq!(s.len(), 1024);
                     }
                     _ => panic!("Expected string body"),

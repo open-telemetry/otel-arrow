@@ -71,7 +71,7 @@
 //!   stuck data when space is needed for new data
 //! - `max_in_flight` limit prevents thundering herd after recovery
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = DURABLE_BUFFER_URN,
     target = "otel.processor.durable_buffer",
 );
@@ -88,18 +88,20 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use quiver::budget::DiskBudget;
-use quiver::segment::SegmentSeq;
-use quiver::segment_store::SegmentStore;
-use quiver::subscriber::{
+use otel_arrow_dfe_quiver::budget::DiskBudget;
+use otel_arrow_dfe_quiver::segment::SegmentSeq;
+use otel_arrow_dfe_quiver::segment_store::SegmentStore;
+use otel_arrow_dfe_quiver::subscriber::{
     BundleHandle, BundleIndex, BundleRef, RegistryCallback, SegmentProvider, SubscriberId,
 };
-use quiver::{QuiverConfig, QuiverEngine, RetentionLossCounts, RetentionLossSnapshot};
+use otel_arrow_dfe_quiver::{
+    QuiverConfig, QuiverEngine, RetentionLossCounts, RetentionLossSnapshot,
+};
 use smallvec::smallvec;
 
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
 
 use bundle_adapter::{
     OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, recover_item_count,
@@ -113,27 +115,27 @@ use metrics::{BundleOutcome, DurableBufferMetrics, IngestFailure, LossReason};
 #[cfg(test)]
 use metrics::{LossAttributes, SignalLossAttributes};
 
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::Context8u8;
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::Context8u8;
+use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, NackMsg, NodeControlMsg, WakeupRevision, WakeupSlot,
 };
-use otap_df_engine::error::Error;
-use otap_df_engine::local::processor::EffectHandler;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::{
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::local::processor::EffectHandler;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements, ProcessorFactory,
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
 };
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
 #[cfg(test)]
-use otap_df_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
 
 /// URN for the durable buffer.
 pub const DURABLE_BUFFER_URN: &str = "urn:otel:processor:durable_buffer";
@@ -990,8 +992,8 @@ impl DurableBuffer {
         // Ingest based on payload type and configuration.
         // Adapters preserve the original payload via into_inner() for NACK on failure.
         // Returns (Result, item_count) - item count tracks individual items for all formats.
-        let (ingest_result, item_count): (Result<(), _>, u64) = match payload {
-            OtapPayload::OtlpBytes(otlp_bytes) => {
+        let (ingest_result, item_count): (Result<(), _>, u64) = match payload.into_data() {
+            PayloadData::OtlpBytes(otlp_bytes) => {
                 // OTLP bytes: check configuration for handling mode
                 match self.config.otlp_handling {
                     OtlpHandling::PassThrough => {
@@ -1003,9 +1005,7 @@ impl DurableBuffer {
                                 let num_items = adapter.cached_item_count();
                                 let result = match engine.ingest(&adapter).await {
                                     Ok(()) => Ok(()),
-                                    Err(e) => {
-                                        Err((e, OtapPayload::OtlpBytes(adapter.into_inner())))
-                                    }
+                                    Err(e) => Err((e, OtapPayload::from(adapter.into_inner()))),
                                 };
                                 (result, num_items)
                             }
@@ -1018,7 +1018,7 @@ impl DurableBuffer {
                                 otel_error!("durable_buffer.otlp.adapter_failed", error = %e);
 
                                 let nack_pdata =
-                                    OtapPdata::new(context, OtapPayload::OtlpBytes(original_bytes));
+                                    OtapPdata::new(context, OtapPayload::from(original_bytes));
                                 effect_handler
                                     .notify_nack(NackMsg::new(
                                         format!("OTLP adapter creation failed: {}", e),
@@ -1034,7 +1034,7 @@ impl DurableBuffer {
                         // Clone bytes for NACK on conversion failure (conversion consumes the input).
                         let bytes_for_nack = otlp_bytes.clone();
                         let conversion_result: Result<OtapArrowRecords, _> =
-                            OtapPayload::OtlpBytes(otlp_bytes).try_into_with_default();
+                            OtapPayload::from(otlp_bytes).try_into_with_default();
                         match conversion_result {
                             Ok(records) => {
                                 // Count items from Arrow data (cheap - just num_rows)
@@ -1043,10 +1043,7 @@ impl DurableBuffer {
                                 let result = match engine.ingest(&adapter).await {
                                     Ok(()) => Ok(()),
                                     // Ingest failed: NACK with the Arrow records we tried to store
-                                    Err(e) => Err((
-                                        e,
-                                        OtapPayload::OtapArrowRecords(adapter.into_inner()),
-                                    )),
+                                    Err(e) => Err((e, OtapPayload::from(adapter.into_inner()))),
                                 };
                                 (result, num_items)
                             }
@@ -1059,7 +1056,7 @@ impl DurableBuffer {
                                 otel_error!("durable_buffer.otlp.conversion_failed", error = %e);
 
                                 let nack_pdata =
-                                    OtapPdata::new(context, OtapPayload::OtlpBytes(bytes_for_nack));
+                                    OtapPdata::new(context, OtapPayload::from(bytes_for_nack));
                                 effect_handler
                                     .notify_nack(NackMsg::new(
                                         format!("OTLP to Arrow conversion failed: {}", e),
@@ -1072,13 +1069,13 @@ impl DurableBuffer {
                     }
                 }
             }
-            OtapPayload::OtapArrowRecords(records) => {
+            PayloadData::OtapArrowRecords(records) => {
                 // Native Arrow data: count items (cheap) and store directly.
                 let num_items = records.num_items() as u64;
                 let adapter = OtapRecordBundleAdapter::new(records);
                 let result = match engine.ingest(&adapter).await {
                     Ok(()) => Ok(()),
-                    Err(e) => Err((e, OtapPayload::OtapArrowRecords(adapter.into_inner()))),
+                    Err(e) => Err((e, OtapPayload::from(adapter.into_inner()))),
                 };
                 (result, num_items)
             }
@@ -1380,8 +1377,8 @@ impl DurableBuffer {
                             .set(self.pending_bundles.len() as u64);
                         ProcessBundleResult::Sent
                     }
-                    Err(otap_df_engine::error::TypedError::ChannelSendError(
-                        otap_df_channel::error::SendError::Full(_pdata),
+                    Err(otel_arrow_dfe_engine::error::TypedError::ChannelSendError(
+                        otel_arrow_dfe_channel::error::SendError::Full(_pdata),
                     )) => {
                         // Channel is full - release the bundle for retry on next tick.
                         // Dropping the handle triggers implicit defer, making the bundle
@@ -1389,8 +1386,8 @@ impl DurableBuffer {
                         drop(handle);
                         ProcessBundleResult::Backpressure
                     }
-                    Err(otap_df_engine::error::TypedError::ChannelSendError(
-                        otap_df_channel::error::SendError::Closed(_pdata),
+                    Err(otel_arrow_dfe_engine::error::TypedError::ChannelSendError(
+                        otel_arrow_dfe_channel::error::SendError::Closed(_pdata),
                     )) => {
                         // Channel is closed - this is a fatal error.
                         // Drop the handle to release the claim (data stays in Quiver).
@@ -1400,7 +1397,7 @@ impl DurableBuffer {
                             closed: true,
                         })
                     }
-                    Err(otap_df_engine::error::TypedError::Error(e)) => {
+                    Err(otel_arrow_dfe_engine::error::TypedError::Error(e)) => {
                         // Configuration error (no default port) - this is a fatal error
                         drop(handle);
                         ProcessBundleResult::Error(e)
@@ -1731,7 +1728,7 @@ impl DurableBuffer {
 // -----------------------------------------------------------------------------
 
 #[async_trait(?Send)]
-impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
+impl otel_arrow_dfe_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
         ProcessorRuntimeRequirements {
             local_wakeups: Some(LocalWakeupRequirements::new(1)),
@@ -1827,10 +1824,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                     self.handle_retry_wakeup(slot, revision, effect_handler)
                         .await
                 }
-                NodeControlMsg::DelayedData { .. } => {
-                    otel_warn!("durable_buffer.delayed_data.unexpected");
-                    Ok(())
-                }
+                NodeControlMsg::ResumeData { .. } => Ok(()),
             },
         }
     }
@@ -1846,7 +1840,7 @@ pub fn create_durable_buffer(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let config: DurableBufferConfig =
         serde_json::from_value(node_config.config.clone()).map_err(|e| {
@@ -1870,13 +1864,13 @@ pub fn create_durable_buffer(
 
 /// Register DurableBuffer as an OTAP processor factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static DURABLE_BUFFER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: DURABLE_BUFFER_URN,
     create: create_durable_buffer,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<DurableBufferConfig>,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<DurableBufferConfig>,
 };
 
 #[cfg(test)]
@@ -1885,13 +1879,13 @@ mod tests {
     use arrow::array::Int32Array;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_telemetry::attributes::AttributeEnum;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::reporter::MetricsReporter;
-    use quiver::record_bundle::{
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_quiver::record_bundle::{
         BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
     };
+    use otel_arrow_dfe_telemetry::attributes::AttributeEnum;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
 
@@ -2020,16 +2014,16 @@ mod tests {
     /// wakeup resumes normal downstream delivery exactly once.
     #[test]
     fn test_retry_wakeup_resumes_retry_logic() {
-        use otap_df_config::node::NodeUserConfig;
-        use otap_df_engine::config::ProcessorConfig;
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::control::pipeline_completion_msg_channel;
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-        use otap_df_engine::testing::test_node;
-        use otap_df_otap::testing::next_nack;
-        use otap_df_pdata::encode::encode_logs_otap_batch;
-        use otap_df_pdata::testing::fixtures::DataGenerator;
+        use otel_arrow_dfe_config::node::NodeUserConfig;
+        use otel_arrow_dfe_engine::config::ProcessorConfig;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::control::pipeline_completion_msg_channel;
+        use otel_arrow_dfe_engine::message::Message;
+        use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_otap::testing::next_nack;
+        use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+        use otel_arrow_dfe_pdata::testing::fixtures::DataGenerator;
         use serde_json::json;
 
         let rt = TestRuntime::new();
@@ -2054,7 +2048,7 @@ mod tests {
             test_node("durable-buffer-retry-wakeup"),
             Arc::new(node_config),
             &ProcessorConfig::new("durable-buffer-retry-wakeup"),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create durable buffer");
 
@@ -2110,16 +2104,16 @@ mod tests {
     /// deferred retries; the matching wakeup later resumes all due retries.
     #[test]
     fn test_unknown_wakeup_does_not_lose_deferred_retries() {
-        use otap_df_config::node::NodeUserConfig;
-        use otap_df_engine::config::ProcessorConfig;
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::control::pipeline_completion_msg_channel;
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-        use otap_df_engine::testing::test_node;
-        use otap_df_otap::testing::next_nack;
-        use otap_df_pdata::encode::encode_logs_otap_batch;
-        use otap_df_pdata::testing::fixtures::DataGenerator;
+        use otel_arrow_dfe_config::node::NodeUserConfig;
+        use otel_arrow_dfe_engine::config::ProcessorConfig;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::control::pipeline_completion_msg_channel;
+        use otel_arrow_dfe_engine::message::Message;
+        use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_otap::testing::next_nack;
+        use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+        use otel_arrow_dfe_pdata::testing::fixtures::DataGenerator;
         use serde_json::json;
 
         let rt = TestRuntime::new();
@@ -2144,7 +2138,7 @@ mod tests {
             test_node("durable-buffer-unknown-wakeup"),
             Arc::new(node_config),
             &ProcessorConfig::with_channel_capacities("durable-buffer-unknown-wakeup", 1, 100),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create durable buffer");
 
@@ -2212,16 +2206,16 @@ mod tests {
     /// one matching wakeup resumes all due retries.
     #[test]
     fn test_multiple_retries_share_single_wakeup() {
-        use otap_df_config::node::NodeUserConfig;
-        use otap_df_engine::config::ProcessorConfig;
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::control::pipeline_completion_msg_channel;
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-        use otap_df_engine::testing::test_node;
-        use otap_df_otap::testing::next_nack;
-        use otap_df_pdata::encode::encode_logs_otap_batch;
-        use otap_df_pdata::testing::fixtures::DataGenerator;
+        use otel_arrow_dfe_config::node::NodeUserConfig;
+        use otel_arrow_dfe_engine::config::ProcessorConfig;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::control::pipeline_completion_msg_channel;
+        use otel_arrow_dfe_engine::message::Message;
+        use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_otap::testing::next_nack;
+        use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+        use otel_arrow_dfe_pdata::testing::fixtures::DataGenerator;
         use serde_json::json;
 
         let rt = TestRuntime::new();
@@ -2246,7 +2240,7 @@ mod tests {
             test_node("durable-buffer-shared-retry-wakeup"),
             Arc::new(node_config),
             &ProcessorConfig::with_channel_capacities("durable-buffer-shared-retry-wakeup", 1, 100),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create durable buffer");
 
@@ -2311,16 +2305,16 @@ mod tests {
     /// loop can forward that parked bundle instead of leaving it restart-dependent.
     #[test]
     fn test_shutdown_drains_deferred_retry_bundle() {
-        use otap_df_config::node::NodeUserConfig;
-        use otap_df_engine::config::ProcessorConfig;
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::control::pipeline_completion_msg_channel;
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-        use otap_df_engine::testing::test_node;
-        use otap_df_otap::testing::next_nack;
-        use otap_df_pdata::encode::encode_logs_otap_batch;
-        use otap_df_pdata::testing::fixtures::DataGenerator;
+        use otel_arrow_dfe_config::node::NodeUserConfig;
+        use otel_arrow_dfe_engine::config::ProcessorConfig;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::control::pipeline_completion_msg_channel;
+        use otel_arrow_dfe_engine::message::Message;
+        use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_otap::testing::next_nack;
+        use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+        use otel_arrow_dfe_pdata::testing::fixtures::DataGenerator;
         use serde_json::json;
 
         let rt = TestRuntime::new();
@@ -2345,7 +2339,7 @@ mod tests {
             test_node("durable-buffer-shutdown-drain-deferred"),
             Arc::new(node_config),
             &ProcessorConfig::new("durable-buffer-shutdown-drain-deferred"),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create durable buffer");
 
@@ -2399,8 +2393,8 @@ mod tests {
 
     #[test]
     fn test_backoff_calculation() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
         let registry = TelemetryRegistryHandle::default();
         let controller_ctx = ControllerContext::new(registry);
@@ -2447,9 +2441,9 @@ mod tests {
     /// Bundle resolution outcomes are exported as separate items.
     #[test]
     fn test_nack_metrics_snapshot_field_positions() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
         let registry = TelemetryRegistryHandle::default();
         let controller_ctx = ControllerContext::new(registry);
@@ -2508,8 +2502,8 @@ mod tests {
     /// drifts upward, giving operators a false picture of backlog.
     #[test]
     fn test_permanent_nack_decrements_queued_gauge() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
         let registry = TelemetryRegistryHandle::default();
         let controller_ctx = ControllerContext::new(registry);
@@ -2667,8 +2661,8 @@ mod tests {
 
     #[test]
     fn test_segment_cache_bound_evicts_oldest_and_warn_marker() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
         let registry = TelemetryRegistryHandle::default();
         let controller_ctx = ControllerContext::new(registry);
@@ -2745,15 +2739,15 @@ mod tests {
 
     #[test]
     fn test_storage_utilization_reporting() {
-        use otap_df_config::node::NodeUserConfig;
-        use otap_df_engine::config::ProcessorConfig;
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::message::Message;
-        use otap_df_engine::testing::processor::TestRuntime;
-        use otap_df_engine::testing::test_node;
-        use otap_df_pdata::encode::encode_logs_otap_batch;
-        use otap_df_pdata::testing::fixtures::DataGenerator;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_config::node::NodeUserConfig;
+        use otel_arrow_dfe_engine::config::ProcessorConfig;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::message::Message;
+        use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+        use otel_arrow_dfe_pdata::testing::fixtures::DataGenerator;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
         use serde_json::json;
 
         let rt = TestRuntime::new();
@@ -2778,7 +2772,7 @@ mod tests {
             test_node("durable-buffer-utilization-test"),
             Arc::new(node_config),
             &ProcessorConfig::new("durable-buffer-utilization-test"),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create durable buffer");
 

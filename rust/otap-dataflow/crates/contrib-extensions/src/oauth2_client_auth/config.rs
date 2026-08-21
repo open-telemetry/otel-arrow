@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use otap_df_config::tls::TlsClientConfig;
+use otel_arrow_dfe_config::tls::TlsClientConfig;
 use secrecy::SecretString;
 use serde::Deserialize;
 
-use otap_df_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
 
 /// Default duration ahead of expiry at which a token is refreshed.
 fn default_expiry_buffer() -> Duration {

@@ -33,8 +33,8 @@ use crate::topic::types::{
     TrackedPublishOutcome, TrackedPublishPermit, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
 use crate::topic::{Delivery, RecvDelivery, Subscription, TopicBroker, TopicSet};
-use otap_df_config::topic::{TopicBroadcastAckMode, TopicBroadcastOnLagPolicy};
-use otap_df_config::{SubscriptionGroupName, TopicName};
+use otel_arrow_dfe_config::topic::{TopicBroadcastAckMode, TopicBroadcastOnLagPolicy};
+use otel_arrow_dfe_config::{SubscriptionGroupName, TopicName};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

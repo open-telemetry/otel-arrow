@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! OTAP batch processor.  Batches OtapPdata by item count or timer,
-//! uses the lower-level otap_df_pdata::otap::groups module for
+//! uses the lower-level otel_arrow_dfe_pdata::otap::groups module for
 //! merging and splitting batches.
 //!
 //! Configuration is modelled on the (original) OpenTelemetry batch
@@ -20,7 +20,7 @@
 //! splitting is configured, it means there can be residual data left
 //! after flushing. Retained data is always "first in line" for
 //! considering in the next flush event. Note that the lower-level
-//! function in otap_df_pdata::otap::groups is required to support
+//! function in otel_arrow_dfe_pdata::otap::groups is required to support
 //! "in-line" batching (see that component for the definition).
 //!
 //! This component should be installed before any retry processor
@@ -28,7 +28,7 @@
 //! Interests::RETURN_DATA because (a) more memory required, (b) forces
 //! whole-request retry (instead of partial).
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = OTAP_BATCH_PROCESSOR_URN,
     target = "otel.processor.batch",
 );
@@ -36,11 +36,11 @@ otap_df_telemetry::otel_component_scope!(
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::{
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::{SignalFormat, SignalType};
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
@@ -49,21 +49,21 @@ use otap_df_engine::{
     local::processor as local,
     message::Message,
     node::NodeId,
-    processor::ProcessorWrapper,
+    processor::{FlowMetricHook, ProcessorWrapper},
 };
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::{
-    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes,
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::{
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData,
     error::Error as PDataError,
     otap::batching::make_item_batches,
     otlp::batching::{BytesBatches, make_bytes_batches_owned},
 };
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -258,11 +258,11 @@ pub struct Config {
     #[serde(with = "humantime_serde", default = "default_max_batch_duration")]
     pub max_batch_duration: Duration,
 
-    /// Limits the number of pending requests for ack/nack tracking.
+    /// Limits the number of pending requests for completion tracking.
     #[serde(default = "default_inbound_request_limit")]
     pub inbound_request_limit: NonZeroUsize,
 
-    /// Limits the number of outbound requests for ack/nack tracking.
+    /// Limits the number of outbound requests for completion tracking.
     #[serde(default = "default_outbound_request_limit")]
     pub outbound_request_limit: NonZeroUsize,
 
@@ -802,8 +802,8 @@ impl BatchProcessor {
 
         let (ctx, payload) = request.into_parts();
 
-        match payload {
-            OtapPayload::OtapArrowRecords(otap) => {
+        match payload.into_data() {
+            PayloadData::OtapArrowRecords(otap) => {
                 if let Some(mut otap_format) = self.otap_format() {
                     otap_format
                         .for_signal(signal)
@@ -819,7 +819,7 @@ impl BatchProcessor {
                     return Err(Self::no_active_format_error());
                 }
             }
-            OtapPayload::OtlpBytes(otlp) => {
+            PayloadData::OtlpBytes(otlp) => {
                 if let Some(mut otlp_format) = self.otlp_format() {
                     otlp_format
                         .for_signal(signal)
@@ -885,11 +885,13 @@ impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
 
     fn empty(signal: SignalType) -> OtapArrowRecords {
         match signal {
-            SignalType::Logs => OtapArrowRecords::Logs(otap_df_pdata::otap::Logs::default()),
+            SignalType::Logs => OtapArrowRecords::Logs(otel_arrow_dfe_pdata::otap::Logs::default()),
             SignalType::Metrics => {
-                OtapArrowRecords::Metrics(otap_df_pdata::otap::Metrics::default())
+                OtapArrowRecords::Metrics(otel_arrow_dfe_pdata::otap::Metrics::default())
             }
-            SignalType::Traces => OtapArrowRecords::Traces(otap_df_pdata::otap::Traces::default()),
+            SignalType::Traces => {
+                OtapArrowRecords::Traces(otel_arrow_dfe_pdata::otap::Traces::default())
+            }
         }
     }
 
@@ -951,7 +953,8 @@ where
             // Note: we do not check for empty envelopes, e.g., logs
             // requests with only a resource and no log records. We do
             // not count these.
-            let pdata = OtapPdata::new(ctx, payload.into());
+            let mut pdata = OtapPdata::new(ctx, payload.into());
+            pdata.complete_processor_without_output(effect);
             effect.notify_ack(AckMsg::new(pdata)).await?;
             return Ok(());
         }
@@ -962,8 +965,8 @@ where
         // when none of them subscribed to ack/nack.
         let peer_addr = ctx.peer_addr();
 
-        // If there are subscribers, calculate an inbound slot key.
-        let inkey = if ctx.has_subscribers() {
+        // Retain contexts needed for Ack/Nack routing or metrics unwinding.
+        let inkey = if ctx.needs_completion_tracking() {
             let slot = self
                 .buffer
                 .inbound
@@ -1186,8 +1189,8 @@ where
             let weight = ownership;
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
-            // If any inputs in this batch require notification, get an
-            // outbound slot and subscribe.
+            // If any inputs require completion tracking, get an outbound slot
+            // and subscribe so their contexts can unwind after this output.
             let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
             // Forward the receiver-observed peer address only when every
             // input merged into this output batch came from the same peer
@@ -1314,7 +1317,7 @@ impl BatchProcessor {
 
 /// Factory function to create a batch processor.
 pub fn create_otap_batch_processor(
-    pipeline_ctx: otap_df_engine::context::PipelineContext,
+    pipeline_ctx: otel_arrow_dfe_engine::context::PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
@@ -1344,86 +1347,60 @@ impl local::Processor<OtapPdata> for BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         match msg {
-            Message::Control(ctrl) => {
-                match ctrl {
-                    NodeControlMsg::Config { .. } => Ok(()),
-                    NodeControlMsg::Shutdown { .. } => {
-                        self.flush_shutdown(effect).await?;
-                        Ok(())
-                    }
-                    NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    } => {
-                        effect
-                            .report_local_scheduler_metrics(&mut metrics_reporter)
-                            .map_err(|e| EngineError::InternalError {
-                                message: e.to_string(),
-                            })?;
-                        metrics_reporter.report(&mut self.metrics).map_err(|e| {
-                            EngineError::InternalError {
-                                message: e.to_string(),
-                            }
-                        })?;
-                        Ok(())
-                    }
-                    NodeControlMsg::Wakeup { slot, when, .. } => {
-                        let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
-                            return Ok(());
-                        };
-
-                        match format {
-                            SignalFormat::OtapRecords => {
-                                if let Some(mut otap_format) = self.otap_format() {
-                                    otap_format
-                                        .for_signal(signal)
-                                        .flush_signal_impl(effect, when, FlushReason::Timer)
-                                        .await?;
-                                }
-                            }
-                            SignalFormat::OtlpBytes => {
-                                if let Some(mut otlp_format) = self.otlp_format() {
-                                    otlp_format
-                                        .for_signal(signal)
-                                        .flush_signal_impl(effect, when, FlushReason::Timer)
-                                        .await?;
-                                }
-                            }
-                        };
-
-                        Ok(())
-                    }
-                    NodeControlMsg::DelayedData { data, when } => {
-                        let signal = data.signal_type();
-
-                        match self.format_for_signal_format(data.signal_format()) {
-                            Some(ActiveBatchProcessorFormatKind::Otap) => self
-                                .otap_format()
-                                .expect(
-                                    "otap batch state must exist when otap format kind is selected",
-                                )
-                                .for_signal(signal)
-                                .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?,
-                            Some(ActiveBatchProcessorFormatKind::Otlp) => self
-                                .otlp_format()
-                                .expect(
-                                    "otlp batch state must exist when otlp format kind is selected",
-                                )
-                                .for_signal(signal)
-                                .flush_signal_impl(effect, when, FlushReason::Timer)
-                                .await?,
-                            None => return Err(Self::no_active_format_error()),
-                        };
-
-                        Ok(())
-                    }
-                    NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
-                    NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
-                    NodeControlMsg::DrainIngress { .. } => Ok(()),
-                    NodeControlMsg::TimerTick { .. } => unreachable!(),
-                    NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
+            Message::Control(ctrl) => match ctrl {
+                NodeControlMsg::Config { .. } => Ok(()),
+                NodeControlMsg::Shutdown { .. } => {
+                    self.flush_shutdown(effect).await?;
+                    Ok(())
                 }
-            }
+                NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } => {
+                    effect
+                        .report_local_scheduler_metrics(&mut metrics_reporter)
+                        .map_err(|e| EngineError::InternalError {
+                            message: e.to_string(),
+                        })?;
+                    metrics_reporter.report(&mut self.metrics).map_err(|e| {
+                        EngineError::InternalError {
+                            message: e.to_string(),
+                        }
+                    })?;
+                    Ok(())
+                }
+                NodeControlMsg::Wakeup { slot, when, .. } => {
+                    let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
+                        return Ok(());
+                    };
+
+                    match format {
+                        SignalFormat::OtapRecords => {
+                            if let Some(mut otap_format) = self.otap_format() {
+                                otap_format
+                                    .for_signal(signal)
+                                    .flush_signal_impl(effect, when, FlushReason::Timer)
+                                    .await?;
+                            }
+                        }
+                        SignalFormat::OtlpBytes => {
+                            if let Some(mut otlp_format) = self.otlp_format() {
+                                otlp_format
+                                    .for_signal(signal)
+                                    .flush_signal_impl(effect, when, FlushReason::Timer)
+                                    .await?;
+                            }
+                        }
+                    };
+
+                    Ok(())
+                }
+                NodeControlMsg::ResumeData { .. } => Ok(()),
+                NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
+                NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
+                NodeControlMsg::DrainIngress { .. } => Ok(()),
+                NodeControlMsg::TimerTick { .. } => unreachable!(),
+                NodeControlMsg::MemoryPressureChanged { .. } => Ok(()),
+            },
             Message::PData(request) => self.process_signal_impl(effect, request).await,
         }
     }
@@ -1481,8 +1458,8 @@ impl MultiContext {
 impl<T: OtapPayloadHelpers> Inputs<T> {
     fn drain(&mut self) -> Self {
         Self {
-            pending: self.pending.drain(..).collect(),
-            context: self.context.drain(..).collect(),
+            pending: std::mem::take(&mut self.pending),
+            context: std::mem::take(&mut self.context),
             weight: std::mem::take(&mut self.weight),
         }
     }
@@ -1703,63 +1680,65 @@ where
 
 /// Register factory for OTAP batch processor
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
+pub static OTAP_BATCH_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
+    otel_arrow_dfe_engine::ProcessorFactory {
         name: OTAP_BATCH_PROCESSOR_URN,
         create:
-            |pipeline_ctx: otap_df_engine::context::PipelineContext,
+            |pipeline_ctx: otel_arrow_dfe_engine::context::PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_otap_batch_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+        wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::{PipelineGroupId, PipelineId};
-    use otap_df_engine::config::ProcessorConfig;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
+    use otel_arrow_dfe_engine::config::ProcessorConfig;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{
         NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
         runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::message::Message;
-    use otap_df_engine::node::Node;
-    use otap_df_engine::testing::liveness::next_completion;
-    use otap_df_engine::testing::processor::TestRuntime;
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::TestCallData;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
-    use otap_df_pdata::otap::OtapArrowRecords;
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::node::Node;
+    use otel_arrow_dfe_engine::testing::liveness::next_completion;
+    use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::TestCallData;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
+    use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, TracesData,
     };
-    use otap_df_pdata::testing::equiv::assert_equivalent;
-    use otap_df_pdata::testing::fixtures::DataGenerator;
-    use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_message_to_bytes, otlp_to_otap};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
+    use otel_arrow_dfe_pdata::testing::fixtures::DataGenerator;
+    use otel_arrow_dfe_pdata::testing::round_trip::{
+        otap_to_otlp, otlp_message_to_bytes, otlp_to_otap,
+    };
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     /// Helper to create test pipeline context
     fn create_test_pipeline_context() -> (
-        otap_df_engine::context::PipelineContext,
+        otel_arrow_dfe_engine::context::PipelineContext,
         TelemetryRegistryHandle,
     ) {
         let telemetry_registry = TelemetryRegistryHandle::new();
@@ -1779,8 +1758,8 @@ mod tests {
         cfg: Value,
     ) -> (
         TelemetryRegistryHandle,
-        otap_df_telemetry::reporter::MetricsReporter,
-        otap_df_engine::testing::processor::TestPhase<OtapPdata>,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter,
+        otel_arrow_dfe_engine::testing::processor::TestPhase<OtapPdata>,
     ) {
         let rt = TestRuntime::new();
         let telemetry_registry = rt.metrics_registry();
@@ -1812,8 +1791,9 @@ mod tests {
             if desc.name == set_name {
                 for (field, metric_value) in iter {
                     if field.name == metric_name
-                        && let otap_df_telemetry::metrics::MetricValue::Distribution(distribution) =
-                            metric_value
+                        && let otel_arrow_dfe_telemetry::metrics::MetricValue::Distribution(
+                            distribution,
+                        ) = metric_value
                     {
                         count = distribution.count();
                     }
@@ -2097,7 +2077,7 @@ mod tests {
                             looped += 1;
 
                             // Apply ack/nack policy
-                            if new_output.has_subscribers() {
+                            if new_output.has_ack_or_nack_interests() {
                                 let policy = nack_policy
                                     .as_ref()
                                     .map(|p| p(total_outputs - 1, &new_output))
@@ -3242,8 +3222,8 @@ mod tests {
             });
     }
 
-    /// A zero-byte OTLP request is acked immediately and never reaches the
-    /// batch buffer.
+    /// Scenario: a subscribed zero-byte OTLP request reaches the batch processor.
+    /// Guarantees: it is acknowledged without output or entering the batch buffer.
     #[test]
     fn test_otlp_zero_byte_request_acked_immediately() {
         let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
@@ -3257,12 +3237,33 @@ mod tests {
 
         phase
             .run_test(move |mut ctx| async move {
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                ctx.set_pipeline_completion_sender(completion_tx);
                 let empty = OtlpProtoBytes::ExportLogsRequest(Bytes::new());
-                ctx.process(Message::PData(OtapPdata::new_default(empty.into())))
+                let pdata = OtapPdata::new_default(empty.into()).test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    11,
+                );
+                ctx.process(Message::PData(pdata))
                     .await
                     .expect("process empty otlp");
 
                 assert!(ctx.drain_pdata().await.is_empty(), "no batch should flush");
+                match next_completion(
+                    &mut completion_rx,
+                    Duration::from_secs(1),
+                    "zero-byte input should be acknowledged",
+                )
+                .await
+                {
+                    PipelineCompletionMsg::DeliverAck { mut ack } => {
+                        assert_eq!(ack.accepted.num_items(), 0);
+                    }
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        panic!("zero-byte input was unexpectedly nacked: {}", nack.reason);
+                    }
+                }
 
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,
@@ -3533,7 +3534,7 @@ mod tests {
             if desc.name == set_name {
                 for (field, metric_value) in iter {
                     if field.name == metric_name
-                        && let otap_df_telemetry::metrics::MetricValue::U64(v) = metric_value
+                        && let otel_arrow_dfe_telemetry::metrics::MetricValue::U64(v) = metric_value
                     {
                         value = *v;
                     }
@@ -3647,7 +3648,7 @@ mod tests {
                 let last = outputs.len() - 1;
                 for (i, out) in outputs.into_iter().enumerate() {
                     assert!(
-                        out.has_subscribers(),
+                        out.has_ack_or_nack_interests(),
                         "every fragment must be subscribed for ack/nack"
                     );
                     if i == last {

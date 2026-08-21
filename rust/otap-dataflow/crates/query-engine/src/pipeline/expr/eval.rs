@@ -28,19 +28,19 @@ use datafusion::logical_expr::{ColumnarValue, Expr};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::{
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_array,
 };
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::bitmap::combine_scope;
 use crate::pipeline::expr::join::{JoinInput, join, multi_join};
 use crate::pipeline::expr::{
-    DataScope, LeafEval, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue, VALUE_COLUMN_NAME,
-    arg_column_name,
+    DataScope, LeafEval, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue, ShortCircuitStrategy,
+    VALUE_COLUMN_NAME, arg_column_name,
 };
 use crate::pipeline::id_mask::IdMask;
 use crate::pipeline::planner::AttributesIdentifier;
@@ -48,7 +48,7 @@ use crate::pipeline::project::anyval::{
     find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
 };
 use crate::pipeline::project::{Projection, ProjectionOptions};
-use otap_df_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 
 impl ScopedExpr {
     /// Produce a full `ScopedValue` (array + scope + IDs).
@@ -72,11 +72,13 @@ impl ScopedExpr {
                 eval,
                 default_null_children,
                 align_children_to_root,
+                short_circuit,
             } => join_and_eval_value(
                 children.as_mut_slice(),
                 eval,
                 *default_null_children,
                 *align_children_to_root,
+                short_circuit.as_ref(),
                 otap_batch,
                 session_ctx,
             ),
@@ -242,6 +244,7 @@ pub(super) fn join_and_eval_value(
     eval: &mut LeafEval,
     default_null_children: bool,
     align_children_to_root: bool,
+    short_circuit: Option<&ShortCircuitStrategy>,
     otap_batch: &OtapArrowRecords,
     session_ctx: &SessionContext,
 ) -> Result<Option<ScopedValue>> {
@@ -265,6 +268,14 @@ pub(super) fn join_and_eval_value(
                 }
             }
         };
+
+        // Check for short-circuit: skip remaining children and the join when the
+        // outcome is already determined by this child's result.
+        if let Some(strategy) = short_circuit {
+            if strategy.should_short_circuit(&result.scope, &result.values) {
+                return Ok(Some(strategy.value()));
+            }
+        }
 
         child_results.push(result)
     }

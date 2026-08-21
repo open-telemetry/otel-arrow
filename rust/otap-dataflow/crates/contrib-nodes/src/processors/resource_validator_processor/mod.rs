@@ -39,7 +39,7 @@
 //! The `get_allowed_values` method provides the extension point - it currently
 //! returns static config values, but can be extended to check auth context first.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = RESOURCE_VALIDATOR_PROCESSOR_URN,
     target = "otel.processor.resource_validator",
 );
@@ -52,41 +52,41 @@ pub use metrics::ResourceValidatorMetrics;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::OtapPayload;
-use otap_df_pdata::TryFromWithOptions;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::PayloadData;
+use otel_arrow_dfe_pdata::TryFromWithOptions;
 #[cfg(test)]
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::otap::OtapLogsView;
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
-use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
-use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
-use otap_df_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_pdata_views::views::trace::{ResourceSpansView, TracesView};
-use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
+use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
+use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
+use otel_arrow_dfe_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::trace::{ResourceSpansView, TracesView};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 
 /// URN identifier for the Resource Validator processor
 pub const RESOURCE_VALIDATOR_PROCESSOR_URN: &str = "urn:otel:processor:resource_validator";
@@ -175,22 +175,23 @@ pub fn create_resource_validator_processor(
 
 /// Register ResourceValidatorProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
-        name: RESOURCE_VALIDATOR_PROCESSOR_URN,
-        create:
-            |pipeline_ctx: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-                create_resource_validator_processor(pipeline_ctx, node, node_config, proc_cfg)
-            },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
-    };
+pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<
+    OtapPdata,
+> = otel_arrow_dfe_engine::ProcessorFactory {
+    name: RESOURCE_VALIDATOR_PROCESSOR_URN,
+    create:
+        |pipeline_ctx: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            create_resource_validator_processor(pipeline_ctx, node, node_config, proc_cfg)
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
+};
 
 impl ResourceValidatorProcessor {
     /// Creates a new ResourceValidatorProcessor from configuration
@@ -484,15 +485,15 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                 }
                 Ok(())
             }
-            Message::PData(pdata) => {
+            Message::PData(mut pdata) => {
                 let signal_type = pdata.signal_type();
 
                 // Get allowed values (extension point for future dynamic auth)
                 let allowed_values = self.get_allowed_values(&pdata);
 
                 // Validate based on payload type
-                let validation_result = match pdata.payload_ref() {
-                    OtapPayload::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
+                let validation_result = match pdata.payload_ref().data() {
+                    PayloadData::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
                         (SignalType::Logs, OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                             let logs_data = RawLogsData::new(bytes.as_ref());
                             self.validate_logs(&logs_data, &allowed_values)
@@ -511,7 +512,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                             Ok(())
                         }
                     },
-                    OtapPayload::OtapArrowRecords(arrow_records) => match signal_type {
+                    PayloadData::OtapArrowRecords(arrow_records) => match signal_type {
                         SignalType::Logs => {
                             self.validate_arrow_logs(arrow_records, &allowed_values)
                         }
@@ -564,7 +565,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use otap_df_pdata::proto::opentelemetry::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
@@ -1018,7 +1019,7 @@ mod tests {
     // ==================== Metrics/Traces OTLP Validation Tests ====================
 
     fn create_metrics_request_with_resource(attrs: Vec<KeyValue>) -> Bytes {
-        use otap_df_pdata::proto::opentelemetry::{
+        use otel_arrow_dfe_pdata::proto::opentelemetry::{
             collector::metrics::v1::ExportMetricsServiceRequest,
             metrics::v1::{Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics},
         };
@@ -1034,9 +1035,9 @@ mod tests {
                     scope: Some(InstrumentationScope::default()),
                     metrics: vec![Metric {
                         name: "test_metric".to_string(),
-                        data: Some(otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data::Gauge(Gauge {
+                        data: Some(otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data::Gauge(Gauge {
                             data_points: vec![NumberDataPoint {
-                                value: Some(otap_df_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsInt(42)),
+                                value: Some(otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsInt(42)),
                                 ..Default::default()
                             }],
                         })),
@@ -1053,7 +1054,7 @@ mod tests {
     }
 
     fn create_traces_request_with_resource(attrs: Vec<KeyValue>) -> Bytes {
-        use otap_df_pdata::proto::opentelemetry::{
+        use otel_arrow_dfe_pdata::proto::opentelemetry::{
             collector::trace::v1::ExportTraceServiceRequest,
             trace::v1::{ResourceSpans, ScopeSpans, Span},
         };

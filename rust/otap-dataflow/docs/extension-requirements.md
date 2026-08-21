@@ -324,6 +324,13 @@ model defines the *type constraints* on the implementation (`!Send` for
 determined by the configuration scope at which the extension is declared (see
 [Extension Scopes](#extension-scopes)).
 
+These extension implementation bounds are distinct from capability trait
+bounds. The generated local capability trait adds no `Send` or `Sync`
+requirement, while the generated shared capability trait requires
+`Send + Sync`. This allows a shared capability handle to be retained behind
+shared references by concurrent consumers without changing the Phase 1
+per-pipeline extension instance boundary.
+
 ## Extension Scopes
 
 ### Phase 1 - Pipeline Scope

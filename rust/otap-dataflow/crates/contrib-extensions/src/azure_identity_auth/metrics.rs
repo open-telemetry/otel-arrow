@@ -3,8 +3,8 @@
 
 //! Telemetry for the Azure Identity Auth extension.
 
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
 use crate::common::token_refresh::TokenProviderMetrics;
 

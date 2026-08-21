@@ -6,7 +6,7 @@ use crate::Interests;
 use crate::control::NodeControlMsg;
 use crate::message::{Message, ProcessorInbox, Receiver};
 use crate::testing::dst::common::{setup_dst_runtime, yield_cycles};
-use otap_df_channel::mpsc;
+use otel_arrow_dfe_channel::mpsc;
 use std::time::Duration;
 
 // Seeded regression for the known closed-admission limitation: once shutdown is

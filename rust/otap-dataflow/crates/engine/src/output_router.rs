@@ -7,8 +7,8 @@
 use crate::StampOutputPort;
 use crate::error::{Error, TypedError};
 use crate::node::NodeId;
-use otap_df_channel::error::SendError;
-use otap_df_config::PortName;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_config::PortName;
 use std::collections::HashMap;
 use std::future::Future;
 

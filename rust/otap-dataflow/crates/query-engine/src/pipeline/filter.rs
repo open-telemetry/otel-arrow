@@ -22,9 +22,11 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::MaybeDictArrayAccessor;
-use otap_df_pdata::otap::filter::{ChildBatchFilterIdHelper, IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::arrays::MaybeDictArrayAccessor;
+use otel_arrow_dfe_pdata::otap::filter::{
+    ChildBatchFilterIdHelper, IdBitmapPool, filter_otap_batch,
+};
 
 // TODO - need to wire this back into the expression evaluation
 #[allow(dead_code)]
@@ -399,9 +401,9 @@ mod test {
     use crate::pipeline::{Pipeline, PipelineOptions};
 
     use super::*;
-    use otap_df_pdata::OtapPayloadHelpers;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::schema::consts;
+    use otel_arrow_dfe_pdata::OtapPayloadHelpers;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::schema::consts;
 
     /// Test helper to build an IdBitmap from a slice of u32 values.
     fn id_bitmap_from(ids: &[u32]) -> IdBitmap {
@@ -412,30 +414,30 @@ mod test {
         bm
     }
     use data_engine_kql_parser::{KqlParser, Parser};
-    use otap_df_pdata::otap::filter::IdBitmap;
-    use otap_df_pdata::otap::{Logs, Traces};
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_pdata::otap::filter::IdBitmap;
+    use otel_arrow_dfe_pdata::otap::{Logs, Traces};
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
 
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         AggregationTemporality, Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint,
         Gauge, Histogram, HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Sum, Summary,
         SummaryDataPoint,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
-    use otap_df_pdata::testing::round_trip::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{Span, Status};
+    use otel_arrow_dfe_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_otap_logs, to_otap_metrics,
         to_otap_traces, to_traces_data,
     };
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::test::{
         exec_logs_pipeline, exec_metrics_pipeline, otap_to_logs_data, otap_to_metrics_data,
@@ -2398,7 +2400,6 @@ mod test {
         );
 
         // check simple inverted "and" filter with mixed attributes & properties predicates
-        // check simple inverted "and" filter with attributes predicates
         let result = exec_logs_pipeline::<P>(
             "logs | where not(attributes[\"x\"] == \"c\" and severity_text == \"DEBUG\")",
             to_logs_data(log_records.clone()),
@@ -2408,6 +2409,31 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[1].clone()],
         );
+
+        // check that the inverted "and" produces all matches when one side has no matches and each
+        // side of the "and" is from different data sources. This will be planned with a short
+        // circuit strategy and we want to ensure the value produced by is properly inverted
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(severity_text == \"TRACE\" and attributes[\"x\"] == \"a\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_records[0].clone(),
+                log_records[1].clone(),
+                log_records[2].clone()
+            ],
+        );
+
+        // same test case as above - but now with double not, so no records should pass filter
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(not(severity_text == \"TRACE\" and attributes[\"x\"] == \"a\"))",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(result.resource_logs.len(), 0);
     }
 
     #[tokio::test]
@@ -2425,6 +2451,7 @@ mod test {
             LogRecord::build()
                 .event_name("1")
                 .severity_text("INFO")
+                .severity_number(9i32)
                 .attributes(vec![
                     KeyValue::new("x", AnyValue::new_string("a")),
                     KeyValue::new("y", AnyValue::new_string("d")),
@@ -2433,6 +2460,7 @@ mod test {
             LogRecord::build()
                 .event_name("2")
                 .severity_text("ERROR")
+                .severity_number(17i32)
                 .attributes(vec![
                     KeyValue::new("x", AnyValue::new_string("b")),
                     KeyValue::new("y", AnyValue::new_string("e")),
@@ -2441,6 +2469,7 @@ mod test {
             LogRecord::build()
                 .event_name("3")
                 .severity_text("DEBUG")
+                .severity_number(5i32)
                 .attributes(vec![
                     KeyValue::new("x", AnyValue::new_string("c")),
                     KeyValue::new("y", AnyValue::new_string("f")),
@@ -2479,6 +2508,31 @@ mod test {
         pretty_assertions::assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone()],
+        );
+
+        // check that the inverted "or" produces all matches when one side has is all true and each
+        // side of the "or" is from different data sources. This will be planned with a short
+        // circuit strategy and we want to ensure the value produced by is properly inverted
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(severity_number > 0 or attributes[\"x\"] == \"a\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(result.resource_logs.len(), 0);
+
+        // same test case as above but now with double not - so all rows should be returned
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(not(severity_number > 0 or attributes[\"x\"] == \"a\"))",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_records[0].clone(),
+                log_records[1].clone(),
+                log_records[2].clone()
+            ],
         );
     }
 

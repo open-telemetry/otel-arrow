@@ -52,12 +52,12 @@ use crate::process_duration::ComputeDuration;
 use crate::processor::ProcessorRuntimeRequirements;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
-use otap_df_config::{PortName, SignalType};
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Mmsc;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_config::{PortName, SignalType};
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Mmsc;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -581,11 +581,6 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Delay data.
-    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
-        self.core.delay_data(when, data).await
-    }
-
     /// Requeue retained pdata onto this node later.
     pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.core.requeue_later(when, data)
@@ -715,10 +710,10 @@ mod tests {
     use crate::local::message::LocalSender;
     use crate::testing::test_node;
     use crate::{Interests, Unwindable, WakeupError};
-    use otap_df_channel::error::SendError;
-    use otap_df_channel::mpsc;
-    use otap_df_config::{MetricLevel, node::NodeKind};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_channel::error::SendError;
+    use otel_arrow_dfe_channel::mpsc;
+    use otel_arrow_dfe_config::{MetricLevel, node::NodeKind};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
     use tokio::time::{Duration, timeout};
@@ -1144,8 +1139,8 @@ mod tests {
             FlowAttributeSet, FlowConsumedItemsMetrics, FlowDurationMetrics,
             FlowProducedItemsMetrics,
         };
-        use otap_df_config::node::NodeKind;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_config::node::NodeKind;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
         // Set up a pipeline context and register a flow_metric entity.
         let registry = TelemetryRegistryHandle::new();

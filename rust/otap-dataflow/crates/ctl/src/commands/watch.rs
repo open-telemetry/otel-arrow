@@ -23,8 +23,8 @@ use crate::troubleshoot::{
     extract_events_from_pipeline_status, filter_logs, filter_metrics_compact, filter_metrics_full,
     group_shutdown_snapshot, tail_events,
 };
-use otap_df_admin_api::telemetry::MetricsOptions;
-use otap_df_admin_api::{AdminClient, telemetry};
+use otel_arrow_dfe_admin_api::telemetry::MetricsOptions;
+use otel_arrow_dfe_admin_api::{AdminClient, telemetry};
 use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::time::{Duration, SystemTime};
@@ -104,7 +104,7 @@ pub(crate) async fn watch_groups_shutdown(
     client: &AdminClient,
     stdout: &mut dyn Write,
     human_style: HumanStyle,
-    request_status: otap_df_admin_api::groups::ShutdownStatus,
+    request_status: otel_arrow_dfe_admin_api::groups::ShutdownStatus,
     wait_timeout: Duration,
     interval: Duration,
     output: StreamOutput,
@@ -155,7 +155,7 @@ pub(crate) async fn watch_rollout(
     rollout_id: &str,
     interval: Duration,
     output: StreamOutput,
-    initial: Option<otap_df_admin_api::pipelines::RolloutStatus>,
+    initial: Option<otel_arrow_dfe_admin_api::pipelines::RolloutStatus>,
 ) -> Result<(), CliError> {
     let mut current = if let Some(initial) = initial {
         initial
@@ -178,7 +178,8 @@ pub(crate) async fn watch_rollout(
         }
 
         if rollout_is_terminal(current.state) {
-            return if current.state == otap_df_admin_api::pipelines::PipelineRolloutState::Succeeded
+            return if current.state
+                == otel_arrow_dfe_admin_api::pipelines::PipelineRolloutState::Succeeded
             {
                 Ok(())
             } else {
@@ -208,7 +209,7 @@ pub(crate) async fn watch_shutdown(
     shutdown_id: &str,
     interval: Duration,
     output: StreamOutput,
-    initial: Option<otap_df_admin_api::pipelines::ShutdownStatus>,
+    initial: Option<otel_arrow_dfe_admin_api::pipelines::ShutdownStatus>,
 ) -> Result<(), CliError> {
     let mut current = if let Some(initial) = initial {
         initial
@@ -411,12 +412,12 @@ fn emit_logs(
     Ok(())
 }
 
-fn rollout_is_terminal(state: otap_df_admin_api::pipelines::PipelineRolloutState) -> bool {
+fn rollout_is_terminal(state: otel_arrow_dfe_admin_api::pipelines::PipelineRolloutState) -> bool {
     matches!(
         state,
-        otap_df_admin_api::pipelines::PipelineRolloutState::Succeeded
-            | otap_df_admin_api::pipelines::PipelineRolloutState::Failed
-            | otap_df_admin_api::pipelines::PipelineRolloutState::RollbackFailed
+        otel_arrow_dfe_admin_api::pipelines::PipelineRolloutState::Succeeded
+            | otel_arrow_dfe_admin_api::pipelines::PipelineRolloutState::Failed
+            | otel_arrow_dfe_admin_api::pipelines::PipelineRolloutState::RollbackFailed
     )
 }
 

@@ -7,7 +7,7 @@
 //! parent IDs have been selected by some predicate. It supports efficient boolean combination
 //! (AND, OR, NOT) via bitmap algebra without materializing intermediate arrays.
 
-use otap_df_pdata::otap::filter::{IdBitmap, IdBitmapPool};
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmap, IdBitmapPool};
 
 /// This represents which IDs have been selected by some filter operation.
 ///

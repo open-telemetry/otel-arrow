@@ -18,28 +18,28 @@ use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::transport_headers::TransportHeaders;
-use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
-use otap_df_config::validation::validate_typed_config;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{CallData, Context8u8, NodeControlMsg};
-use otap_df_engine::error::{Error as EngineError, ReceiverErrorKind, format_error_sources};
-use otap_df_engine::local::receiver as local;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{Interests, ProducerEffectHandlerExtension, ReceiverFactory};
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::Consumer as PdataConsumer;
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
-use otap_df_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_config::validation::validate_typed_config;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{CallData, Context8u8, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error as EngineError, ReceiverErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::local::receiver as local;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension, ReceiverFactory};
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::Consumer as PdataConsumer;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, from_record_messages};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
 use prost::Message;
 use rdkafka::Message as _;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
@@ -221,24 +221,25 @@ pub struct KafkaReceiver {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static KAFKA_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: KAFKA_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ReceiverWrapper::local(
-            KafkaReceiver::from_config(pipeline, &node_config.config)?,
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ReceiverWrapper::local(
+                KafkaReceiver::from_config(pipeline, &node_config.config)?,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
     validate_config: validate_typed_config::<KafkaReceiverConfig>,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 impl KafkaReceiver {
@@ -1693,24 +1694,26 @@ mod tests {
     use crate::common::kafka::test::producer::SendRecord;
     use crate::common::kafka::test::wait::poll_until;
     use crate::common::kafka::test::with_cluster;
-    use otap_df_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::RuntimeControlMsg;
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::Producer;
-    use otap_df_pdata::otap::{Logs, Metrics};
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::RuntimeControlMsg;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::Producer;
+    use otel_arrow_dfe_pdata::otap::{Logs, Metrics};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue, any_value,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-    use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, ResourceLogs, ScopeLogs,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData, TryIntoWithOptions};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message;
     use rdkafka::ClientConfig;
     use rdkafka::consumer::{Consumer, StreamConsumer};
@@ -1727,7 +1730,7 @@ mod tests {
     // ---- Shared test helpers ----
 
     fn measurement_counter(
-        snapshots: &[otap_df_telemetry::metrics::MetricSetSnapshot],
+        snapshots: &[otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot],
         metric_set: &str,
         attributes: &[(&str, &str)],
         metric: &str,
@@ -3606,6 +3609,7 @@ mod tests {
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
         // Own partition 0 and track three in-flight offsets under its generation.
+        // in flight: traces/0={0,1,2} => gauge 3
         let mut tpl = TopicPartitionList::new();
         let _ = tpl.add_partition("traces", 0);
         receiver.rebalance_state.set_assignment_for_test(&tpl);
@@ -3623,6 +3627,7 @@ mod tests {
         );
 
         // Acknowledge the two lowest offsets; only offset 2 remains pending.
+        // in flight: traces/0={2} => gauge 1
         let _ = receiver.offset_tracker.acknowledge("traces", 0, 0);
         let _ = receiver.offset_tracker.acknowledge("traces", 0, 1);
         receiver.reconcile_rebalance_state();
@@ -3633,6 +3638,7 @@ mod tests {
         );
 
         // Revoke and purge the partition; nothing remains in flight.
+        // in flight: {} => gauge 0
         receiver
             .rebalance_state
             .push_revoked_for_test("traces", 0, generation);
@@ -6075,8 +6081,8 @@ mod tests {
         let payload: OtapPayload = pdata.take_payload();
         assert!(
             matches!(
-                payload,
-                OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                payload.into_data(),
+                PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
             ),
             "expected OtapArrowRecords::Traces"
         );
@@ -6094,8 +6100,8 @@ mod tests {
         let payload: OtapPayload = pdata.take_payload();
         assert!(
             matches!(
-                payload,
-                OtapPayload::OtapArrowRecords(OtapArrowRecords::Metrics(_))
+                payload.into_data(),
+                PayloadData::OtapArrowRecords(OtapArrowRecords::Metrics(_))
             ),
             "expected OtapArrowRecords::Metrics"
         );
@@ -6113,8 +6119,8 @@ mod tests {
         let payload: OtapPayload = pdata.take_payload();
         assert!(
             matches!(
-                payload,
-                OtapPayload::OtapArrowRecords(OtapArrowRecords::Logs(_))
+                payload.into_data(),
+                PayloadData::OtapArrowRecords(OtapArrowRecords::Logs(_))
             ),
             "expected OtapArrowRecords::Logs"
         );
@@ -6337,8 +6343,8 @@ mod tests {
                     let payload: OtapPayload = pdata.take_payload();
                     assert!(
                         matches!(
-                            payload,
-                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                            payload.into_data(),
+                            PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
                         ),
                         "Expected OtapArrowRecords::Traces for message {i}"
                     );
@@ -6386,7 +6392,7 @@ mod tests {
                 for i in 0..3 {
                     let mut pdata = receiver.recv_pdata().await;
                     let payload: OtapPayload = pdata.take_payload();
-                    if let OtapPayload::OtapArrowRecords(arrow_records) = payload {
+                    if let PayloadData::OtapArrowRecords(arrow_records) = payload.into_data() {
                         let expected = OtapArrowRecords::Metrics(Metrics::default());
                         assert_eq!(expected, arrow_records);
                     } else {
@@ -6436,7 +6442,7 @@ mod tests {
                 for i in 0..3 {
                     let mut pdata = receiver.recv_pdata().await;
                     let payload: OtapPayload = pdata.take_payload();
-                    if let OtapPayload::OtapArrowRecords(arrow_records) = payload {
+                    if let PayloadData::OtapArrowRecords(arrow_records) = payload.into_data() {
                         let expected = OtapArrowRecords::Logs(Logs::default());
                         assert_eq!(expected, arrow_records);
                     } else {
@@ -6503,8 +6509,8 @@ mod tests {
                     let payload: OtapPayload = pdata.take_payload();
                     assert!(
                         matches!(
-                            payload,
-                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(_))
+                            payload.into_data(),
+                            PayloadData::OtapArrowRecords(OtapArrowRecords::Traces(_))
                         ),
                         "message {i}: MessageFormat=otap header must override the \
                          OtlpProto per-signal default and decode via the OTAP path",

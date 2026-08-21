@@ -10,7 +10,7 @@
 
 use super::*;
 
-use otap_df_admin_api::pipelines::Status as PipelineStatus;
+use otel_arrow_dfe_admin_api::pipelines::Status as PipelineStatus;
 use serde_json::json;
 use std::time::Duration;
 

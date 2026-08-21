@@ -162,7 +162,7 @@ contract must say so.
 | Component shape | Provider extension (e.g. `k8s_metadata_extension`) + generic processor (`resource_enricher_processor`) |
 | Capability surface | Provider-neutral `MetadataLookup`: `snapshot()`, `lookup()`, `validate_index_spec(spec)`, `set_index_spec(registrant, spec)`, `clear_index_spec(registrant)`, plus `as_connection_lookup()` to optionally downcast to the `ConnectionLookup` companion trait (`lookup_by_connection(snapshot, peer)`). No provider vocabulary. |
 | Extension scope | Per-provider operator choice between **engine scope** (one instance per collector) and **pipeline-group scope** (one instance per named group). Per-pipeline scope is rejected because the framework's pipeline-scoped extensions are themselves per-core, so it would mean per-core duplication. See [Extension scope is a per-provider choice](#extension-scope-is-a-per-provider-choice). |
-| Sharing model | `Active + Shared` extension. Exactly one instance per scope unit. Per-pipeline processors bind via `require_shared` and hold a `Send + Clone` capability handle that exposes a cheap, non-blocking `snapshot()` returning an immutable view. How the provider backs that snapshot is private to the extension. |
+| Sharing model | `Active + Shared` extension. Exactly one instance per scope unit. Per-pipeline processors bind via `require_shared` and hold a `Send + Sync` capability handle that exposes a cheap, non-blocking `snapshot()` returning an immutable view. How the provider backs that snapshot is private to the extension. |
 | Lookup key | Composite: an AND of `(resource_attribute_name, value)` pairs (`LookupKey<'_>`, a borrowed slice). |
 | Returned record | Provider-neutral flat `EnrichmentRecord` (dotted field name -> `EnrichmentValue`). |
 | Hot-path contract | Capability lookups are constant-time, synchronous, and never block. |
@@ -794,7 +794,7 @@ to an `EnrichmentRecord` in the extension's cache. The semantics are:
 
 The processor reads each rule's referenced attribute names from the Arrow
 resource attribute batch via
-[`otap_df_pdata::otap::transform::apply_attribute_transform`](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/crates/pdata/src/otap/transform.rs)-style
+[`otel_arrow_dfe_pdata::otap::transform::apply_attribute_transform`](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/crates/pdata/src/otap/transform.rs)-style
 helpers, batched across resources to avoid per-row dispatch. Per-rule
 attribute name sets are precomputed at `Config` time into a single
 rule-scan plan so the hot path performs at most one O(R) pass per resource

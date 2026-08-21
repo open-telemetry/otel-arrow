@@ -1001,7 +1001,7 @@ Config loading validates:
 
 ## Core Node Catalog
 
-Core nodes are provided by the `otap-df-core-nodes` crate. Use the shortcut
+Core nodes are provided by the `otel-arrow-dfe-core-nodes` crate. Use the shortcut
 form in YAML, such as `receiver:otlp`, or the full `urn:otel:<kind>:<id>` form.
 
 The authoritative catalog is

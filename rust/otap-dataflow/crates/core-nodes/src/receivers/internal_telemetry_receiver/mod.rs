@@ -28,7 +28,7 @@
 //!           description: Uptime of the pipeline process.
 //! ```
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = INTERNAL_TELEMETRY_RECEIVER_URN,
     target = "otel.receiver.internal_telemetry",
 );
@@ -36,28 +36,28 @@ otap_df_telemetry::otel_component_scope!(
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error;
-use otap_df_engine::local::receiver as local;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::otlp::ProtoBuffer;
-use otap_df_telemetry::event::{LogEvent, ObservedEvent};
-use otap_df_telemetry::metrics::MetricSetSnapshot;
-use otap_df_telemetry::metrics::otlp::{
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::local::receiver as local;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::otlp::ProtoBuffer;
+use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent};
+use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
+use otel_arrow_dfe_telemetry::metrics::otlp::{
     MetricView, MetricViewSelector, MetricViewStream, MetricsOtlpEncoder,
 };
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::self_tracing::{ScopeToBytesMap, encode_export_logs_request};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::self_tracing::{ScopeToBytesMap, encode_export_logs_request};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -66,7 +66,7 @@ use std::time::Duration;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
 /// The URN for the internal telemetry receiver.
-pub use otap_df_config::engine::INTERNAL_TELEMETRY_RECEIVER_URN;
+pub use otel_arrow_dfe_config::engine::INTERNAL_TELEMETRY_RECEIVER_URN;
 
 /// Signal type emitted by the internal telemetry receiver.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -189,37 +189,38 @@ pub struct InternalTelemetryReceiver {
     config: Config,
     /// Internal telemetry settings obtained from the pipeline context during construction.
     /// Contains the logs receiver channel, pre-encoded resource bytes, and registry handle.
-    internal_telemetry: otap_df_telemetry::InternalTelemetrySettings,
+    internal_telemetry: otel_arrow_dfe_telemetry::InternalTelemetrySettings,
 }
 
 /// Declares the internal telemetry receiver as a local receiver factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: INTERNAL_TELEMETRY_RECEIVER_URN,
-    create: |mut pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        // Get internal telemetry settings from the pipeline context
-        let internal_telemetry = pipeline.take_internal_telemetry().ok_or_else(|| {
-            otap_df_config::error::Error::InvalidUserConfig {
+    create:
+        |mut pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            // Get internal telemetry settings from the pipeline context
+            let internal_telemetry = pipeline.take_internal_telemetry().ok_or_else(|| {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "InternalTelemetryReceiver requires internal telemetry settings in pipeline context".to_owned(),
             }
         })?;
 
-        let config = InternalTelemetryReceiver::parse_config(&node_config.config)?;
+            let config = InternalTelemetryReceiver::parse_config(&node_config.config)?;
 
-        Ok(ReceiverWrapper::local(
-            InternalTelemetryReceiver::new_with_telemetry(config, internal_telemetry),
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+            Ok(ReceiverWrapper::local(
+                InternalTelemetryReceiver::new_with_telemetry(config, internal_telemetry),
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: InternalTelemetryReceiver::validate_config,
 };
 
@@ -228,7 +229,7 @@ impl InternalTelemetryReceiver {
     #[must_use]
     pub const fn new_with_telemetry(
         config: Config,
-        internal_telemetry: otap_df_telemetry::InternalTelemetrySettings,
+        internal_telemetry: otel_arrow_dfe_telemetry::InternalTelemetrySettings,
     ) -> Self {
         Self {
             config,
@@ -237,9 +238,9 @@ impl InternalTelemetryReceiver {
     }
 
     /// Parse configuration from a JSON value.
-    pub fn parse_config(config: &Value) -> Result<Config, otap_df_config::error::Error> {
+    pub fn parse_config(config: &Value) -> Result<Config, otel_arrow_dfe_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -247,15 +248,15 @@ impl InternalTelemetryReceiver {
         Ok(config)
     }
 
-    fn validate_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
+    fn validate_config(config: &Value) -> Result<(), otel_arrow_dfe_config::error::Error> {
         Self::parse_config(config).map(drop)
     }
 }
 
 impl Config {
-    fn validate(&self) -> Result<(), otap_df_config::error::Error> {
+    fn validate(&self) -> Result<(), otel_arrow_dfe_config::error::Error> {
         if self.signals.is_empty() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "internal telemetry receiver signals must not be empty".to_owned(),
             });
         }
@@ -265,7 +266,7 @@ impl Config {
             .iter()
             .find(|signal| !unique_signals.insert(**signal))
         {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!(
                     "internal telemetry receiver signal '{}' is configured more than once",
                     signal.as_str()
@@ -277,7 +278,7 @@ impl Config {
             .interval
             .is_some_and(|interval| interval.is_zero())
         {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "internal telemetry receiver metrics interval must be greater than zero"
                     .to_owned(),
             });
@@ -288,7 +289,7 @@ impl Config {
                 .iter()
                 .find(|(_, value)| matches!(value, ConfigAttributeValue::Array(_)))
         }) {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!(
                     "internal telemetry receiver metric view scope attribute '{key}' must be a scalar value"
                 ),
@@ -447,7 +448,7 @@ impl InternalTelemetryReceiver {
     /// Drains queued logs and performs the final bounded metric-registry drain.
     async fn flush_terminal_telemetry(
         effect_handler: &local::EffectHandler<OtapPdata>,
-        internal: &otap_df_telemetry::InternalTelemetrySettings,
+        internal: &otel_arrow_dfe_telemetry::InternalTelemetrySettings,
         logs_enabled: bool,
         scope_cache: &mut ScopeToBytesMap,
         encoder: Option<&MetricsOtlpEncoder>,
@@ -557,23 +558,27 @@ impl InternalTelemetryReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::observed_state::SendPolicy;
-    use otap_df_config::pipeline::telemetry::TelemetryConfig;
-    use otap_df_config::settings::telemetry::logs::{LoggingProviders, LogsConfig, ProviderMode};
-    use otap_df_engine::control::{NodeControlMsg, RuntimeControlMsg, runtime_ctrl_msg_channel};
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::local::receiver::Receiver as _;
-    use otap_df_engine::message::{Receiver as EngineReceiver, Sender as EngineSender};
-    use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
-    use otap_df_pdata::OtapPayload;
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
-    use otap_df_telemetry::instrument::Counter;
-    use otap_df_telemetry::reporter::MetricsReporter;
-    use otap_df_telemetry::testing::EmptyAttributes;
-    use otap_df_telemetry::{InternalTelemetrySystem, LogContext};
-    use otap_df_telemetry_macros::metric_set;
+    use otel_arrow_dfe_config::observed_state::SendPolicy;
+    use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
+    use otel_arrow_dfe_config::settings::telemetry::logs::{
+        LoggingProviders, LogsConfig, ProviderMode,
+    };
+    use otel_arrow_dfe_engine::control::{
+        NodeControlMsg, RuntimeControlMsg, runtime_ctrl_msg_channel,
+    };
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+    use otel_arrow_dfe_engine::local::receiver::Receiver as _;
+    use otel_arrow_dfe_engine::message::{Receiver as EngineReceiver, Sender as EngineSender};
+    use otel_arrow_dfe_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
+    use otel_arrow_dfe_pdata::PayloadData;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
+    use otel_arrow_dfe_telemetry::instrument::Counter;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
+    use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
+    use otel_arrow_dfe_telemetry_macros::metric_set;
     use prost::Message as _;
     use std::collections::HashMap;
     use std::time::{Duration, Instant as StdInstant};
@@ -588,7 +593,8 @@ mod tests {
     }
 
     fn decode_metric_value(pdata: OtapPdata) -> i64 {
-        let OtapPayload::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) = pdata.payload()
+        let PayloadData::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) =
+            pdata.payload().into_data()
         else {
             panic!("internal telemetry receiver emitted a non-metrics payload")
         };
@@ -793,12 +799,12 @@ mod tests {
         let (runtime, local_tasks) = setup_test_runtime();
         runtime.block_on(local_tasks.run_until(async move {
             let registry = TelemetryRegistryHandle::new();
-            let metric_set: otap_df_telemetry::metrics::MetricSet<TestMetrics> =
+            let metric_set: otel_arrow_dfe_telemetry::metrics::MetricSet<TestMetrics> =
                 registry.register_metric_set(EmptyAttributes());
             registry.accumulate_metric_set_snapshot(
                 metric_set.metric_set_key(),
                 0,
-                &[otap_df_telemetry::metrics::MetricValue::U64(9)],
+                &[otel_arrow_dfe_telemetry::metrics::MetricValue::U64(9)],
             );
             let encoder = MetricsOtlpEncoder::new(&ResourceLogs::default().encode_to_vec());
 
@@ -828,7 +834,7 @@ mod tests {
             assert_eq!(retry.metric_sets.len(), 1);
             assert_eq!(
                 retry.metric_sets[0].values,
-                vec![otap_df_telemetry::metrics::MetricValue::U64(9)]
+                vec![otel_arrow_dfe_telemetry::metrics::MetricValue::U64(9)]
             );
         }));
     }
@@ -840,12 +846,12 @@ mod tests {
         let (runtime, local_tasks) = setup_test_runtime();
         runtime.block_on(local_tasks.run_until(async move {
             let registry = TelemetryRegistryHandle::new();
-            let metric_set: otap_df_telemetry::metrics::MetricSet<TestMetrics> =
+            let metric_set: otel_arrow_dfe_telemetry::metrics::MetricSet<TestMetrics> =
                 registry.register_metric_set(EmptyAttributes());
             registry.accumulate_metric_set_snapshot(
                 metric_set.metric_set_key(),
                 0,
-                &[otap_df_telemetry::metrics::MetricValue::U64(9)],
+                &[otel_arrow_dfe_telemetry::metrics::MetricValue::U64(9)],
             );
 
             let (output_tx, output_rx) = create_not_send_channel(1);
@@ -876,7 +882,7 @@ mod tests {
             });
             assert_eq!(
                 admin_values,
-                vec![otap_df_telemetry::metrics::MetricValue::U64(9)],
+                vec![otel_arrow_dfe_telemetry::metrics::MetricValue::U64(9)],
                 "discarding an ITS export must not consume the admin accumulator"
             );
         }));
@@ -889,12 +895,12 @@ mod tests {
         let (runtime, local_tasks) = setup_test_runtime();
         runtime.block_on(local_tasks.run_until(async move {
             let registry = TelemetryRegistryHandle::new();
-            let metric_set: otap_df_telemetry::metrics::MetricSet<TestMetrics> =
+            let metric_set: otel_arrow_dfe_telemetry::metrics::MetricSet<TestMetrics> =
                 registry.register_metric_set(EmptyAttributes());
             registry.accumulate_metric_set_snapshot(
                 metric_set.metric_set_key(),
                 0,
-                &[otap_df_telemetry::metrics::MetricValue::U64(9)],
+                &[otel_arrow_dfe_telemetry::metrics::MetricValue::U64(9)],
             );
 
             let (logs_sender, logs_receiver) = flume::bounded(1);
@@ -906,7 +912,7 @@ mod tests {
                         views: Vec::new(),
                     },
                 },
-                otap_df_telemetry::InternalTelemetrySettings {
+                otel_arrow_dfe_telemetry::InternalTelemetrySettings {
                     logs_receiver,
                     resource_field_bytes: ResourceLogs::default().encode_to_vec().into(),
                     registry: registry.clone(),
@@ -959,7 +965,7 @@ mod tests {
             assert_eq!(retry.metric_sets.len(), 1);
             assert_eq!(
                 retry.metric_sets[0].values,
-                vec![otap_df_telemetry::metrics::MetricValue::U64(9)]
+                vec![otel_arrow_dfe_telemetry::metrics::MetricValue::U64(9)]
             );
 
             drop(output_rx);

@@ -17,7 +17,7 @@
 //!   node, each holding a cloned produce closure and a shared
 //!   consumption cell.
 
-use otap_df_config::ExtensionId;
+use otel_arrow_dfe_config::ExtensionId;
 use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -33,6 +33,8 @@ use std::rc::Rc;
 ///
 /// The stored closure returns `Box<Box<dyn C::Shared>>` erased as
 /// `Box<dyn Any + Send>` -- the double-box envelope the registry uses.
+/// The envelope is only moved through the build-time registry; the
+/// contained `C::Shared` trait object is `Send + Sync`.
 #[doc(hidden)]
 pub trait SharedProduce: Fn() -> Box<dyn Any + Send> + Send {
     fn clone_box(&self) -> Box<dyn SharedProduce>;
@@ -96,13 +98,14 @@ impl LocalCapabilityEntry {
     }
 }
 
-/// A type-erased shared (Send) capability entry.
+/// A type-erased shared (Send + Sync) capability entry.
 ///
 /// Two closures/fn pointers, both minted by the
 /// `#[capability]`-generated `shared_entry::<E>` caster:
 ///
 /// - `produce` -- builds `Box<Box<dyn C::Shared>>` erased as
-///   `Box<dyn Any + Send>`. Called per consumer.
+///   `Box<dyn Any + Send>`. The envelope is moved, not shared; the
+///   contained capability object is `Send + Sync`. Called per consumer.
 /// - `adapt_as_local` -- takes that same erased double box and returns
 ///   `Box<Box<dyn C::Local>>` erased as `Box<dyn Any>`. Used by the
 ///   `SharedAsLocal` fallback path in `resolve_bindings`.
