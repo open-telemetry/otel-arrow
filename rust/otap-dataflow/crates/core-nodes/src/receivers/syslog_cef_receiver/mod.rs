@@ -29,7 +29,7 @@ use otap_df_engine::{
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_telemetry::common_attributes::{
-    Outcome, ReceiverRejectionErrorType, SignalOutcomeAttributes, SignalRegistrationAttributes,
+    Outcome, OutcomeAttributes, ReceiverRejectionErrorType, SignalRegistrationAttributes,
 };
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -1060,7 +1060,8 @@ pub struct SyslogCefTransportAttributes {
 /// Deliveries metrics for syslog cef
 #[metric_set(
     name = "receiver.syslog_cef.forwards",
-    measurement_attributes = SignalOutcomeAttributes
+    registration_attributes = SignalRegistrationAttributes,
+    measurement_attributes = OutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct SyslogCefForwardMetrics {
@@ -1137,7 +1138,7 @@ impl SyslogCefReceiverMetrics {
         };
         Self {
             received: SyslogCefReceivedMetrics::register(pipeline_ctx, &signal_attrs),
-            forwards: SyslogCefForwardMetrics::register(pipeline_ctx),
+            forwards: SyslogCefForwardMetrics::register(pipeline_ctx, &signal_attrs),
             rejections: SyslogCefRejectionMetrics::register(pipeline_ctx, &signal_attrs),
             transport: SyslogCefTransportMetrics::register(pipeline_ctx),
             truncations: SyslogCefTruncationMetrics::register(pipeline_ctx, &signal_attrs),
@@ -1156,10 +1157,7 @@ impl SyslogCefReceiverMetrics {
     /// Records a forward outcome
     pub fn record_forwards(&mut self, outcome: Outcome, count: u64) {
         self.forwards
-            .with(SignalOutcomeAttributes {
-                signal: SignalType::Logs,
-                outcome,
-            })
+            .with(OutcomeAttributes { outcome })
             .items
             .add(count);
     }
@@ -1234,10 +1232,7 @@ impl SyslogCefReceiverMetrics {
     /// Returns a delivery bucket for inspection without marking it for export.
     #[must_use]
     pub fn forwards_for(&self, outcome: Outcome) -> &SyslogCefForwardMetrics {
-        self.forwards.get(SignalOutcomeAttributes {
-            signal: SignalType::Logs,
-            outcome,
-        })
+        self.forwards.get(OutcomeAttributes { outcome })
     }
 
     /// Returns a rejection bucket for inspection without marking it for export.
@@ -3470,7 +3465,6 @@ mod telemetry_tests {
 
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.syslog_cef.forwards"
-                && snapshot.measurement_attribute_value("signal") == Some("logs")
                 && snapshot.measurement_attribute_value("outcome") == Some("success")
         }));
         assert!(snapshots.iter().any(|snapshot| {
