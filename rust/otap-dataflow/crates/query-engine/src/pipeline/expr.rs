@@ -228,6 +228,23 @@ impl ShortCircuitStrategy {
         })))
     }
 
+    /// Returns the default value to substitute when a child is absent (returns `None`).
+    ///
+    /// For OR/NotOr: absent data means "no match", so the identity element for OR is
+    /// `false` -- `false OR x == x`.
+    /// For AND/NotAnd: absent data means "no match", so the identity element for AND is
+    /// `true` -- `true AND x == x`. However, for AND with absent data, we actually want
+    /// the result to be "no match" for the absent rows, which is already handled by the
+    /// join producing nulls, so we return `None` to indicate no substitution is needed.
+    fn absent_child_default(&self) -> Option<ScopedValue> {
+        match self {
+            Self::Or | Self::NotOr => {
+                Some(ScopedValue::new_scalar(ScalarValue::Boolean(Some(false))))
+            }
+            Self::And | Self::NotAnd => None,
+        }
+    }
+
     fn invert(&self) -> Self {
         match self {
             Self::And => Self::NotAnd,

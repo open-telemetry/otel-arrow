@@ -2826,6 +2826,61 @@ mod test {
         test_filter_no_attrs::<OplParser>().await;
     }
 
+    /// Scenario: OR expression where the left side references an absent attributes
+    /// payload and the right side matches root-scoped fields.
+    /// Guarantees: when evaluating `attributes["x"] == 10 or severity_text == "WARN"`
+    /// on a batch with no attributes payload at all, rows matching the right side of
+    /// the OR are still returned -- the absent left side does not suppress them.
+    async fn test_filter_or_with_absent_attrs_payload<P: Parser>() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("WARN")
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .severity_text("ERROR")
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .severity_text("WARN")
+                .finish(),
+        ];
+
+        // attributes["x"] == 10 or severity_text == "WARN"
+        //
+        // No log records have attributes, so the left side of the OR references an
+        // entirely absent attributes payload. The right side matches rows 0 and 2.
+        // The OR should still return rows 0 and 2.
+        let parser_result =
+            P::parse("logs | where attributes[\"x\"] == 10 or severity_text == \"WARN\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap_logs(log_records.clone()))
+            .await
+            .unwrap();
+        let result_logs = otap_to_logs_data(result);
+        let result_records = &result_logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(
+            result_records.len(),
+            2,
+            "expected 2 rows matching severity_text == WARN, got {}",
+            result_records.len()
+        );
+        assert_eq!(result_records[0].event_name, "1");
+        assert_eq!(result_records[1].event_name, "3");
+    }
+
+    #[tokio::test]
+    async fn test_filter_or_with_absent_attrs_payload_opl_parser() {
+        test_filter_or_with_absent_attrs_payload::<OplParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_or_with_absent_attrs_payload_kql_parser() {
+        test_filter_or_with_absent_attrs_payload::<KqlParser>().await;
+    }
+
     async fn test_filter_property_is_null<P: Parser>(null_lit: &str) {
         let log_records = vec![
             LogRecord::build()

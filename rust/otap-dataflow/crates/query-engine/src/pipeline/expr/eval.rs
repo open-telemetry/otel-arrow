@@ -263,6 +263,11 @@ pub(super) fn join_and_eval_value(
             None => {
                 if default_null_children {
                     ScopedValue::new_scalar(ScalarValue::Null)
+                } else if let Some(default) = short_circuit.and_then(|s| s.absent_child_default()) {
+                    // For OR, an absent child (e.g. missing attributes payload) is
+                    // treated as "false" so that the other side of the OR still
+                    // determines the outcome.
+                    default
                 } else {
                     return Ok(None); // if any child is absent, the whole expression is null
                 }
