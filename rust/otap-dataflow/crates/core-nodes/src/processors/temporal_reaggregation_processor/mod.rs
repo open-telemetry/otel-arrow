@@ -665,23 +665,14 @@ impl TemporalReaggregationProcessor {
                     // Pass data through directly if no completion routing or
                     // metrics unwinding depends on the inbound context.
                     let (inbound_ctx, _) = pdata.into_parts();
-<<<<<<< HEAD
-                    if !inbound_ctx.has_subscribers() {
+                    if !inbound_ctx.needs_completion_tracking() {
                         if let Err(e) = self.ensure_wakeup_scheduled(effect_handler) {
                             self.metrics.record_failure(ErrorType::Internal);
                             return Err(e);
                         }
-                        let pt_pdata =
-                            OtapPdata::new(inbound_ctx, OtapPayload::OtapArrowRecords(records));
-=======
-                    if !inbound_ctx.needs_completion_tracking() {
-                        self.ensure_wakeup_scheduled(effect_handler)?;
                         let pt_pdata = OtapPdata::new(inbound_ctx, OtapPayload::from(records));
->>>>>>> upstream/main
 
-                        let send_res = effect_handler
-                            .send_message_with_source_node(pt_pdata)
-                            .await;
+                        let send_res = effect_handler.send_message_with_source_node(pt_pdata).await;
                         if send_res.is_ok() {
                             self.metrics.record_success();
                         } else {
@@ -732,9 +723,7 @@ impl TemporalReaggregationProcessor {
                         &mut pt_pdata,
                     );
 
-                    let send_res = effect_handler
-                        .send_message_with_source_node(pt_pdata)
-                        .await;
+                    let send_res = effect_handler.send_message_with_source_node(pt_pdata).await;
                     if send_res.is_ok() {
                         self.metrics.record_success();
                     } else {
@@ -749,17 +738,12 @@ impl TemporalReaggregationProcessor {
                     // If no completion routing or metrics unwinding depends on
                     // the inbound context, only schedule the aggregate flush.
                     let (inbound_ctx, _) = pdata.into_parts();
-<<<<<<< HEAD
-                    if !inbound_ctx.has_subscribers() {
+                    if !inbound_ctx.needs_completion_tracking() {
                         if let Err(e) = self.ensure_wakeup_scheduled(effect_handler) {
                             self.metrics.record_failure(ErrorType::Internal);
                             return Err(e);
                         }
                         self.metrics.record_success();
-=======
-                    if !inbound_ctx.needs_completion_tracking() {
-                        self.ensure_wakeup_scheduled(effect_handler)?;
->>>>>>> upstream/main
                         return Ok(());
                     }
 
@@ -2223,9 +2207,21 @@ mod tests {
                 assert_output_metric_count(&output[1], 2);
 
                 let snaps = collect_telemetry(&mut ctx).await;
-                assert_eq!(metric_count(&snaps, "operations", Some("success"), None, None), 2);
+                assert_eq!(
+                    metric_count(&snaps, "operations", Some("success"), None, None),
+                    2
+                );
                 assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
-                assert_eq!(metric_count(&snaps, "flushes", Some("success"), Some("id_overflow"), None), 1);
+                assert_eq!(
+                    metric_count(
+                        &snaps,
+                        "flushes",
+                        Some("success"),
+                        Some("id_overflow"),
+                        None
+                    ),
+                    1
+                );
             },
         );
     }
@@ -2261,9 +2257,21 @@ mod tests {
                 assert_output_otlp_equivalent(&output3[0], data2);
 
                 let snaps = collect_telemetry(&mut ctx).await;
-                assert_eq!(metric_count(&snaps, "operations", Some("success"), None, None), 2);
+                assert_eq!(
+                    metric_count(&snaps, "operations", Some("success"), None, None),
+                    2
+                );
                 assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
-                assert_eq!(metric_count(&snaps, "flushes", Some("success"), Some("stream_cardinality_exceeded"), None), 1);
+                assert_eq!(
+                    metric_count(
+                        &snaps,
+                        "flushes",
+                        Some("success"),
+                        Some("stream_cardinality_exceeded"),
+                        None
+                    ),
+                    1
+                );
             },
         );
     }
@@ -2749,7 +2757,10 @@ mod tests {
             assert_output_otlp_equivalent(&output[0], input_data);
 
             let snaps = collect_telemetry(&mut ctx).await;
-            assert_eq!(metric_count(&snaps, "operations", Some("success"), None, None), 1);
+            assert_eq!(
+                metric_count(&snaps, "operations", Some("success"), None, None),
+                1
+            );
             assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
         });
     }
@@ -2908,7 +2919,10 @@ mod tests {
 
             let _ = ctx.fire_wakeup().await.unwrap();
             let snaps = collect_telemetry(&mut ctx).await;
-            assert_eq!(metric_count(&snaps, "flushes", Some("success"), Some("timer"), None), 1);
+            assert_eq!(
+                metric_count(&snaps, "flushes", Some("success"), Some("timer"), None),
+                1
+            );
         });
     }
 
@@ -3725,7 +3739,10 @@ mod tests {
             assert!(ctx.drain_pdata().await.is_empty());
 
             let snaps = collect_telemetry(&mut ctx).await;
-            assert_eq!(metric_count(&snaps, "flushes", None, Some("timer"), None), 0);
+            assert_eq!(
+                metric_count(&snaps, "flushes", None, Some("timer"), None),
+                0
+            );
         });
     }
 
@@ -3911,7 +3928,4 @@ mod tests {
             );
         });
     }
-
-
 }
-

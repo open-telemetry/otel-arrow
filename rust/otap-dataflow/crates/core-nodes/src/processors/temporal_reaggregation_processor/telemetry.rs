@@ -131,7 +131,9 @@ impl TemporalReaggregationMetrics {
     /// Record one successful input operation.
     pub fn record_success(&mut self) {
         self.operations
-            .with(OutcomeAttributes { outcome: Outcome::Success })
+            .with(OutcomeAttributes {
+                outcome: Outcome::Success,
+            })
             .operations
             .inc();
     }
@@ -139,7 +141,9 @@ impl TemporalReaggregationMetrics {
     /// Record one failed input operation with the actionable cause.
     pub fn record_failure(&mut self, error_type: ErrorType) {
         self.operations
-            .with(OutcomeAttributes { outcome: Outcome::Failure })
+            .with(OutcomeAttributes {
+                outcome: Outcome::Failure,
+            })
             .operations
             .inc();
         self.failures
