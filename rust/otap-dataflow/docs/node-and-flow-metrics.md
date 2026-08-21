@@ -35,8 +35,8 @@ configuration.
 ## Node Metrics
 
 With `policies.telemetry.runtime_metrics: normal` or `detailed`, every node
-emits message outcome counters on its existing `node.consumer` and
-`node.producer` metric sets:
+emits message outcome counters on its `node.input` and `node.output`
+metric sets:
 
 ### Messages, Items, and Size
 
@@ -48,12 +48,12 @@ logical byte size of the current payload representation.
 
 | Metric | Meaning | Emitted by | Availability |
 | --- | --- | --- | --- |
-| `consumed.messages` | Messages received by a node | `node.consumer` | `normal` or `detailed` |
-| `produced.messages` | Messages emitted by a node | `node.producer` | `normal` or `detailed` |
-| `consumed.items` | Items a node receives | `node.consumer` | `detailed`, or `normal` plus item-count opt-in |
-| `produced.items` | Items a node emits | `node.producer` | `detailed`, or `normal` plus item-count opt-in |
-| `consumed.size` | Logical payload bytes a node receives | `node.consumer` | `detailed`, or `normal` plus size opt-in |
-| `produced.size` | Logical payload bytes a node emits | `node.producer` | `detailed`, or `normal` plus size opt-in |
+| `node.input.messages` | Messages received by a node | `node.input` | `normal` or `detailed` |
+| `node.output.messages` | Messages emitted by a node | `node.output` | `normal` or `detailed` |
+| `node.input.items` | Items a node receives | `node.input` | `detailed`, or `normal` plus item-count opt-in |
+| `node.output.items` | Items a node emits | `node.output` | `detailed`, or `normal` plus item-count opt-in |
+| `node.input.size` | Logical payload bytes a node receives | `node.input` | `detailed`, or `normal` plus size opt-in |
+| `node.output.size` | Logical payload bytes a node emits | `node.output` | `detailed`, or `normal` plus size opt-in |
 
 Message, item, and size counters have bounded `signal` and `outcome` data-point
 attributes. `signal` is one of `logs`, `metrics`, or `traces`; `outcome` is
@@ -105,8 +105,8 @@ for every node without node-level settings.
 
 ### Interpret Node Counts
 
-For a linear topology, a node's `produced.items` normally matches the next
-node's `consumed.items` for the same signal. A filtering or sampling processor
+For a linear topology, a node's `output.items` normally matches the next
+node's `input.items` for the same signal. A filtering or sampling processor
 can produce fewer items than it consumes; a fan-out processor can produce an
 item on more than one output. Compare counts only along the particular edge or
 topology behavior being investigated.

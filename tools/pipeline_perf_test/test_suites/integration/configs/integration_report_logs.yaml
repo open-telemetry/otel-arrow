@@ -110,7 +110,7 @@ queries:
             ) AND (
               metric_name <> 'consumed_items'
               OR (
-                "metric_attributes.otel_scope_name" = 'node.consumer'
+                "metric_attributes.otel_scope_name" = 'node.input'
                 AND "metric_attributes.otel_scope_node_id" = 'perf'
                 AND "metric_attributes.signal" = 'logs'
                 AND "metric_attributes.outcome" = 'success'

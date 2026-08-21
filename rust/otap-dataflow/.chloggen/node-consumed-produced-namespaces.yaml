@@ -1,0 +1,6 @@
+change_type: breaking
+component: engine
+note: "Rename node metrics to node.input.* and node.output.* and report duration histograms in seconds."
+issues: [2884]
+subtext: |
+  Migration: Replace `node.consumer.consumed.*` with `node.input.*` and `node.producer.produced.*` with `node.output.*`. Update scope selectors and treat duration values as seconds.

@@ -101,7 +101,7 @@ size metrics:
 - `runtime_metrics: detailed` enables item and size measurements for every
   node; the second pipeline demonstrates per-node `item_counts: true` and
   `size: true` opt-ins at the normal level.
-- An internal observability pipeline filters to only produced/consumed
+- An internal observability pipeline filters to only input/output
   instruments and prints normal-verbosity metrics to stdout.
 
 ### `trafficgen-flow-metrics-demo.yaml`

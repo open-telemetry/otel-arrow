@@ -79,9 +79,9 @@ These tables list telemetry emitted directly by this node. Common engine
 runtime metric sets may also be attached by the pipeline telemetry policy.
 
 Request and primary signal item throughput are reported by the engine's
-universal `node.consumer` metrics instead of being duplicated by this
-processor. Use `node.consumer.consumed.messages` for requests and enable item
-counts to use `node.consumer.consumed.items`.
+universal `node.input` metrics instead of being duplicated by this
+processor. Use `node.input.messages` for requests and enable item counts to
+use `node.input.items`.
 
 Named events and span links remain debug processor metrics because they are
 nested signal details, not the primary log records, metric data points, or

@@ -1,5 +1,5 @@
-# Demonstrates the per-signal produced/consumed item counts and logical payload
-# sizes that a node emits on its `node.producer` / `node.consumer` metric sets.
+# Demonstrates the per-signal input/output item counts and logical payload
+# sizes that a node emits on its `node.input` / `node.output` metric sets.
 #
 # Two pipelines in the same engine, each running: receiver -> sampler -> noop
 #   - `full`:    detailed metrics enable both measurements on all three nodes.
@@ -23,26 +23,26 @@
 # these measurements extend the produced/consumed metric sets.
 #
 # Metrics emitted per opted-in node:
-#   node.producer: produced.items {item}, with `signal` = logs, metrics, or traces
-#   node.producer: produced.size By, with `signal` = logs, metrics, or traces
-#   node.consumer: consumed.items {item}, with `signal` = logs, metrics, or traces
-#   node.consumer: consumed.size By, with `signal` = logs, metrics, or traces
+#   node.output: items {item}, with `signal` = logs, metrics, or traces
+#   node.output: size By, with `signal` = logs, metrics, or traces
+#   node.input: items {item}, with `signal` = logs, metrics, or traces
+#   node.input: size By, with `signal` = logs, metrics, or traces
 #
 # What to look for:
 #   - In `full`, every node reports per-signal items and size. In `partial`,
 #     only the sampler does because the receiver and noop did not opt in.
-#   - receiver `node.producer.produced.items` is the per-signal accepted volume
+#   - receiver `node.output.items` is the per-signal accepted volume
 #     the traffic generator injected.
-#   - sampler `node.consumer.consumed.*` equals the receiver's produced counts
+#   - sampler `node.input.*` equals the receiver's output counts
 #     (everything the sampler received), while sampler
-#     `node.producer.produced.items{signal="logs"}` is LOWER because the sampler
+#     `node.output.items{signal="logs"}` is LOWER because the sampler
 #     keeps only ~1/3 of log records; metrics and traces pass through unchanged
 #     (sampling only targets logs). This shows the per-signal accounting
 #     isolating the affected signal.
-#   - noop `node.consumer.consumed.*` reflects the surviving per-signal volume.
+#   - noop `node.input.*` reflects the surviving per-signal volume.
 #
 # The internal observability pipeline filters out everything except the six
-# produced/consumed message, item, and size instruments, then prints their
+# input/output message, item, and size instruments, then prints their
 # normal-verbosity representation to stdout once per second.
 #
 # Run with:
@@ -73,12 +73,9 @@ engine:
               include:
                 match_type: strict
                 metric_names:
-                  - consumed.messages
-                  - consumed.items
-                  - consumed.size
-                  - produced.messages
-                  - produced.items
-                  - produced.size
+                  - messages
+                  - items
+                  - size
         metrics_debug:
           type: processor:debug
           config:
@@ -128,8 +125,8 @@ groups:
               data_source: synthetic
 
           # Keeps ~1/3 of log records and drops the rest. Only logs are affected,
-          # so the sampler's produced.items{signal="logs"} is lower than its
-          # consumed.items{signal="logs"}, while the metrics and traces buckets
+          # so the sampler's node.output.items{signal="logs"} is lower than its
+          # node.input.items{signal="logs"}, while the metrics and traces buckets
           # stay equal.
           sampler:
             type: processor:log_sampling
