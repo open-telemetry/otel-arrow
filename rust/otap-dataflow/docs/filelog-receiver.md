@@ -18,23 +18,29 @@ behavior while separating collection from semantic processing.
 
 ## Responsibility split
 
-```mermaid
-flowchart LR
-  D["Discovery<br/>Find files and assign ownership"]
-  R["Filelog receiver<br/>Read, decode and frame<br/>Track identity, offsets and rotation<br/>Emit raw OTAP logs"]
-  P["Processors<br/>Parse timestamps and structure<br/>Enrich, normalize, filter and route"]
-  E["Exporters<br/>Represent and deliver records"]
+```text
+Phase 1 filelog receiver:
+  discover files
+  read and decode bytes
+  frame records
+  track identity and offsets
+  handle rotation and checkpoints
+  emit raw OTAP logs
 
-  D -->|"file assignments"| R
-  R -->|"raw OTAP LogRecords"| P
-  P -->|"processed OTAP LogRecords"| E
-  E -.->|"Ack or Nack"| R
+Processors:
+  parse timestamps and structured content
+  enrich, normalize, filter and route
+
+Exporters:
+  represent and deliver records to destinations
 ```
 
 The important boundary is simple: the receiver decides **which source bytes form a
 record**; processors decide **what that record means**; exporters decide **how that
 record is represented and delivered**. Ack or Nack returns to the receiver because
-only the receiver controls checkpoint advancement.
+only the receiver controls checkpoint advancement. In Phase 3, discovery and ownership
+assignment may move to the shared extension shown in the target architecture diagram;
+reading, decoding, framing, rotation and checkpoints remain receiver responsibilities.
 
 ## Why this design
 
