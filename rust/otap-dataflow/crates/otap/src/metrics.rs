@@ -11,7 +11,71 @@ use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
 use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::time::Duration;
 
+/// Receiver-local handling of classified messages at the external ingress boundary.
+#[metric_set(
+    name = "receiver.ingress",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ReceiverIngressMetrics {
+    /// Number of classified external messages whose receiver-local handling terminated.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
+    /// Encoded application payload bytes observed at the receiver ingress boundary.
+    #[metric(name = "wire_bytes", unit = "By")]
+    pub wire_bytes: Counter<u64>,
+    /// Receiver-local time from observing the classified message through termination.
+    /// Downstream processing and Ack/Nack completion are excluded.
+    #[metric(unit = "s")]
+    pub duration: HistogramNormal,
+}
+
+impl ReceiverIngressMetrics {
+    /// Records one classified external message when receiver-local handling terminates.
+    #[inline]
+    pub fn record(&mut self, duration: Duration, wire_bytes: u64) {
+        self.messages.inc();
+        self.wire_bytes.add(wire_bytes);
+        self.duration.record(duration.as_secs_f64());
+    }
+}
+
+/// Terminal external results observed at an exporter egress boundary.
+#[metric_set(
+    name = "exporter.egress",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ExporterEgressMetrics {
+    /// Number of PData messages whose export reached a terminal external result.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
+    /// Number of signal items whose export reached the terminal external result.
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
+    /// Encoded application payload bytes submitted across all export attempts.
+    #[metric(name = "wire_bytes", unit = "By")]
+    pub wire_bytes: Counter<u64>,
+    /// Time from dequeuing PData through its terminal local or backend export result.
+    /// Ack/Nack notification time is excluded.
+    #[metric(unit = "s")]
+    pub duration: HistogramNormal,
+}
+
+impl ExporterEgressMetrics {
+    /// Records one terminal export result.
+    #[inline]
+    pub fn record(&mut self, duration: Duration, items: u64, wire_bytes: u64) {
+        self.messages.inc();
+        self.items.add(items);
+        self.wire_bytes.add(wire_bytes);
+        self.duration.record(duration.as_secs_f64());
+    }
+}
+
 /// Completed export operations.
+///
+/// This set will be deprecated after exporters migrate to [`ExporterEgressMetrics`].
 #[metric_set(
     name = "exporter.exports",
     measurement_attributes = SignalOutcomeAttributes
@@ -37,6 +101,8 @@ impl ExporterExportMetrics {
 }
 
 /// Lifecycle and wire bytes for messages admitted by a receiver.
+///
+/// This set will be deprecated after receivers migrate to [`ReceiverIngressMetrics`].
 #[metric_set(
     name = "receiver.messages",
     measurement_attributes = SignalAttributes
@@ -63,6 +129,22 @@ mod tests {
     use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
+    fn new_egress_metrics() -> MeasurementMetricSet<ExporterEgressMetrics> {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        ExporterEgressMetrics::register(&pipeline_ctx)
+    }
+
+    fn new_ingress_metrics() -> MeasurementMetricSet<ReceiverIngressMetrics> {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        ReceiverIngressMetrics::register(&pipeline_ctx)
+    }
+
     fn new_export_metrics() -> MeasurementMetricSet<ExporterExportMetrics> {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
@@ -77,6 +159,90 @@ mod tests {
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         ReceiverMessageMetrics::register(&pipeline_ctx)
+    }
+
+    /// Scenario: Shared ingress and egress sets produce terminal snapshots.
+    /// Guarantees: Metric namespaces, units, and bounded dimensions match the external-boundary contract.
+    #[test]
+    fn external_boundary_metric_descriptors_are_stable() {
+        let mut ingress = new_ingress_metrics();
+        ingress
+            .with(SignalOutcomeAttributes {
+                signal: SignalType::Metrics,
+                outcome: Outcome::Success,
+            })
+            .record(Duration::from_millis(10), 64);
+        let ingress_snapshot = ingress
+            .terminal_snapshots()
+            .into_iter()
+            .next()
+            .expect("ingress snapshot");
+        assert_eq!(ingress_snapshot.descriptor().name, "receiver.ingress");
+        assert_eq!(
+            ingress_snapshot.measurement_attribute_value("signal"),
+            Some("metrics")
+        );
+        assert_eq!(
+            ingress_snapshot.measurement_attribute_value("outcome"),
+            Some("success")
+        );
+        assert!(
+            ingress_snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "messages" && metric.unit == "{message}")
+        );
+        assert!(
+            ingress_snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "wire_bytes" && metric.unit == "By")
+        );
+        assert!(
+            ingress_snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "duration" && metric.unit == "s")
+        );
+
+        let mut egress = new_egress_metrics();
+        egress
+            .with(SignalOutcomeAttributes {
+                signal: SignalType::Logs,
+                outcome: Outcome::Success,
+            })
+            .record(Duration::from_millis(20), 2, 96);
+        let egress_snapshot = egress
+            .terminal_snapshots()
+            .into_iter()
+            .next()
+            .expect("egress snapshot");
+        assert_eq!(egress_snapshot.descriptor().name, "exporter.egress");
+        assert_eq!(
+            egress_snapshot.measurement_attribute_value("signal"),
+            Some("logs")
+        );
+        assert_eq!(
+            egress_snapshot.measurement_attribute_value("outcome"),
+            Some("success")
+        );
+        assert!(
+            egress_snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "items" && metric.unit == "{item}")
+        );
+        assert!(
+            egress_snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "wire_bytes" && metric.unit == "By")
+        );
     }
 
     /// Scenario: An exporter completes successful and failed exports for multiple signals.
