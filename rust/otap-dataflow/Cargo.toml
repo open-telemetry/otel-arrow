@@ -308,7 +308,13 @@ jemalloc = [
     "otap-df-controller/jemalloc-pprof",
 ]
 mimalloc = ["dep:mimalloc"]
-azure = ["otap-df-otap/azure"]
+# Azure Blob Storage for the Parquet exporter. Azure storage authenticates through
+# a bound bearer token provider, so enabling it pulls in that extension.
+azure = [
+    "otap-df-otap/azure",
+    "otap-df-core-nodes/azure",
+    "azure-identity-auth-extension",
+]
 aws = ["otap-df-otap/aws", "otap-df-contrib-nodes/aws"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
