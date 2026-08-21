@@ -10,9 +10,10 @@
 
 ## Overview
 
-The console exporter prints OTLP logs to standard output. It supports a
+The console exporter prints logs and metrics to standard output. It supports a
 human-readable hierarchical `pretty` format for interactive inspection and a
-newline-delimited record JSON format for structured logging pipelines.
+newline-delimited, logs-only `record_json` format for structured logging
+pipelines.
 
 This node is intended for local inspection, demos, and debugging pipelines. It
 is not a production exporter, durable export path, or stable machine-readable
@@ -95,7 +96,7 @@ config:
 ```yaml
 type: exporter:console
 config:
-  # Output format: "pretty" (default) or "record_json".
+  # Output format: "pretty" (default) or logs-only "record_json".
   format: pretty
 
   # Enables ANSI color output (default: true).
@@ -105,6 +106,11 @@ config:
   # Enables Unicode box-drawing output (default: true).
   # Applies only to pretty output.
   unicode: true
+
+  # Format-specific pretty options.
+  pretty:
+    # "compact" (default) or "raw".
+    histogram: compact
 
   # Format-specific record_json options.
   record_json:
@@ -145,11 +151,54 @@ config:
   unicode: false
 ```
 
+### Pretty metrics output
+
+The `pretty` format accepts metrics from both OTLP protobuf bytes and OTAP Arrow
+records. It renders resources, scopes, metric metadata, aggregation properties,
+data points, attributes, exact nanosecond timestamps, values, exemplars, flags,
+compact histogram statistics, and summary quantiles.
+
+```yaml
+type: exporter:console
+config:
+  format: pretty
+  color: false
+  unicode: false
+```
+
+Representative output:
+
+```text
+RESOURCE [service.name=checkout]
+| +- SCOPE name=checkout.metrics version=1.0.0
+| | +- METRIC name=requests unit={request}
+| | | +- SUM temporality=cumulative monotonic=true
+| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 value_int=42
+```
+
+Aggregation temporality and monotonicity are printed before data points.
+Histograms default to compact `count`, `sum`, `avg`, `min`, and `max`
+statistics. `avg` is emitted only when both `sum` is present and `count` is
+non-zero. Percentiles are not currently estimated.
+
+To inspect the complete histogram representation, including explicit bounds,
+bucket counts, exponential scale, offsets, zero count, and zero threshold,
+select raw histogram output:
+
+```yaml
+type: exporter:console
+config:
+  format: pretty
+  pretty:
+    histogram: raw
+```
+
 ### Record JSON output
 
 `record_json` writes one compact JSON object followed by `\n` for each log
-record. It uses logging-oriented snake_case fields and native JSON values.
-Enabled resource and scope context are added as sibling objects.
+record. It does not render metrics or traces. It uses logging-oriented
+snake_case fields and native JSON values. Enabled resource and scope context
+are added as sibling objects.
 
 The following outputs use the engine's `otlp.receiver.grpc.start` internal
 event as a representative record.
@@ -236,7 +285,7 @@ That standard format and `record_json` have different framing:
 | Format | JSON value written per line | Availability |
 | --- | --- | --- |
 | `record_json` | One log record with optional repeated context | Supported |
-| `otlp_json` | One complete OTLP signal batch | Planned |
+| `otlp_json` | One complete OTLP signal batch | Planned for a separate cross-signal implementation |
 
 `otlp_json` is reserved for a future implementation and is not currently an
 accepted configuration value.
@@ -250,7 +299,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | PData messages whose console export reached a terminal outcome. A successful outcome means formatting and the stdout write completed without an error. |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | PData messages whose console export reached a terminal outcome. A successful outcome means formatting and the stdout write completed without an error. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal formatting and stdout write result, excluding Ack notification. |
 | `exporter.console.failures.messages` | `{message}` | `format`, `signal`, `error.type` | Failed console exports classified by selected output format and actionable error type. |
 
 `error.type` is one of `otlp_view_creation`, `otap_view_creation`,
@@ -260,7 +310,7 @@ per-measurement attributes.
 
 Console output remains best effort. The exporter ACKs a message after the
 attempt even when `outcome="failure"`, so `node.consumer.consumed.messages`
-describes pipeline completion while `exporter.pdata.exports.messages` describes
+describes pipeline completion while `exporter.exports.messages` describes
 the actual console export result.
 
 ### Events
@@ -269,7 +319,9 @@ the actual console export result.
 | --- | --- | --- |
 | `console.logs_view.otlp_create_failed` | `error` | Failed to create an OTLP logs view for console output. |
 | `console.logs_view.otap_create_failed` | `error` | Failed to create an OTAP logs view for console output. |
-| `console.message.unsupported_signal` | `warn` | The exporter received an unsupported `metrics` or `traces` signal; use `processor:debug` followed by `exporter:noop` to inspect it. |
+| `console.metrics_view.otlp_create_failed` | `warn` | Failed to create an OTLP metrics view for pretty console output. |
+| `console.metrics_view.otap_create_failed` | `warn` | Failed to create an OTAP metrics view for pretty console output. |
+| `console.message.unsupported_signal` | `warn` | The selected format does not support the signal. Traces are always unsupported; metrics are unsupported by `record_json`. |
 | `console.format_failed` | `error` | Failed to format a payload for console output. |
 | `console.write_failed` | `error` | Failed to write rendered output to stdout. |
 
@@ -279,9 +331,11 @@ the actual console export result.
 - Large or high-rate telemetry streams can produce substantial console output.
 - Formatting and writes are best effort. Payloads are ACKed after the export
   attempt, including when formatting or writing fails.
-- Traces and metrics are not currently rendered in either format.
-- To inspect traces or metrics, use `processor:debug` and terminate the pipeline
-  with `exporter:noop`.
+- Traces are not currently rendered in either format. To inspect traces, use
+  `processor:debug` and terminate the pipeline with `exporter:noop`.
+- Metrics are rendered only by `pretty`. `record_json` remains logs-only.
+- Pretty histogram output is compact by default. Select
+  `pretty.histogram: raw` for complete bucket details.
 - OTAP views do not currently expose every scope field. In particular, scope
   name and version can be absent from `record_json` after conversion to OTAP,
   while scope attributes remain available.

@@ -8,6 +8,7 @@ use crate::exporters::clickhouse_exporter::transform::transform_plan::Transforma
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 pub(crate) mod logs_fast;
+pub(crate) mod logs_otlp;
 mod transform_attributes;
 pub(crate) mod transform_batch;
 mod transform_column;

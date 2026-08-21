@@ -6,6 +6,11 @@
 //! This processor decreases telemetry volume by reaggregating metrics collected
 //! at a higher frequency into a lower one.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = TEMPORAL_REAGGREGATION_PROCESSOR_URN,
+    target = "otel.processor.temporal_reaggregation",
+);
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -36,7 +41,7 @@ use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::views::otap::OtapMetricsView;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
+use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
 use otap_df_pdata_views::views::common::InstrumentationScopeView;
 use otap_df_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramDataPointView,
@@ -46,7 +51,6 @@ use otap_df_pdata_views::views::metrics::{
 };
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_warn;
 
 mod builder;
 mod config;
@@ -321,8 +325,8 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         // We may need up to one inbound slot and three outbound slots.
         //
         // The inbound slot is used to track the inbound request context and is
-        // needed if either there are ack/nack interests on the context OR if some of
-        // the data is aggregable meaning we won't just pass the whole batch
+        // needed if the context requires completion tracking OR if some of the
+        // data is aggregable, meaning we won't just pass the whole batch
         // through untouched.
         //
         // One outbound slot may be needed to flush the existing batch if we
@@ -618,8 +622,8 @@ impl TemporalReaggregationProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         pdata: OtapPdata,
     ) -> Result<(), Error> {
-        let result = match pdata.payload_ref() {
-            OtapPayload::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
+        let result = match pdata.payload_ref().data() {
+            PayloadData::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
                 Ok(view) => self.process_view(effect_handler, &view).await,
                 Err(e) => {
                     otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
@@ -632,7 +636,7 @@ impl TemporalReaggregationProcessor {
                     return Ok(());
                 }
             },
-            OtapPayload::OtlpBytes(otlp) => {
+            PayloadData::OtlpBytes(otlp) => {
                 let view = RawMetricsData::new(otlp.as_bytes());
                 self.process_view(effect_handler, &view).await
             }
@@ -648,13 +652,12 @@ impl TemporalReaggregationProcessor {
                     // the in-progress builder; remember its peer_addr so the
                     // next flush can compute the merged output peer_addr.
                     self.aggregated_peer.push(pdata.peer_addr());
-                    // Pass data through if there are no subscribers -- but we
-                    // still need a wakeup to flush the aggregated portion.
+                    // Pass data through directly if no completion routing or
+                    // metrics unwinding depends on the inbound context.
                     let (inbound_ctx, _) = pdata.into_parts();
-                    if !inbound_ctx.has_subscribers() {
+                    if !inbound_ctx.needs_completion_tracking() {
                         self.ensure_wakeup_scheduled(effect_handler)?;
-                        let pt_pdata =
-                            OtapPdata::new(inbound_ctx, OtapPayload::OtapArrowRecords(records));
+                        let pt_pdata = OtapPdata::new(inbound_ctx, OtapPayload::from(records));
 
                         effect_handler
                             .send_message_with_source_node(pt_pdata)
@@ -686,8 +689,7 @@ impl TemporalReaggregationProcessor {
                     // Subscribe to the outbound
                     let outbound_calldata: CallData = outbound_key.into();
                     let context = Context::with_capacity(1);
-                    let mut pt_pdata =
-                        OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+                    let mut pt_pdata = OtapPdata::new(context, OtapPayload::from(records));
                     if let Some(addr) = passthrough_peer {
                         pt_pdata.set_peer_addr(addr);
                     }
@@ -706,11 +708,10 @@ impl TemporalReaggregationProcessor {
                     // The full input was folded into the in-progress builder;
                     // remember its peer_addr for the next flush.
                     self.aggregated_peer.push(pdata.peer_addr());
-                    // Nothing to passthrough and no subscribers so we don't
-                    // care about ack/nack -- but we still need a wakeup to
-                    // flush the aggregated data.
+                    // If no completion routing or metrics unwinding depends on
+                    // the inbound context, only schedule the aggregate flush.
                     let (inbound_ctx, _) = pdata.into_parts();
-                    if !inbound_ctx.has_subscribers() {
+                    if !inbound_ctx.needs_completion_tracking() {
                         self.ensure_wakeup_scheduled(effect_handler)?;
                         return Ok(());
                     }
@@ -778,7 +779,7 @@ impl TemporalReaggregationProcessor {
         // Nobody was subscribed to anything here
         if pending_flush_calldata.is_empty() {
             let context = Context::default();
-            let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+            let mut pdata = OtapPdata::new(context, OtapPayload::from(records));
             if let Some(addr) = merged_peer {
                 pdata.set_peer_addr(addr);
             }
@@ -805,7 +806,7 @@ impl TemporalReaggregationProcessor {
         let outbound_key = outbound_slot.insert(pending_flush_calldata);
         let outbound_calldata: CallData = outbound_key.into();
         let outbound_ctx = Context::with_capacity(1);
-        let mut pdata = OtapPdata::new(outbound_ctx, OtapPayload::OtapArrowRecords(records));
+        let mut pdata = OtapPdata::new(outbound_ctx, OtapPayload::from(records));
         if let Some(addr) = merged_peer {
             pdata.set_peer_addr(addr);
         }
@@ -2138,8 +2139,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_stream_cardinality_overflow_triggers_early_flush() {
+    fn test_stream_cardinality_triggers_early_flush(data1: MetricsData, data2: MetricsData) {
         // Configure the processor to allow at most 2 unique streams in a batch.
         // Send a batch with 2 streams (fills to the limit), then a second batch
         // with 1 new stream. The new stream should trigger a cardinality overflow:
@@ -2148,20 +2148,68 @@ mod tests {
         run_processor_test(
             json!({ "max_stream_cardinality": 2 }),
             |mut ctx| async move {
-                let batch1 = make_otlp_bytes_pdata(make_n_gauge_metrics(2));
-                // Use offset to ensure distinct metric names from the first batch.
-                let batch2 = make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(1, 2));
+                let batch1 = make_otlp_bytes_pdata(data1.clone());
+                let batch2 = make_otlp_bytes_pdata(data2.clone());
 
                 ctx.process(Message::PData(batch1)).await.unwrap();
-                ctx.process(Message::PData(batch2)).await.unwrap();
-                let _ = ctx.fire_wakeup().await.unwrap();
+                let output1 = ctx.drain_pdata().await;
+                assert_eq!(output1.len(), 0, "expected no output after first batch");
 
-                let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
-                assert_output_metric_count(&output[0], 2);
-                assert_output_metric_count(&output[1], 1);
+                ctx.process(Message::PData(batch2)).await.unwrap();
+                let output2 = ctx.drain_pdata().await;
+                assert_eq!(
+                    output2.len(),
+                    1,
+                    "expected early flush of first batch when limit exceeded"
+                );
+                assert_output_otlp_equivalent(&output2[0], data1);
+
+                let _ = ctx.fire_wakeup().await.unwrap();
+                let output3 = ctx.drain_pdata().await;
+                assert_eq!(output3.len(), 1, "expected wakeup flush of second batch");
+                assert_output_otlp_equivalent(&output3[0], data2);
             },
         );
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing Gauge metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_gauge_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_gauge_metrics_with_offset(2, 0);
+        let data2 = make_n_gauge_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing Histogram metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_histogram_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_histogram_metrics_with_offset(2, 0);
+        let data2 = make_n_histogram_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing ExponentialHistogram metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_exp_histogram_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_exp_histogram_metrics_with_offset(2, 0);
+        let data2 = make_n_exp_histogram_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing Summary metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_summary_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_summary_metrics_with_offset(2, 0);
+        let data2 = make_n_summary_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
     }
 
     #[test]
@@ -2433,8 +2481,8 @@ mod tests {
             assert_eq!(output.len(), 1);
             // Both streams should be present: verify by converting the output
             // to OTLP and checking we have 2 resource_metrics entries.
-            let actual = match output[0].payload_ref() {
-                OtapPayload::OtapArrowRecords(r) => r,
+            let actual = match output[0].payload_ref().data() {
+                PayloadData::OtapArrowRecords(r) => r,
                 _ => panic!("expected OtapArrowRecords payload"),
             };
             let otlp = otap_to_otlp(actual);
@@ -3085,7 +3133,7 @@ mod tests {
             // Full passthrough forwards original OTLP bytes unchanged -
             // just verify something was emitted, the payload format is preserved.
             assert!(
-                matches!(output[0].payload_ref(), OtapPayload::OtlpBytes(_)),
+                matches!(output[0].payload_ref().data(), PayloadData::OtlpBytes(_)),
                 "full passthrough should preserve OTLP bytes payload"
             );
         });

@@ -6,24 +6,25 @@
 use super::ConsoleOutputFormat;
 use otap_df_config::SignalType;
 use otap_df_engine::context::PipelineContext;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
+use otap_df_otap::metrics::ExporterExportMetrics;
 use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use std::time::Duration;
 
 /// Actionable category for a failed console export operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub(super) enum ConsoleExportErrorType {
-    /// An OTLP byte payload could not be exposed as a logs view.
+    /// An OTLP byte payload could not be exposed as a signal view.
     OtlpViewCreation,
-    /// An OTAP Arrow payload could not be exposed as a logs view.
+    /// An OTAP Arrow payload could not be exposed as a signal view.
     OtapViewCreation,
     /// The exporter received a signal that it cannot render.
     UnsupportedSignal,
-    /// The selected output formatter could not encode the logs payload.
+    /// The selected output formatter could not encode the payload.
     Formatting,
     /// The rendered output could not be written to stdout.
     Write,
@@ -60,7 +61,7 @@ struct ConsoleExporterFailureMetrics {
 
 /// Metric sets emitted directly by a console exporter.
 pub(super) struct ConsoleExporterMetrics {
-    export_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    export_metrics: MeasurementMetricSet<ExporterExportMetrics>,
     failure_metrics: MeasurementMetricSet<ConsoleExporterFailureMetrics>,
 }
 
@@ -68,7 +69,7 @@ impl ConsoleExporterMetrics {
     /// Registers console exporter metrics with the selected output format.
     pub(super) fn register(pipeline_ctx: &PipelineContext, format: ConsoleOutputFormat) -> Self {
         Self {
-            export_metrics: ExporterPDataExportMetrics::register(pipeline_ctx),
+            export_metrics: ExporterExportMetrics::register(pipeline_ctx),
             failure_metrics: ConsoleExporterFailureMetrics::register(
                 pipeline_ctx,
                 &ConsoleFormatAttributes { format },
@@ -93,14 +94,13 @@ impl ConsoleExporterMetrics {
 
     /// Records one successfully rendered and written PData message.
     #[inline]
-    pub(super) fn record_success(&mut self, signal: SignalType) {
+    pub(super) fn record_success(&mut self, signal: SignalType, duration: Duration) {
         self.export_metrics
             .with(SignalOutcomeAttributes {
                 signal,
                 outcome: Outcome::Success,
             })
-            .messages
-            .inc();
+            .record(duration);
     }
 
     /// Records one failed PData message and its diagnostic category.
@@ -109,14 +109,14 @@ impl ConsoleExporterMetrics {
         &mut self,
         signal: SignalType,
         error_type: ConsoleExportErrorType,
+        duration: Duration,
     ) {
         self.export_metrics
             .with(SignalOutcomeAttributes {
                 signal,
                 outcome: Outcome::Failure,
             })
-            .messages
-            .inc();
+            .record(duration);
         self.failure_metrics
             .with(ConsoleFailureAttributes { signal, error_type })
             .messages
@@ -148,16 +148,21 @@ mod tests {
     }
 
     /// Scenario: Console exports succeed and fail for different telemetry signals.
-    /// Guarantees: Outcomes and actionable failure types are counted in isolated buckets.
+    /// Guarantees: Outcome counts and durations stay paired while failure types use isolated buckets.
     #[test]
     fn export_outcomes_and_failures_are_bucketed_consistently() {
         let mut metrics = new_test_metrics(ConsoleOutputFormat::RecordJson);
-        metrics.record_success(SignalType::Logs);
-        metrics.record_success(SignalType::Logs);
-        metrics.record_failure(SignalType::Logs, ConsoleExportErrorType::OtlpViewCreation);
+        metrics.record_success(SignalType::Logs, Duration::from_millis(10));
+        metrics.record_success(SignalType::Logs, Duration::from_millis(20));
+        metrics.record_failure(
+            SignalType::Logs,
+            ConsoleExportErrorType::OtlpViewCreation,
+            Duration::from_millis(30),
+        );
         metrics.record_failure(
             SignalType::Metrics,
             ConsoleExportErrorType::UnsupportedSignal,
+            Duration::from_millis(40),
         );
 
         assert_eq!(
@@ -180,6 +185,30 @@ mod tests {
                 })
                 .messages
                 .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .export_metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Success,
+                })
+                .duration_seconds
+                .get()
+                .count(),
+            2
+        );
+        assert_eq!(
+            metrics
+                .export_metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
+                .duration_seconds
+                .get()
+                .count(),
             1
         );
         assert_eq!(
@@ -225,12 +254,13 @@ mod tests {
         metrics.record_failure(
             SignalType::Traces,
             ConsoleExportErrorType::UnsupportedSignal,
+            Duration::from_millis(10),
         );
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 2);
         assert!(snapshots.iter().any(|snapshot| {
-            snapshot.descriptor().name == "exporter.pdata.exports"
+            snapshot.descriptor().name == "exporter.exports"
                 && snapshot.measurement_attribute_value("signal") == Some("traces")
                 && snapshot.measurement_attribute_value("outcome") == Some("failure")
         }));

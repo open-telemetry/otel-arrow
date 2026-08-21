@@ -4,6 +4,13 @@
 //! Console exporter that prints OTLP data in human-readable or structured formats.
 
 mod metrics;
+mod pretty_metrics;
+mod pretty_writer;
+otap_df_telemetry::otel_component_scope!(
+    urn = CONSOLE_EXPORTER_URN,
+    target = "otel.exporter.console",
+);
+
 mod record_json;
 
 use async_trait::async_trait;
@@ -24,17 +31,18 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::OtapPayload;
-use otap_df_pdata::views::otap::OtapLogsView;
+use otap_df_pdata::views::otap::{OtapLogsView, OtapMetricsView};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
+use otap_df_pdata::{OtapPayload, PayloadData};
 use otap_df_pdata_views::views::common::InstrumentationScopeView;
 use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
+use otap_df_pdata_views::views::metrics::MetricsView;
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_telemetry::output_service::{Frame, OutputService, StreamHandle};
 use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
-use otap_df_telemetry::{otel_error, otel_warn};
 use otap_df_telemetry_macros::AttributeEnum;
 use std::io::Write;
 use std::sync::Arc;
@@ -57,6 +65,25 @@ pub enum ConsoleOutputFormat {
     Pretty,
     /// One compact log record JSON object per line.
     RecordJson,
+}
+
+/// Histogram detail levels supported by `pretty`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrettyHistogramMode {
+    /// Render compact distribution statistics without bucket details.
+    #[default]
+    Compact,
+    /// Render the complete histogram representation, including buckets.
+    Raw,
+}
+
+/// Format-specific configuration for `pretty`.
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+pub struct PrettyConfig {
+    /// Histogram detail level (default: compact).
+    #[serde(default)]
+    pub histogram: PrettyHistogramMode,
 }
 
 /// Timestamp encodings supported by `record_json`.
@@ -140,6 +167,9 @@ pub struct ConsoleExporterConfig {
     /// Whether to use Unicode box-drawing characters (default: true)
     #[serde(default = "default_unicode")]
     pub unicode: bool,
+    /// Format-specific options for `pretty`.
+    #[serde(default)]
+    pub pretty: PrettyConfig,
     /// Format-specific options for `record_json`.
     #[serde(default)]
     pub record_json: RecordJsonConfig,
@@ -151,6 +181,7 @@ impl Default for ConsoleExporterConfig {
             format: ConsoleOutputFormat::default(),
             color: default_color(),
             unicode: default_unicode(),
+            pretty: PrettyConfig::default(),
             record_json: RecordJsonConfig::default(),
         }
     }
@@ -191,9 +222,11 @@ impl ConsoleExporter {
     pub fn new(pipeline_ctx: &PipelineContext, config: ConsoleExporterConfig) -> Self {
         let metrics = ConsoleExporterMetrics::register(pipeline_ctx, config.format);
         let formatter = match config.format {
-            ConsoleOutputFormat::Pretty => {
-                ConsoleFormatter::Pretty(HierarchicalFormatter::new(config.color, config.unicode))
-            }
+            ConsoleOutputFormat::Pretty => ConsoleFormatter::Pretty(HierarchicalFormatter::new(
+                config.color,
+                config.unicode,
+                config.pretty.histogram,
+            )),
             ConsoleOutputFormat::RecordJson => {
                 ConsoleFormatter::RecordJson(RecordJsonFormatter::new(config.record_json))
             }
@@ -365,10 +398,14 @@ impl Exporter<OtapPdata> for ConsoleExporter {
                     // Resolved per payload: another pipeline can claim stdout for
                     // records after this exporter has already started.
                     let output = self.output_handle();
+                    let export_start = Instant::now();
                     let signal = data.signal_type();
                     match self.export(data.payload_ref(), &output).await {
-                        Ok(()) => self.metrics.record_success(signal),
-                        Err(error_type) => self.metrics.record_failure(signal, error_type),
+                        Ok(()) => self.metrics.record_success(signal, export_start.elapsed()),
+                        Err(error_type) => {
+                            self.metrics
+                                .record_failure(signal, error_type, export_start.elapsed())
+                        }
                     }
                     effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }
@@ -389,7 +426,7 @@ impl ConsoleExporter {
         match payload.signal_type() {
             SignalType::Logs => self.export_logs(payload, output).await,
             SignalType::Traces => self.unsupported_signal("traces"),
-            SignalType::Metrics => self.unsupported_signal("metrics"),
+            SignalType::Metrics => self.export_metrics(payload, output).await,
         }
     }
 
@@ -398,15 +435,15 @@ impl ConsoleExporter {
         payload: &OtapPayload,
         output: &StreamHandle,
     ) -> Result<(), ConsoleExportErrorType> {
-        match payload {
-            OtapPayload::OtlpBytes(bytes) => match RawLogsData::try_from(bytes) {
+        match payload.data() {
+            PayloadData::OtlpBytes(bytes) => match RawLogsData::try_from(bytes) {
                 Ok(logs_view) => self.formatter.print_logs_data(&logs_view, output).await,
                 Err(e) => {
                     otel_error!("console.logs_view.otlp_create_failed", error = ?e, message = "Failed to create OTLP logs view");
                     Err(ConsoleExportErrorType::OtlpViewCreation)
                 }
             },
-            OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
+            PayloadData::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
                 Ok(logs_view) => self.formatter.print_logs_data(&logs_view, output).await,
                 Err(e) => {
                     otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
@@ -416,11 +453,60 @@ impl ConsoleExporter {
         }
     }
 
+    async fn export_metrics(
+        &self,
+        payload: &OtapPayload,
+        output: &StreamHandle,
+    ) -> Result<(), ConsoleExportErrorType> {
+        if !self.formatter.supports_metrics() {
+            return self.unsupported_signal("metrics");
+        }
+
+        match payload.data() {
+            PayloadData::OtlpBytes(bytes) => {
+                let metrics_bytes = match bytes {
+                    otap_df_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes,
+                    _ => unreachable!("metrics payload must contain metrics OTLP bytes"),
+                };
+                match RawMetricsData::try_new(metrics_bytes) {
+                    Ok(metrics_view) => {
+                        self.formatter
+                            .print_metrics_data(&metrics_view, output)
+                            .await
+                    }
+                    Err(e) => {
+                        otel_warn!("console.metrics_view.otlp_create_failed", error = ?e);
+                        Err(ConsoleExportErrorType::OtlpViewCreation)
+                    }
+                }
+            }
+            PayloadData::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
+                Ok(metrics_view) => {
+                    self.formatter
+                        .print_metrics_data(&metrics_view, output)
+                        .await
+                }
+                Err(e) => {
+                    otel_warn!("console.metrics_view.otap_create_failed", error = ?e);
+                    Err(ConsoleExportErrorType::OtapViewCreation)
+                }
+            },
+        }
+    }
+
     fn unsupported_signal(&self, signal: &'static str) -> Result<(), ConsoleExportErrorType> {
+        let message = match (signal, &self.formatter) {
+            ("metrics", ConsoleFormatter::RecordJson(_)) => {
+                "Console exporter record_json format supports logs only; select pretty to inspect metrics"
+            }
+            _ => {
+                "Console exporter does not support this signal in the selected format; use processor:debug followed by exporter:noop to inspect it"
+            }
+        };
         otel_warn!(
             "console.message.unsupported_signal",
             signal = signal,
-            message = "Console exporter supports logs only; use processor:debug followed by exporter:noop to inspect metrics or traces"
+            message = message
         );
         Err(ConsoleExportErrorType::UnsupportedSignal)
     }
@@ -433,6 +519,10 @@ enum ConsoleFormatter {
 }
 
 impl ConsoleFormatter {
+    const fn supports_metrics(&self) -> bool {
+        matches!(self, Self::Pretty(_))
+    }
+
     /// Format logs and hand the complete payload to the process-wide writer.
     async fn print_logs_data<L: LogsDataView>(
         &self,
@@ -470,6 +560,37 @@ impl ConsoleFormatter {
 
         Ok(())
     }
+
+    /// Format metrics and hand the complete payload to the process-wide writer.
+    async fn print_metrics_data<M: MetricsView>(
+        &self,
+        metrics_data: &M,
+        output: &StreamHandle,
+    ) -> Result<(), ConsoleExportErrorType> {
+        let mut buffer = Vec::new();
+        let format_result = match self {
+            Self::Pretty(formatter) => formatter.format_metrics_data_to(metrics_data, &mut buffer),
+            Self::RecordJson(_) => {
+                unreachable!("record_json metrics are rejected before formatting")
+            }
+        };
+
+        if let Err(err) = format_result {
+            otel_error!(
+                "console.format_failed",
+                error = ?err,
+                message = "Could not format console output"
+            );
+            return Err(ConsoleExportErrorType::Formatting);
+        }
+
+        if let Err(err) = output.submit(Frame::new(buffer)).await {
+            otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
+            return Err(ConsoleExportErrorType::Write);
+        }
+
+        Ok(())
+    }
 }
 
 /// Tree drawing characters (Unicode or ASCII).
@@ -497,12 +618,17 @@ impl TreeChars {
 pub struct HierarchicalFormatter {
     color: ColorMode,
     tree: TreeChars,
+    histogram_mode: PrettyHistogramMode,
 }
 
 impl HierarchicalFormatter {
     /// Create a new hierarchical formatter.
     #[must_use]
-    pub const fn new(use_color: bool, use_unicode: bool) -> Self {
+    pub const fn new(
+        use_color: bool,
+        use_unicode: bool,
+        histogram_mode: PrettyHistogramMode,
+    ) -> Self {
         Self {
             color: if use_color {
                 ColorMode::Color
@@ -514,6 +640,7 @@ impl HierarchicalFormatter {
             } else {
                 TreeChars::ASCII
             },
+            histogram_mode,
         }
     }
 
@@ -708,12 +835,19 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack};
     use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::encode::encode_logs_otap_batch;
+    use otap_df_pdata::encode::{encode_logs_otap_batch, encode_metrics_otap_batch};
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{
             AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
         },
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
+        metrics::v1::{
+            AggregationTemporality as ProtoAggregationTemporality, Exemplar, ExponentialHistogram,
+            ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint, Metric,
+            MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary,
+            SummaryDataPoint, exemplar, exponential_histogram_data_point, metric,
+            number_data_point, summary_data_point,
+        },
         resource::v1::Resource,
     };
     use otap_df_pdata::testing::fixtures::logs_with_full_resource_and_scope;
@@ -758,13 +892,187 @@ mod tests {
         }
     }
 
+    fn metrics_with_all_data_types() -> MetricsData {
+        let point_attribute = || {
+            vec![attribute(
+                "series",
+                any_value::Value::StringValue("blue".to_string()),
+            )]
+        };
+        let exemplar = || Exemplar {
+            filtered_attributes: vec![attribute("sampled", any_value::Value::BoolValue(true))],
+            time_unix_nano: 150,
+            span_id: (1u8..=8).collect(),
+            trace_id: (1u8..=16).collect(),
+            value: Some(exemplar::Value::AsDouble(1.25)),
+        };
+        let number_point = |value| NumberDataPoint {
+            attributes: point_attribute(),
+            start_time_unix_nano: 100,
+            time_unix_nano: 200,
+            exemplars: vec![exemplar()],
+            flags: 1,
+            value: Some(value),
+        };
+
+        MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![attribute(
+                        "service.name",
+                        any_value::Value::StringValue("metrics-test".to_string()),
+                    )],
+                    ..Resource::default()
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: Some(InstrumentationScope {
+                        name: "metrics-scope".to_string(),
+                        version: "1.0.0".to_string(),
+                        attributes: vec![attribute("scope.attr", any_value::Value::IntValue(7))],
+                        dropped_attributes_count: 0,
+                    }),
+                    metrics: vec![
+                        Metric {
+                            name: "temperature".to_string(),
+                            description: "Current temperature".to_string(),
+                            unit: "Cel".to_string(),
+                            metadata: vec![attribute(
+                                "metadata.attr",
+                                any_value::Value::StringValue("value".to_string()),
+                            )],
+                            data: Some(metric::Data::Gauge(Gauge {
+                                data_points: vec![number_point(
+                                    number_data_point::Value::AsDouble(21.5),
+                                )],
+                            })),
+                        },
+                        Metric {
+                            name: "requests".to_string(),
+                            description: "Request count".to_string(),
+                            unit: "{request}".to_string(),
+                            metadata: vec![],
+                            data: Some(metric::Data::Sum(Sum {
+                                data_points: vec![number_point(number_data_point::Value::AsInt(
+                                    42,
+                                ))],
+                                aggregation_temporality: ProtoAggregationTemporality::Cumulative
+                                    as i32,
+                                is_monotonic: true,
+                            })),
+                        },
+                        Metric {
+                            name: "latency".to_string(),
+                            description: String::new(),
+                            unit: "ms".to_string(),
+                            metadata: vec![],
+                            data: Some(metric::Data::Histogram(Histogram {
+                                data_points: vec![HistogramDataPoint {
+                                    attributes: point_attribute(),
+                                    start_time_unix_nano: 100,
+                                    time_unix_nano: 200,
+                                    count: 4,
+                                    sum: Some(20.0),
+                                    bucket_counts: vec![1, 2, 1],
+                                    explicit_bounds: vec![1.0, 10.0],
+                                    exemplars: vec![exemplar()],
+                                    flags: 1,
+                                    min: Some(0.5),
+                                    max: Some(12.0),
+                                }],
+                                aggregation_temporality: ProtoAggregationTemporality::Delta as i32,
+                            })),
+                        },
+                        Metric {
+                            name: "size_distribution".to_string(),
+                            description: String::new(),
+                            unit: "By".to_string(),
+                            metadata: vec![],
+                            data: Some(metric::Data::ExponentialHistogram(ExponentialHistogram {
+                                data_points: vec![ExponentialHistogramDataPoint {
+                                    attributes: point_attribute(),
+                                    start_time_unix_nano: 100,
+                                    time_unix_nano: 200,
+                                    count: 6,
+                                    sum: Some(30.0),
+                                    scale: -1,
+                                    zero_count: 1,
+                                    positive: Some(exponential_histogram_data_point::Buckets {
+                                        offset: 2,
+                                        bucket_counts: vec![2, 1],
+                                    }),
+                                    negative: Some(exponential_histogram_data_point::Buckets {
+                                        offset: -2,
+                                        bucket_counts: vec![1, 1],
+                                    }),
+                                    flags: 1,
+                                    exemplars: vec![exemplar()],
+                                    min: Some(-4.0),
+                                    max: Some(16.0),
+                                    zero_threshold: 0.01,
+                                }],
+                                aggregation_temporality: ProtoAggregationTemporality::Cumulative
+                                    as i32,
+                            })),
+                        },
+                        Metric {
+                            name: "request_summary".to_string(),
+                            description: String::new(),
+                            unit: "ms".to_string(),
+                            metadata: vec![],
+                            data: Some(metric::Data::Summary(Summary {
+                                data_points: vec![SummaryDataPoint {
+                                    attributes: point_attribute(),
+                                    start_time_unix_nano: 100,
+                                    time_unix_nano: 200,
+                                    count: 5,
+                                    sum: 25.0,
+                                    quantile_values: vec![
+                                        summary_data_point::ValueAtQuantile {
+                                            quantile: 0.5,
+                                            value: 4.0,
+                                        },
+                                        summary_data_point::ValueAtQuantile {
+                                            quantile: 0.99,
+                                            value: 9.0,
+                                        },
+                                    ],
+                                    flags: 1,
+                                }],
+                            })),
+                        },
+                    ],
+                    schema_url: "https://opentelemetry.io/schemas/scope".to_string(),
+                }],
+                schema_url: "https://opentelemetry.io/schemas/resource".to_string(),
+            }],
+        }
+    }
+
+    fn format_pretty_metrics_with_histogram_mode(
+        metrics_data: &MetricsData,
+        histogram_mode: PrettyHistogramMode,
+    ) -> String {
+        let bytes = metrics_data.encode_to_vec();
+        let metrics_view = RawMetricsData::try_new(&bytes).expect("metrics");
+        let formatter = HierarchicalFormatter::new(false, false, histogram_mode);
+        let mut output = Vec::new();
+        formatter
+            .format_metrics_data_to(&metrics_view, &mut output)
+            .expect("format pretty metrics");
+        String::from_utf8(output).expect("pretty output is UTF-8")
+    }
+
+    fn format_pretty_metrics(metrics_data: &MetricsData) -> String {
+        format_pretty_metrics_with_histogram_mode(metrics_data, PrettyHistogramMode::Compact)
+    }
+
     /// Scenario: the text formatter receives a fixture with multiple scopes and records.
     /// Guarantees: the existing hierarchical text output remains byte-for-byte unchanged.
     #[test]
     fn text_formatter_preserves_hierarchical_output() {
         let logs_data = logs_with_full_resource_and_scope();
         let bytes = OtlpProtoBytes::ExportLogsRequest(logs_data.encode_to_vec().into());
-        let formatter = HierarchicalFormatter::new(false, true);
+        let formatter = HierarchicalFormatter::new(false, true, PrettyHistogramMode::Compact);
 
         let mut output = Vec::new();
         let logs_view = RawLogsData::try_from(&bytes).expect("logs");
@@ -787,6 +1095,165 @@ mod tests {
         assert_eq!(text, expected);
     }
 
+    /// Scenario: Pretty output receives one batch containing every OTLP metric data type.
+    /// Guarantees: The compact metrics hierarchy, field ordering, and tree prefixes remain
+    /// byte-for-byte stable while raw histogram details are omitted.
+    #[test]
+    fn pretty_metrics_render_all_data_types_and_semantics() {
+        let text = format_pretty_metrics(&metrics_with_all_data_types());
+
+        let expected = concat!(
+            "RESOURCE schema_url=https://opentelemetry.io/schemas/resource [service.name=metrics-test]\n",
+            "| +- SCOPE name=metrics-scope version=1.0.0 schema_url=https://opentelemetry.io/schemas/scope [scope.attr=7]\n",
+            "| | +- METRIC name=temperature description=Current temperature unit=Cel [metadata.attr=value]\n",
+            "| | | +- GAUGE\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 value_double=21.5 flags=1 [series=blue]\n",
+            "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
+            "| | +- METRIC name=requests description=Request count unit={request}\n",
+            "| | | +- SUM temporality=cumulative monotonic=true\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 value_int=42 flags=1 [series=blue]\n",
+            "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
+            "| | +- METRIC name=latency unit=ms\n",
+            "| | | +- HISTOGRAM temporality=delta\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=4 sum=20 avg=5 min=0.5 max=12 flags=1 [series=blue]\n",
+            "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
+            "| | +- METRIC name=size_distribution unit=By\n",
+            "| | | +- EXPONENTIAL_HISTOGRAM temporality=cumulative\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=6 sum=30 avg=5 min=-4 max=16 flags=1 [series=blue]\n",
+            "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
+            "| | +- METRIC name=request_summary unit=ms\n",
+            "| | | +- SUMMARY\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=5 sum=25 flags=1 [series=blue]\n",
+            "| | | | | +- QUANTILE quantile=0.5 value=4\n",
+            "| | | | | +- QUANTILE quantile=0.99 value=9\n",
+        );
+        assert_eq!(text, expected);
+    }
+
+    /// Scenario: Compact histograms have no usable sum or contain no observations.
+    /// Guarantees: Average is omitted instead of emitting a fabricated or undefined value.
+    #[test]
+    fn pretty_metrics_compact_histograms_omit_unavailable_average() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        let Some(metric::Data::Histogram(histogram)) = metrics[2].data.as_mut() else {
+            panic!("expected explicit histogram");
+        };
+        histogram.data_points[0].count = 0;
+        histogram.data_points[0].sum = Some(0.0);
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[3].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        histogram.data_points[0].sum = None;
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(!text.contains(" avg="));
+    }
+
+    /// Scenario: Pretty metrics select raw histogram rendering.
+    /// Guarantees: Exact explicit and exponential bucket details remain available on request.
+    #[test]
+    fn pretty_metrics_raw_histograms_preserve_bucket_details() {
+        let text = format_pretty_metrics_with_histogram_mode(
+            &metrics_with_all_data_types(),
+            PrettyHistogramMode::Raw,
+        );
+
+        assert!(text.contains(
+            "count=4 sum=20 min=0.5 max=12 flags=1 [series=blue]\n\
+             | | | | | +- EXPLICIT_BOUND index=0 value=1\n\
+             | | | | | +- EXPLICIT_BOUND index=1 value=10\n\
+             | | | | | +- BUCKET_COUNT index=0 count=1\n\
+             | | | | | +- BUCKET_COUNT index=1 count=2\n\
+             | | | | | +- BUCKET_COUNT index=2 count=1\n"
+        ));
+        assert!(text.contains(
+            "count=6 scale=-1 zero_count=1 zero_threshold=0.01 sum=30 min=-4 max=16 flags=1 [series=blue]\n\
+             | | | | | +- POS_BUCKET offset=2 bucket_index=2 count=2\n\
+             | | | | | +- POS_BUCKET offset=2 bucket_index=3 count=1\n\
+             | | | | | +- NEG_BUCKET offset=-2 bucket_index=-2 count=1\n\
+             | | | | | +- NEG_BUCKET offset=-2 bucket_index=-1 count=1\n"
+        ));
+    }
+
+    /// Scenario: Equivalent metrics use compact and raw formatting through both payload models.
+    /// Guarantees: OTLP bytes and OTAP Arrow records render identically in each histogram mode.
+    #[test]
+    fn pretty_metrics_support_otlp_and_otap_views() {
+        let metrics_data = metrics_with_all_data_types();
+        let records = encode_metrics_otap_batch(&metrics_data).expect("encode OTAP metrics");
+        let otap_view = OtapMetricsView::try_from(&records).expect("OTAP metrics view");
+
+        for histogram_mode in [PrettyHistogramMode::Compact, PrettyHistogramMode::Raw] {
+            let otlp_text =
+                format_pretty_metrics_with_histogram_mode(&metrics_data, histogram_mode);
+            let formatter = HierarchicalFormatter::new(false, false, histogram_mode);
+            let mut output = Vec::new();
+            formatter
+                .format_metrics_data_to(&otap_view, &mut output)
+                .expect("format OTAP metrics");
+            let otap_text = String::from_utf8(output).expect("pretty output is UTF-8");
+
+            assert_eq!(otap_text, otlp_text);
+        }
+    }
+
+    /// Scenario: A metrics field exceeds the fixed line capacity used by internal telemetry.
+    /// Guarantees: Data-plane pretty output preserves the complete field without truncation.
+    #[test]
+    fn pretty_metrics_preserve_long_lines() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let long_name = "x".repeat(LOG_BUFFER_SIZE * 2);
+        metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].name = long_name.clone();
+
+        let bytes = metrics_data.encode_to_vec();
+        let metrics_view = RawMetricsData::try_new(&bytes).expect("metrics");
+        let formatter = HierarchicalFormatter::new(true, false, PrettyHistogramMode::Compact);
+        let mut output = Vec::new();
+        formatter
+            .format_metrics_data_to(&metrics_view, &mut output)
+            .expect("format long metrics line");
+        let text = String::from_utf8(output).expect("UTF-8");
+        let metric_line = text
+            .lines()
+            .find(|line| line.contains(&long_name))
+            .expect("metric line");
+
+        assert!(metric_line.len() > LOG_BUFFER_SIZE);
+        assert!(metric_line.contains("\x1b[32mMETRIC\x1b[0m"));
+        assert!(metric_line.contains(&format!("name={long_name}")));
+        assert!(metric_line.ends_with("[metadata.attr=value]"));
+    }
+
+    /// Scenario: The destination writer rejects pretty metrics output.
+    /// Guarantees: The formatter returns the destination error instead of reporting success.
+    #[test]
+    fn pretty_metrics_propagate_output_errors() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let metrics_data = metrics_with_all_data_types();
+        let bytes = metrics_data.encode_to_vec();
+        let metrics_view = RawMetricsData::try_new(&bytes).expect("metrics");
+        let formatter = HierarchicalFormatter::new(false, false, PrettyHistogramMode::Compact);
+
+        let err = formatter
+            .format_metrics_data_to(&metrics_view, &mut FailingWriter)
+            .expect_err("writer failure must propagate");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+
     /// Scenario: console configuration selects pretty output and every record JSON override.
     /// Guarantees: pretty and record JSON defaults remain stable and invalid selectors are rejected.
     #[test]
@@ -796,6 +1263,7 @@ mod tests {
         assert_eq!(config.format, ConsoleOutputFormat::Pretty);
         assert!(config.color);
         assert!(config.unicode);
+        assert_eq!(config.pretty.histogram, PrettyHistogramMode::Compact);
         assert_eq!(
             config.record_json.timestamp_format,
             RecordJsonTimestampFormat::Rfc3339
@@ -809,9 +1277,23 @@ mod tests {
         assert!(config.record_json.scope);
         assert!(!config.record_json.otel);
 
-        let config: ConsoleExporterConfig =
-            serde_json::from_value(json!({"format": "pretty"})).expect("pretty config");
+        let config: ConsoleExporterConfig = serde_json::from_value(json!({
+            "format": "pretty",
+            "pretty": {
+                "histogram": "raw"
+            }
+        }))
+        .expect("pretty config");
         assert_eq!(config.format, ConsoleOutputFormat::Pretty);
+        assert_eq!(config.pretty.histogram, PrettyHistogramMode::Raw);
+        assert!(
+            ConsoleFormatter::Pretty(HierarchicalFormatter::new(
+                false,
+                false,
+                config.pretty.histogram
+            ))
+            .supports_metrics()
+        );
 
         let config: ConsoleExporterConfig = serde_json::from_value(json!({
             "format": "record_json",
@@ -840,6 +1322,10 @@ mod tests {
         assert!(config.record_json.resource);
         assert!(!config.record_json.scope);
         assert!(config.record_json.otel);
+        assert!(
+            !ConsoleFormatter::RecordJson(RecordJsonFormatter::new(config.record_json))
+                .supports_metrics()
+        );
 
         for unsupported in ["text", "json", "otlp_json", "logfmt"] {
             let result = serde_json::from_value::<ConsoleExporterConfig>(json!({
@@ -847,6 +1333,16 @@ mod tests {
             }));
             assert!(result.is_err(), "{unsupported} should be rejected");
         }
+        let result = serde_json::from_value::<ConsoleExporterConfig>(json!({
+            "format": "pretty",
+            "pretty": {
+                "histogram": "summary"
+            }
+        }));
+        assert!(
+            result.is_err(),
+            "unsupported histogram mode should be rejected"
+        );
         for (field, unsupported) in [
             ("timestamp_format", "epoch"),
             ("body_field", "log"),

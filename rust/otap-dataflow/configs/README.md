@@ -13,6 +13,12 @@ future.
 
 ## Available Configurations
 
+### `trafficgen-file.yaml`
+
+Generates logs, metrics, and traces and writes each signal to an exclusive OTLP
+JSON Lines file under `/tmp` using the experimental file exporter. The resolved
+filenames include the signal, core ID, and deployment generation.
+
 ### `internal-telemetry-logs.yaml`
 
 Routes only the engine's own logs through the Internal Telemetry System:

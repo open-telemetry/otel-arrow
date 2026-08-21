@@ -133,7 +133,8 @@ pub use config::{
     DurabilityMode, QuiverConfig, RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig,
 };
 pub use engine::{
-    MaintenanceStats, QuiverEngine, QuiverEngineBuilder, RetentionLossCounts, RetentionLossSnapshot,
+    MaintenanceStats, QuiverEngine, QuiverEngineBuilder, RetentionLossCounts,
+    RetentionLossSnapshot, WalItemCounter,
 };
 pub use error::{QuiverError, Result};
 

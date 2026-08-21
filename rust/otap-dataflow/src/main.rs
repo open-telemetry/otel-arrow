@@ -19,6 +19,13 @@ use otap_df_controller::{BuildInfo, Controller, ControllerRunOptions};
 use otap_df_core_nodes::exporters::console_exporter::claim_structured_stdout;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_telemetry::output_service::{OutputService, OutputServiceConfig, ShutdownOutcome};
+// Keep this side-effect import so the experimental wasm-host crate is linked
+// and its `linkme` distributed-slice registration (the `wasm_processor`
+// factory) is visible in `OTAP_PIPELINE_FACTORY` at runtime. Off by default;
+// only present when the `wasm` cargo feature is enabled.
+#[cfg(feature = "wasm")]
+use otap_df_wasm_host as _;
+
 /// Project license text (Apache-2.0), embedded at compile time.
 const LICENSE_TEXT: &str = include_str!("../LICENSE");
 

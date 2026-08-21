@@ -303,8 +303,8 @@ pub struct ManifestEntry {
     ///
     /// For Arrow bundles this is `num_rows()`, for OTLP pass-through
     /// bundles this is the count of log records, metric data points,
-    /// or spans. Zero if unknown (e.g. legacy segments without this field).
-    item_count: u64,
+    /// or spans. `None` means the count is unknown.
+    item_count: Option<u64>,
     /// Mapping from slot to the stream/chunk containing that slot's data.
     slot_refs: HashMap<SlotId, SlotChunkRef>,
 }
@@ -313,6 +313,11 @@ impl ManifestEntry {
     /// Creates a new manifest entry for the given bundle index and item count.
     #[must_use]
     pub fn new(bundle_index: u32, item_count: u64) -> Self {
+        Self::new_with_item_count(bundle_index, Some(item_count))
+    }
+
+    /// Creates a manifest entry with an optional authoritative item count.
+    pub(crate) fn new_with_item_count(bundle_index: u32, item_count: Option<u64>) -> Self {
         Self {
             bundle_index,
             item_count,
@@ -321,8 +326,18 @@ impl ManifestEntry {
     }
 
     /// Returns the number of logical data items in this bundle.
+    ///
+    /// Returns 0 when the count is unavailable.
     #[must_use]
     pub const fn item_count(&self) -> u64 {
+        match self.item_count {
+            Some(item_count) => item_count,
+            None => 0,
+        }
+    }
+
+    /// Returns the authoritative item count when available.
+    pub(crate) const fn exact_item_count(&self) -> Option<u64> {
         self.item_count
     }
 
