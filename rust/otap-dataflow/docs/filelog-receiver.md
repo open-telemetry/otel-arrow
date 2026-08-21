@@ -2,156 +2,113 @@
 
 # Filelog Receiver Design
 
-**Status:** Draft (revised after design review)
-**Tracking issue:** [#2844](https://github.com/open-telemetry/otel-arrow/issues/2844)
-**Related issues:** [#2321](https://github.com/open-telemetry/otel-arrow/issues/2321) (seed request), [#2858](https://github.com/open-telemetry/otel-arrow/issues/2858) (journald receiver, shared source-progress contract)
-**Owner:** @lalitb
+Tracks [#2844](https://github.com/open-telemetry/otel-arrow/issues/2844). Related work:
+[#2321](https://github.com/open-telemetry/otel-arrow/issues/2321) and the journald
+receiver [#2858](https://github.com/open-telemetry/otel-arrow/issues/2858).
 
-## Summary
+## Objective
 
-An OTAP-native `filelog` receiver for local file-based log ingestion. The receiver owns
-**file bytes, file identity, byte offsets, framing, rotation handling, backpressure, and
-Ack-gated checkpoints**. It emits raw, unparsed OTAP log records with file metadata
-attached. All semantic interpretation -- parsing, extraction, enrichment, categorization,
-filtering, routing -- lives outside the receiver in processors (OPL transform processors
-in particular).
+Add an OTAP-native receiver that collects logs from local files reliably and fits the
+OTAP Dataflow architecture. It must keep reading while files grow, survive restart and
+rotation, stop under backpressure, and advance file positions only after downstream
+acknowledgement.
 
-This document distinguishes four kinds of statements throughout:
+This is not a port of the Go Collector filelog receiver. It keeps the useful customer
+behavior while separating collection from semantic processing.
 
-- **[Confirmed]** -- existing repository behavior this design relies on, with source references.
-- **[Decision]** -- a design decision made by this document.
-- **[Open]** -- an unresolved question that must be settled before or during implementation.
-- **[Deferred]** -- explicitly out of scope for the initial implementation.
+## Responsibility split
 
-## Relationship to epic #2844
+```text
+Discovery:
+  find files and assign ownership
 
-The discovery/assignment extension, fixed virtual partitions, and multi-instance
-assignment described in [#2844](https://github.com/open-telemetry/otel-arrow/issues/2844)
-remain the **target architecture**. They solve the long-term ownership and handoff
-problem when receiver instances are added, removed, restarted, or replaced. This
-document does not replace that architecture. **[Decision]**
+Filelog receiver:
+  read bytes, decode text, frame records, track identity and offsets,
+  handle rotation and checkpoints, emit raw OTAP logs
 
-The initial implementation is an incremental step toward that target: one receiver
-instance consumes assignments from an in-process discovery source because the engine
-does not yet provide the required engine- or group-scoped coordinator, stable placement,
-ready-without-ownership lifecycle, or enforced fencing mechanism. The boundary between
-assignment and reading is preserved so those capabilities can move to an external
-coordinator without redesigning file reading, framing, or Ack-gated progress.
-**[Decision]**
+Processors:
+  parse timestamps and structured content, enrich, normalize, filter and route
 
-Consequently, Phase 1 does **not** complete the epic's multi-instance acceptance
-criteria. It validates the source-progress path and checkpoint identity across restart,
-including restart under a changed ambient CPU allocation. It does not provide live CPU
-scale up/down through virtual-partition reassignment; that remains Phase 3. Agreement
-that this is an acceptable first implementation step is an open epic-level decision.
-**[Open]**
+Exporters:
+  represent and deliver OTAP records to destinations
+```
 
-## Relationship to the journald receiver (#2858)
+The important boundary is simple: the receiver decides **which source bytes form a
+record**; processors decide **what that record means**.
 
-The journald receiver (`docs/journald-receiver.md`) is the in-repo prior art for an
-Ack-gated, checkpointing source. Both receivers share a **source-neutral progress
-contract**; the source mechanics differ:
+## Why this design
 
-| Concern | journald | filelog |
-| --- | --- | --- |
-| Source iteration | `sd-journal` FFI | file discovery + `read(2)` |
-| Progress token | opaque journald cursor | file identity + byte offset |
-| Framing | provided by journald | receiver-owned (newline and bounded multiline) |
-| Rotation | n/a (journald owns retention) | move/create + copytruncate |
-| Checkpoint unit | one cursor per source | identity-keyed offset table persisted as snapshot + WAL |
+File collection combines several problems that must remain correct together: discovery,
+identity, framing, rotation, backpressure and restart recovery. Embedding timestamp,
+JSON, severity, filtering and routing logic in the receiver would mix source progress
+with customer-specific interpretation. Keeping those operations in processors makes the
+receiver smaller, makes failures easier to reason about, and lets other receivers reuse
+the same processing functions.
 
-Shared (source-neutral) contract, per the discussion on
-[#2858](https://github.com/open-telemetry/otel-arrow/issues/2858#issuecomment-4414785174):
-bounded backpressure, Ack/Nack-gated commits, in-flight batch retention and resend,
-checkpoint envelope conventions, lifecycle/drain behavior, and assignment hooks. The
-journald design doc explicitly defers consolidating shared plumbing "until the filelog
-design proves the shared shape"; this document defines that shape but does **not**
-require refactoring journald as a precondition. **[Decision]**
+## Relationship to #2844
 
-## Confirmed engine behavior this design relies on
+Laurent's proposal in #2844 remains the target: one discovery/assignment coordinator,
+fixed virtual partitions, and multiple receiver instances whose ownership does not
+depend on the current CPU count.
 
-- **Receiver contract.** Receivers implement `local::Receiver<PData>` or
-  `shared::Receiver<PData>` with a single `start(ctrl_chan, effect_handler)` entry point;
-  control messages must be processed in priority over external data
-  (`crates/engine/src/local/receiver.rs:62-96`, priority requirement `:79-80`).
-- **Ack/Nack subscription.** A producer subscribes per-message via
-  `ProducerEffectHandlerExtension::subscribe_to(Interests::ACKS | Interests::NACKS, ctx, &mut pdata)`;
-  outcomes return as `NodeControlMsg::Ack(AckMsg)` / `Nack(NackMsg)` on the control
-  channel, correlated through opaque `CallData` (`crates/engine/src/lib.rs:292-455`,
-  `crates/engine/src/control.rs:111-255`). journald tags `CallData` with a `batch_id`
-  (`journald_receiver/mod.rs:885-891`); filelog uses the same correlation pattern.
-  `NackMsg` carries a `permanent` flag and a cause (`RouteFull`, `RouteClosed`,
-  `NodeShutdown`, `Unspecified`) (`control.rs:167-198`).
-- **`Interests` is a full `u8`** -- no free bits remain; this design must not require a
-  new interest flag (`crates/engine/src/lib.rs:325`). `Interests::RETURN_DATA` already
-  exists (bit 2, `lib.rs:308`) and would return the Nacked payload to the producer;
-  this design does not use it (see Ack model) but requires no new flag either way.
-- **Drain orchestration.** On shutdown latch the engine sends `DrainIngress` to every
-  receiver while downstream nodes stay live; it waits for each receiver's
-  `RuntimeControlMsg::ReceiverDrained` and only then sends `Shutdown` to non-receiver
-  nodes (`crates/engine/src/pipeline_ctrl.rs:484-558`). A receiver that drains cleanly
-  and exits **never receives `Shutdown`**; `Shutdown` reaches receivers only on the
-  forced-deadline path (`pipeline_ctrl.rs:385-419`). Downstream-alive-during-drain is
-  what allows a receiver to flush and await Ack of its final batch.
-- **Live reconfiguration / resize overlaps generations.** The controller starts the new
-  deployment generation and waits for it to become ready **before** draining the old one
-  (`crates/controller/src/live_control/execution.rs:390-448`). Two instances of the
-  receiver can therefore be alive simultaneously during every rollout, and
-  `deployment_generation` is monotonic only within one controller lifetime
-  (`crates/engine/src/context.rs:203-205`). No receiver consumes
-  `NodeControlMsg::Config`; reconfiguration is teardown + rebuild.
-- **Per-core instancing, no stable slot id.** The engine runs one receiver instance per
-  core of a pipeline; `PipelineContext` exposes `core_id()`/`num_cores()`/
-  `deployment_generation()` but no restart-stable placement slot
-  (`crates/engine/src/context.rs`). journald's factory rejects `num_cores() > 1`
-  (`journald_receiver/mod.rs:161-167`). Receiver readiness is not an engine primitive
-  (readiness signalling exists only for extensions,
-  `crates/engine/src/extension/readiness.rs`).
-- **Extensions are pipeline-scoped (per-core) in Phase 1.** Engine-level and
-  group-level extension scopes are documented future work; no cross-instance singleton
-  exists today (`docs/extension-system-architecture.md`).
-- **OTAP logs encoding.** `LogsRecordBatchBuilder` + `StrKeysAttributesRecordBatchBuilder<u16>`
-  (`crates/pdata/src/encode/record/logs.rs`, `attributes.rs`); record ids are `u16`, so
-  one OTAP batch holds at most 65,535 log records
-  (`journald_receiver/arrow_records_encoder.rs:133`).
-- **Batch retention is cheap.** `OtapArrowRecords` clones are shallow: Arrow columns are
-  `Arc`-backed, so retaining an emitted batch bumps refcounts without copying data
-  (`crates/pdata/src/otap.rs`, `raw_batch_store.rs`). journald retains its in-flight
-  batch and resends it on pre-checkpoint Nack (`journald_receiver/mod.rs:557-566`,
-  `:659-669`).
-- **Checkpoint envelope precedents.** journald: JSON envelope, blake3 checksum,
-  write-tmp -> fsync -> rename -> fsync-dir (`journald_receiver/checkpoint.rs:103-160`,
-  2 fsyncs per commit). quiver: binary `[magic][version][header_size][body][crc32]`
-  envelopes with the same atomic write discipline (`crates/quiver/ARCHITECTURE.md`).
-- **Blocking I/O isolation.** journald isolates all blocking calls on a dedicated worker
-  thread with bounded channels in both directions; the async side never blocks, uses
-  biased selection to prioritize control messages, and races blocked sends against
-  incoming control messages (`journald_receiver/mod.rs:751-753`, `:906-974`).
-- **No existing filelog, discovery, or partition-assignment code.** Verified by
-  repository search; the assignment extension in #2844 is a planned capability, not an
-  existing one. journald's `SourceLease` is a process-local config-mistake guard, not a
-  cross-process ownership mechanism (`journald_receiver/mod.rs:1112-1143`).
+Phase 1 uses one receiver and an in-process discovery source because the required
+engine-level coordinator and fencing mechanism do not exist yet. The reader consumes a
+small assignment interface from the start, so external discovery can replace the local
+producer later without changing framing, rotation, or checkpoints. Phase 1 delivers the
+complete product P0, but the epic's live multi-instance resize criteria remain Phase 3.
 
-## Core Decisions
+## Reuse from journald
 
-| # | Decision | Choice |
-| --- | --- | --- |
-| D1 | Instance model (v1) | Single receiver instance (`num_cores == 1` enforced at factory, like journald); scale-out via topic fanout; multi-instance assignment is Phase 3 |
-| D2 | Discovery placement (v1) | Discovery runs on its **own thread** inside the receiver, behind an `AssignmentSource` boundary; it feeds the read worker over a bounded event channel |
-| D3 | Ownership unit | Checkpoint records are keyed by a persisted opaque `file_id`; virtual partitions are a Phase-3 assignment concept and do not appear in v1 storage or config |
-| D4 | File identity | Stable logical identity = persisted opaque `file_id`; runtime locator = POSIX `(st_dev, st_ino)` or Windows `(volume_serial, FILE_ID_INFO)`; raw fingerprint bytes are mutable matching evidence, never a unique key |
-| D5 | Checkpoint keys | File-centric: never include core id, CPU count, instance id, deployment generation, or any future partition owner |
-| D6 | Checkpoint store | One snapshot plus an append-only progress log per stable checkpoint namespace; Ack updates append only changed records, and periodic compaction atomically replaces the snapshot |
-| D7 | Ack model (v1) | `max_in_flight_batches = 1`; the worker retains the in-flight batch and resends retryable Nacks with bounded backoff; no reader advances past the unacked frontier |
-| D8 | Thread layout | Three components: discovery thread (blocking), read worker thread (blocking, owns FDs/framing/encoding/checkpoint I/O), async engine task (control, Ack/Nack, emission) |
-| D9 | Framing | Phase 1 includes newline plus configurable start- or end-pattern multiline framing, bounded partial-record flush, decode-before-framing encodings, and split/truncate oversize policy |
-| D10 | Emitted schema | Raw framed record as body; file metadata as attributes (`log.file.path`, `log.file.name`, optional source offset); no semantic parsing |
-| D11 | Batch bounds | `batch.max_records` (<= 65,535, default 1,024), `batch.max_flush_period`, and `batch.max_bytes` -- a byte budget from day one |
-| D12 | Rotation | Move/create: retain FD, read to EOF + `rotate_wait`, finalize. Copytruncate: **best-effort** detection, default policy `read_new`, per-file epoch guards stale in-flight deltas |
-| D13 | Backpressure & control priority | Bounded channels end to end; reader stops when the handoff is full; the async half biased-selects control messages over data and races blocked sends against incoming control messages |
-| D14 | Discovery mechanism | Periodic glob reconciliation (`poll_interval`) with platform-locator dedup in v1; filesystem notifications plus reconciliation are the target so new files are tailed promptly without relying on notifications for correctness |
-| D15 | Ownership across generations | A checkpoint-namespace lock serializes generations sharing checkpoint state; a process-wide runtime-identity lease prevents two local receiver instances from reading the same open file |
-| D16 | Failure policy | Fail-closed on checkpoint corruption; per-file read errors quarantine the file; recovery identity mismatch follows an explicit policy that defaults to replay from beginning (duplicates over loss) |
+Journald is useful prior art for one pattern: keep blocking source and checkpoint work
+on a dedicated worker, hand bounded batches to the async receiver, retain an in-flight
+batch, and commit progress only after Ack. Filelog follows that lifecycle pattern but
+does not share journald's source mechanics: it has file discovery, byte offsets,
+framing, fingerprints and rotation. Refactoring common plumbing is optional follow-up
+work, not a prerequisite.
+
+Rotel's file receiver is additional implementation prior art. It validates native
+directory notifications with polling fallback, debounced events as rescan hints, open
+handles across rename, versioned atomic state, and Ack-aware offsets. This design keeps
+those patterns. It does not copy Rotel's embedded JSON/nginx parsers, global
+`spawn_blocking` worker pool, Nack-as-Ack option, or platform ID as permanent identity
+because they do not match the responsibility, bounded-thread, and recovery contracts
+here.
+
+## What users get
+
+- Point the receiver at files or directories using include and exclude patterns.
+- Discover new matching files and start reading while they are still growing.
+- Keep stack traces and other multiline events together.
+- Read UTF-8, ASCII and UTF-16 without treating NUL bytes as end-of-record.
+- Resume from durable positions after restart.
+- Drain an old file and start its replacement during normal rotation.
+- Stop reading when downstream is slow instead of growing memory without bound.
+- See health signals for parsing fallback, invalid bytes, truncation, identity reset,
+  copy-truncate detection, unreadable files and checkpoint failures.
+
+The receiver emits ordinary OTel `LogRecord`s, so existing processors and exporters can
+handle the result like logs from other OTAP-native sources.
+
+## Design at a glance
+
+- **One source owner in Phase 1 (D1-D3).** One receiver owns all assigned files. Topic
+  fanout provides downstream parallelism. Fixed virtual partitions add multiple owners
+  in Phase 3.
+- **Stable file progress (D4-D6).** A persisted opaque `file_id` owns the checkpoint.
+  Platform file IDs and fingerprints reconnect discovered files; neither is a unique
+  checkpoint key by itself.
+- **Ack controls progress (D7).** Phase 1 retains one in-flight Arrow batch. Ack commits
+  offsets; Nack never silently advances them.
+- **Blocking work stays off the runtime (D8).** One discovery thread and one
+  read/checkpoint thread communicate with the async receiver over bounded channels.
+- **Frame, do not interpret (D9-D10).** The receiver decodes text, forms records,
+  applies size limits and emits raw OTAP. Processors parse timestamps, JSON and severity.
+- **Everything is bounded (D11, D13).** File turns, readers, descriptors, record
+  buffers, batches and channels have limits. Backpressure stops file reads.
+- **Rotation is explicit (D12, D14).** Move/create drains the old handle while reading
+  the replacement. Copy-truncate detection is best-effort and reported.
+- **One live reader per file (D15-D16).** Locks and leases prevent overlap. Corrupt
+  state fails closed; ambiguous recovery defaults to replay rather than silent loss.
 
 ## Architecture
 
@@ -159,76 +116,64 @@ require refactoring journald as a precondition. **[Decision]**
 
 ```mermaid
 flowchart LR
-  subgraph Receiver instance (one core, v1)
-    subgraph Discovery thread (blocking)
-      D[Glob reconcile, stat,
-fingerprint new files]
+  subgraph receiver["Receiver instance - one core"]
+    subgraph discovery["Discovery thread"]
+      D["Watch and reconcile<br/>identify new files"]
     end
-    D -->|bounded AssignmentEvent channel| W
-    subgraph Read worker thread (blocking)
-      W[File readers: framing,
-offset table, Arrow build] --> CK[(Snapshot + progress log
-+ namespace lock)]
+    D -->|"bounded assignments"| W
+    subgraph worker["Read and checkpoint thread"]
+      W["Read, decode, frame<br/>build OTAP batches"]
+      W --> CK[("Checkpoint snapshot and WAL")]
     end
-    W -->|bounded handoff: batch + delta set| A[Async engine task]
-    A -->|Commit / Resend / Drain commands| W
+    W -->|"bounded batch handoff"| A["Async engine task"]
+    A -->|"commit, resend, drain"| W
   end
-  A -->|OTAP batch + Ack/Nack subscription| P[OPL / parser / enrichment processors]
-  P --> R[Routing] --> E[Exporters]
-  P -.->|Ack / Nack unwind| A
+  A -->|"raw OTAP logs"| P["OPL and parsing processors"]
+  P --> R["Routing"] --> E["Exporters"]
+  E -.->|"Ack or Nack"| A
 ```
 
 ### Target architecture from #2844
 
 ```mermaid
 flowchart LR
-  D[Discovery / assignment extension] -->|virtual-partition assignments| R1[Receiver instance 1]
-  D -->|virtual-partition assignments| R2[Receiver instance 2]
-  R1 -->|raw OTAP batches| P[Processors / OPL]
-  R2 -->|raw OTAP batches| P
-  P --> E[Routing / exporters]
-  P -.->|Ack / Nack unwind| R1
-  P -.->|Ack / Nack unwind| R2
-  C[(Partition-owned checkpoint store<br/>with enforced fencing)] --- D
+  D["Discovery and assignment"] -->|"virtual partitions"| R1["Receiver 1"]
+  D -->|"virtual partitions"| R2["Receiver 2"]
+  R1 -->|"raw OTAP logs"| P["Processors and OPL"]
+  R2 -->|"raw OTAP logs"| P
+  P --> E["Routing and exporters"]
+  E -.->|"Ack or Nack"| R1
+  E -.->|"Ack or Nack"| R2
+  C[("Partition checkpoints<br/>with fencing")] --- D
   C --- R1
   C --- R2
 ```
 
 The target replaces only assignment ownership and checkpoint coordination. Receiver
 behavior below the assignment boundary -- file reading, framing, batching, Ack/Nack
-correlation, backpressure, and drain -- remains the same. **[Decision]**
+correlation, backpressure, and drain -- remains the same.
 
-Data flow per batch:
+For each batch:
 
-1. The discovery thread reconciles the include/exclude globs on `poll_interval`,
-   dedupes candidates by platform runtime locator, computes fingerprints for new files, and
-   emits assignment events. It never touches the read path.
-2. The read worker reads bytes from assigned files (bounded per turn), frames newline
-   records, appends to the Arrow builder, and tracks per-file offset deltas
-   (`(file_id, file_epoch, prev_offset, new_offset)`) for the open batch.
-3. On flush (records, bytes, or time bound), the worker hands the batch plus its delta
-   set to the async task and **retains a shallow clone** of the batch.
-4. The async task subscribes the batch to `ACKS | NACKS` with a `batch_id` in
-   `CallData` and emits it downstream.
-5. On Ack, the async task sends `Commit { batch_id, attempt }`; the worker applies the delta set
-   to the in-memory offset table (skipping stale-epoch deltas), drops the retained
-   clone, and appends a progress transaction.
-6. On a retryable Nack, the async task schedules bounded backoff and sends
-   `Resend { batch_id, next_attempt }` to the worker. The worker returns the retained
-   batch over the normal handoff; the async task installs a fresh subscription carrying
-   the same logical `batch_id` and the new attempt number before sending it again. On
-   permanent Nack or exhausted retries, the configured `on_nack` policy applies.
+1. Discovery assigns new or changed files.
+2. The worker reads bounded turns, frames records and builds an OTAP batch.
+3. The receiver emits the batch and retains it while waiting for completion.
+4. Ack persists the new file positions; retryable Nack resends the retained batch.
+5. Backpressure, drain and shutdown interrupt reading without advancing unacknowledged
+   positions.
+
+The detailed correlation and retry rules appear under **Ack and checkpoint model**.
 
 ## Instance model and discovery
 
-### v1: single instance, internal discovery **[Decision D1, D2, D14]**
+### Phase 1: single instance with local discovery
 
 The factory rejects `pipeline.num_cores() > 1`, exactly as journald does. One receiver
 instance owns all matched files. Parallel semantic processing is achieved downstream via
 the topic exporter/receiver fanout (`docs/topic-architecture.md`).
 
 Rationale: #2844's discovery/assignment extension requires an engine- or group-scoped
-coordinator, and the extension system has no such scope today **[Confirmed]**. v1
+coordinator, and the extension system has no such scope today. v1
 therefore isolates discovery behind a small internal boundary:
 
 ```text
@@ -244,7 +189,7 @@ read worker must depend only on its ordered event contract; it must not inspect 
 configuration, assume assignments are produced locally, or derive ownership from core
 id, CPU count, deployment generation, or receiver instance. The future extension must
 be able to replace the in-process producer without changing file reading, framing,
-batching, or Ack-gated progress semantics. **[Decision]**
+batching, or Ack-gated progress semantics.
 
 The v1 implementation is a dedicated **discovery thread** running glob reconciliation
 (include minus exclude, `ignore_older_than` filter) on `poll_interval`. Running
@@ -262,7 +207,7 @@ rotation storms), and `stat` storms. Discovery output invariants:
   locator is live, even if their fingerprints are identical. Equal prefixes are common
   for unrelated logs and are not proof of identity. Same-filesystem rename continuity
   comes from the unchanged locator. Cross-device or cross-volume copy/unlink is treated as a new file in
-  v1; duplicate ingestion is safer than merging two independent streams. **[Decision]**
+  v1; duplicate ingestion is safer than merging two independent streams.
 
 ### Growing-file tailing
 
@@ -271,14 +216,14 @@ directory, the receiver discovers and assigns it without waiting for the file to
 stop growing, or reach a size threshold. After applying `start_at` and durably
 registering the initial checkpoint anchor, the worker reads currently available bytes
 in bounded turns and emits complete records incrementally as new bytes are appended.
-It never loads or waits for the complete file. **[Decision]**
+It never loads or waits for the complete file.
 
 The target discovery implementation combines filesystem notifications with periodic
 glob reconciliation. Notifications provide prompt discovery of create, move, and
 relevant modification events; reconciliation remains the source of correctness after
 missed or coalesced events, watcher overflow, directory replacement, startup races, or
 platform-specific notification gaps. A notification is only a hint to reconcile and
-`stat`; it is not file identity or proof that a write is complete. **[Decision]**
+`stat`; it is not file identity or proof that a write is complete.
 
 Rapid file growth remains bounded by `max_read_bytes_per_turn`, batch byte/record bounds,
 and downstream backpressure. When downstream is blocked, the receiver stops reading and
@@ -298,14 +243,14 @@ assigned when a dynamic exclude begins to match are revoked at the next record b
 tailed file merely because the writer becomes quiet. `recursive` controls whether the
 scanner may descend below the directory named by an include; `**` controls which paths
 match within that permitted traversal. A recursive glob does not override
-`recursive: false`. **[Decision]**
+`recursive: false`.
 
 The receiver's resolved checkpoint namespace under `${engine.state_dir}` is always
 excluded from discovery. Configuration is rejected when an include resolves directly
 to that namespace, and a warning is emitted when include patterns appear to cover the
 engine's own log output. The state exclusion is mandatory even when an exclude pattern
 would otherwise be required, preventing checkpoint WAL or snapshot files from feeding
-back into the receiver. **[Decision]**
+back into the receiver.
 
 The design distinguishes matched files, durable tracked identities, active readers, and
 open file descriptors. `max_tracked_files` bounds the first two durable populations;
@@ -317,17 +262,17 @@ candidate's wait age and the queue depth are observable without using paths as m
 dimensions. With `checkpoint.retention: 0`, durable records are never automatically
 removed, so a full tracked table can remain saturated until the limit is raised or an
 operator explicitly removes state. This interaction is validated with a configuration
-warning and documented as an availability tradeoff. **[Decision]**
+warning and documented as an availability tradeoff.
 
 When engine-scope extensions exist, the same event stream is delivered by an external
 discovery extension and the reader/checkpoint machinery below the boundary is
 unchanged. The event protocol above is deliberately minimal; richer handoff mechanics
-are **not** specified now (see Multi-instance requirements). **[Decision]**
+are **not** specified now (see Multi-instance requirements).
 
-### Ownership across generations **[Decision D15]**
+### Ownership across generations
 
 Live reconfiguration and resize overlap deployment generations: the new instance starts
-and must become ready **before** the old one drains **[Confirmed]**. Both generations
+and must become ready **before** the old one drains. Both generations
 resolve the same checkpoint path (keys exclude generation by design, D5). Without an
 ownership mechanism, the old generation can rewrite checkpoint state **after** the
 new generation has advanced it -- a lost-update race that exists in v1, not just in the
@@ -355,16 +300,16 @@ v1 uses two mechanisms with deliberately different scopes:
 - Runtime file leases are released when their FDs close and on receiver termination.
   They are process-local guards, not durable identity or checkpoint records.
 - Advisory locks are unreliable on some network filesystems; a `state_dir` on NFS is
-  documented as unsupported for concurrent-rollout safety. **[Decision]**
+  documented as unsupported for concurrent-rollout safety.
 
 This prevents duplicate readers during normal live reconfiguration inside one engine,
 including receiver-node renames and overlapping patterns. It does not coordinate two
 independent engine processes that use different state directories; that deployment is
 outside the v1 ownership guarantee and must be documented. "Ready" here remains a
 lifecycle description, not an engine primitive -- receiver readiness signalling does
-not exist in the engine today **[Confirmed]**.
+not exist in the engine today.
 
-### Multi-instance requirements (Phase 3) **[Decision D3, deliberately minimal]**
+### Multi-instance requirements (Phase 3)
 
 When a discovery/assignment extension and engine-scope coordination exist, ownership
 moves from "one instance owns everything" to assigned subsets. This document fixes only
@@ -379,26 +324,26 @@ identity scheme must not preclude them:
    insufficient because a stale writer can overwrite that file. The Phase-3 storage or
    coordinator must compare and reject stale epochs atomically (for example, under a
    coordinator-owned lease or compare-and-swap store). Epoch allocation, verification,
-   and transport are **[Open]**.
+   and transport are.
 3. **Ready-before-ownership:** an instance can run without owning anything and acquire
    ownership later (already the v1 startup shape under D15).
 4. **Stable partition input:** partition mapping uses the persisted opaque `file_id`,
    never a fingerprint. It is therefore stable for short, empty, and growing files.
-   The mapping function and partition count remain Phase-3 decisions. **[Open]**
+   The mapping function and partition count remain Phase-3 decisions.
 
 Checkpoint records carry stable `file_id`s and no current owner, which makes a future
 split deterministic. Moving from the v1 instance-local snapshot/log to partition-owned
 storage still requires a coordinated format and ownership migration; this document does
 not claim otherwise. Virtual partitions, partition counts, and revoke/assign mechanics
 do not appear in v1 config because freezing them now would encode an unproven protocol
-into a durable format. **[Decision]**
+into a durable format.
 
 That migration must be explicit and versioned. It must preserve each committed
 `file_id` offset without re-ingestion or skipping, reject mixed old/new ownership during
 cutover, and either roll back safely or fail before any new owner reads. Phase 3 is not
-complete until this migration path is specified and tested. **[Decision]**
+complete until this migration path is specified and tested.
 
-## File identity **[Decision D4]**
+## File identity
 
 Three values have separate roles:
 
@@ -466,7 +411,7 @@ store into candidate `(path, locator, offset)` records, but each imported offset
 only after identity validation. An importer must report matched, ambiguous, reset, and
 rejected records and must be idempotent across restart. Filebeat 9.x path/native-to-
 fingerprint migration is prior art for the algorithm, not proof that an unrelated
-product's stored state contains enough evidence to migrate safely. **[Decision]**
+product's stored state contains enough evidence to migrate safely.
 
 Phase 1 supports Linux, macOS, and Windows durable identity. Linux and macOS use the
 runtime locator described above. Windows uses
@@ -474,12 +419,10 @@ runtime locator described above. Windows uses
 correctness. Equivalent restart and rotation tests are Phase-1 acceptance criteria on
 all three platforms. Reading a Windows file whose writer denies shared-read access
 remains a separate P1 source contract and is not implied by Windows identity support.
-**[Decision]**
 
-## Execution model **[Decision D8]**
+## Execution model
 
-Three components, blocking work isolated from the engine runtime **[Confirmed
-pattern]**:
+Three components keep blocking work isolated from the engine runtime:
 
 - **Discovery thread** (blocking): glob reconcile, `stat`, fingerprint computation for
   new files. Emits `AssignmentEvent`s over a bounded channel. Slow scans delay
@@ -490,7 +433,7 @@ pattern]**:
   because the worker is idle during the in-flight window anyway (see Ack model): commit
   I/O fills dead time rather than competing with reads.
 - **Async engine task**: owns the control channel, Ack/Nack correlation, emission, and
-  drain deadlines. Two hard requirements from the engine contract **[Confirmed]**:
+  drain deadlines. Two hard requirements from the engine contract:
   - control messages are polled with **biased priority** over the worker handoff
     channel (journald `mod.rs:751-753`);
   - a blocked downstream send is raced against **incoming control messages** (not
@@ -519,9 +462,9 @@ Reader scheduling within the worker:
   is the Phase-2 pipelining/multi-in-flight work, which must then design read-ahead
   offset tracking. Independently, one read worker is the Phase-1 aggregate file-I/O and
   checkpoint-I/O throughput ceiling even when downstream latency is negligible; Phase-1
-  performance claims and benchmarks must name both ceilings. **[Decision]**
+  performance claims and benchmarks must name both ceilings.
 
-### Threading and NUMA placement **[Decision]**
+### Threading and NUMA placement
 
 Phase 1 follows the singleton-source pattern used by journald and host metrics:
 
@@ -571,7 +514,7 @@ Unknown topology remains `unknown`, never silently NUMA node zero. CPU count, co
 NUMA node, thread ID, and deployment generation remain absent from checkpoint keys, so
 placement changes cannot change source identity or resume position.
 
-## Framing **[Decision D9]**
+## Framing
 
 Phase 1 supports newline framing and the bounded multiline contract below. Newline is
 the default when no multiline boundary is configured. Framing operates on decoded
@@ -599,25 +542,24 @@ Invariants and constraints:
   line is terminal. On rotation finalization any unflushed partial bytes are counted as
   `filelog.partial_bytes_dropped`; the checkpoint remains at the previous complete
   boundary. At drain, recoverable buffered bytes are reported as pending, not dropped,
-  so restart can resume if the source still exists. **[Decision]**
+  so restart can resume if the source still exists.
 - Idle flush is the only sanctioned way to commit a mid-line offset on a non-terminal
   file. It trades latency for a documented slow-writer split risk and is included in
   Phase 1 because the P0 requirements require the final record to be released without
-  waiting indefinitely. **[Decision]**
+  waiting indefinitely.
 - Phase 1 encoding supports UTF-8, ASCII, UTF-16LE, UTF-16BE, and raw mode using the
   decode-before-framing contract below. Raw byte preservation is not a substitute for
-  selecting UTF-16. **[Decision]**
+  selecting UTF-16.
 
 Multiline aggregation lives in the receiver's framing layer because it changes record
 boundaries and therefore offset accounting. It is part of the Phase-1 P0 release.
-**[Decision]**
 
 ### Phase-1 framing and encoding contract
 
 The following are target filelog capabilities, independent of any one destination.
 They have established precedent in the OpenTelemetry Collector filelog receiver and
 Fluent Bit tail/multiline implementations. Their inclusion does not imply Stanza
-operator-chain compatibility. **[Decision]**
+operator-chain compatibility.
 
 - **Character encoding before framing.** Configuration supports `utf-8` (default),
   `ascii`, `utf-16le`, `utf-16be`, and `raw`. A matching UTF-8 or UTF-16 byte-order mark
@@ -677,7 +619,7 @@ only on observed content. Before the first start-pattern match, complete non-mat
 physical lines use newline framing and increment a bounded `pattern_not_matched`
 counter; after a timeout/limit flush, the reader returns to that seeking state. An
 end-pattern mode buffers immediately and is released only by its end match or a bound.
-This state machine is reset when a new logical file identity begins. **[Decision]**
+This state machine is reset when a new logical file identity begins.
 
 More elaborate state-machine parsers and built-in language-specific multiline presets
 can be added later. The initial generic contract is start-pattern or end-pattern
@@ -692,7 +634,7 @@ must support fractional seconds, explicit numeric offsets, configured fallback
 timezones, and explicitly selected `epoch_s` or `epoch_ms` units for either string or
 numeric input. It must not infer epoch units from magnitude. If extraction or parsing
 fails, the record retains observed time and receives a stable parse-status attribute;
-bounded self-telemetry reports the failure class. **[Decision]**
+bounded self-telemetry reports the failure class.
 
 The corresponding processor configuration must define both where the timestamp is
 found (for example, a regex capture or parsed field) and how it is parsed. A `strptime`
@@ -844,20 +786,20 @@ sequenceDiagram
 
   C-->>W1: Committed offset 100
   W1->>D: Emit records for bytes 100 through 200
-  W1-xW1: Crash before matching Ack is committed
+  Note over W1: Process crashes before matching Ack is committed
   W2->>C: Load offset 100
   W2->>F: Validate identity and read from 100
   W2->>D: Re-emit reconstructed records
-  Note over W2,D: Duplicate delivery is possible; intentional skipping is avoided
+  Note over W2,D: Duplicate delivery is possible, intentional skipping is avoided
 ```
 
 Recovery succeeds only while the checkpoint and source bytes still exist. The receiver
 does not persist the in-flight Arrow batch as a durable spool.
 
-## Emitted data model **[Decision D10, D11]**
+## Emitted data model
 
 Each framed line becomes one OTAP log record built with `LogsRecordBatchBuilder` +
-`StrKeysAttributesRecordBatchBuilder<u16>` **[Confirmed]**:
+`StrKeysAttributesRecordBatchBuilder<u16>`:
 
 - `body`: the raw line. No timestamp parsing: `time_unix_nano` is unset;
   `observed_time_unix_nano` is captured per record when the framed record becomes
@@ -869,7 +811,7 @@ Each framed line becomes one OTAP log record built with `LogsRecordBatchBuilder`
   fragments additionally carry their source range. Opaque `file_id` remains checkpoint
   state and is not exposed by default.
 - Batch flush when any bound is hit: `batch.max_records` (default 1,024; hard cap
-  65,535 from the `u16` id space **[Confirmed]**), `batch.max_flush_period` (default
+  65,535 from the `u16` id space), `batch.max_flush_period` (default
   1 s), or `batch.max_bytes` (default 8 MiB). The byte budget uses one documented
   logical-size function: body bytes plus attribute-key bytes, attribute-value bytes,
   and a conservative fixed per-record overhead. It is not a claim about exact Arrow
@@ -877,9 +819,9 @@ Each framed line becomes one OTAP log record built with `LogsRecordBatchBuilder`
 - A single record cannot exceed `batch.max_bytes`: the same logical-size function used
   by runtime flushing validates `max_line_bytes` plus configured and fixed attributes
   at config build time (reject otherwise), following journald's validate-at-build
-  convention **[Confirmed pattern]**.
+  convention.
 
-## Ack and checkpoint model **[Decision D5, D6, D7]**
+## Ack and checkpoint model
 
 ### Capture, delivery, and recovery guarantees
 
@@ -903,19 +845,19 @@ the record; missing checkpoint persistence after that Ack widens the duplicate w
 not the loss window. Loss is explicit only where a configured policy requests it
 (`start_at: end`, `truncate`, `drop_and_continue`, or recovery mismatch `skip_to_end`)
 or where
-source bytes disappear before capture/recovery. **[Decision]**
+source bytes disappear before capture/recovery.
 
 ### In-flight tracking and Nack recovery
 
 Each emitted batch carries a delta set `{ (file_id, file_epoch, prev_offset,
 new_offset) }` plus rotation-finalization markers. The async half subscribes the batch
-to `ACKS | NACKS` with `(batch_id, attempt)` in `CallData` **[Confirmed mechanism]**.
+to `ACKS | NACKS` with `(batch_id, attempt)` in `CallData`.
 v1 enforces `max_in_flight_batches = 1` -- the proven Ack-gating pattern
-**[Confirmed]**.
+.
 
 - **Retention:** the worker retains a shallow clone of the in-flight batch. This is
   bounded by the declared in-flight memory budget; cloning does not duplicate Arrow
-  buffers because the columns are `Arc`-shared **[Confirmed]**.
+  buffers because the columns are `Arc`-shared.
 - **Ack:** only an Ack matching the current `(batch_id, attempt)` is terminal. The
   worker applies each delta only when its `file_epoch` still matches (a truncate reset
   invalidates old deltas), appends the corresponding progress transaction, then drops
@@ -933,7 +875,7 @@ v1 enforces `max_in_flight_batches = 1` -- the proven Ack-gating pattern
 - **Retry exhaustion:** after `max_attempts` total sends, `on_nack` applies. The retry
   budget and backoff are explicit configuration; no unbounded or zero-delay resend loop
   exists. Rewind-to-committed-offset is a restart mechanism, not an in-process Nack
-  mechanism. **[Decision]**
+  mechanism.
 
 The worker is the sole owner of retained data. The async task never stores a second
 copy; all sends and resends use the same worker-to-async handoff and install a fresh
@@ -942,7 +884,21 @@ subscription before emission. `Interests::RETURN_DATA` is intentionally not requ
 ### Checkpoint storage
 
 Each receiver has an explicit stable `checkpoint.id`. It defaults to the configured
-node identity but can be pinned across node renames. The namespace is:
+node identity but can be pinned across node renames. The store uses a compact snapshot
+plus an append-only progress log:
+
+- register a file durably before reading it;
+- append only changed offsets after Ack;
+- recover a torn final WAL write but fail closed on earlier corruption;
+- compact atomically without rewriting every file on every Ack; and
+- expire inactive state only through the documented retention policy.
+
+<!-- markdownlint-disable MD033 -->
+
+<details>
+<summary>Checkpoint file format and recovery details</summary>
+
+The namespace is:
 
 ```text
 ${engine.state_dir}/filelog/<checkpoint.id>/
@@ -959,7 +915,7 @@ overlapping generations and cooperating processes.
 The store uses a compact snapshot plus an append-only progress log. This avoids an
 `O(all tracked files)` rewrite on every Ack while keeping recovery bounded.
 
-Snapshot envelope (quiver conventions **[Confirmed]**):
+Snapshot envelope (quiver conventions):
 
 ```text
 [ magic "OTAPFLSN" (8) ][ version u16 ][ header_size u16 ][ generation u64 ]
@@ -1019,7 +975,11 @@ update:
   clock jump can expire state early; that can cause duplicate ingestion or intentional
   `start_at: end` skipping if the file later returns. This is an explicit retention
   tradeoff, not harmless behavior. Retention can be disabled for operators that require
-  indefinite resume state.
+indefinite resume state.
+
+</details>
+
+<!-- markdownlint-enable MD033 -->
 
 The v1 namespace lock prevents stale whole-store writers. Phase 3 cannot obtain fencing
 merely by storing an epoch in these files; it requires a coordinator or storage API that
@@ -1036,7 +996,7 @@ core/instance/generation inputs, restarting under a different ambient CPU alloca
 resolves the same progress state. What this validates (and does not) is stated honestly
 in Phased implementation.
 
-## Rotation handling **[Decision D12]**
+## Rotation handling
 
 - **Move/create (logrotate `create`):** the open FD keeps reading the renamed file to
   EOF. Discovery finds the new file at the old path as a new identity. The old
@@ -1059,15 +1019,15 @@ in Phased implementation.
   guarantees copytruncate correctness. The receiver therefore: detects what is
   detectable, counts `filelog.rotation.copytruncate_detected`, documents that bytes
   written between copy and truncate are unrecoverable, and **recommends move/create
-  rotation** in its README. **[Decision]**
+  rotation** in its README.
 - On detection, policy `on_truncate`, default **`read_new`**: increment the file's
   `file_epoch` (invalidating any in-flight deltas for it, which are skipped at Ack
   apply time), reset the offset to 0, and read the file as new content. The retained
   in-flight batch is unaffected -- its redelivery does not depend on the file
   (D7). `on_truncate: fail` is offered for operators who prefer loud failure. Silent
-  `ignore` (stanza's default) is rejected. **[Decision]**
+  `ignore` (stanza's default) is rejected.
 
-## Backpressure **[Decision D13]**
+## Backpressure
 
 Every buffer is bounded: assignment channel, worker->async handoff (capacity 1),
 command channel, per-reader line buffer (`max_line_bytes`), open batch
@@ -1082,13 +1042,13 @@ Execution model).
 ## Lifecycle and drain
 
 The sequence below follows the engine's actual orchestration
-(`pipeline_ctrl.rs:484-558`) **[Confirmed]**:
+(`pipeline_ctrl.rs:484-558`):
 
 1. **Startup:** start threads; acquire the checkpoint-namespace lock
    (waiting-for-ownership, D15); load snapshot and WAL (fail-closed); run initial
    discovery; acquire runtime file leases and durably register unmatched files before
    reading.
-2. **DrainIngress** (downstream still live **[Confirmed]**): stop discovery and new
+2. **DrainIngress** (downstream still live): stop discovery and new
    reads; flush the open batch; await Ack of the in-flight batch and sync the progress
    log, bounded by the min of the engine deadline and `drain_timeout`. On
    deadline with an unacked batch: warn, do not advance its offsets, rely on
@@ -1096,26 +1056,25 @@ The sequence below follows the engine's actual orchestration
 3. **Drain completion:** sync final progress, close FDs, release runtime leases and the
    namespace lock, call `notify_receiver_drained()`, and exit with terminal state. A
    cleanly drained receiver **never receives `Shutdown`** -- cleanup must not wait for
-   one **[Confirmed]**.
+   one.
 4. **Forced path:** `Shutdown` arrives only if the engine's deadline fired first; the
    receiver stops immediately without advancing checkpoints.
 
-Live reconfiguration is teardown + rebuild with generation overlap **[Confirmed]**;
+Live reconfiguration is teardown + rebuild with generation overlap;
 correctness reduces to the drain path, restart recovery, and the D15 lock serializing
 checkpoint access between the outgoing and incoming generations, plus runtime inode
 leases preventing overlapping readers.
 
-## Configuration (target surface, delivered in phases)
+## Proposed Phase 1 configuration
 
-The example shows the intended generic surface. Phase 1 implements the complete P0
-surface: newline and multiline framing, encoding, oversize handling, partial flush,
-timestamp-processing integration, identity, checkpoints, and rotation. Optional source
-position settings are P1 metadata and may follow in Phase 2.
+This is the proposed shape, not a compatibility promise. It keeps source behavior under
+the receiver and timestamp interpretation under a processor. Phase 1 implements the
+complete P0 surface; optional P1 metadata may follow in Phase 2.
 
 ```yaml
 receivers:
   filelog:
-    urn: "urn:otel:receiver:filelog"          # [Confirmed] URN convention, docs/urns.md
+    urn: "urn:otel:receiver:filelog"
     config:
       include: ["/var/log/app/*.log"]          # required, non-empty
       exclude: []
@@ -1124,7 +1083,10 @@ receivers:
       max_recursion_depth: 64
       start_at: end                            # beginning | end (first discovery only;
                                                # checkpoints always win on restart)
-      poll_interval: 5s                        # discovery reconcile period
+      discovery:
+        watch_mode: auto                       # auto | native | poll
+        debounce_interval: 200ms
+        poll_interval: 5s                      # correctness fallback
       ignore_older_than: 0s                    # 0 = disabled
       identity:
         fingerprint_bytes: 1000                # min 16
@@ -1170,11 +1132,53 @@ receivers:
         max_backoff: 5s
       on_nack: fail                            # fail | drop_and_continue
       drain_timeout: 10s
+
+processors:
+  filelog_timestamp:
+    urn: "urn:otel:processor:transform"
+    config:
+      timestamp:
+        extract:
+          from: body
+          regex: 'event_time=(?<event_time>\S+)'
+          capture: event_time
+        parse:
+          profile: strptime-v1
+          layout: '%Y-%m-%dT%H:%M:%S.%f%:z'
+          fallback_timezone: America/Los_Angeles
+        on_error:
+          use_observed_time: true
+          status_attribute: log.timestamp.parse_status
+```
+
+Common variants stay small:
+
+```yaml
+# UTF-16 Windows log
+encoding: utf-16le
+on_decode_error: preserve_raw
+
+# Raw bytes with byte newline framing
+encoding: raw
+
+# Epoch milliseconds in the first field
+timestamp:
+  extract: { from: body, regex: '^(?<ts>\d+)', capture: ts }
+  parse: { format: epoch_ms }
+
+# End-pattern multiline instead of start-pattern multiline
+multiline:
+  regex_profile: re2-v1
+  line_end_pattern: '^END request$'
+
+# Fail loudly rather than reset a detectably truncated file
+rotation:
+  on_truncate: fail
 ```
 
 Validation at factory build time (`validate_config`, serde `deny_unknown_fields`,
 semantic checks returning `InvalidUserConfig`) follows the journald convention
-**[Confirmed pattern]**, including cross-field rules (`max_line_bytes` and
+, including cross-field rules (`max_line_bytes` and
 `max_record_bytes` vs `batch.max_bytes`, `max_records <= 65535`, non-empty `include`, nonzero retry
 attempts/backoffs, `initial_backoff <= max_backoff`, exactly one multiline boundary
 pattern, supported regex profile, valid encoding/error policy, valid timezone names in
@@ -1187,7 +1191,7 @@ Issue-thread requests map as: file metadata -> D10; ignore-older-than ->
 (skipping header *content* from ingestion is deferred); max FD / max bytes / line
 length -> `limits.*`, `framing.*`, `batch.*`.
 
-## Failure policy **[Decision D16]**
+## Failure policy
 
 | Failure | Behavior |
 | --- | --- |
@@ -1205,7 +1209,7 @@ length -> `limits.*`, `framing.*`, `batch.*`.
 
 ## Self-telemetry
 
-Metric set `receiver.filelog` (URN convention **[Confirmed]**): records/bytes emitted,
+Metric set `receiver.filelog` (URN convention): records/bytes emitted,
 batches emitted/acked/nacked/resent, checkpoint persists/failures/duration, files
 discovered/open/quarantined, identity resets, rotations by type, copytruncate
 detections, truncated lines, partial bytes dropped, records dropped on permanent Nack,
@@ -1222,7 +1226,7 @@ source. Per-file paths must not become unbounded metric dimensions; detailed fil
 identity belongs in sampled/rate-limited health events. Required customer-visible
 conditions include pattern fallback, timeout/line/byte flushes, decode replacement,
 truncation, quarantine/unreadable files, identity resets, copytruncate detection,
-checkpoint failures, and tracked-file-limit saturation. **[Decision]**
+checkpoint failures, and tracked-file-limit saturation.
 
 ## Phased implementation
 
@@ -1247,7 +1251,7 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
   **Resize honesty:** Phase 1 validates checkpoint-identity stability and
   single-instance restart continuity under a changed ambient core count; it cannot
   validate or claim multi-instance partition reassignment under CPU scale up/down -- that
-  requires Phase 3 and is deferred, not claimed. **[Decision]**
+  requires Phase 3 and is deferred, not claimed.
 - **Phase 2 (P1 scale and discovery improvements):** read-ahead / multi-batch in-flight window with contiguous-Ack
   cumulative commit (lifts the one-batch-per-round-trip throughput cap that v1
   accepts deliberately); filesystem-notification discovery backend with periodic
@@ -1256,11 +1260,11 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
   compaction is measured to stall ingestion; full-path benchmark with allocation and
   checkpoint-I/O accounting.
 - **Phase 3:** external discovery/assignment extension at engine or group scope
-  (blocked on extension-scope work **[Confirmed gap]**); virtual-partition assignment
+  (blocked on extension-scope work); virtual-partition assignment
   satisfying the Multi-instance requirements, enforced fencing and checkpoint-store
   migration.
 
-## Open questions **[Open]**
+## Open questions
 
 1. **Epic agreement on staging:** is a single-instance receiver with an internal
    `AssignmentSource` an acceptable first implementation while the extension-based,
@@ -1315,7 +1319,7 @@ must not silently inherit its guarantees:
 
 Each follow-up must state which capture, delivery, and recovery guarantees it provides.
 
-## Deferred beyond the initial implementation **[Deferred]**
+## Deferred beyond the initial implementation
 
 Per #2844's out-of-scope list and the issue discussion: Stanza compatibility and
 embedded operator chains; eBPF capture; `io_uring` / `mmap` I/O backends; remote files;
@@ -1350,6 +1354,26 @@ Phase 3 is still required for the epic's multi-instance and live-resize criteria
 | Move/create handled; copytruncate detected | D12, with copytruncate detection explicitly best-effort |
 | Tests: restart, resize, Ack/Nack, backpressure, rotation | Phase 1 scope (resize: key-stability portion only, remainder Phase 3) |
 | Documented delivery guarantees and limitations | Capture, delivery, and recovery guarantees; README requirement |
+
+## Implementation references
+
+The main design above is independent of internal symbol names. These current engine
+facts explain why Phase 1 uses this shape:
+
+| Constraint | Current precedent |
+| --- | --- |
+| Control must win over external input | `crates/engine/src/local/receiver.rs`; journald uses biased selection |
+| Ack/Nack is correlated per emitted message | `ProducerEffectHandlerExtension::subscribe_to` plus `CallData` in `crates/engine/src/lib.rs` and `control.rs` |
+| Drain keeps downstream alive until receivers finish | `crates/engine/src/pipeline_ctrl.rs` |
+| Live rollout overlaps old and new generations | `crates/controller/src/live_control/execution.rs` |
+| One local receiver is otherwise created per pipeline core | `PipelineContext::num_cores`; journald and host metrics reject multicore source pipelines |
+| Arrow log record IDs are `u16` | `LogsRecordBatchBuilder` and journald's Arrow encoder |
+| Retained Arrow batches clone shallowly | `OtapArrowRecords` stores Arrow columns behind `Arc` |
+| Blocking source work belongs on fixed workers | journald and host metrics dedicated-worker patterns |
+| Compact durable files need version and integrity checks | quiver envelope conventions and journald atomic update sequence |
+
+No new engine interest flag is required. Phase 1 uses the existing Ack/Nack interests,
+bounded channels, control messages and receiver-drained notification.
 
 ## References
 
