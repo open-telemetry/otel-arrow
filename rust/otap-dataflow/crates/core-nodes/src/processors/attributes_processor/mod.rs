@@ -35,6 +35,11 @@
 //! Implementation uses otap_df_pdata::otap::transform::transform_attributes for
 //! efficient batch processing of Arrow record batches.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = ATTRIBUTES_PROCESSOR_URN,
+    target = "otel.processor.attribute",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -601,7 +606,7 @@ mod tests {
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+    use otap_df_pdata::{OtlpProtoBytes, PayloadData};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
@@ -2229,8 +2234,8 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otap_batch = match first {
-                    OtapPayload::OtapArrowRecords(otap_batch) => otap_batch,
+                let otap_batch = match first.into_data() {
+                    PayloadData::OtapArrowRecords(otap_batch) => otap_batch,
                     _ => panic!("unexpected output payload type"),
                 };
 

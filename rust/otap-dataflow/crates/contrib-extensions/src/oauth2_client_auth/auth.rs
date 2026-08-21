@@ -20,7 +20,6 @@ use oauth2::{
 };
 use otap_df_engine::capability::auth::BearerToken;
 use otap_df_otap::tls_utils::{read_file_with_limit_async, read_file_with_limit_sync};
-use otap_df_telemetry::otel_warn;
 use rand::RngExt;
 use reqwest::{Certificate, Identity};
 use secrecy::{ExposeSecret, SecretString};

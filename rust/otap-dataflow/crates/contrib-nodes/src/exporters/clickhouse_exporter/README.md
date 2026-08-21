@@ -309,6 +309,20 @@ inserts and drops queued inserts that have not started.
 There is no longer any special write ordering for attribute tables because
 attribute tables do not exist.
 
+## Telemetry
+
+Input PData message volume is reported by the engine through
+`channel.receiver.messages` and is not duplicated by the exporter.
+
+<!-- markdownlint-disable MD013 -->
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose ClickHouse export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal ClickHouse write result, including conversion, queueing, and transformation. |
+
+<!-- markdownlint-enable MD013 -->
+
 ## Snapshots and Tests
 
 DDL snapshot coverage currently lives in `table_snapshots/` and covers:

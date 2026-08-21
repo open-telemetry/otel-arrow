@@ -86,8 +86,9 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
 /// Encode the event name from callsite metadata.
 ///
 /// Emits the bare `callsite.name()` (the first argument to `otel_info!` /
-/// `otel_warn!` / ...). The crate name (`callsite.target()`) is **not**
-/// prefixed here; it is conveyed separately through
+/// `otel_warn!` / ...). The tracing target (`callsite.target()`) is **not**
+/// prefixed here; it identifies the static logical software unit and is
+/// conveyed separately through
 /// `InstrumentationScope.name` by [`encode_export_logs_request`] so that
 /// `event.name` on the wire matches the value declared in the
 /// `rust/otap-dataflow/semconv/` registry and validated by
@@ -775,12 +776,12 @@ pub fn encode_export_logs_request(
         buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
             // ScopeLogs.scope (field 1, InstrumentationScope message)
             buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
-                // InstrumentationScope.name (field 1, string) -- the crate
-                // that emitted the event (i.e. the tracing target,
-                // `env!("CARGO_PKG_NAME")` at the call site). Pairing
-                // scope.name with the bare `event.name` encoded below
-                // keeps `event.name` aligned with the
-                // `rust/otap-dataflow/semconv/` registry.
+                // InstrumentationScope.name (field 1, string) -- the tracing
+                // target identifying the static logical software unit that
+                // emitted the event. Component-owned events use a
+                // component-aware target; shared code uses its package target.
+                // Pairing scope.name with the bare `event.name` encoded below
+                // keeps `event.name` aligned with the semconv registry.
                 buf.encode_string(INSTRUMENTATION_SCOPE_NAME, event.record.callsite().target())?;
                 for entity_key in event.record.context.iter() {
                     let scope_bytes = scope_cache.get_or_encode(*entity_key);

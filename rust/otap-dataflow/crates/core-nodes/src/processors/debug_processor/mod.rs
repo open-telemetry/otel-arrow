@@ -8,6 +8,11 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
 
+otap_df_telemetry::otel_component_scope!(
+    urn = DEBUG_PROCESSOR_URN,
+    target = "otel.processor.debug",
+);
+
 use self::config::{Config, DisplayMode, SignalActive, Verbosity};
 use self::metrics::DebugMetrics;
 use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode};

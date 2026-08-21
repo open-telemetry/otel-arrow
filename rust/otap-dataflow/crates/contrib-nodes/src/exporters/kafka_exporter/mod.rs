@@ -64,6 +64,11 @@
 //!       linger_ms: 5
 //! ```
 
+otap_df_telemetry::otel_component_scope!(
+    urn = exporter::KAFKA_EXPORTER_URN,
+    target = "otel.exporter.kafka",
+);
+
 pub mod config;
 pub mod encoder;
 pub mod error;

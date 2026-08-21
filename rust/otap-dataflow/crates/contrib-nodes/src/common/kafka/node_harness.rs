@@ -63,13 +63,13 @@ pub(crate) mod node_metrics {
     /// are coerced; the Kafka node counters are all `Counter<u64>`.
     #[must_use]
     pub(crate) fn metric_value(snapshot: &MetricSetSnapshot, name: &str) -> Option<u64> {
-        let wanted = normalize(name);
+        let normalized = normalize(name);
         let fields = snapshot.descriptor().metrics;
         let values = snapshot.get_metrics();
         fields
             .iter()
             .zip(values.iter())
-            .find(|(field, _)| field.name == wanted)
+            .find(|(field, _)| field.name == name || field.name == normalized)
             .map(|(_, value)| value.to_u64_lossy())
     }
 
@@ -114,7 +114,11 @@ pub(crate) mod node_metrics {
         /// form), or `0` if never observed.
         #[must_use]
         pub(crate) fn value(&self, name: &str) -> u64 {
-            self.totals.get(&normalize(name)).copied().unwrap_or(0)
+            self.totals
+                .get(name)
+                .or_else(|| self.totals.get(&normalize(name)))
+                .copied()
+                .unwrap_or(0)
         }
 
         /// Returns `true` if any value has been folded for `name`.
@@ -122,7 +126,7 @@ pub(crate) mod node_metrics {
         /// NOTE: [`FoldedMetrics`] folds by field name and ignores measurement
         /// attributes, so it collapses every attribute bucket of a
         /// [`MeasurementMetricSet`] (e.g. the exporter's
-        /// `exporter.kafka.exports.messages`, keyed by `signal` and `outcome`)
+        /// `exporter.exports.messages`, keyed by `signal` and `outcome`)
         /// into a single per-field total. Use it only for flat metric sets; for
         /// attribute-keyed measurement metrics use [`measurement_value`] /
         /// [`kafka_exports`], which select a specific bucket by its attributes.
@@ -130,7 +134,7 @@ pub(crate) mod node_metrics {
         /// [`MeasurementMetricSet`]: otap_df_telemetry::metrics::MeasurementMetricSet
         #[must_use]
         pub(crate) fn contains(&self, name: &str) -> bool {
-            self.totals.contains_key(&normalize(name))
+            self.totals.contains_key(name) || self.totals.contains_key(&normalize(name))
         }
     }
 
@@ -155,7 +159,7 @@ pub(crate) mod node_metrics {
         field: &str,
         attributes: &[(&str, &str)],
     ) -> u64 {
-        let wanted_field = normalize(field);
+        let normalized_field = normalize(field);
         snapshots
             .iter()
             .filter(|snapshot| snapshot.descriptor().name == set_name)
@@ -170,13 +174,13 @@ pub(crate) mod node_metrics {
                 fields
                     .iter()
                     .zip(values.iter())
-                    .find(|(f, _)| f.name == wanted_field)
+                    .find(|(f, _)| f.name == field || f.name == normalized_field)
                     .map(|(_, v)| v.to_u64_lossy())
             })
             .unwrap_or(0)
     }
 
-    /// Returns the Kafka exporter's `exporter.kafka.exports.messages` count for
+    /// Returns the Kafka exporter's `exporter.exports.messages` count for
     /// the `(signal, outcome)` bucket, e.g. `kafka_exports(snaps, "logs",
     /// "success")`. Convenience wrapper over [`measurement_value`] for the
     /// exporter's migrated export counter (replaces the old flat
@@ -192,7 +196,7 @@ pub(crate) mod node_metrics {
     ) -> u64 {
         measurement_value(
             snapshots,
-            "exporter.kafka.exports",
+            "exporter.exports",
             "messages",
             &[("signal", signal), ("outcome", outcome)],
         )
@@ -364,8 +368,8 @@ mod exporter_harness {
         }
 
         /// Delivers a downstream `NodeControlMsg::Ack` to the running exporter,
-        /// standing in for a downstream node acknowledging a batch. Drives the
-        /// exporter's ack-accounting path (`acks_received`).
+        /// standing in for a downstream node acknowledging a batch. Exporters
+        /// are terminal nodes, so this control does not produce export metrics.
         pub(crate) async fn send_ack(&self, pdata: OtapPdata) {
             self.control_tx
                 .send(NodeControlMsg::Ack(AckMsg::new(pdata)))
@@ -375,8 +379,8 @@ mod exporter_harness {
 
         /// Delivers a downstream `NodeControlMsg::Nack` (with `reason`) to the
         /// running exporter, standing in for a downstream node refusing a batch.
-        /// Drives the exporter's nack-accounting and reason-sanitizing path
-        /// (`nacks_received`).
+        /// Drives the exporter's reason-sanitizing path without producing an
+        /// export outcome.
         pub(crate) async fn send_nack(&self, reason: impl Into<String>, pdata: OtapPdata) {
             self.control_tx
                 .send(NodeControlMsg::Nack(NackMsg::new(reason.into(), pdata)))
@@ -462,6 +466,7 @@ mod receiver_harness {
     use super::test_pipeline_context;
     use crate::common::kafka::test::cluster::KafkaTestCluster;
     use crate::receivers::kafka_receiver::config::{KafkaReceiverConfig, SignalConfig};
+    use crate::receivers::kafka_receiver::rebalance::RebalanceState;
     use crate::receivers::kafka_receiver::receiver::KAFKA_RECEIVER_URN;
     use crate::receivers::kafka_receiver::receiver::KafkaReceiver;
 
@@ -504,6 +509,7 @@ mod receiver_harness {
         pdata_rx: Receiver<OtapPdata>,
         control_tx: mpsc::Sender<NodeControlMsg<OtapPdata>>,
         runtime_rx: RuntimeCtrlMsgReceiver<OtapPdata>,
+        rebalance_state: Arc<RebalanceState>,
         join: JoinHandle<Result<TerminalState, EngineError>>,
         _keep_alive: KeepAlive,
     }
@@ -520,9 +526,10 @@ mod receiver_harness {
         ) -> Self {
             let pipeline_ctx = test_pipeline_context();
             let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
-            let receiver = Box::new(
-                KafkaReceiver::new(pipeline_ctx, cfg).expect("kafka receiver config is valid"),
-            );
+            let receiver =
+                KafkaReceiver::new(pipeline_ctx, cfg).expect("kafka receiver config is valid");
+            let rebalance_state = receiver.rebalance_state_for_test();
+            let receiver = Box::new(receiver);
 
             let (control_sender, control_receiver) = mpsc::Channel::new(32);
             let control_receiver = LocalReceiver::mpsc(control_receiver);
@@ -556,6 +563,7 @@ mod receiver_harness {
                 pdata_rx,
                 control_tx: control_sender,
                 runtime_rx: pipeline_ctrl_msg_rx,
+                rebalance_state,
                 join,
                 _keep_alive: keep_alive,
             }
@@ -622,6 +630,30 @@ mod receiver_harness {
                 Ok(Ok(msg)) => Some(msg),
                 Ok(Err(_)) | Err(_) => None,
             }
+        }
+
+        /// Waits until the receiver's rebalance callback has removed a partition
+        /// from its current assignment.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the partition remains assigned when `timeout` elapses.
+        pub(crate) async fn wait_for_partition_revocation(
+            &self,
+            topic: &str,
+            partition: i32,
+            timeout: Duration,
+        ) {
+            let revoked = crate::common::kafka::test::wait::poll_until_async(
+                timeout,
+                Duration::from_millis(25),
+                || async { !self.rebalance_state.is_assigned(topic, partition) },
+            )
+            .await;
+            assert!(
+                revoked,
+                "kafka-test: receiver still owns {topic}/{partition} after waiting for revocation"
+            );
         }
 
         /// Acknowledges a consumed `pdata`, folding `next_ack` + `AckMsg` +

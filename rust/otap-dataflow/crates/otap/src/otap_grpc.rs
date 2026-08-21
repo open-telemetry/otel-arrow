@@ -14,6 +14,7 @@ use crate::pdata::{Context, OtapPdata};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt as FuturesStreamExt};
+use otap_df_config::SignalType;
 use otap_df_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
     memory_limiter::SharedReceiverAdmissionState, shared::receiver as shared,
@@ -28,12 +29,16 @@ use otap_df_pdata::{
     },
 };
 use otap_df_telemetry::{otel_error, otel_warn};
+use prost::Message;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tonic::{Request, Response, Status, Streaming};
 
 pub mod client_settings;
@@ -47,9 +52,19 @@ use crate::memory_pressure_layer::{ReceiverRejectionMetrics, grpc_memory_pressur
 use crate::otap_grpc::common::peer_addr_from_extensions;
 use crate::otap_grpc::otlp::server::SharedState;
 pub use client_settings::GrpcClientSettings;
+use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
 pub use server_settings::GrpcServerSettings;
 
-/// Common settings for OTLP receivers.
+/// Records lifecycle and rejection telemetry for OTAP receiver batches.
+pub trait OtapReceiverTelemetry: ReceiverRejectionMetrics {
+    /// Records one decoded OTAP batch admitted to the pipeline send path.
+    fn record_batch_admitted(&self, signal: SignalType, payload_bytes: u64);
+
+    /// Records termination of receiver work for one admitted OTAP batch.
+    fn record_batch_completed(&self, signal: SignalType);
+}
+
+/// Common settings for OTAP receiver services.
 #[derive(Clone, Debug)]
 pub struct NewSettings {
     /// Maximum concurrent requests per receiver instance (per core).
@@ -71,8 +86,10 @@ pub struct Settings {
     pub wait_for_result: bool,
     /// Receiver-local memory pressure admission state.
     pub admission_state: SharedReceiverAdmissionState,
-    /// Shared rejection counters used by both stream-open and per-batch shedding.
-    pub receiver_rejection_metrics: Option<Arc<dyn ReceiverRejectionMetrics>>,
+    /// Shared lifecycle and rejection metrics for OTAP streams and batches.
+    pub receiver_metrics: Option<Arc<dyn OtapReceiverTelemetry>>,
+    /// Owner for every detached OTAP stream handler started by this receiver.
+    pub stream_tasks: OtapStreamTaskManager,
 }
 
 impl Settings {
@@ -80,6 +97,71 @@ impl Settings {
         self.max_concurrent_requests_per_stream
             .min(self.max_concurrent_requests)
             .max(1)
+    }
+}
+
+/// Tracks OTAP stream handlers and provides an explicit cancellation boundary.
+///
+/// Tonic invokes the service methods independently of the receiver event loop,
+/// so their stream handlers must be tracked separately from the gRPC serving
+/// future. Waiting for this manager guarantees that every handler has dropped
+/// its batch completion guards before receiver terminal metrics are captured.
+#[derive(Clone)]
+pub struct OtapStreamTaskManager {
+    tracker: TaskTracker,
+    shutdown: CancellationToken,
+}
+
+impl OtapStreamTaskManager {
+    /// Creates an open stream-task manager.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tracker: TaskTracker::new(),
+            shutdown: CancellationToken::new(),
+        }
+    }
+
+    /// Marks the tracker closed so [`Self::wait`] completes once it is empty.
+    pub fn close(&self) {
+        _ = self.tracker.close();
+    }
+
+    /// Cancels all currently tracked stream handlers.
+    pub fn cancel(&self) {
+        self.shutdown.cancel();
+    }
+
+    /// Returns whether every tracked stream handler has finished.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tracker.is_empty()
+    }
+
+    /// Closes the manager, then waits until every tracked handler has finished.
+    pub async fn wait(&self) {
+        self.close();
+        self.tracker.wait().await;
+    }
+
+    fn spawn<F>(&self, handler: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let shutdown = self.shutdown.clone();
+        drop(self.tracker.spawn(async move {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {}
+                _ = handler => {}
+            }
+        }));
+    }
+}
+
+impl Default for OtapStreamTaskManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -180,6 +262,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         spawn_stream_handler::<Logs, _>(
             request.into_inner(),
             OtapArrowRecords::Logs,
+            SignalType::Logs,
             self.effect_handler.clone(),
             self.state.clone(),
             self.settings.clone(),
@@ -208,6 +291,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         spawn_stream_handler::<Metrics, _>(
             request.into_inner(),
             OtapArrowRecords::Metrics,
+            SignalType::Metrics,
             self.effect_handler.clone(),
             self.state.clone(),
             self.settings.clone(),
@@ -236,6 +320,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         spawn_stream_handler::<Traces, _>(
             request.into_inner(),
             OtapArrowRecords::Traces,
+            SignalType::Traces,
             self.effect_handler.clone(),
             self.state.clone(),
             self.settings.clone(),
@@ -249,15 +334,53 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
 
 type PendingResponseFuture = BoxFuture<'static, PendingResponse>;
 
+struct OtapBatchCompletionGuard {
+    metrics: Arc<dyn OtapReceiverTelemetry>,
+    signal: SignalType,
+}
+
+impl OtapBatchCompletionGuard {
+    fn start(
+        metrics: Option<&Arc<dyn OtapReceiverTelemetry>>,
+        signal: SignalType,
+        payload_bytes: u64,
+    ) -> Option<Self> {
+        metrics.map(|metrics| {
+            metrics.record_batch_admitted(signal, payload_bytes);
+            Self {
+                metrics: metrics.clone(),
+                signal,
+            }
+        })
+    }
+}
+
+impl Drop for OtapBatchCompletionGuard {
+    fn drop(&mut self) {
+        self.metrics.record_batch_completed(self.signal);
+    }
+}
+
 enum PendingResponse {
-    Ack { batch_id: i64 },
-    Nack { batch_id: i64, reason: String },
-    ChannelClosed { batch_id: i64 },
+    Ack {
+        batch_id: i64,
+        completion_guard: Option<OtapBatchCompletionGuard>,
+    },
+    Nack {
+        batch_id: i64,
+        reason: String,
+        completion_guard: Option<OtapBatchCompletionGuard>,
+    },
+    ChannelClosed {
+        batch_id: i64,
+        completion_guard: Option<OtapBatchCompletionGuard>,
+    },
 }
 
 fn spawn_stream_handler<T, F>(
     input_stream: Streaming<BatchArrowRecords>,
     otap_batch: F,
+    signal: SignalType,
     effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
     settings: Settings,
@@ -267,23 +390,23 @@ fn spawn_stream_handler<T, F>(
     T: OtapBatchStore + Send + 'static,
     F: Fn(T) -> OtapArrowRecords + Copy + Send + 'static,
 {
-    _ = tokio::spawn(async move {
-        handle_stream::<T, F>(
-            input_stream,
-            otap_batch,
-            effect_handler,
-            state,
-            settings,
-            tx,
-            peer_addr,
-        )
-        .await;
-    });
+    let stream_tasks = settings.stream_tasks.clone();
+    stream_tasks.spawn(handle_stream::<T, F>(
+        input_stream,
+        otap_batch,
+        signal,
+        effect_handler,
+        state,
+        settings,
+        tx,
+        peer_addr,
+    ));
 }
 
 async fn handle_stream<T, F>(
     mut input_stream: Streaming<BatchArrowRecords>,
     otap_batch: F,
+    signal: SignalType,
     effect_handler: shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
     settings: Settings,
@@ -315,7 +438,7 @@ async fn handle_stream<T, F>(
 
         if reject_open_stream_for_memory_pressure(
             &settings.admission_state,
-            settings.receiver_rejection_metrics.as_deref(),
+            settings.receiver_metrics.as_deref(),
             &tx,
         )
         .await
@@ -339,12 +462,13 @@ async fn handle_stream<T, F>(
 
                 match accept_data::<T, F>(
                     otap_batch,
+                    signal,
                     &mut consumer,
                     batch,
                     &effect_handler,
                     state.clone(),
                     &settings.admission_state,
-                    settings.receiver_rejection_metrics.as_deref(),
+                    settings.receiver_metrics.as_ref(),
                     &tx,
                     peer_addr,
                 )
@@ -376,14 +500,14 @@ async fn flush_ready_pending_responses(
 
 async fn reject_open_stream_for_memory_pressure(
     admission_state: &SharedReceiverAdmissionState,
-    rejection_metrics: Option<&dyn ReceiverRejectionMetrics>,
+    receiver_metrics: Option<&dyn OtapReceiverTelemetry>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> bool {
     if !admission_state.should_shed_ingress() {
         return false;
     }
 
-    if let Some(metrics) = rejection_metrics {
+    if let Some(metrics) = receiver_metrics {
         metrics.record_memory_pressure_rejection();
     }
 
@@ -410,12 +534,13 @@ async fn reject_open_stream_for_memory_pressure(
 /// handles sending the data down the pipeline via effect_handler and generating the appropriate response
 async fn accept_data<T: OtapBatchStore, F>(
     otap_batch: F,
+    signal: SignalType,
     consumer: &mut Consumer,
     mut batch: BatchArrowRecords,
     effect_handler: &shared::EffectHandler<OtapPdata>,
     state: Option<SharedState>,
     admission_state: &SharedReceiverAdmissionState,
-    rejection_metrics: Option<&dyn ReceiverRejectionMetrics>,
+    receiver_metrics: Option<&Arc<dyn OtapReceiverTelemetry>>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
     peer_addr: Option<SocketAddr>,
 ) -> Result<Option<PendingResponseFuture>, ()>
@@ -424,8 +549,8 @@ where
 {
     let batch_id = batch.batch_id;
     if admission_state.should_shed_ingress() {
-        if let Some(metrics) = rejection_metrics {
-            metrics.record_memory_pressure_rejection();
+        if let Some(metrics) = receiver_metrics {
+            metrics.record_item_rejection(ReceiverRejectionErrorType::MemoryPressure);
         }
 
         otel_warn!(
@@ -446,11 +571,23 @@ where
         return Ok(None);
     }
 
+    // Decoding consumes the encoded Arrow payloads, so capture their wire size
+    // beforehand, but only when telemetry is enabled and after the stream-level
+    // memory-pressure admission check has passed.
+    let payload_bytes =
+        receiver_metrics.map(|_| u64::try_from(batch.encoded_len()).unwrap_or(u64::MAX));
+
     let batch = consumer.consume_bar(&mut batch).map_err(|e| {
+        if let Some(metrics) = receiver_metrics {
+            metrics.record_item_rejection(ReceiverRejectionErrorType::InvalidRequest);
+        }
         otel_error!("otap.batch.decode_failed", error = ?e, message = "Error decoding OTAP Batch. Closing stream");
     })?;
 
     let batch = from_record_messages::<T>(batch).map_err(|e| {
+        if let Some(metrics) = receiver_metrics {
+            metrics.record_item_rejection(ReceiverRejectionErrorType::InvalidRequest);
+        }
         otel_error!("otap.batch.validation_failed", error = ?e, message = "Invalid OTAP batch. Closing stream");
     })?;
     let otap_batch_as_otap_arrow_records = otap_batch(batch);
@@ -479,8 +616,8 @@ where
                     "otap.request.concurrency_limit",
                     message = "Too many concurrent requests"
                 );
-                if let Some(metrics) = rejection_metrics {
-                    metrics.record_rejection();
+                if let Some(metrics) = receiver_metrics {
+                    metrics.record_item_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
                 }
 
                 // Send backpressure response
@@ -513,6 +650,14 @@ where
         None
     };
 
+    let completion_guard = receiver_metrics.and_then(|metrics| {
+        OtapBatchCompletionGuard::start(
+            Some(metrics),
+            signal,
+            payload_bytes.expect("payload size is captured when receiver metrics are enabled"),
+        )
+    });
+
     // Send to the pipeline. The Ack/Nack wait is returned to the stream driver
     // so the driver can continue reading up to the per-stream in-flight limit.
     match effect_handler
@@ -530,7 +675,7 @@ where
     // slot if Tonic times-out this task.
     if let Some((cancel_guard, rx)) = cancel_rx {
         return Ok(Some(
-            wait_for_pending_response(batch_id, cancel_guard, rx).boxed(),
+            wait_for_pending_response(batch_id, cancel_guard, rx, completion_guard).boxed(),
         ));
     }
 
@@ -551,14 +696,22 @@ async fn wait_for_pending_response(
     batch_id: i64,
     _cancel_guard: otlp::server::SlotGuard,
     rx: oneshot::Receiver<Result<(), otap_df_engine::control::NackMsg<OtapPdata>>>,
+    completion_guard: Option<OtapBatchCompletionGuard>,
 ) -> PendingResponse {
     match rx.await {
-        Ok(Ok(())) => PendingResponse::Ack { batch_id },
+        Ok(Ok(())) => PendingResponse::Ack {
+            batch_id,
+            completion_guard,
+        },
         Ok(Err(nack)) => PendingResponse::Nack {
             batch_id,
             reason: nack.reason,
+            completion_guard,
         },
-        Err(_) => PendingResponse::ChannelClosed { batch_id },
+        Err(_) => PendingResponse::ChannelClosed {
+            batch_id,
+            completion_guard,
+        },
     }
 }
 
@@ -566,18 +719,34 @@ async fn send_pending_response(
     response: PendingResponse,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
 ) -> Result<(), ()> {
-    let status = match response {
-        PendingResponse::Ack { batch_id } => BatchStatus {
+    let (status, _completion_guard) = match response {
+        PendingResponse::Ack {
             batch_id,
-            status_code: StatusCode::Ok as i32,
-            status_message: "Successfully received".to_string(),
-        },
-        PendingResponse::Nack { batch_id, reason } => BatchStatus {
+            completion_guard,
+        } => (
+            BatchStatus {
+                batch_id,
+                status_code: StatusCode::Ok as i32,
+                status_message: "Successfully received".to_string(),
+            },
+            completion_guard,
+        ),
+        PendingResponse::Nack {
             batch_id,
-            status_code: StatusCode::Unavailable as i32,
-            status_message: format!("Pipeline processing failed: {reason}"),
-        },
-        PendingResponse::ChannelClosed { batch_id } => {
+            reason,
+            completion_guard,
+        } => (
+            BatchStatus {
+                batch_id,
+                status_code: StatusCode::Unavailable as i32,
+                status_message: format!("Pipeline processing failed: {reason}"),
+            },
+            completion_guard,
+        ),
+        PendingResponse::ChannelClosed {
+            batch_id,
+            completion_guard: _completion_guard,
+        } => {
             otel_error!(
                 "otap.response.channel_closed",
                 batch_id = batch_id,
@@ -599,29 +768,132 @@ mod tests {
     use otap_df_engine::memory_limiter::{
         MemoryPressureBehaviorConfig, MemoryPressureLevel, MemoryPressureState,
     };
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use tonic::Code;
 
     #[derive(Default)]
     struct CountingReceiverRejectionMetrics {
         calls: AtomicUsize,
+        batches_started: AtomicUsize,
+        batches_completed: AtomicUsize,
+        payload_bytes: AtomicU64,
     }
 
     impl ReceiverRejectionMetrics for CountingReceiverRejectionMetrics {
-        fn record_rejection(&self) {
+        fn record_rejection(&self, _error_type: ReceiverRejectionErrorType) {
             let _ = self.calls.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    impl OtapReceiverTelemetry for CountingReceiverRejectionMetrics {
+        fn record_batch_admitted(&self, _signal: SignalType, payload_bytes: u64) {
+            let _ = self.batches_started.fetch_add(1, Ordering::Relaxed);
+            let _ = self
+                .payload_bytes
+                .fetch_add(payload_bytes, Ordering::Relaxed);
+        }
+
+        fn record_batch_completed(&self, _signal: SignalType) {
+            let _ = self.batches_completed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Scenario: An admitted OTAP batch waits for capacity on its client response channel.
+    /// Guarantees: Completion is recorded only after the response is sent, with start and bytes.
+    #[tokio::test]
+    async fn batch_completion_guard_pairs_started_and_completed_metrics() {
+        let concrete_metrics = Arc::new(CountingReceiverRejectionMetrics::default());
+        let receiver_metrics: Arc<dyn OtapReceiverTelemetry> = concrete_metrics.clone();
+        let completion_guard =
+            OtapBatchCompletionGuard::start(Some(&receiver_metrics), SignalType::Logs, 42)
+                .expect("configured receiver metrics should create a completion guard");
+        let response = PendingResponse::Ack {
+            batch_id: 7,
+            completion_guard: Some(completion_guard),
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(Ok(BatchStatus::default()))
+            .await
+            .expect("response channel should accept its initial item");
+
+        let send_task = tokio::spawn(async move { send_pending_response(response, &tx).await });
+        tokio::task::yield_now().await;
+        assert_eq!(concrete_metrics.batches_started.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            concrete_metrics.batches_completed.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(concrete_metrics.payload_bytes.load(Ordering::Relaxed), 42);
+
+        _ = rx.recv().await;
+        send_task
+            .await
+            .expect("response task should not panic")
+            .expect("response should be sent after capacity becomes available");
+
+        assert_eq!(
+            concrete_metrics.batches_completed.load(Ordering::Relaxed),
+            1
+        );
+        let status = rx
+            .recv()
+            .await
+            .expect("OTAP batch status should be sent")
+            .expect("OTAP batch status should be successful");
+        assert_eq!(status.batch_id, 7);
+    }
+
+    /// Scenario: A caller cancels a tracked OTAP stream, then waits without explicitly closing it.
+    /// Guarantees: The wait closes the tracker and observes the batch completion guard before returning.
+    #[tokio::test]
+    async fn stream_shutdown_completes_batch_metrics_before_wait_returns() {
+        let concrete_metrics = Arc::new(CountingReceiverRejectionMetrics::default());
+        let receiver_metrics: Arc<dyn OtapReceiverTelemetry> = concrete_metrics.clone();
+        let completion_guard =
+            OtapBatchCompletionGuard::start(Some(&receiver_metrics), SignalType::Logs, 42)
+                .expect("configured receiver metrics should create a completion guard");
+        let task_started = Arc::new(tokio::sync::Notify::new());
+        let task_started_in_handler = task_started.clone();
+        let stream_tasks = OtapStreamTaskManager::new();
+
+        stream_tasks.spawn(async move {
+            let _completion_guard = completion_guard;
+            task_started_in_handler.notify_one();
+            std::future::pending::<()>().await;
+        });
+
+        task_started.notified().await;
+        assert_eq!(concrete_metrics.batches_started.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            concrete_metrics.batches_completed.load(Ordering::Relaxed),
+            0
+        );
+
+        stream_tasks.cancel();
+        stream_tasks.wait().await;
+
+        assert_eq!(
+            concrete_metrics.batches_completed.load(Ordering::Relaxed),
+            1
+        );
     }
 
     #[tokio::test]
     async fn flush_ready_pending_responses_drains_ready_without_waiting() {
         let mut pending = FuturesUnordered::<PendingResponseFuture>::new();
-        pending.push(futures::future::ready(PendingResponse::Ack { batch_id: 1_i64 }).boxed());
+        pending.push(
+            futures::future::ready(PendingResponse::Ack {
+                batch_id: 1_i64,
+                completion_guard: None,
+            })
+            .boxed(),
+        );
         pending.push(futures::future::pending::<PendingResponse>().boxed());
         pending.push(
             futures::future::ready(PendingResponse::Nack {
                 batch_id: 2_i64,
                 reason: "rejected".to_string(),
+                completion_guard: None,
             })
             .boxed(),
         );

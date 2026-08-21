@@ -28,9 +28,9 @@
 //!   `pdata`, processor shutdown draining after admission reopens, exporter
 //!   shutdown draining of buffered `pdata` without reopening admission, and
 //!   deadline-forced shutdown when a processor keeps admission closed
-//! - `dst_runtime_control_plane_seeded`: timer and delayed-data progress under
-//!   runtime-control pressure, Ack/Nack unwind correctness, `RETURN_DATA`
-//!   retention/drop behavior, and `DrainIngress` before downstream `Shutdown`
+//! - `dst_runtime_control_plane_seeded`: timer progress under runtime-control
+//!   pressure, Ack/Nack unwind correctness, `RETURN_DATA` retention/drop
+//!   behavior, and `DrainIngress` before downstream `Shutdown`
 //! - `dst_heavy_ingress_backpressure_seeded`: sustained ingress, bounded
 //!   `pdata` channels, processor admission gating and reopen, mixed Ack/Nack
 //!   completions, runtime-control noise, and clean shutdown ordering

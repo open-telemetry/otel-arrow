@@ -64,7 +64,8 @@ pub fn resolve_connection(args: &ConnectionArgs) -> Result<ResolvedConnection, C
 
     let endpoint = AdminEndpoint::from_url(&url)
         .map_err(|err| CliError::config(format!("invalid admin endpoint '{url}': {err}")))?;
-    let mut settings = HttpAdminClientSettings::new(endpoint);
+    let mut settings = HttpAdminClientSettings::new(endpoint)
+        .with_user_agent(format!("dfctl/{}", env!("CARGO_PKG_VERSION")));
 
     if let Some(connect_timeout) = args.connect_timeout.or(profile.connect_timeout) {
         settings = settings.with_connect_timeout(connect_timeout);
@@ -280,6 +281,18 @@ mod tests {
                 .as_deref()
                 .expect("base path"),
             "/engine-a"
+        );
+    }
+
+    /// Scenario: dfctl resolves its default admin HTTP client settings.
+    /// Guarantees: the client identifies itself with a stable versioned User-Agent.
+    #[test]
+    fn resolved_connection_identifies_dfctl() {
+        let resolved = resolve_connection(&ConnectionArgs::default()).expect("resolve connection");
+
+        assert_eq!(
+            resolved.settings.user_agent.as_deref(),
+            Some(concat!("dfctl/", env!("CARGO_PKG_VERSION")))
         );
     }
 }

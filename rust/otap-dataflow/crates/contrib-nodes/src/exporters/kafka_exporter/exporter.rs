@@ -19,7 +19,7 @@ use super::producer::{ExporterDeliveryFuture, ExporterFutureProducer, ExporterFu
 use super::config::{KafkaExporterConfig, SignalConfig};
 use super::encoder;
 use super::error::{KafkaExporterError, is_permanent_send_error};
-use super::metrics::KafkaExporterMetrics;
+use super::metrics::{KafkaExporterErrorType, KafkaExporterMetrics, KafkaExporterOperation};
 use super::partitioner;
 use super::topic_regex;
 use super::topic_router::TopicRouter;
@@ -51,6 +51,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer as PdataProducer;
+use otap_df_telemetry::common_attributes::Outcome;
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::FromClientConfigAndContext;
 use rdkafka::message::{Header, OwnedHeaders};
@@ -60,7 +61,7 @@ use regex::Regex;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Compiles a signal's `allowed_topics_regex` patterns into [`Regex`] values,
 /// or returns `None` when the signal configures no patterns (avoiding an
@@ -281,6 +282,9 @@ struct SendMeta {
     signal_type: SignalType,
     topic: String,
     pdata: OtapPdata,
+    export_start: Instant,
+    delivery_start: Instant,
+    payload_bytes: usize,
 }
 
 /// Bounded set of in-flight Kafka deliveries.
@@ -451,7 +455,7 @@ impl KafkaExporter {
     ) -> Result<Self, KafkaExporterError> {
         // Warn about producer_config keys that may be overwritten by first-class fields.
         for key in config.overridden_producer_config_keys() {
-            otap_df_telemetry::otel_warn!(
+            otel_warn!(
                 "kafka.exporter.producer_config.overridden_key",
                 key = %key,
                 "producer_config contains key '{key}' which is also managed by a \
@@ -639,6 +643,7 @@ impl KafkaExporter {
         reporter: &dyn AckNackReporter,
         effect_handler: Option<&EffectHandler<OtapPdata>>,
     ) -> Result<Option<(ExporterDeliveryFuture, SendMeta)>, KafkaExporterError> {
+        let export_start = Instant::now();
         let signal_type = pdata.signal_type();
 
         // Extract context and payload first so we can nack if config lookup fails.
@@ -650,10 +655,16 @@ impl KafkaExporter {
         let signal_config = match Self::get_signal_config(&self.config, signal_type) {
             Ok(cfg) => cfg,
             Err(e) => {
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "kafka.exporter.signal.unconfigured",
                     signal_type = ?signal_type,
                     error = %e,
+                );
+                self.metrics.record_failure(
+                    signal_type,
+                    KafkaExporterErrorType::UnconfiguredSignal,
+                    export_start.elapsed(),
+                    None,
                 );
                 let _ = reporter
                     .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
@@ -677,17 +688,27 @@ impl KafkaExporter {
         // Resolve topic via the dynamic topic router *before* doing any encoding
         // work. If a transport header supplied an invalid topic,
         // permanently nack the batch
-        let topic =
-            match TopicRouter::resolve(signal_config, allowed_regex, &context, &mut self.metrics) {
-                Ok(t) => t,
-                Err(e) => {
-                    self.metrics.inc_failed(signal_type);
-                    let _ = reporter
-                        .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
-                        .await;
-                    return Err(e);
-                }
-            };
+        let topic = match TopicRouter::resolve(
+            signal_config,
+            allowed_regex,
+            &context,
+            signal_type,
+            &mut self.metrics,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                self.metrics.record_failure(
+                    signal_type,
+                    KafkaExporterErrorType::InvalidTopic,
+                    export_start.elapsed(),
+                    None,
+                );
+                let _ = reporter
+                    .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
+                    .await;
+                return Err(e);
+            }
+        };
 
         let partition_key = partitioner::partition_key_for_signal(signal_config, &context);
 
@@ -699,6 +720,7 @@ impl KafkaExporter {
         // Encode payload to bytes using the per-signal encoding.
         // This block borrows &mut self.pdata_producer so it must complete
         // before we borrow self.config again for the topic reference below.
+        let encoding_start = Instant::now();
         let encode_result = match encoding {
             MessageFormat::OtlpProto => encoder::encode_to_otlp_bytes(payload.clone()),
             MessageFormat::OtapProto => encoder::encode_to_batch_arrow_record_bytes(
@@ -709,14 +731,33 @@ impl KafkaExporter {
 
         // nack on failed encoding bytes
         let payload_bytes = match encode_result {
-            Ok(bytes) => bytes,
+            Ok(bytes) => {
+                self.metrics.record_operation(
+                    signal_type,
+                    KafkaExporterOperation::Encoding,
+                    Outcome::Success,
+                    encoding_start.elapsed().as_secs_f64(),
+                );
+                bytes
+            }
             Err(e) => {
-                otap_df_telemetry::otel_error!(
+                otel_error!(
                     "kafka.exporter.encode.failed",
                     signal_type = ?signal_type,
                     error = %e,
                 );
-                self.metrics.inc_failed(signal_type);
+                self.metrics.record_operation(
+                    signal_type,
+                    KafkaExporterOperation::Encoding,
+                    Outcome::Failure,
+                    encoding_start.elapsed().as_secs_f64(),
+                );
+                self.metrics.record_failure(
+                    signal_type,
+                    KafkaExporterErrorType::Encoding,
+                    export_start.elapsed(),
+                    None,
+                );
                 let _ = reporter
                     .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
                     .await;
@@ -733,10 +774,17 @@ impl KafkaExporter {
             record = record.key(key);
         }
 
-        // Enqueue to librdkafka without awaiting delivery; the returned future is
-        // finalized later by `finalize_send_completion`. `send_result` does not
-        // retry a full queue -- a queue-full (or any) enqueue error is reported as
-        // a transient nack for an upstream `processor:retry` to resend.
+        // Enqueue the record to librdkafka without awaiting delivery. The
+        // returned delivery future resolves asynchronously and is finalized by
+        // `finalize_send_completion`; bounding the number of outstanding
+        // futures (see `max_in_flight`) is what provides backpressure here.
+        //
+        // Note: unlike the previous inline `send`, `send_result` does not retry
+        // a full producer queue. A queue-full (or any other) enqueue error is
+        // reported as a transient nack so an upstream `processor:retry` can
+        // resend; the bounded in-flight set already keeps the queue from being
+        // driven unboundedly deep.
+        let delivery_start = Instant::now();
         match self.producer.send_result(record) {
             Ok(delivery) => Ok(Some((
                 delivery,
@@ -744,14 +792,23 @@ impl KafkaExporter {
                     signal_type,
                     topic: topic.into_owned(),
                     pdata: OtapPdata::new(context, payload),
+                    export_start,
+                    delivery_start,
+                    payload_bytes: payload_bytes.len(),
                 },
             ))),
             Err((kafka_err, _record)) => {
-                self.metrics.inc_failed(signal_type);
+                self.metrics.record_delivery_failure(
+                    signal_type,
+                    &kafka_err,
+                    delivery_start.elapsed().as_secs_f64(),
+                    export_start.elapsed(),
+                    payload_bytes.len(),
+                );
                 let permanent = is_permanent_send_error(&kafka_err);
                 // `topic` may be a client-supplied (header-routed) value, so
                 // bound/escape it before logging to avoid log injection.
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "kafka.exporter.send.failed",
                     topic = %crate::common::kafka::sanitize_for_log(&topic),
                     signal_type = ?signal_type,
@@ -800,6 +857,9 @@ impl KafkaExporter {
             signal_type,
             topic,
             pdata,
+            export_start,
+            delivery_start,
+            payload_bytes,
         } = meta;
 
         // Match the two delivery layers directly:
@@ -810,7 +870,14 @@ impl KafkaExporter {
         //                    purge-error semantics) so the batch can be retried.
         let kafka_err = match result {
             Ok(Ok(_delivery)) => {
-                self.metrics.inc_exported(signal_type);
+                self.metrics.record_operation(
+                    signal_type,
+                    KafkaExporterOperation::Delivery,
+                    Outcome::Success,
+                    delivery_start.elapsed().as_secs_f64(),
+                );
+                self.metrics
+                    .record_success(signal_type, export_start.elapsed(), payload_bytes);
                 if let Err(e) = reporter.ack(pdata).await {
                     if let Some(eh) = effect_handler {
                         eh.info(&format!(
@@ -826,7 +893,13 @@ impl KafkaExporter {
             Err(_canceled) => rdkafka::error::KafkaError::Canceled,
         };
 
-        self.metrics.inc_failed(signal_type);
+        self.metrics.record_delivery_failure(
+            signal_type,
+            &kafka_err,
+            delivery_start.elapsed().as_secs_f64(),
+            export_start.elapsed(),
+            payload_bytes,
+        );
         // Classify the delivery failure: some Kafka errors (e.g. a record that
         // exceeds `message.max.bytes`, or an authorization failure) can never
         // succeed on retry, so they are permanently nacked and dropped at the
@@ -866,7 +939,7 @@ impl KafkaExporter {
     /// deadline.
     async fn drain_and_flush(
         &mut self,
-        deadline: std::time::Instant,
+        deadline: Instant,
         effect_handler: &EffectHandler<OtapPdata>,
     ) {
         effect_handler.info("Flushing Kafka producer").await;
@@ -875,11 +948,11 @@ impl KafkaExporter {
         // at zero if it has already passed), matching the parquet exporter's
         // deadline-bounded shutdown flush.
         let flush_timeout = deadline
-            .checked_duration_since(std::time::Instant::now())
+            .checked_duration_since(Instant::now())
             .unwrap_or(Duration::ZERO);
 
         if let Err(e) = self.producer.flush(flush_timeout) {
-            otap_df_telemetry::otel_warn!(
+            otel_warn!(
                 "kafka.exporter.shutdown.flush_failed",
                 error = %e,
             );
@@ -961,7 +1034,7 @@ impl KafkaExporter {
         let new_config: KafkaExporterConfig = match serde_json::from_value(config) {
             Ok(cfg) => cfg,
             Err(e) => {
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "kafka.exporter.reconfigure_error",
                     error = %e,
                     "ignoring invalid Config; keeping current configuration",
@@ -973,7 +1046,7 @@ impl KafkaExporter {
         // Warn about producer_config keys overridden by first-class fields,
         // matching the startup behavior.
         for key in new_config.overridden_producer_config_keys() {
-            otap_df_telemetry::otel_warn!(
+            otel_warn!(
                 "kafka.exporter.producer_config.overridden_key",
                 key = %key,
                 "producer_config contains key '{key}' which is also managed by a \
@@ -1002,7 +1075,7 @@ impl KafkaExporter {
         let new_producer = match new_producer_result {
             Ok(producer) => producer,
             Err(e) => {
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "kafka.exporter.reconfigure_error",
                     error = %e,
                     "failed to build producer for new config; keeping current configuration",
@@ -1018,7 +1091,7 @@ impl KafkaExporter {
             match Self::compile_signal_allowed_regexes(&new_config) {
                 Ok(regexes) => regexes,
                 Err(e) => {
-                    otap_df_telemetry::otel_warn!(
+                    otel_warn!(
                         "kafka.exporter.reconfigure_error",
                         error = %e,
                         "failed to compile allowed_topics_regex for new config; \
@@ -1060,7 +1133,7 @@ impl KafkaExporter {
             flush_timeout,
         ));
 
-        otap_df_telemetry::otel_info!(
+        otel_info!(
             "kafka.exporter.reconfigured",
             brokers = %self.config.brokers(),
         );
@@ -1183,14 +1256,12 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     _ = self.metrics.report(&mut metrics_reporter);
                 }
                 Message::Control(NodeControlMsg::Ack(_ack)) => {
-                    // Track ack receipt without spamming logs
-                    self.metrics.inc_ack();
+                    // Exporters terminate pdata delivery and do not route downstream acks.
                 }
                 Message::Control(NodeControlMsg::Nack(nack)) => {
-                    // Nack reached end of pipeline, track and log the failure
-                    // reason. The reason string can embed client-supplied values
+                    // A nack reached the end of the pipeline. The reason string
+                    // can embed client-supplied values
                     // (e.g. a header-routed topic), so bound/escape it.
-                    self.metrics.inc_nack();
                     effect_handler
                         .info(&format!(
                             "Kafka exporter: received Nack - {}",
@@ -1521,7 +1592,7 @@ pub mod test_support {
         // Kafka test-suite wiring (mock broker, exporter harness, assertions).
         use crate::common::kafka::MSG_FORMAT_HEADER;
         use crate::common::kafka::node_harness::KafkaExporterHarness;
-        use crate::common::kafka::node_harness::node_metrics::{FoldedMetrics, kafka_exports};
+        use crate::common::kafka::node_harness::node_metrics::{kafka_exports, measurement_value};
         use crate::common::kafka::test::cluster::KafkaTestCluster;
         use crate::common::kafka::test::message::count_by_partition;
         use crate::common::kafka::test::{run_on_local_set, with_cluster};
@@ -1881,6 +1952,8 @@ pub mod test_support {
 
         // ---- RecordingReporter ----
 
+        /// Scenario: A reporter receives successful, transient, and permanent outcomes.
+        /// Guarantees: Each outcome is retained in its corresponding bounded test collection.
         #[tokio::test]
         async fn recording_reporter_tracks_acks_and_nacks() {
             let reporter = RecordingReporter::new();
@@ -1904,6 +1977,8 @@ pub mod test_support {
             assert_eq!(permanent_reasons[0], "permanent-error");
         }
 
+        /// Scenario: A traces message reaches an exporter configured only for logs.
+        /// Guarantees: The message is permanently nacked and counted as an unconfigured-signal failure.
         #[tokio::test]
         async fn test_export_unconfigured_signal_type_is_nacked() {
             let pipeline_ctx = pipeline_context();
@@ -1942,8 +2017,38 @@ pub mod test_support {
                 "permanent nack reason should mention the signal type, got: {}",
                 permanent_reasons[0]
             );
+            assert_eq!(
+                exporter
+                    .metrics
+                    .exports
+                    .get(
+                        otap_df_telemetry::common_attributes::SignalOutcomeAttributes {
+                            signal: SignalType::Traces,
+                            outcome: Outcome::Failure,
+                        }
+                    )
+                    .messages
+                    .get(),
+                1,
+            );
+            assert_eq!(
+                exporter
+                    .metrics
+                    .failures
+                    .get(
+                        crate::exporters::kafka_exporter::metrics::KafkaExporterFailureAttributes {
+                            signal: SignalType::Traces,
+                            error_type: KafkaExporterErrorType::UnconfiguredSignal,
+                        }
+                    )
+                    .messages
+                    .get(),
+                1,
+            );
         }
 
+        /// Scenario: A transport header supplies an invalid dynamic Kafka topic.
+        /// Guarantees: The message is permanently nacked and classified as an invalid-topic failure.
         #[tokio::test]
         async fn test_export_invalid_dynamic_topic_is_permanently_nacked() {
             let pipeline_ctx = pipeline_context();
@@ -1988,6 +2093,20 @@ pub mod test_support {
                 permanent_reasons[0].contains("bad topic/name"),
                 "permanent nack reason should mention the offending topic, got: {}",
                 permanent_reasons[0]
+            );
+            assert_eq!(
+                exporter
+                    .metrics
+                    .failures
+                    .get(
+                        crate::exporters::kafka_exporter::metrics::KafkaExporterFailureAttributes {
+                            signal: SignalType::Logs,
+                            error_type: KafkaExporterErrorType::InvalidTopic,
+                        }
+                    )
+                    .messages
+                    .get(),
+                1,
             );
         }
 
@@ -2362,9 +2481,8 @@ pub mod test_support {
 
         /// Returns the `unit` string declared for field `field` in the metric
         /// set named `set_name`, across a terminal state's snapshots (or `None`
-        /// if that set/field was not emitted). `field` accepts either the Rust
-        /// identifier (`acks_received`) or the emitted dotted form
-        /// (`acks.received`); underscores are normalized to dots before lookup.
+        /// if that set/field was not emitted). Underscores in `field` are
+        /// normalized to dots before lookup.
         fn metric_unit<'a>(
             snapshots: &'a [otap_df_telemetry::metrics::MetricSetSnapshot],
             set_name: &str,
@@ -3873,7 +3991,7 @@ pub mod test_support {
 
                 // Short shutdown deadline; the whole stop must finish well
                 // inside this outer bound even though the broker is unreachable.
-                let start = std::time::Instant::now();
+                let start = Instant::now();
                 exporter.shutdown(Duration::from_millis(500)).await;
                 tokio::time::timeout(Duration::from_secs(10), exporter.await_stopped())
                     .await
@@ -3943,6 +4061,9 @@ pub mod test_support {
                 signal_type: SignalType::Logs,
                 topic: topic.to_string(),
                 pdata: sample_pdata(SignalType::Logs),
+                export_start: Instant::now(),
+                delivery_start: Instant::now(),
+                payload_bytes: 0,
             };
             (delivery, meta)
         }
@@ -4857,7 +4978,7 @@ pub mod test_support {
                 // purge the in-flight delivery, cancelling its future.
                 exporter.shutdown(Duration::from_millis(300)).await;
 
-                let nack = exporter
+                let mut nack = exporter
                     .recv_nack(Duration::from_secs(10))
                     .await
                     .expect("a purged in-flight delivery must unwind a nack");
@@ -5062,7 +5183,7 @@ pub mod test_support {
                     .await
                     .expect("send pdata");
 
-                let nack = exporter
+                let mut nack = exporter
                     .recv_nack(Duration::from_secs(10))
                     .await
                     .expect("send failure must unwind a nack to the subscriber");
@@ -5611,7 +5732,7 @@ pub mod test_support {
                     KafkaExporter::new(pipeline_ctx, cfg).expect("config should be valid");
                 let reporter = RecordingReporter::new();
 
-                let start = std::time::Instant::now();
+                let start = Instant::now();
                 let result = tokio::time::timeout(
                     Duration::from_secs(10),
                     export_once(
@@ -7133,11 +7254,9 @@ pub mod test_support {
 
         /// Scenario (telemetry): after a successful export and graceful shutdown, inspect the
         /// terminal metric snapshots' schema.
-        /// Guarantees: both node metric sets are present -- the operational
-        /// `exporter.kafka` set and the measurement `exporter.kafka.exports`
-        /// set -- with the migrated units (`exports.messages` is `{message}`;
-        /// operational counters are `{batch}`), pinning the post-migration
-        /// telemetry schema (names + units) against accidental regressions.
+        /// Guarantees: shared export outcomes and Kafka-specific payload,
+        /// operation, and routing measurements use their dedicated metric sets
+        /// with the expected units.
         #[tokio::test]
         async fn terminal_snapshot_exposes_both_metric_sets_with_expected_units() {
             let topic = "it-telemetry-schema";
@@ -7161,12 +7280,14 @@ pub mod test_support {
                     let ts = exporter.await_terminal_state().await;
                     let snaps = ts.metrics();
 
-                    // Both metric sets are represented in the terminal snapshot.
+                    // Each observation answers a distinct question: whether the
+                    // export succeeded, how much data it carried, how long each
+                    // Kafka phase took, and how its destination was selected.
                     assert!(
                         snaps
                             .iter()
-                            .any(|s| s.descriptor().name == "exporter.kafka"),
-                        "operational set exporter.kafka should be present"
+                            .any(|s| s.descriptor().name == "exporter.exports"),
+                        "shared exporter.exports set should be present"
                     );
                     assert!(
                         snaps
@@ -7174,23 +7295,30 @@ pub mod test_support {
                             .any(|s| s.descriptor().name == "exporter.kafka.exports"),
                         "measurement set exporter.kafka.exports should be present"
                     );
-
-                    // Migrated units: exports are per-message, operational are
-                    // per-batch.
                     assert_eq!(
-                        metric_unit(snaps, "exporter.kafka.exports", "messages"),
+                        metric_unit(snaps, "exporter.exports", "messages"),
                         Some("{message}"),
                         "exports.messages unit"
                     );
                     assert_eq!(
-                        metric_unit(snaps, "exporter.kafka", "acks_received"),
-                        Some("{batch}"),
-                        "acks_received unit"
+                        metric_unit(snaps, "exporter.exports", "duration"),
+                        Some("s"),
+                        "exports.duration unit"
                     );
                     assert_eq!(
-                        metric_unit(snaps, "exporter.kafka", "topic_from_header"),
-                        Some("{batch}"),
-                        "topic_from_header unit"
+                        metric_unit(snaps, "exporter.kafka.exports", "bytes"),
+                        Some("By"),
+                        "Kafka export bytes unit"
+                    );
+                    assert_eq!(
+                        metric_unit(snaps, "exporter.kafka.operations", "duration"),
+                        Some("s"),
+                        "Kafka operation duration unit"
+                    );
+                    assert_eq!(
+                        metric_unit(snaps, "exporter.kafka.routing", "messages"),
+                        Some("{message}"),
+                        "Kafka routing messages unit"
                     );
                 },
             )
@@ -7237,11 +7365,10 @@ pub mod test_support {
 
         /// Scenario (telemetry): a downstream node acknowledges a batch (a
         /// `NodeControlMsg::Ack` reaches the exporter).
-        /// Guarantees: the operational `acks_received` counter increments once
-        /// and `nacks_received` stays zero, validating the exporter's
-        /// ack-accounting path end-to-end.
+        /// Guarantees: the terminal exporter ignores the downstream control and
+        /// does not misclassify it as an export outcome.
         #[tokio::test]
-        async fn acks_received_counter_increments_on_downstream_ack() {
+        async fn downstream_ack_does_not_emit_export_metrics() {
             let topic = "it-telemetry-ack";
             with_cluster(
                 KafkaTestCluster::builder().topic(topic),
@@ -7258,10 +7385,10 @@ pub mod test_support {
 
                     exporter.shutdown(Duration::from_secs(5)).await;
                     let ts = exporter.await_terminal_state().await;
-                    let mut m = FoldedMetrics::new();
-                    m.fold_all(ts.metrics());
-                    assert_eq!(m.value("acks_received"), 1, "one downstream ack observed");
-                    assert_eq!(m.value("nacks_received"), 0);
+                    assert!(
+                        ts.metrics().is_empty(),
+                        "a downstream ack is not a terminal export outcome"
+                    );
                 },
             )
             .await;
@@ -7269,11 +7396,10 @@ pub mod test_support {
 
         /// Scenario (telemetry): a downstream node refuses a batch (a `NodeControlMsg::Nack`
         /// with a benign reason reaches the exporter).
-        /// Guarantees: the operational `nacks_received` counter increments once
-        /// and `acks_received` stays zero, validating the exporter's
-        /// nack-accounting path end-to-end.
+        /// Guarantees: the terminal exporter safely handles the downstream
+        /// control without misclassifying it as an export failure.
         #[tokio::test]
-        async fn nacks_received_counter_increments_on_downstream_nack() {
+        async fn downstream_nack_does_not_emit_export_metrics() {
             let topic = "it-telemetry-nack";
             with_cluster(
                 KafkaTestCluster::builder().topic(topic),
@@ -7290,10 +7416,10 @@ pub mod test_support {
 
                     exporter.shutdown(Duration::from_secs(5)).await;
                     let ts = exporter.await_terminal_state().await;
-                    let mut m = FoldedMetrics::new();
-                    m.fold_all(ts.metrics());
-                    assert_eq!(m.value("nacks_received"), 1, "one downstream nack observed");
-                    assert_eq!(m.value("acks_received"), 0);
+                    assert!(
+                        ts.metrics().is_empty(),
+                        "a downstream nack is not a terminal export failure"
+                    );
                 },
             )
             .await;
@@ -7302,8 +7428,8 @@ pub mod test_support {
         /// Scenario (telemetry): a downstream nack carries an adversarial reason string
         /// (embedded control characters and an overlong value), which the
         /// exporter logs after sanitizing.
-        /// Guarantees: the exporter still counts the nack (`nacks_received ==
-        /// 1`) and shuts down cleanly, so client-influenced nack reasons cannot
+        /// Guarantees: the exporter shuts down cleanly without emitting an
+        /// unbounded metric attribute, so client-influenced nack reasons cannot
         /// crash, hang, or corrupt the telemetry path (the sanitizer's exact
         /// output is pinned separately by the `sanitize_for_log` unit tests).
         #[tokio::test]
@@ -7327,12 +7453,9 @@ pub mod test_support {
 
                     exporter.shutdown(Duration::from_secs(5)).await;
                     let ts = exporter.await_terminal_state().await;
-                    let mut m = FoldedMetrics::new();
-                    m.fold_all(ts.metrics());
-                    assert_eq!(
-                        m.value("nacks_received"),
-                        1,
-                        "an adversarial nack reason is still counted and handled safely"
+                    assert!(
+                        ts.metrics().is_empty(),
+                        "an adversarial nack reason must not become metric data"
                     );
                 },
             )
@@ -7341,12 +7464,10 @@ pub mod test_support {
 
         /// Scenario (telemetry): one batch is routed via a transport header while another is
         /// routed via the static per-signal topic.
-        /// Guarantees: the topic-source operational counters reflect the routing
-        /// decision end-to-end (`topic_from_header == 1`,
-        /// `topic_from_static_config == 1`), so the router's telemetry is wired
-        /// through to the terminal snapshot.
+        /// Guarantees: the bounded `topic.source` observations distinguish the
+        /// header and static routing decisions end-to-end.
         #[tokio::test]
-        async fn topic_source_counters_reflect_header_vs_static_routing() {
+        async fn topic_source_attributes_reflect_header_vs_static_routing() {
             let static_topic = "it-telemetry-static";
             let dynamic_topic = "it-telemetry-dynamic";
             with_cluster(
@@ -7380,15 +7501,23 @@ pub mod test_support {
 
                     exporter.shutdown(Duration::from_secs(5)).await;
                     let ts = exporter.await_terminal_state().await;
-                    let mut m = FoldedMetrics::new();
-                    m.fold_all(ts.metrics());
                     assert_eq!(
-                        m.value("topic_from_header"),
+                        measurement_value(
+                            ts.metrics(),
+                            "exporter.kafka.routing",
+                            "messages",
+                            &[("signal", "logs"), ("topic.source", "header")],
+                        ),
                         1,
                         "one batch routed from a transport header"
                     );
                     assert_eq!(
-                        m.value("topic_from_static_config"),
+                        measurement_value(
+                            ts.metrics(),
+                            "exporter.kafka.routing",
+                            "messages",
+                            &[("signal", "logs"), ("topic.source", "static_config")],
+                        ),
                         1,
                         "one batch routed from static config"
                     );
@@ -7397,12 +7526,10 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (telemetry): a mixed run of successful exports, one broker-rejected
-        /// export, and one downstream ack, followed by graceful shutdown.
-        /// Guarantees: the final terminal snapshot reflects all activity up to
-        /// shutdown -- `messages{success} == N`, `messages{failure} == 1`, and
-        /// `acks_received == 1` -- so the shutdown snapshot is a complete record
-        /// of the node's counters, not a partial or reset view.
+        /// Scenario (telemetry): successful exports and an ignored downstream
+        /// ack are followed by a broker-rejected export on a second exporter.
+        /// Guarantees: each final snapshot contains every terminal export
+        /// outcome up to shutdown, while the downstream ack adds no outcome.
         #[tokio::test]
         async fn final_snapshot_reflects_all_activity_up_to_shutdown() {
             const N: usize = 3;
@@ -7434,17 +7561,10 @@ pub mod test_support {
                     exporter.shutdown(Duration::from_secs(5)).await;
                     let ts = exporter.await_terminal_state().await;
                     let snaps = ts.metrics();
-                    let mut m = FoldedMetrics::new();
-                    m.fold_all(snaps);
                     assert_eq!(
                         kafka_exports(snaps, "logs", "success"),
                         N as u64,
                         "snapshot should record every successful export"
-                    );
-                    assert_eq!(
-                        m.value("acks_received"),
-                        1,
-                        "snapshot should record the ack"
                     );
 
                     // One broker-rejected export on a second exporter counts as a

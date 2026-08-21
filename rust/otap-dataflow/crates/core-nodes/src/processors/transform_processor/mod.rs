@@ -12,6 +12,11 @@
 //!
 //! ToDo: Detect unsupported pipelines at config time instead of run time.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = TRANSFORM_PROCESSOR_URN,
+    target = "otel.processor.transform",
+);
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -38,7 +43,7 @@ use otap_df_otap::{
 };
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{
-    OtapArrowRecords, OtapPayload, otap::transform::sanitize::sanitize_otap_batch,
+    OtapArrowRecords, OtapPayload, PayloadData, otap::transform::sanitize::sanitize_otap_batch,
 };
 use otap_df_query_engine::{
     parser::default_parser_options,
@@ -397,7 +402,7 @@ impl TransformProcessor {
             }
 
             // setup the pdata with the new outbound context
-            let payload = OtapPayload::OtapArrowRecords(otap_batch);
+            let payload = OtapPayload::from(otap_batch);
             let mut pdata = OtapPdata::new(outbound_context.clone(), payload);
             let outbound_key = self
                 .contexts
@@ -621,7 +626,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                     match result {
                         Ok(next_result) => {
                             // initialize payload for the next loop iteration
-                            payload = Some(OtapPayload::OtapArrowRecords(next_result));
+                            payload = Some(OtapPayload::from(next_result));
                         }
                         Err(e) => {
                             transform_error = Some(e);
@@ -636,8 +641,12 @@ impl Processor<OtapPdata> for TransformProcessor {
                         None => {
                             // safety: since error is `None`, we know payload must be `Some` based
                             // on the logic in the loop above, so it is safe to expect here
-                            match payload.take().expect("payload option initialized") {
-                                OtapPayload::OtapArrowRecords(otap_batch) => Ok(otap_batch),
+                            match payload
+                                .take()
+                                .expect("payload option initialized")
+                                .into_data()
+                            {
+                                PayloadData::OtapArrowRecords(otap_batch) => Ok(otap_batch),
                                 _ => {
                                     // safety: if any transform applied then we'll have converted
                                     // the payload the OTAP, so we know here that it must be this
@@ -1587,8 +1596,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         assert_eq!(result, input)
                     }
                     _ => panic!("unexpected payload type"),
@@ -1787,8 +1796,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         // ensure the routed record was "sanitized"
                         let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
                         let severity_text_col = logs_batch
@@ -1815,8 +1824,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         assert_logs_records_equal(result, info_log_record);
                     }
                     _ => panic!("unexpected payload type"),
@@ -1987,7 +1996,7 @@ mod test {
                 assert_eq!(outbound_context.source_node(), Some(0));
                 inbound_context.set_source_node(0);
                 assert_eq!(inbound_context, outbound_context);
-                assert!(outbound_context.has_subscribers());
+                assert!(outbound_context.has_ack_or_nack_subscribers());
             })
             .validate(|_ctx| async move {})
     }
@@ -2067,7 +2076,7 @@ mod test {
                 // The processor at node 5 should have tagged the outbound source.
                 assert_eq!(outbound_pdata.get_source_node(), Some(5));
                 // The original ACK subscriber should still be present.
-                assert!(outbound_pdata.has_subscribers());
+                assert!(outbound_pdata.has_ack_or_nack_interests());
 
                 // Behavior check: ACK unwinds back to the original subscriber.
                 let (node_id, ack) = next_ack(AckMsg::new(outbound_pdata))
@@ -2838,8 +2847,8 @@ mod test {
                 }
                 assert_eq!(routed.len(), 1);
                 let (_context, payload) = routed.pop().unwrap().into_parts();
-                match payload {
-                    OtapPayload::OtapArrowRecords(result) => {
+                match payload.into_data() {
+                    PayloadData::OtapArrowRecords(result) => {
                         // check sanitization was skipped on routed record
                         let logs_batch = result.get(ArrowPayloadType::Logs).unwrap();
                         let severity_text_col = logs_batch
@@ -2891,10 +2900,8 @@ mod test {
                         )],
                     )],
                 }));
-                let pdata_batch1 = OtapPdata::new(
-                    Context::default(),
-                    OtapPayload::OtapArrowRecords(otap_batch1),
-                );
+                let pdata_batch1 =
+                    OtapPdata::new(Context::default(), OtapPayload::from(otap_batch1));
                 ctx.process(Message::PData(pdata_batch1)).await.unwrap();
 
                 // check it still processes correctly metrics batches even if they don't have
@@ -2914,10 +2921,8 @@ mod test {
                         )],
                     )],
                 }));
-                let pdata_batch2 = OtapPdata::new(
-                    Context::default(),
-                    OtapPayload::OtapArrowRecords(otap_batch2),
-                );
+                let pdata_batch2 =
+                    OtapPdata::new(Context::default(), OtapPayload::from(otap_batch2));
                 ctx.process(Message::PData(pdata_batch2)).await.unwrap();
 
                 let output = ctx.drain_pdata().await;

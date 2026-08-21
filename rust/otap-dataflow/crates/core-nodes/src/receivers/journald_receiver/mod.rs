@@ -10,6 +10,11 @@
 //! platforms the factory rejects construction with a clear error.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+otap_df_telemetry::otel_component_scope!(
+    urn = JOURNALD_RECEIVER_URN,
+    target = "otel.receiver.journald",
+);
+
 #[cfg(target_os = "linux")]
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -43,8 +48,6 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 #[cfg(target_os = "linux")]
 use otap_df_telemetry::metrics::MetricSetSnapshot;
-#[cfg(target_os = "linux")]
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
 #[cfg(any(target_os = "linux", test))]
@@ -894,7 +897,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             }
                             let mut pdata = OtapPdata::new(
                                 Context::default(),
-                                OtapPayload::OtapArrowRecords(batch.records),
+                                OtapPayload::from(batch.records),
                             );
                             let mut calldata = CallData::new();
                             calldata.push(Context8u8::from(batch.id));

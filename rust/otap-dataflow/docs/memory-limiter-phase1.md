@@ -4,6 +4,10 @@ This document describes the **Phase 1 implementation** of the process-wide memor
 limiter. It covers current behavior only. The longer-term hierarchical
 lease-and-ticket design is planned for a separate document.
 
+For a status-labelled map of process memory views, allocator telemetry,
+retained-work attribution, throttling, and control actions, see
+[Memory Resource Management](memory-resource-management.md).
+
 ## Problem
 
 The collector already has bounded channels, topic publish limits, and
@@ -451,8 +455,8 @@ All engine metrics are registered under the `engine` metric-set.
 | `receiver.otlp.rejections.requests{error.type="memory_pressure"}` | OTLP (gRPC + HTTP) | Requests rejected due to memory pressure, partitioned by `protocol` |
 | `receiver.otlp.rejections.requests{error.type="rate_limit"}` | OTLP (gRPC + HTTP) | Requests refused by rate throttling, partitioned by `protocol` |
 | `admission.rate_limiter.refusals` | Any participating component | Admission attempts refused, oversized, or admitted in observe-only mode, partitioned by bounded `dimension` and `refusal` attributes |
-| `receiver.otap.refused_memory_pressure` | OTAP gRPC | Requests rejected due to memory pressure |
-| `receiver.otap.rejected_requests` | OTAP gRPC | Total rejected requests (includes memory pressure) |
+| `receiver.otap.rejections.streams{error.type="memory_pressure"}` | OTAP gRPC | Streaming RPCs rejected due to memory pressure |
+| `receiver.otap.rejections.batches{error.type="memory_pressure"}` | OTAP gRPC | Batches rejected due to memory pressure after stream admission |
 | `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | Syslog / CEF TCP | Connections rejected or closed |
 | `receiver.syslog_cef.received_logs_rejected_memory_pressure` | Syslog / CEF | Log records dropped under pressure |
 <!-- markdownlint-enable MD013 -->
