@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787339514490,
+  "lastUpdate": 1787348542476,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -20834,6 +20834,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 114.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cf7af5caed927965ecdf657a4d5acc2409faff87",
+          "message": "chore(repo): Standardize crate namespaces on otel-arrow-dfe (#3859)\n\n# Chore Summary\n\nRename the OTAP Dataflow Engine Cargo packages from the `otap-df`\nnamespace to the SIG-approved `otel-arrow-dfe` namespace.\n\nGit and path dependency consumers must update Cargo dependency names and\n`cargo -p` selectors to the new prefix, and update Rust imports from\n`otap_df_*` to `otel_arrow_dfe_*`.\n\n## Geneva compatibility\n\n`geneva-uploader` is pinned to revision\n`b4cbfda441075af8a6d1f2b7db7632febb3068ae`, whose manifest still\nrequests the Git package `otap-df-pdata-views`.\n\nCargo `[patch]` entries replace a package source but do not rename its\npackage identity. After this change, pointing the existing\n`otap-df-pdata-views` patch directly at `crates/pdata-views` fails\nbecause that directory now declares `package.name =\n\"otel-arrow-dfe-pdata-views\"`.\n\nTo keep the pinned dependency resolvable, this change adds an\nunpublished, workspace-excluded compatibility facade:\n\n```text\ngeneva-uploader\n  -> otap-df-pdata-views compatibility package\n      -> otel-arrow-dfe-pdata-views\n```\n\nThe facade contains no implementation. It depends on and re-exports\n`otel-arrow-dfe-pdata-views`; the root patch redirects only the old Git\npackage identity to that facade. Remove the facade, workspace exclusion,\nand patch together after `geneva-uploader` changes its dependency\npackage name to `otel-arrow-dfe-pdata-views`.\n\n## Related issue\n\n- Closes #1848",
+          "timestamp": "2026-08-21T20:41:14Z",
+          "tree_id": "f74146992e6ac3a436b0cd0e874a312f8a0cccf5",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/cf7af5caed927965ecdf657a4d5acc2409faff87"
+        },
+        "date": 1787348528413,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.46,
             "unit": "MB"
           },
           {
