@@ -83,7 +83,7 @@ force-links `otel-arrow-dfe-wasm-host` (registering the `wasm_processor` factory
 and pulls in wasmtime:
 
 ```sh
-cargo build -p otap-df --features wasm
+cargo build -p otel-arrow-dfe --features wasm
 ```
 
 Without `--features wasm`, `df_engine` compiles with no wasmtime dependency
