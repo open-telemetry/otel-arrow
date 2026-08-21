@@ -3088,6 +3088,18 @@ mod tests {
         }
     }
 
+    /// Assert that a normal-tier histogram contains one expected duration in seconds.
+    fn assert_duration_seconds(values: &[MetricValue], index: usize, expected: f64, msg: &str) {
+        let (count, sum, min, max) = assert_dist_is_normal_histogram(values, index, msg);
+        assert_eq!(count, 1, "{msg}: expected one duration observation");
+        for (name, actual) in [("sum", sum), ("min", min), ("max", max)] {
+            assert!(
+                (actual - expected).abs() < f64::EPSILON,
+                "{msg}: expected {name}={expected}, got {actual}"
+            );
+        }
+    }
+
     // ConsumedMetrics field indices (defined by #[metric_set] field order):
     const CONSUMER_DURATION: usize = 0;
     const CONSUMER_REQUESTS: usize = 1;
@@ -3752,35 +3764,39 @@ mod tests {
     /// Guarantees: Consumed durations are recorded as normal-tier histograms in seconds.
     #[tokio::test]
     async fn test_ack_lifecycle_duration_histogram() {
+        const ENTRY_TIME_NS: u64 = 1_000_000_000;
+        const RETURN_TIME_NS: u64 = 1_250_000_000;
+        const EXPECTED_DURATION_SECONDS: f64 = 0.25;
+
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
-            let pdata = build_3node_pdata(nodes, true);
+            let mut pdata = build_3node_pdata(nodes, true);
+            for frame in &mut pdata.frames {
+                if frame.route.entry_time_ns > 0 {
+                    frame.route.entry_time_ns = ENTRY_TIME_NS;
+                }
+            }
             let mut ack = AckMsg::new(pdata);
-            ack.unwind.return_time_ns = nanos_since_birth();
+            ack.unwind.return_time_ns = RETURN_TIME_NS;
             vec![PipelineCompletionMsg::DeliverAck { ack }]
         })
         .await;
 
-        // Exporter consumed duration: 1 observation, min > 0
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let (count, _, min, max) =
-            assert_dist_is_normal_histogram(exp, CONSUMER_DURATION, "Exporter duration");
-        assert_eq!(count, 1, "Exporter should have 1 duration observation");
-        assert!(min > 0.0, "Duration min should be > 0");
-        assert!(max >= min, "Duration max >= min");
+        assert_duration_seconds(
+            exp,
+            CONSUMER_DURATION,
+            EXPECTED_DURATION_SECONDS,
+            "Exporter consumed duration",
+        );
 
-        // Processor consumed duration: 1 observation, min > 0
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let (count, _, min, _) = assert_dist_is_normal_histogram(
+        assert_duration_seconds(
             proc_c,
             CONSUMER_DURATION,
+            EXPECTED_DURATION_SECONDS,
             "Processor consumed duration",
         );
-        assert_eq!(
-            count, 1,
-            "Processor should have 1 consumed duration observation"
-        );
-        assert!(min > 0.0, "Processor consumed duration should be > 0");
 
         // Processor produced duration: should be 0 observations because the
         // processor frame has CONSUMER_METRICS, so produced duration is
@@ -3801,28 +3817,29 @@ mod tests {
     /// Guarantees: Produced duration is recorded only when no consumed duration owns the frame.
     #[tokio::test]
     async fn test_ack_lifecycle_produced_duration_histogram() {
+        const ENTRY_TIME_NS: u64 = 1_000_000_000;
+        const RETURN_TIME_NS: u64 = 1_250_000_000;
+        const EXPECTED_DURATION_SECONDS: f64 = 0.25;
+
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
-            let pdata = build_3node_pdata_no_subscribers(nodes, true);
+            let mut pdata = build_3node_pdata_no_subscribers(nodes, true);
+            for frame in &mut pdata.frames {
+                frame.route.entry_time_ns = ENTRY_TIME_NS;
+            }
             let mut ack = AckMsg::new(pdata);
-            ack.unwind.return_time_ns = nanos_since_birth();
+            ack.unwind.return_time_ns = RETURN_TIME_NS;
             vec![PipelineCompletionMsg::DeliverAck { ack }]
         })
         .await;
 
-        // Receiver produced duration: 1 observation, min > 0
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let (count, _, min, max) = assert_dist_is_normal_histogram(
+        assert_duration_seconds(
             recv_p,
             PRODUCER_DURATION,
+            EXPECTED_DURATION_SECONDS,
             "Receiver produced duration",
         );
-        assert_eq!(
-            count, 1,
-            "Receiver should have 1 produced duration observation"
-        );
-        assert!(min > 0.0, "Receiver produced duration should be > 0");
-        assert!(max >= min, "Receiver produced duration max >= min");
 
         // Processor produced duration: 0 observations
         // (merged frame has CONSUMER_METRICS -> produced_duration suppressed)
