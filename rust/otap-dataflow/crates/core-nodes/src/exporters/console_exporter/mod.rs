@@ -954,11 +954,11 @@ mod tests {
             "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
             "| | +- METRIC name=latency unit=ms\n",
             "| | | +- HISTOGRAM temporality=delta\n",
-            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=4 sum=20 avg=5 min=0.5 max=12 flags=1 [series=blue]\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=4 sum=20 avg=5 p50~=5.5 p90~=11 p99~=11 min=0.5 max=12 flags=1 [series=blue]\n",
             "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
             "| | +- METRIC name=size_distribution unit=By\n",
             "| | | +- EXPONENTIAL_HISTOGRAM temporality=cumulative\n",
-            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=6 sum=30 avg=5 min=-4 max=16 flags=1 [series=blue]\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=6 sum=30 avg=5 p50~=0 p90~=16 p99~=16 min=-4 max=16 flags=1 [series=blue]\n",
             "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
             "| | +- METRIC name=request_summary unit=ms\n",
             "| | | +- SUMMARY\n",
@@ -1014,6 +1014,166 @@ mod tests {
              | | | | | +- NEG_BUCKET offset=-2 bucket_index=-2 count=1\n\
              | | | | | +- NEG_BUCKET offset=-2 bucket_index=-1 count=1\n"
         ));
+        assert!(!text.contains("p50~="));
+        assert!(!text.contains("p90~="));
+        assert!(!text.contains("p99~="));
+    }
+
+    /// Scenario: Explicit percentile ranks land in finite and unbounded buckets without extrema.
+    /// Guarantees: The finite estimate is rendered while only estimates needing absent extrema
+    /// are omitted.
+    #[test]
+    fn pretty_metrics_omit_only_unbounded_explicit_percentiles_without_extrema() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "latency");
+        let Some(metric::Data::Histogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected explicit histogram");
+        };
+        histogram.data_points[0].min = None;
+        histogram.data_points[0].max = None;
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(text.contains(" avg=5 p50~=5.5"));
+        assert!(!text.contains("p90~="));
+        assert!(!text.contains("p99~="));
+    }
+
+    /// Scenario: Compact histograms are bucketless or disagree with their declared count.
+    /// Guarantees: Percentiles are omitted rather than inferred from summary fields or malformed
+    /// bucket populations.
+    #[test]
+    fn pretty_metrics_omit_percentiles_for_unusable_bucket_data() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "latency" || metric.name == "size_distribution");
+        let Some(metric::Data::Histogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected explicit histogram");
+        };
+        histogram.data_points[0].bucket_counts.clear();
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[1].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        histogram.data_points[0].count += 1;
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(!text.contains("p50~="));
+        assert!(!text.contains("p90~="));
+        assert!(!text.contains("p99~="));
+    }
+
+    /// Scenario: Explicit histogram buckets have invalid ordering, shape, totals, or arithmetic.
+    /// Guarantees: Every malformed representation suppresses percentile estimates without
+    /// panicking or changing the exact summary fields.
+    #[test]
+    fn pretty_metrics_reject_malformed_explicit_buckets() {
+        let cases = [
+            (vec![10.0, 1.0], vec![1, 2, 1], 4),
+            (vec![1.0, 10.0], vec![1, 2, 1, 0], 4),
+            (vec![1.0, 10.0], vec![1, 2, 0], 4),
+            (vec![1.0, 10.0], vec![u64::MAX, 1, 0], u64::MAX),
+        ];
+
+        for (bounds, counts, count) in cases {
+            let mut metrics_data = metrics_with_all_data_types();
+            let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+            metrics.retain(|metric| metric.name == "latency");
+            let Some(metric::Data::Histogram(histogram)) = metrics[0].data.as_mut() else {
+                panic!("expected explicit histogram");
+            };
+            let point = &mut histogram.data_points[0];
+            point.explicit_bounds = bounds;
+            point.bucket_counts = counts;
+            point.count = count;
+
+            let text = format_pretty_metrics(&metrics_data);
+
+            assert!(text.contains(&format!("count={count}")));
+            assert!(!text.contains("p50~="), "{text}");
+            assert!(!text.contains("p90~="), "{text}");
+            assert!(!text.contains("p99~="), "{text}");
+        }
+    }
+
+    /// Scenario: Exponential percentile ranks span negative, zero, and positive buckets.
+    /// Guarantees: Numeric ordering and geometric bucket midpoints are applied at scale zero.
+    #[test]
+    fn pretty_metrics_order_exponential_buckets_numerically() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "size_distribution");
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        let point = &mut histogram.data_points[0];
+        point.count = 10;
+        point.sum = Some(0.0);
+        point.scale = 0;
+        point.zero_count = 1;
+        point.negative = Some(exponential_histogram_data_point::Buckets {
+            offset: 0,
+            bucket_counts: vec![2, 4],
+        });
+        point.positive = Some(exponential_histogram_data_point::Buckets {
+            offset: 0,
+            bucket_counts: vec![1, 2],
+        });
+        point.min = Some(-4.0);
+        point.max = Some(4.0);
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(text.contains(
+            "p50~=-1.4142135623730951 p90~=2.8284271247461903 \
+             p99~=2.8284271247461903"
+        ));
+    }
+
+    /// Scenario: An exponential histogram contains only observations in its zero bucket.
+    /// Guarantees: Every requested percentile is represented by zero without requiring a valid
+    /// non-zero bucket scale.
+    #[test]
+    fn pretty_metrics_render_zero_bucket_percentiles() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "size_distribution");
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        let point = &mut histogram.data_points[0];
+        point.count = 4;
+        point.sum = Some(0.0);
+        point.scale = i32::MAX;
+        point.zero_count = 4;
+        point.positive = None;
+        point.negative = None;
+        point.min = Some(0.0);
+        point.max = Some(0.0);
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(text.contains("p50~=0 p90~=0 p99~=0"));
+    }
+
+    /// Scenario: A non-zero exponential histogram reports a scale outside the OTLP range.
+    /// Guarantees: Invalid geometry suppresses all percentile estimates without affecting summary
+    /// statistics.
+    #[test]
+    fn pretty_metrics_omit_percentiles_for_invalid_exponential_scale() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "size_distribution");
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        histogram.data_points[0].scale = 21;
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(text.contains("count=6 sum=30 avg=5"));
+        assert!(!text.contains("p50~="));
     }
 
     /// Scenario: Equivalent metrics use compact and raw formatting through both payload models.
