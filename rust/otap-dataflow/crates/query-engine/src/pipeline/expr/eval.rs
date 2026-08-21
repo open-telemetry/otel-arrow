@@ -267,10 +267,16 @@ pub(super) fn join_and_eval_value(
                 } else if let Some((strategy, default)) = short_circuit
                     .and_then(|s| s.absent_child_default().map(|d| (s, d)))
                 {
-                    // The short-circuit strategy can handle absent children (e.g. OR treats absent
-                    // data as "no match"/false). For the common 2-child case we can skip the join
-                    // entirely: evaluate the remaining child and return its result directly.
-                    if num_children == 2 {
+                    // The short-circuit strategy can handle absent children (e.g. OR
+                    // treats absent data as "no match"/false). For the 2-child OR
+                    // case we skip the join entirely and return the other child's
+                    // result directly.
+                    if num_children == 2
+                        && matches!(
+                            strategy,
+                            ShortCircuitStrategy::Or | ShortCircuitStrategy::NotOr
+                        )
+                    {
                         // The other child is either already evaluated (in
                         // child_results) or is the next child to evaluate.
                         let other = child_results.into_iter().next().or(children
@@ -283,8 +289,8 @@ pub(super) fn join_and_eval_value(
                             otap_batch,
                         );
                     }
-                    // For N > 2 children, fall back to substituting the identity
-                    // value and proceeding through the join.
+                    // Otherwise, fall back to substituting the identity value and
+                    // proceeding through the join.
                     default
                 } else {
                     return Ok(None); // if any child is absent, the whole expression is null
