@@ -18,23 +18,23 @@ behavior while separating collection from semantic processing.
 
 ## Responsibility split
 
-```text
-Discovery:
-  find files and assign ownership
+```mermaid
+flowchart LR
+  D["Discovery<br/>Find files and assign ownership"]
+  R["Filelog receiver<br/>Read, decode and frame<br/>Track identity, offsets and rotation<br/>Emit raw OTAP logs"]
+  P["Processors<br/>Parse timestamps and structure<br/>Enrich, normalize, filter and route"]
+  E["Exporters<br/>Represent and deliver records"]
 
-Filelog receiver:
-  read bytes, decode text, frame records, track identity and offsets,
-  handle rotation and checkpoints, emit raw OTAP logs
-
-Processors:
-  parse timestamps and structured content, enrich, normalize, filter and route
-
-Exporters:
-  represent and deliver OTAP records to destinations
+  D -->|"file assignments"| R
+  R -->|"raw OTAP LogRecords"| P
+  P -->|"processed OTAP LogRecords"| E
+  E -.->|"Ack or Nack"| R
 ```
 
 The important boundary is simple: the receiver decides **which source bytes form a
-record**; processors decide **what that record means**.
+record**; processors decide **what that record means**; exporters decide **how that
+record is represented and delivered**. Ack or Nack returns to the receiver because
+only the receiver controls checkpoint advancement.
 
 ## Why this design
 
@@ -57,7 +57,7 @@ small assignment interface from the start, so external discovery can replace the
 producer later without changing framing, rotation, or checkpoints. Phase 1 delivers the
 complete product P0, but the epic's live multi-instance resize criteria remain Phase 3.
 
-## Reuse from journald
+## Reuse from journald and Quiver
 
 Journald is useful prior art for one pattern: keep blocking source and checkpoint work
 on a dedicated worker, hand bounded batches to the async receiver, retain an in-flight
@@ -66,13 +66,13 @@ does not share journald's source mechanics: it has file discovery, byte offsets,
 framing, fingerprints and rotation. Refactoring common plumbing is optional follow-up
 work, not a prerequisite.
 
-Rotel's file receiver is additional implementation prior art. It validates native
-directory notifications with polling fallback, debounced events as rescan hints, open
-handles across rename, versioned atomic state, and Ack-aware offsets. This design keeps
-those patterns. It does not copy Rotel's embedded JSON/nginx parsers, global
-`spawn_blocking` worker pool, Nack-as-Ack option, or platform ID as permanent identity
-because they do not match the responsibility, bounded-thread, and recovery contracts
-here.
+Quiver provides reusable persistence conventions, not the filelog data model. Its small
+cursor/progress sidecars use magic bytes, version and size fields, a logical position,
+CRC validation, and atomic temporary-file + sync + rename updates. Filelog reuses those
+envelope and recovery conventions for its snapshot, WAL and current-generation marker.
+It does not use Quiver's Arrow segment store or copy its single WAL cursor directly:
+filelog progress is a table of `(file_id, byte_offset)` entries whose offsets advance
+after downstream Ack.
 
 ## What users get
 
