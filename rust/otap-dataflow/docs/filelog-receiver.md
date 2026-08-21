@@ -12,16 +12,16 @@
 An OTAP-native `filelog` receiver for local file-based log ingestion. The receiver owns
 **file bytes, file identity, byte offsets, framing, rotation handling, backpressure, and
 Ack-gated checkpoints**. It emits raw, unparsed OTAP log records with file metadata
-attached. All semantic interpretation — parsing, extraction, enrichment, categorization,
-filtering, routing — lives outside the receiver in processors (OPL transform processors
+attached. All semantic interpretation -- parsing, extraction, enrichment, categorization,
+filtering, routing -- lives outside the receiver in processors (OPL transform processors
 in particular).
 
 This document distinguishes four kinds of statements throughout:
 
-- **[Confirmed]** — existing repository behavior this design relies on, with source references.
-- **[Decision]** — a design decision made by this document.
-- **[Open]** — an unresolved question that must be settled before or during implementation.
-- **[Deferred]** — explicitly out of scope for the initial implementation.
+- **[Confirmed]** -- existing repository behavior this design relies on, with source references.
+- **[Decision]** -- a design decision made by this document.
+- **[Open]** -- an unresolved question that must be settled before or during implementation.
+- **[Deferred]** -- explicitly out of scope for the initial implementation.
 
 ## Relationship to epic #2844
 
@@ -82,7 +82,7 @@ require refactoring journald as a precondition. **[Decision]**
   (`journald_receiver/mod.rs:885-891`); filelog uses the same correlation pattern.
   `NackMsg` carries a `permanent` flag and a cause (`RouteFull`, `RouteClosed`,
   `NodeShutdown`, `Unspecified`) (`control.rs:167-198`).
-- **`Interests` is a full `u8`** — no free bits remain; this design must not require a
+- **`Interests` is a full `u8`** -- no free bits remain; this design must not require a
   new interest flag (`crates/engine/src/lib.rs:325`). `Interests::RETURN_DATA` already
   exists (bit 2, `lib.rs:308`) and would return the Nacked payload to the producer;
   this design does not use it (see Ack model) but requires no new flag either way.
@@ -120,7 +120,7 @@ require refactoring journald as a precondition. **[Decision]**
   batch and resends it on pre-checkpoint Nack (`journald_receiver/mod.rs:557-566`,
   `:659-669`).
 - **Checkpoint envelope precedents.** journald: JSON envelope, blake3 checksum,
-  write-tmp → fsync → rename → fsync-dir (`journald_receiver/checkpoint.rs:103-160`,
+  write-tmp -> fsync -> rename -> fsync-dir (`journald_receiver/checkpoint.rs:103-160`,
   2 fsyncs per commit). quiver: binary `[magic][version][header_size][body][crc32]`
   envelopes with the same atomic write discipline (`crates/quiver/ARCHITECTURE.md`).
 - **Blocking I/O isolation.** journald isolates all blocking calls on a dedicated worker
@@ -146,7 +146,7 @@ require refactoring journald as a precondition. **[Decision]**
 | D8 | Thread layout | Three components: discovery thread (blocking), read worker thread (blocking, owns FDs/framing/encoding/checkpoint I/O), async engine task (control, Ack/Nack, emission) |
 | D9 | Framing | Phase 1 includes newline plus configurable start- or end-pattern multiline framing, bounded partial-record flush, decode-before-framing encodings, and split/truncate oversize policy |
 | D10 | Emitted schema | Raw framed record as body; file metadata as attributes (`log.file.path`, `log.file.name`, optional source offset); no semantic parsing |
-| D11 | Batch bounds | `batch.max_records` (≤ 65,535, default 1,024), `batch.max_flush_period`, and `batch.max_bytes` — a byte budget from day one |
+| D11 | Batch bounds | `batch.max_records` (<= 65,535, default 1,024), `batch.max_flush_period`, and `batch.max_bytes` -- a byte budget from day one |
 | D12 | Rotation | Move/create: retain FD, read to EOF + `rotate_wait`, finalize. Copytruncate: **best-effort** detection, default policy `read_new`, per-file epoch guards stale in-flight deltas |
 | D13 | Backpressure & control priority | Bounded channels end to end; reader stops when the handoff is full; the async half biased-selects control messages over data and races blocked sends against incoming control messages |
 | D14 | Discovery mechanism | Periodic glob reconciliation (`poll_interval`) with platform-locator dedup in v1; filesystem notifications plus reconciliation are the target so new files are tailed promptly without relying on notifications for correctness |
@@ -330,7 +330,7 @@ Live reconfiguration and resize overlap deployment generations: the new instance
 and must become ready **before** the old one drains **[Confirmed]**. Both generations
 resolve the same checkpoint path (keys exclude generation by design, D5). Without an
 ownership mechanism, the old generation can rewrite checkpoint state **after** the
-new generation has advanced it — a lost-update race that exists in v1, not just in the
+new generation has advanced it -- a lost-update race that exists in v1, not just in the
 multi-instance future.
 
 v1 uses two mechanisms with deliberately different scopes:
@@ -350,7 +350,7 @@ v1 uses two mechanisms with deliberately different scopes:
   because pipeline readiness must not deadlock against the old generation still
   holding the lock during its drain.
 - The lock is released at drain completion (process exit releases it in all failure
-  modes — this is why an OS lock is preferred over a persisted lease, which would need
+  modes -- this is why an OS lock is preferred over a persisted lease, which would need
   staleness heuristics).
 - Runtime file leases are released when their FDs close and on receiver termination.
   They are process-local guards, not durable identity or checkpoint records.
@@ -361,7 +361,7 @@ This prevents duplicate readers during normal live reconfiguration inside one en
 including receiver-node renames and overlapping patterns. It does not coordinate two
 independent engine processes that use different state directories; that deployment is
 outside the v1 ownership guarantee and must be documented. "Ready" here remains a
-lifecycle description, not an engine primitive — receiver readiness signalling does
+lifecycle description, not an engine primitive -- receiver readiness signalling does
 not exist in the engine today **[Confirmed]**.
 
 ### Multi-instance requirements (Phase 3) **[Decision D3, deliberately minimal]**
@@ -499,8 +499,8 @@ pattern]**:
     only fire from an already-known deadline would be unreachable while parked on a
     full channel.
 
-Channels: discovery→worker (bounded, assignment events), worker→async (bounded,
-capacity 1, batches + delta sets), async→worker (bounded, commands: Commit, Resend,
+Channels: discovery->worker (bounded, assignment events), worker->async (bounded,
+capacity 1, batches + delta sets), async->worker (bounded, commands: Commit, Resend,
 Drain, Shutdown). The worker never blocks indefinitely on a full channel: it polls the
 command channel with a short timeout while the handoff is full (journald's discipline).
 
@@ -520,6 +520,56 @@ Reader scheduling within the worker:
   offset tracking. Independently, one read worker is the Phase-1 aggregate file-I/O and
   checkpoint-I/O throughput ceiling even when downstream latency is negligible; Phase-1
   performance claims and benchmarks must name both ceilings. **[Decision]**
+
+### Threading and NUMA placement **[Decision]**
+
+Phase 1 follows the singleton-source pattern used by journald and host metrics:
+
+```text
+one-core source pipeline
+  async receiver task          control, Ack/Nack, emission, drain deadlines
+  discovery OS thread          scans, stat, fingerprint evidence
+  read/checkpoint OS thread    read, decode, frame, Arrow build, WAL and fsync
+
+multicore downstream pipeline
+  topic receiver -> processors -> exporters
+```
+
+The factory rejects `pipeline.num_cores() > 1`; there is exactly one discovery thread
+and one read/checkpoint thread per Phase-1 receiver, never one thread per file, directory,
+or mount. Downstream topic fanout is the Phase-1 parallelism boundary. Phase 3 may add
+multiple assigned receiver instances only after virtual-partition ownership, fencing,
+and checkpoint migration are defined.
+
+Potentially blocking or unbounded-latency operations never run on the df-engine
+current-thread async runtime. This includes directory traversal, `stat`, fingerprint
+reads, file open/read/close, character decoding and framing, checkpoint WAL writes,
+`fsync`, snapshot replacement, and synchronous compaction. Like host metrics' bounded
+`statvfs` worker, filelog uses fixed dedicated threads and bounded handoff channels
+rather than submitting repeated long-lived work to Tokio's shared blocking pool. This
+caps a stuck filesystem's thread and queue impact.
+
+The async task never calls a blocking channel send or synchronously joins a worker.
+Worker shutdown is requested over the bounded command channel. Drain continues polling
+control and downstream completion; any final thread join uses a non-blocking lifecycle
+path and is bounded by the engine drain deadline. A blocked or failed worker produces a
+terminal receiver event rather than parking the pipeline runtime indefinitely.
+
+Phase 1 does **not** pin the discovery or read worker, does not assume they share the
+pipeline core's NUMA node, and makes no NUMA-local allocation or throughput claim. The
+operating system chooses placement. For ordinary file tailing, filesystem/page-cache,
+checkpoint, and downstream-Ack behavior must be measured before introducing affinity.
+
+A future NUMA-aware design may expose, without changing file identity or checkpoints:
+
+- the backing device's NUMA node when the platform can resolve it;
+- preferred worker and pipeline placement as scheduler metadata;
+- virtual-partition assignment constrained by NUMA or storage locality; and
+- per-NUMA throughput, remote-memory, and migration measurements.
+
+Unknown topology remains `unknown`, never silently NUMA node zero. CPU count, core ID,
+NUMA node, thread ID, and deployment generation remain absent from checkpoint keys, so
+placement changes cannot change source identity or resume position.
 
 ## Framing **[Decision D9]**
 
@@ -860,7 +910,7 @@ source bytes disappear before capture/recovery. **[Decision]**
 Each emitted batch carries a delta set `{ (file_id, file_epoch, prev_offset,
 new_offset) }` plus rotation-finalization markers. The async half subscribes the batch
 to `ACKS | NACKS` with `(batch_id, attempt)` in `CallData` **[Confirmed mechanism]**.
-v1 enforces `max_in_flight_batches = 1` — the proven Ack-gating pattern
+v1 enforces `max_in_flight_batches = 1` -- the proven Ack-gating pattern
 **[Confirmed]**.
 
 - **Retention:** the worker retains a shallow clone of the in-flight batch. This is
@@ -1001,8 +1051,8 @@ in Phased implementation.
 - **Copytruncate: detection is best-effort, and the doc says so plainly.** Detection
   fires when a poll observes `current_size < committed_offset` or fingerprint prefix
   re-validation fails. It **cannot** fire when a truncate-and-regrow completes between
-  two polls, ends at a size ≥ the old offset, and reproduces an identical fingerprint
-  window — that sequence is observationally identical to a normal append on POSIX, and
+  two polls, ends at a size >= the old offset, and reproduces an identical fingerprint
+  window -- that sequence is observationally identical to a normal append on POSIX, and
   no portable mechanism closes the gap (inotify surfaces truncate as `IN_MODIFY`;
   a held FD reads EOF at the old offset until the file regrows past it, then silently
   resumes). Prior art (stanza, Fluent Bit, Vector) has the same blind spot and none
@@ -1013,18 +1063,18 @@ in Phased implementation.
 - On detection, policy `on_truncate`, default **`read_new`**: increment the file's
   `file_epoch` (invalidating any in-flight deltas for it, which are skipped at Ack
   apply time), reset the offset to 0, and read the file as new content. The retained
-  in-flight batch is unaffected — its redelivery does not depend on the file
+  in-flight batch is unaffected -- its redelivery does not depend on the file
   (D7). `on_truncate: fail` is offered for operators who prefer loud failure. Silent
   `ignore` (stanza's default) is rejected. **[Decision]**
 
 ## Backpressure **[Decision D13]**
 
-Every buffer is bounded: assignment channel, worker→async handoff (capacity 1),
+Every buffer is bounded: assignment channel, worker->async handoff (capacity 1),
 command channel, per-reader line buffer (`max_line_bytes`), open batch
 (`batch.max_*`), retained batch (shallow clone of the open-batch bound). When
-downstream is slow the handoff fills and the worker stops calling `read(2)` — unread
+downstream is slow the handoff fills and the worker stops calling `read(2)` -- unread
 bytes stay in the files; the filesystem is the buffer. Memory ceiling per instance is
-approximately `batch.max_bytes + open readers × max_line_bytes + offset/checkpoint
+approximately `batch.max_bytes + open readers x max_line_bytes + offset/checkpoint
 tables + Arrow overhead`; retained and outgoing batches share the same Arrow buffers.
 The async half's control-priority obligations under backpressure are part of D13 (see
 Execution model).
@@ -1045,7 +1095,7 @@ The sequence below follows the engine's actual orchestration
    at-least-once redelivery after restart.
 3. **Drain completion:** sync final progress, close FDs, release runtime leases and the
    namespace lock, call `notify_receiver_drained()`, and exit with terminal state. A
-   cleanly drained receiver **never receives `Shutdown`** — cleanup must not wait for
+   cleanly drained receiver **never receives `Shutdown`** -- cleanup must not wait for
    one **[Confirmed]**.
 4. **Forced path:** `Shutdown` arrives only if the engine's deadline fired first; the
    receiver stops immediately without advancing checkpoints.
@@ -1132,10 +1182,10 @@ processor config, bounded recursion, and nonzero compaction thresholds). Control
 validation must use the same versioned profiles and conformance vectors as agent-side
 validation; the agent remains fail-closed if invalid configuration reaches it.
 
-Issue-thread requests map as: file metadata → D10; ignore-older-than →
-`ignore_older_than`; header exclusion from *identity* → `identity.ignored_header_bytes`
+Issue-thread requests map as: file metadata -> D10; ignore-older-than ->
+`ignore_older_than`; header exclusion from *identity* -> `identity.ignored_header_bytes`
 (skipping header *content* from ingestion is deferred); max FD / max bytes / line
-length → `limits.*`, `framing.*`, `batch.*`.
+length -> `limits.*`, `framing.*`, `batch.*`.
 
 ## Failure policy **[Decision D16]**
 
@@ -1196,7 +1246,7 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
   and timestamp success/fallback behavior on all supported platforms.
   **Resize honesty:** Phase 1 validates checkpoint-identity stability and
   single-instance restart continuity under a changed ambient core count; it cannot
-  validate or claim multi-instance partition reassignment under CPU scale up/down — that
+  validate or claim multi-instance partition reassignment under CPU scale up/down -- that
   requires Phase 3 and is deferred, not claimed. **[Decision]**
 - **Phase 2 (P1 scale and discovery improvements):** read-ahead / multi-batch in-flight window with contiguous-Ack
   cumulative commit (lifts the one-batch-per-round-trip throughput cap that v1
@@ -1216,7 +1266,7 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
    `AssignmentSource` an acceptable first implementation while the extension-based,
    virtual-partition architecture remains the target?
 2. **Extension scope for the discovery coordinator** (engine-level vs group-level vs a
-   controller-level service, OpAMP precedent) — blocked on extension-scope work.
+   controller-level service, OpAMP precedent) -- blocked on extension-scope work.
 3. **Phase-3 fencing and storage mechanics:** which coordinator or storage API
    allocates ownership epochs and atomically rejects stale writes, how revoke/assign is
    transported, and how the v1 snapshot/WAL is migrated, explicitly and version-by-version,
@@ -1228,7 +1278,7 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
    offset tracking.
 5. **Shared source-progress crate boundary with journald:** which pieces (envelope
    I/O, worker/async scaffolding, retained-batch resend, Ack correlation) get
-   extracted, and when — after filelog v1 proves the shape.
+   extracted, and when -- after filelog v1 proves the shape.
 6. **Cross-process ownership with unrelated state directories:** v1 coordinates
    overlapping generations and receiver nodes inside one engine, plus cooperating
    processes using the same checkpoint namespace. Independent engines with unrelated
@@ -1275,7 +1325,7 @@ presets; read-ahead pipelining (Phase 2); virtual-partition assignment and
 enforced fencing/checkpoint migration (Phase 3); NUMA-aware placement; schema-aware ingestion for structured file
 types (CSV-with-headers columnar fast path); Fluent Bit feature-parity targeting; the
 OPL function inventory for filelog use cases (extraction/normalization/severity/
-routing) — processor-side work tracked at the epic level, with the receiver contract
+routing) -- processor-side work tracked at the epic level, with the receiver contract
 here guaranteeing only raw records with file metadata.
 
 ## Acceptance-criteria coverage (traceability to #2844)
