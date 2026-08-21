@@ -1303,7 +1303,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // remaining deadline (may be zero). See
                     // `await_pending_retirement`.
                     let remaining = deadline
-                        .checked_duration_since(std::time::Instant::now())
+                        .checked_duration_since(Instant::now())
                         .unwrap_or(Duration::ZERO);
                     await_pending_retirement(&mut retiring_producer, remaining).await;
 
@@ -1632,7 +1632,7 @@ pub mod test_support {
             });
             let mut retiring_producer = Some(handle);
 
-            let start = std::time::Instant::now();
+            let start = Instant::now();
             await_pending_retirement(&mut retiring_producer, Duration::from_secs(5)).await;
 
             assert!(
@@ -1665,7 +1665,7 @@ pub mod test_support {
             });
             let mut retiring_producer = Some(handle);
 
-            let start = std::time::Instant::now();
+            let start = Instant::now();
             await_pending_retirement(&mut retiring_producer, Duration::from_millis(50)).await;
 
             assert!(
@@ -2987,7 +2987,7 @@ pub mod test_support {
                     // retirement flush ran on the loop, one of these would stall for
                     // ~FLUSH_TIMEOUT_MS. We do not consume records here because the
                     // broker is down; the point is that the loop stays responsive.
-                    let start = std::time::Instant::now();
+                    let start = Instant::now();
                     let interactive = tokio::time::timeout(Duration::from_secs(5), async {
                         exporter
                             .send_config(logs_reconfig_json(cluster.bootstrap_servers(), mid_topic))
@@ -3097,7 +3097,7 @@ pub mod test_support {
                     // wait and emits
                     // kafka.exporter.shutdown.retirement_deadline_exceeded before
                     // returning.
-                    let start = std::time::Instant::now();
+                    let start = Instant::now();
                     exporter.shutdown(SHUTDOWN_DEADLINE).await;
                     tokio::time::timeout(Duration::from_secs(10), exporter.await_stopped())
                         .await
@@ -3157,7 +3157,7 @@ pub mod test_support {
                     // batch so each spawns a blocked retirement that chains behind
                     // the previous one. The whole sequence plus a trailing send must
                     // stay far below FLUSH_TIMEOUT_MS.
-                    let start = std::time::Instant::now();
+                    let start = Instant::now();
                     let phase = tokio::time::timeout(Duration::from_secs(3), async {
                         for (seq, topic) in [(1usize, t1), (2, t2), (3, t3)] {
                             exporter
@@ -3243,7 +3243,7 @@ pub mod test_support {
                     // While the first retirement is still blocked, a second
                     // reconfigure plus a post-config send must not stall: they must
                     // return far below FLUSH_TIMEOUT_MS.
-                    let start = std::time::Instant::now();
+                    let start = Instant::now();
                     let phase = tokio::time::timeout(Duration::from_secs(3), async {
                         exporter
                             .send_config(logs_reconfig_json(cluster.bootstrap_servers(), t2))
@@ -3476,7 +3476,7 @@ pub mod test_support {
                     // generation 0 is still stuck, must not block: it folds
                     // generation 0's deliveries into the new retiring generation and
                     // chains the teardown, returning far below FLUSH_TIMEOUT_MS.
-                    let start = std::time::Instant::now();
+                    let start = Instant::now();
                     let phase = tokio::time::timeout(Duration::from_secs(3), async {
                         exporter
                             .send_config(logs_reconfig_json(cluster.bootstrap_servers(), t1))
@@ -3882,7 +3882,7 @@ pub mod test_support {
                     // Reconfigure: the retiring generation-0 producer's flush times
                     // out against the down broker and purges P0, cancelling its
                     // delivery -> transient nack finalized on the event loop.
-                    let start = std::time::Instant::now();
+                    let start = Instant::now();
                     exporter
                         .send_config(logs_reconfig_json(cluster.bootstrap_servers(), new_topic))
                         .await;
@@ -4136,6 +4136,9 @@ pub mod test_support {
                 signal_type: SignalType::Logs,
                 topic: "old".to_string(),
                 pdata: sample_pdata(SignalType::Logs),
+                export_start: Instant::now(),
+                delivery_start: Instant::now(),
+                payload_bytes: 0,
             };
             in_flight.push(stuck_delivery, stuck_meta);
             assert!(in_flight.is_full(), "the live set is at capacity (max=1)");
