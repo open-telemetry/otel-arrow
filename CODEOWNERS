@@ -26,7 +26,7 @@
 /rust/otap-dataflow/crates/ctl/ @lquerel @jmacd @lalitb @utpilla
 /rust/otap-dataflow/crates/pdata*/ @lquerel @jmacd @albertlockett @JakeDern
 /rust/otap-dataflow/crates/query-engine*/ @lquerel @jmacd @albertlockett
-/rust/otap-dataflow/crates/quiver/ @lquerel @jmacd @aaronrm
+/rust/otap-dataflow/crates/quiver/ @lquerel @jmacd
 /rust/otap-dataflow/src/ @lquerel @jmacd
 
 /CODEOWNERS @lquerel @jmacd
