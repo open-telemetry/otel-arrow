@@ -33,7 +33,7 @@
 //! The `#[capability]` proc macro expands the trait into:
 //!
 //! - `pub(crate) mod local::BearerTokenAuthorizer` (`!Send` trait variant)
-//! - `pub(crate) mod shared::BearerTokenAuthorizer` (`Send` trait variant)
+//! - `pub(crate) mod shared::BearerTokenAuthorizer` (`Send + Sync` trait variant)
 //! - A `SharedAsLocalBearerTokenAuthorizer` adapter
 //! - A zero-sized `pub struct BearerTokenAuthorizer` registration handle
 //! - `local_entry::<E>` / `shared_entry::<E>` factory bridges

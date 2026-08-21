@@ -160,7 +160,7 @@ enum CallSequence {
     /// boxed handle. Captures the return value for shared-state tests.
     StatefulIncrement,
     /// `require_shared::<NoOpStateful>()`, then call `.increment()` on the
-    /// boxed shared handle (sync `&mut self` through the `Send` trait
+    /// boxed shared handle (sync `&mut self` through the `Send + Sync` trait
     /// variant). Captures the return value.
     SharedStatefulIncrement,
     /// `require_local::<NoOpStateful>()`; the create() body keeps the
@@ -1408,7 +1408,7 @@ const SHARED_COUNTER_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
 // Shared-counter extension (shared variant) -- same `SharedCounterImpl`
 // registered under `.passive().cloned().shared(...)` so tests can
 // exercise the `require_shared::<NoOpStateful>()` path (sync + async
-// `&mut self` on the `Send` shared trait variant).
+// `&mut self` on the `Send + Sync` shared trait variant).
 // ---------------------------------------------------------------------
 
 const SHARED_COUNTER_SHARED_EXTENSION_URN: &str =
@@ -3942,7 +3942,7 @@ connections:
 // ---------------------------------------------------------------------
 // Cross-node shared state via `Arc<AtomicU64>` on the SHARED trait
 // variant -- same idea as the existing local-Arc multi-node test, but
-// goes through the `require_shared` path with the `Send` trait
+// goes through the `require_shared` path with the `Send + Sync` trait
 // variant.
 // ---------------------------------------------------------------------
 

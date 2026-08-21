@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 trait MacroTestCapLocal {
     fn value(&self) -> &str;
 }
-trait MacroTestCapShared: Send {
+trait MacroTestCapShared: Send + Sync {
     fn value(&self) -> &str;
 }
 
