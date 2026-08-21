@@ -104,6 +104,10 @@ pub async fn create_group(
             StatusCode::UNPROCESSABLE_ENTITY,
             crate::ControlPlaneError::InvalidRequest { message },
         ),
+        Err(error @ crate::ControlPlaneError::RestartRequired { .. })
+        | Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
+            operation_error_response(StatusCode::UNPROCESSABLE_ENTITY, error)
+        }
         Err(other) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other),
     }
 }
@@ -139,6 +143,10 @@ pub async fn delete_group(
             StatusCode::UNPROCESSABLE_ENTITY,
             crate::ControlPlaneError::InvalidRequest { message },
         ),
+        Err(error @ crate::ControlPlaneError::RestartRequired { .. })
+        | Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
+            operation_error_response(StatusCode::UNPROCESSABLE_ENTITY, error)
+        }
         Err(other) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other),
     }
 }

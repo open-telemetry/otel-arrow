@@ -183,6 +183,10 @@ pub async fn put_pipeline(
                     crate::ControlPlaneError::InvalidRequest { message },
                 );
             }
+            Err(error @ crate::ControlPlaneError::RestartRequired { .. })
+            | Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
+                return operation_error_response(StatusCode::UNPROCESSABLE_ENTITY, error);
+            }
             Err(other) => {
                 return operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other);
             }
@@ -382,6 +386,10 @@ pub async fn shutdown_pipeline(
             StatusCode::UNPROCESSABLE_ENTITY,
             crate::ControlPlaneError::InvalidRequest { message },
         ),
+        Err(error @ crate::ControlPlaneError::RestartRequired { .. })
+        | Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
+            operation_error_response(StatusCode::UNPROCESSABLE_ENTITY, error)
+        }
         Err(other) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other),
     }
 }
@@ -419,6 +427,10 @@ pub async fn delete_pipeline(
             StatusCode::UNPROCESSABLE_ENTITY,
             crate::ControlPlaneError::InvalidRequest { message },
         ),
+        Err(error @ crate::ControlPlaneError::RestartRequired { .. })
+        | Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
+            operation_error_response(StatusCode::UNPROCESSABLE_ENTITY, error)
+        }
         Err(other) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other),
     }
 }
@@ -776,6 +788,39 @@ mod tests {
             serde_json::from_slice(&body).expect("error body should deserialize");
         assert_eq!(error.kind, OperationErrorKind::InvalidRequest);
         assert_eq!(error.message.as_deref(), Some("invalid candidate"));
+    }
+
+    /// Scenario: a pipeline reconfigure request would mutate startup-owned runtime state.
+    /// Guarantees: the admin handler returns HTTP 422 with the restart-required wire kind.
+    #[tokio::test]
+    async fn put_pipeline_returns_restart_required_for_runtime_boundary() {
+        let response = put_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            Query(WaitParams {
+                wait: false,
+                timeout_secs: 60,
+            }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Err(ControlPlaneError::RestartRequired {
+                    message: "restart to change topic runtime".to_string(),
+                }),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+                delete_result: Ok(delete_status("succeeded")),
+            }))),
+            Json(request()),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::RestartRequired);
     }
 
     /// Scenario: a waited pipeline reconfigure request times out and the

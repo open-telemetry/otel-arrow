@@ -107,8 +107,19 @@ traffic flip across the whole pipeline.
   `exporter:topic` can therefore be rejected even when the YAML is otherwise
   valid.
 - Per-pipeline reconfiguration does not mutate group-level or engine-level
-  policy. Full-engine reconciliation can update those fields after all
-  requested pipeline rollouts and deletions succeed.
+  policy. Full-engine reconciliation accepts pipeline-level policy changes,
+  but rejects top-level and group policy declaration changes. Move those
+  effective settings to each affected pipeline and retry.
+- Full-engine reconciliation uses fail-closed capability admission. Runtime log
+  level and `engine.custom` metadata are mutable. Other `engine` settings, the
+  process memory limiter, the topic broker configuration, and the system
+  observability pipeline are startup-owned and require a restart to change.
+  If one request combines supported changes with any unsupported change, the
+  complete request is rejected before rollout planning starts. Rejections use
+  `restart_required` when restarting can apply the submitted configuration and
+  `unsupported_mutation` when the request must be rewritten.
+- With `delete_missing: false`, omitted groups and pipelines remain in the
+  effective target.
 - There is no dedicated scale endpoint. Scale-only changes use the same `PUT`
   endpoint as topology changes.
 
@@ -124,6 +135,13 @@ an engine-scoped consistency guard. While one of those operations is active,
 other config-mutating lifecycle operations return `409 Conflict`. This prevents
 full-config reconciliation, group creation, group deletion, and pipeline
 deletion from interleaving with each other or with per-pipeline rollouts.
+
+Capability admission completes before full-engine reconciliation enters rollout
+planning. This prevents an unsupported field from being silently committed or
+from partially applying an otherwise supported request. It does not make
+planning or execution across several pipelines atomic: a valid request can
+still fail during planning, and a later rollout can fail after an earlier
+rollout has succeeded. The response reports that partial progress.
 
 Rollout planning validates a candidate by patching one pipeline into the
 controller's current in-memory `OtelDataflowSpec` snapshot and running full

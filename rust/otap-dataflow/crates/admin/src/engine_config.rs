@@ -69,6 +69,14 @@ pub async fn reconcile_config(
             StatusCode::UNPROCESSABLE_ENTITY,
             crate::ControlPlaneError::InvalidRequest { message },
         ),
+        Err(crate::ControlPlaneError::RestartRequired { message }) => operation_error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            crate::ControlPlaneError::RestartRequired { message },
+        ),
+        Err(crate::ControlPlaneError::UnsupportedMutation { message }) => operation_error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            crate::ControlPlaneError::UnsupportedMutation { message },
+        ),
         Err(other) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other),
     }
 }
@@ -397,6 +405,64 @@ groups:
             serde_json::from_slice(&body).expect("error body should deserialize");
         assert_eq!(error.kind, OperationErrorKind::InvalidRequest);
         assert_eq!(error.message.as_deref(), Some("desired config is invalid"));
+    }
+
+    /// Scenario: full-engine reconciliation requests a valid change that is startup-owned.
+    /// Guarantees: the handler returns HTTP 422 with a machine-readable restart-required error.
+    #[tokio::test]
+    async fn reconcile_config_returns_restart_required_for_unsupported_live_change() {
+        let response = reconcile_config(
+            State(test_app_state(stub(
+                Ok(empty_engine_config()),
+                Err(ControlPlaneError::RestartRequired {
+                    message: "restart to apply engine settings".to_owned(),
+                }),
+            ))),
+            Json(reconcile_request()),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::RestartRequired);
+        assert_eq!(
+            error.message.as_deref(),
+            Some("restart to apply engine settings")
+        );
+    }
+
+    /// Scenario: reconciliation requests a mutation that must be expressed at another scope.
+    /// Guarantees: the handler returns HTTP 422 with a machine-readable unsupported-mutation error.
+    #[tokio::test]
+    async fn reconcile_config_returns_unsupported_mutation_for_wrong_scope() {
+        let response = reconcile_config(
+            State(test_app_state(stub(
+                Ok(empty_engine_config()),
+                Err(ControlPlaneError::UnsupportedMutation {
+                    message: "move the change to pipeline scope".to_owned(),
+                }),
+            ))),
+            Json(reconcile_request()),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::UnsupportedMutation);
+        assert_eq!(
+            error.message.as_deref(),
+            Some("move the change to pipeline scope")
+        );
     }
 
     /// Scenario: reconciliation conflicts with another active control-plane

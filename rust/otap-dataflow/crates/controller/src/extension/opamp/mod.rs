@@ -1889,6 +1889,47 @@ mod test {
         assert!(status.error_message.contains("error happen"));
     }
 
+    /// Scenario: OpAMP submits configs rejected by either live-mutation capability gate.
+    /// Guarantees: both errors report Failed and leave the original config effective.
+    #[tokio::test]
+    async fn test_config_update_capability_errors_preserve_effective_config() {
+        let errors = [
+            ControlPlaneError::RestartRequired {
+                message: "restart required".into(),
+            },
+            ControlPlaneError::UnsupportedMutation {
+                message: "rewrite the mutation".into(),
+            },
+        ];
+
+        for error in errors {
+            let initial_config = empty_engine_config();
+            let control_plane = Arc::new(MockControlPlane::new(initial_config.clone()));
+            control_plane.set_reconcile_result(Err(error));
+            let retained_control_plane = Arc::clone(&control_plane);
+            let responses = vec![
+                Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+                None,
+                None,
+            ];
+            let config: Config = serde_json::from_value(serde_json::json!({
+                "instance_uid": EXPECTED_INSTANCE_UID_STR,
+                "endpoint": ""
+            }))
+            .unwrap();
+
+            let requests =
+                run_web_socket_test_with_config(responses, control_plane, 3, config).await;
+
+            let status = requests[2].remote_config_status.as_ref().unwrap();
+            assert_eq!(status.status, RemoteConfigStatuses::Failed as i32);
+            assert_eq!(
+                retained_control_plane.engine_config_snapshot().unwrap(),
+                initial_config
+            );
+        }
+    }
+
     /// Scenario: the OpAMP server sends a remote configuration containing malformed JSON.
     /// Guarantees: the agent reports the configuration as failed without reconciling it.
     #[tokio::test]
