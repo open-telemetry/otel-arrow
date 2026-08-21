@@ -15,12 +15,12 @@ emitted via `otel_*` log macros.
 | `channel.receiver.messages` | Number of messages successfully dequeued, grouped by `signal` for PData channels. | `crates/engine/src/channel_metrics.rs` |
 | `channel.receiver.queue.depth` | Current number of messages buffered in the channel. | `crates/engine/src/channel_metrics.rs` |
 | `channel.receiver.capacity` | Configured channel buffer capacity. | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.duration` | Duration from entry until the corresponding ack or nack is routed, in nanoseconds (MMSC). | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.messages` | Messages consumed by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.items` | Signal items consumed (received) by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.duration` | Duration from production until the corresponding ack or nack is routed, in nanoseconds (MMSC). | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.messages` | Messages produced by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.items` | Signal items produced (emitted) by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.consumed.duration` | Duration from entry until the corresponding ack or nack is routed, in seconds (exponential histogram). | `crates/engine/src/channel_metrics.rs` |
+| `node.consumed.messages` | Messages consumed by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.consumed.items` | Signal items consumed (received) by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.produced.duration` | Duration from production until the corresponding ack or nack is routed, in seconds (exponential histogram). | `crates/engine/src/channel_metrics.rs` |
+| `node.produced.messages` | Messages produced by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.produced.items` | Signal items produced (emitted) by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
 | `flow.consumed.items` | Signal items entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
 | `flow.compute.duration` | Processor compute duration within an opted-in flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
 | `flow.produced.items` | Signal items leaving an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
@@ -81,7 +81,7 @@ a message's lifecycle:
 | Metric layer | Recorded when | Operational use |
 | --- | --- | --- |
 | `channel.sender` / `channel.receiver` | A forward-path send or receive operation completes. | Diagnose edge throughput, queue saturation, backpressure, and closed channels. |
-| `node.producer` / `node.consumer` | A terminal ACK or NACK unwinds through the node's route frame. | Attribute logical PData outcomes, durations, and item counts to nodes. |
+| `node.produced` / `node.consumed` | A terminal ACK or NACK unwinds through the node's route frame. | Attribute logical PData outcomes, durations, and item counts to nodes. |
 
 Do not aggregate `outcome` values across these layers as equivalent events. For
 channel metrics, `refused` means local capacity backpressure and `failure`

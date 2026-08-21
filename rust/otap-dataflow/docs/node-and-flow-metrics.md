@@ -34,8 +34,8 @@ configuration.
 ## Node Metrics
 
 With `policies.telemetry.runtime_metrics: normal` or `detailed`, every node
-emits message outcome counters on its existing `node.consumer` and
-`node.producer` metric sets:
+emits message outcome counters on its `node.consumed` and `node.produced`
+metric sets:
 
 ### Messages and Items
 
@@ -46,10 +46,10 @@ measure the volume of telemetry data inside those batches.
 
 | Metric | Meaning | Emitted by | Availability |
 | --- | --- | --- | --- |
-| `consumed.messages` | Messages received by a node | `node.consumer` | `normal` or `detailed` |
-| `produced.messages` | Messages emitted by a node | `node.producer` | `normal` or `detailed` |
-| `consumed.items` | Items a node receives | `node.consumer` | `detailed`, or `normal` plus item-count opt-in |
-| `produced.items` | Items a node emits | `node.producer` | `detailed`, or `normal` plus item-count opt-in |
+| `node.consumed.messages` | Messages received by a node | `node.consumed` | `normal` or `detailed` |
+| `node.produced.messages` | Messages emitted by a node | `node.produced` | `normal` or `detailed` |
+| `node.consumed.items` | Items a node receives | `node.consumed` | `detailed`, or `normal` plus item-count opt-in |
+| `node.produced.items` | Items a node emits | `node.produced` | `detailed`, or `normal` plus item-count opt-in |
 
 Both message and item counters have bounded `signal` and `outcome` data-point
 attributes. `signal` is one of `logs`, `metrics`, or `traces`; `outcome` is

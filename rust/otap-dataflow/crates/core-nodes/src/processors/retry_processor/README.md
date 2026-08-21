@@ -56,9 +56,9 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ### Metric Sets
 
 Message outcomes are reported by the engine through
-`node.consumer.consumed.messages` and `node.producer.produced.messages`.
+`node.consumed.messages` and `node.produced.messages`.
 Per-signal item outcomes are available through
-`node.consumer.consumed.items` and `node.producer.produced.items` when detailed
+`node.consumed.items` and `node.produced.items` when detailed
 runtime metrics are enabled or the node opts in with
 `policies.telemetry.item_counts`. The processor does not duplicate these
 engine-owned metrics.
