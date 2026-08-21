@@ -106,13 +106,6 @@ jobs:
           python orchestrator/run_orchestrator.py \
             --config test_suites/integration/clickhouse/otap-clickhouse-logs-saturation-local.yaml
 
-      - name: Run OTel Collector ClickHouse saturation test
-        if: ${{ !cancelled() }}
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py \
-            --config test_suites/integration/clickhouse/otelcol-clickhouse-logs-saturation-local.yaml
-
       - name: Post-run disk usage diagnostics
         if: always()
         run: |

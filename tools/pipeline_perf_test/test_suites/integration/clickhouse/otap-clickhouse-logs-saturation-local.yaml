@@ -1,5 +1,5 @@
 # Temporary dedicated-runner single-core ClickHouse saturation test.
-# CPU layout: DFE=1 core, loadgen=12 cores, ClickHouse=6 cores.
+# CPU layout: DFE=1 core, loadgen=24 cores, ClickHouse=12 cores.
 name: ClickHouse Single-Core Saturation
 components:
   load-generator:
@@ -15,12 +15,12 @@ components:
           - "--config"
           - "./config.yaml"
           - "--core-id-range"
-          - "32-43"
+          - "32-55"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
       docker_component:
-        allocated_cores: 12
+        allocated_cores: 24
       prometheus:
         endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
 
@@ -51,14 +51,14 @@ components:
       docker:
         image: clickhouse/clickhouse-server:26.3.17.56@sha256:422be85ae7344058369cdd366ac0efea9daa8428b55c9cf50258e83a7d12fcb3
         network: testbed
-        cpuset_cpus: "44-49"
+        cpuset_cpus: "64-75"
         ports:
           - "8123:8123"
         environment:
           CLICKHOUSE_PASSWORD: test
     monitoring:
       docker_component:
-        allocated_cores: 6
+        allocated_cores: 12
 
 tests:
   - name: OTAP-IN-BATCHED-SATURATION
