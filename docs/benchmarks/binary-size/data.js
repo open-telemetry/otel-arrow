@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787348542476,
+  "lastUpdate": 1787352490286,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -20983,6 +20983,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 101.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d2f6abc8169d98bbaba414267ef209d673ac899b",
+          "message": "Handle OS signals (SIGTERM/SIGINT) for graceful pipeline shutdown (#2325)\n\nThe main executable did not handle OS termination signals, so Kubernetes\nSIGTERM or local Ctrl+C terminated the process without draining\nin-flight data.\n\nThis PR adds controller-managed OS signal handling with a double-signal\nconvention:\n\n- First SIGINT/SIGTERM requests graceful shutdown for all pipelines with\na 60-second drain deadline.\n- A second signal forces immediate exit via `process::exit(1)`.\n\nThe repository's standalone executable enables this behavior explicitly.\nLibrary embedders retain process-wide signal ownership by default\n(`ControllerRunOptions::handle_os_signals` defaults to `false`) and can\nopt in when the controller owns the process lifetime.\n\nThe second signal is an in-process escape hatch for a drain that stalls.\nUnlike an external SIGKILL, `process::exit(1)` emits a direct stderr log\nrecording that the drain was deliberately abandoned and yields an exit\ncode distinguishable from 137, which Kubernetes also reports for\nOOMKilled.\n\n### Follow-ups\n\n- #3829 captures termination signals earlier during engine startup.\n- #3833 keeps the second-signal force-exit path responsive while\ngraceful shutdown dispatch is blocked.\n\n---------\n\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>\nCopilot-Session: 2ad7f24f-f960-4271-8930-d3729bea032d",
+          "timestamp": "2026-08-21T21:59:22Z",
+          "tree_id": "f64bea8629028ef5243bba28dd537f146fe2e181",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d2f6abc8169d98bbaba414267ef209d673ac899b"
+        },
+        "date": 1787352476557,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.98,
             "unit": "MB"
           }
         ]
