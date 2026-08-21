@@ -1,0 +1,46 @@
+file_format: definition/2
+metrics:
+- name: exporter.exports.duration
+  brief: Time from dequeuing PData through its terminal local or backend export result. Ack/Nack notification
+    time is excluded.
+  instrument: histogram
+  unit: s
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: outcome
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.exports
+      rust:
+        field: duration_seconds
+        instrument: HistogramNormal
+- name: exporter.exports.messages
+  brief: Number of messages whose export reached a terminal outcome.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: outcome
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.exports

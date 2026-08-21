@@ -1,0 +1,24 @@
+file_format: definition/2
+metrics:
+- name: receiver.kafka.rejections.messages
+  brief: Number of rejected Kafka messages.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error.type
+    requirement_level: recommended
+  - ref: reason
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.rejections

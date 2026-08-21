@@ -1,0 +1,182 @@
+file_format: definition/2
+metrics:
+- name: receiver.journald.acks
+  brief: Number of downstream Acks observed.
+  instrument: counter
+  unit: '{ack}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.batches.sent
+  brief: Number of log batches emitted downstream.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.checkpoint.failures
+  brief: Number of durable cursor commit failures.
+  instrument: counter
+  unit: '{failure}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.cursor.commits
+  brief: Number of durable cursor commits completed.
+  instrument: counter
+  unit: '{commit}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.drains
+  brief: Number of clean drain transitions.
+  instrument: counter
+  unit: '{drain}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.nacks
+  brief: Number of downstream Nacks observed.
+  instrument: counter
+  unit: '{nack}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.records.sent
+  brief: Number of log records emitted downstream.
+  instrument: counter
+  unit: '{record}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.rewinds
+  brief: Number of times the worker was asked to rewind after a Nack.
+  instrument: counter
+  unit: '{rewind}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.shutdowns
+  brief: Number of clean shutdown transitions.
+  instrument: counter
+  unit: '{shutdown}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.source.dropped.fields
+  brief: Number of journald fields dropped by extraction safety limits.
+  instrument: counter
+  unit: '{field}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.source.failures
+  brief: Number of source read failures reported by the worker.
+  instrument: counter
+  unit: '{failure}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald
+- name: receiver.journald.starts
+  brief: Number of times the receiver was started.
+  instrument: counter
+  unit: '{start}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.journald

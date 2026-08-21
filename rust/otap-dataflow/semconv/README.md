@@ -1,12 +1,9 @@
-# OTAP Dataflow internal semantic conventions
+# OTAP Dataflow semantic conventions
 
-This directory holds the [Weaver][weaver]-format semantic-conventions
-registry describing the internal events, metrics, and attributes
-emitted by the OTAP Dataflow engine (`df_engine`) for its own
-instrumentation.
-
-CI uses this registry to validate that what the engine actually emits
-at runtime matches the conventions declared here.
+This directory contains the exhaustive semantic-convention contract for
+production attributes, entities, metrics, and events emitted by OTAP Dataflow.
+Definitions use Weaver's experimental
+[`definition/2` syntax][definition-v2].
 
 Tracking issue:
 <https://github.com/open-telemetry/otel-arrow/issues/1613>
@@ -15,38 +12,73 @@ Tracking issue:
 
 ```text
 semconv/
-  manifest.yaml      # registry root + upstream semconv dependency
-  groups/
-    event.<name>.yaml
-  triggers/
-    *.sh             # optional: scripts to run before validation
-                     # (only needed for events that can't be exercised
-                     # purely by the engine config)
+  live-check.weaver.toml
+  manifest.yaml
+  registry/
+    attributes.yaml
+    entities.yaml
+    metrics/*.yaml
+    events/*.yaml
+  triggers/*.sh
+semconv-live-check/
+  internal-events.yaml
 ```
 
-Each event is a Weaver `group` with `type: event`; the group's `name:`
-field is the OpenTelemetry `event.name` value passed as the first
-argument to `otel_info!` / `otel_warn!` / `otel_debug!` /
-`otel_error!` / `otel_event!` (see
-[`crates/telemetry/src/internal_events.rs`][events]).
+The manifest imports upstream OpenTelemetry semantic conventions when the
+project can reuse an existing attribute. All project-owned definitions live
+under `registry/`.
 
-## Adding a new event
+## Signal and entity model
 
-1. Pick a stable, dot-segmented name (`component.action[.detail]`).
-2. Add a new YAML file under `groups/` with a single `type: event`
-   group; reuse attributes from upstream OTel semconv (`error.type`,
-   `server.address`, ...) where they exist, and add project-specific
-   attributes under the `otap.*` namespace otherwise.
-3. Emit the event with the matching name from the appropriate
-   `otel_*!` macro.
-4. Exercise the event in CI. Many events fire from the engine
-   config alone (e.g. startup events fire when a receiver is
-   configured; failure events fire when traffic is routed at an
-   unreachable endpoint). Adjust `configs/internal-events-otlp.yaml`
-   as needed. For events that need active network traffic or other
-   runtime stimulus, drop a script in `triggers/`; everything in
-   that directory is run before validation. The live-check job
-   fails if any declared event receives zero samples.
+Each Rust scope-level `#[attribute_set]` is represented by an entity. Item-level
+attribute sets used while recording metrics are referenced by the metric's
+standard `attributes` field instead. Composed scope attribute sets are
+flattened into the entity identity, along with
+`service.instance.id`. The hierarchy between scope entities is recorded in the
+`otap_dataflow.parent_entities` annotation. Semantic-convention v2 supports
+associating a metric or event with entities, but it does not define a native
+entity-to-entity relationship expression.
 
-[weaver]: https://github.com/open-telemetry/weaver
-[events]: ../crates/telemetry/src/internal_events.rs
+Metrics use `<metric_set>.<instrument_name>` as their canonical convention name.
+Each metric records only its numeric `code_generation.metric_value_type`, its
+`otap_dataflow.metric_set` membership, and exceptional generation overrides.
+The standard metric fields remain the source of truth for the instrument, unit,
+and description.
+
+Events retain an existing wire name as their convention name when it is valid
+v2 syntax. An invalid wire name receives a normalized `otap.*` convention name,
+while `otap_dataflow.wire.event_name` preserves the emitted value. Event
+definitions include every statically declared attribute, scope, severity, and
+source location.
+
+The `semconv-live-check/` manifests describe the signals that a particular CI
+runtime scenario must exercise. They are coverage expectations, not
+semantic-convention definitions. Weaver still validates every telemetry sample
+received during the scenario against the complete registry.
+
+Metrics and events use `entity_associations` to identify the entity carrying
+their scope attributes. When a signal can originate from several alternative
+scope types, the association uses `one_of`.
+
+The `otap_dataflow` annotations are project metadata. Weaver validates the
+standard v2 fields and references.
+
+## Validation
+
+Run the check from `rust/otap-dataflow`:
+
+```bash
+weaver registry check --v2 --registry semconv
+```
+
+The command validates the v2 registry and imported references. CI pins Weaver
+to v0.25.1, runs the static check with `--v2`, and live-checks telemetry emitted
+by an exercised engine scenario against the same registry.
+
+## Updating the contract
+
+When a production telemetry declaration changes, update the corresponding v2
+definition in the same change. Run the Weaver registry check before submitting
+the change.
+
+[definition-v2]: https://github.com/open-telemetry/weaver/blob/v0.25.1/schemas/semconv-syntax.v2.md

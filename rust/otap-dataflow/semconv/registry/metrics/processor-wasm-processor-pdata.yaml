@@ -1,0 +1,62 @@
+file_format: definition/2
+metrics:
+- name: processor.wasm_processor.pdata.guest.process.calls
+  brief: Number of guest `process` calls attempted.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.wasm_processor.pdata
+- name: processor.wasm_processor.pdata.guest.process.errors
+  brief: Number of guest `process` calls that failed or trapped.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.wasm_processor.pdata
+- name: processor.wasm_processor.pdata.kernel.calls
+  brief: Total host kernel invocations dispatched by the guest.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.wasm_processor.pdata
+- name: processor.wasm_processor.pdata.pdata.dropped
+  brief: Number of pdata messages intentionally dropped by guest `process` returning `none`.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.wasm_processor.pdata

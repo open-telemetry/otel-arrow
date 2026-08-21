@@ -1,0 +1,3164 @@
+file_format: definition/2
+events:
+- name: console.format_failed
+  brief: Emitted by OTAP Dataflow as `console.format_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.console
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/exporters/console_exporter/mod.rs
+        availability: []
+- name: console.logs_view.otap_create_failed
+  brief: The console.logs_view.otap_create_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.console
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/exporters/console_exporter/mod.rs
+        availability: []
+- name: console.logs_view.otlp_create_failed
+  brief: The console.logs_view.otlp_create_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.console
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/exporters/console_exporter/mod.rs
+        availability: []
+- name: console.message.unsupported_signal
+  brief: Emitted by OTAP Dataflow as `console.message.unsupported_signal`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.console
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/console_exporter/mod.rs
+        availability: []
+- name: console.write_failed
+  brief: The console.write_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.console
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/exporters/console_exporter/mod.rs
+        availability: []
+- name: durable_buffer.ack.unknown_bundle
+  brief: The durable_buffer.ack.unknown_bundle internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.bundle.acked
+  brief: The durable_buffer.bundle.acked internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.bundle.conversion_failed
+  brief: The durable_buffer.bundle.conversion_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.bundle.duplicate
+  brief: The durable_buffer.bundle.duplicate internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.bundle.forwarded
+  brief: The durable_buffer.bundle.forwarded internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: retry_count
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.bundle.nacked
+  brief: The durable_buffer.bundle.nacked internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: backoff_ms
+    requirement_level: required
+  - ref: bundle_index
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  - ref: retry_count
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.bundle.rejected_permanent
+  brief: The durable_buffer.bundle.rejected_permanent internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.config.update
+  brief: The durable_buffer.config.update internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: config
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.delayed_data.unexpected
+  brief: The durable_buffer.delayed_data.unexpected internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.drain.all_blocked
+  brief: The durable_buffer.drain.all_blocked internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundles_processed
+    requirement_level: required
+  - ref: in_flight
+    requirement_level: required
+  - ref: retry_scheduled
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.drain.at_capacity
+  brief: The durable_buffer.drain.at_capacity internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundles_processed
+    requirement_level: required
+  - ref: in_flight
+    requirement_level: required
+  - ref: max_in_flight
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.drain.backpressure
+  brief: The durable_buffer.drain.backpressure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundles_processed
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.drain.budget_exhausted
+  brief: The durable_buffer.drain.budget_exhausted internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: budget_ms
+    requirement_level: required
+  - ref: bundles_processed
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.engine.init
+  brief: The durable_buffer.engine.init internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: max_age
+    requirement_level: required
+  - ref: max_segment_open_duration
+    requirement_level: required
+  - ref: path
+    requirement_level: required
+  - ref: per_core_size_cap
+    requirement_level: required
+  - ref: policy
+    requirement_level: required
+  - ref: total_size_cap
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.engine.ready
+  brief: The durable_buffer.engine.ready internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: path
+    requirement_level: required
+  - ref: subscriber_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.engine.unavailable
+  brief: The durable_buffer.engine.unavailable internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.flush.failed
+  brief: The durable_buffer.flush.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.ingest.backpressure
+  brief: The durable_buffer.ingest.backpressure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.ingest.failed
+  brief: The durable_buffer.ingest.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.maintenance.failed
+  brief: The durable_buffer.maintenance.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.nack.unknown_bundle
+  brief: The durable_buffer.nack.unknown_bundle internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.otlp.adapter_failed
+  brief: The durable_buffer.otlp.adapter_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.otlp.conversion_failed
+  brief: The durable_buffer.otlp.conversion_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.poll.failed
+  brief: The durable_buffer.poll.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.queued.bundle_index_overflow
+  brief: The durable_buffer.queued.bundle_index_overflow internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  - ref: segment
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.queued.metadata_skip
+  brief: The durable_buffer.queued.metadata_skip internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  - ref: segment
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.queued.recompute_error
+  brief: The durable_buffer.queued.recompute_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.retry.backpressure
+  brief: The durable_buffer.retry.backpressure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.retry.claim_failed
+  brief: The durable_buffer.retry.claim_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.retry.deferred
+  brief: The durable_buffer.retry.deferred internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: in_flight
+    requirement_level: required
+  - ref: max_in_flight
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.retry.rearm_failed
+  brief: The durable_buffer.retry.rearm_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.retry.reschedule_failed
+  brief: The durable_buffer.retry.reschedule_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.retry.schedule_failed
+  brief: The durable_buffer.retry.schedule_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.retry.sent
+  brief: The durable_buffer.retry.sent internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: retry_count
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.retry.skipped
+  brief: The durable_buffer.retry.skipped internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundle_index
+    requirement_level: required
+  - ref: segment_seq
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.retry.unknown_wakeup
+  brief: The durable_buffer.retry.unknown_wakeup internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: wakeup_revision
+    requirement_level: required
+  - ref: wakeup_slot
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.backpressure
+  brief: The durable_buffer.shutdown.backpressure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.bundle_error
+  brief: The durable_buffer.shutdown.bundle_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.complete
+  brief: The durable_buffer.shutdown.complete internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.deadline_exceeded
+  brief: The durable_buffer.shutdown.deadline_exceeded internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.drain_deadline
+  brief: The durable_buffer.shutdown.drain_deadline internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundles_drained
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.drained
+  brief: The durable_buffer.shutdown.drained internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bundles_drained
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.engine_failed
+  brief: The durable_buffer.shutdown.engine_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.flush_failed
+  brief: The durable_buffer.shutdown.flush_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.flushing
+  brief: The durable_buffer.shutdown.flushing internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.poll_error
+  brief: The durable_buffer.shutdown.poll_error internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.shutdown.start
+  brief: The durable_buffer.shutdown.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: deadline
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: durable_buffer.timer.started
+  brief: The durable_buffer.timer.started internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: poll_interval
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.durable_buffer
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/processors/durable_buffer_processor/mod.rs
+        availability: []
+- name: host_metrics.dropped_backpressure
+  brief: The host_metrics.dropped_backpressure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.host_metrics
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/host_metrics_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: host_metrics.scrape_failed
+  brief: The host_metrics.scrape_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.host_metrics
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/host_metrics_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: host_metrics.scrape_timeout
+  brief: The host_metrics.scrape_timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.host_metrics
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/host_metrics_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: host_metrics.scraper_busy
+  brief: The host_metrics.scraper_busy internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.host_metrics
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/host_metrics_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: host_metrics.scraper_stopped
+  brief: The host_metrics.scraper_stopped internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.host_metrics
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/host_metrics_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: host_metrics_receiver.drain_ingress
+  brief: The host_metrics_receiver.drain_ingress internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.host_metrics
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/host_metrics_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: host_metrics_receiver.shutdown
+  brief: The host_metrics_receiver.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.host_metrics
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/host_metrics_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: journald_receiver.batch_sent
+  brief: The journald_receiver.batch_sent internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_id
+    requirement_level: required
+  - ref: first_cursor
+    requirement_level: required
+  - ref: last_cursor
+    requirement_level: required
+  - ref: records
+    requirement_level: required
+  - ref: source_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.journald
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/receivers/journald_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: journald_receiver.checkpoint_failed
+  brief: The journald_receiver.checkpoint_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_id
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  - ref: source_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.journald
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/journald_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: journald_receiver.cursor_committed
+  brief: The journald_receiver.cursor_committed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_id
+    requirement_level: required
+  - ref: cursor
+    requirement_level: required
+  - ref: source_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.journald
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/receivers/journald_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: journald_receiver.drain_ingress
+  brief: The journald_receiver.drain_ingress internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: source_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.journald
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/journald_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: journald_receiver.drain_timeout
+  brief: The journald_receiver.drain_timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_id
+    requirement_level: recommended
+  - ref: pending_batches
+    requirement_level: recommended
+  - ref: source_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.journald
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/journald_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: journald_receiver.shutdown
+  brief: The journald_receiver.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: source_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.journald
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/journald_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: journald_receiver.source_failed
+  brief: The journald_receiver.source_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: source_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.journald
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/journald_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: journald_receiver.start
+  brief: The journald_receiver.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: journal_root_path
+    requirement_level: required
+  - ref: source_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.journald
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/journald_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: journald_receiver.start_at_end_head_recovery
+  brief: The journald_receiver.start_at_end_head_recovery internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: journal_root_path
+    requirement_level: required
+  - ref: source_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.journald
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/journald_receiver/mod.rs
+        availability:
+        - target_os = "linux"
+- name: otap_exporter.batch_status_failed
+  brief: The otap_exporter.batch_status_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_id
+    requirement_level: required
+  - ref: status_code
+    requirement_level: required
+  - ref: status_message
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otap_exporter/mod.rs
+        availability: []
+- name: otap_exporter.batch_status_unmatched
+  brief: The otap_exporter.batch_status_unmatched internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: batch_id
+    requirement_level: required
+  - ref: status_code
+    requirement_level: required
+  - ref: status_message
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otap_exporter/mod.rs
+        availability: []
+- name: otap_exporter.request_failed
+  brief: The otap_exporter.request_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: backoff
+    requirement_level: required
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otap
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/exporters/otap_exporter/mod.rs
+        availability: []
+- name: otap_exporter.response_stream_failed
+  brief: The otap_exporter.response_stream_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: status
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otap
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otap_exporter/mod.rs
+        availability: []
+- name: otap_exporter.shutdown
+  brief: The otap_exporter.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otap
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/otap_exporter/mod.rs
+        availability: []
+- name: otap_exporter.start
+  brief: The otap_exporter.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: grpc_endpoint
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otap
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/otap_exporter/mod.rs
+        availability: []
+- name: otap_exporter.static_headers
+  brief: The otap_exporter.static_headers internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: count
+    requirement_level: required
+  - ref: header_names
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otap
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/exporters/otap_exporter/mod.rs
+        availability: []
+- name: otap_receiver.drain_ingress
+  brief: The otap_receiver.drain_ingress internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.otap
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/otap_receiver/mod.rs
+        availability: []
+- name: otap_receiver.shutdown
+  brief: The otap_receiver.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.otap
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/otap_receiver/mod.rs
+        availability: []
+- name: otap_receiver.start
+  brief: The otap_receiver.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: listening_addr
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.otap
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/otap_receiver/mod.rs
+        availability: []
+- name: otelcol.node.file.operation.fail
+  brief: Emitted by OTAP Dataflow as `otelcol.node.file.operation.fail`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: operation
+    requirement_level: required
+  - ref: signal
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-core-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/file_exporter/mod.rs
+        availability: []
+- name: otelcol.node.file.rollback.fail
+  brief: Emitted by OTAP Dataflow as `otelcol.node.file.rollback.fail`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: operation
+    requirement_level: required
+  - ref: rollback_error
+    requirement_level: required
+  - ref: signal
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-core-nodes
+        severity_levels:
+        - error
+        sources:
+        - crates/core-nodes/src/exporters/file_exporter/mod.rs
+        availability: []
+- name: otelcol.node.file.start
+  brief: Emitted by OTAP Dataflow as `otelcol.node.file.start`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: create_directories
+    requirement_level: required
+  - ref: durability
+    requirement_level: required
+  - ref: format
+    requirement_level: required
+  - ref: max_frame_bytes
+    requirement_level: required
+  - ref: open_mode
+    requirement_level: required
+  - ref: tail_recovery
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-core-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/file_exporter/mod.rs
+        availability: []
+- name: otelcol.node.file.stop
+  brief: Emitted by OTAP Dataflow as `otelcol.node.file.stop`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-core-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/file_exporter/mod.rs
+        availability: []
+- name: otelcol.node.file.tail.recover
+  brief: Emitted by OTAP Dataflow as `otelcol.node.file.tail.recover`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: recovered_bytes
+    requirement_level: required
+  - ref: signal
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-core-nodes
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/file_exporter/mod.rs
+        availability: []
+- name: otelcol.node.file.writer.start
+  brief: Emitted by OTAP Dataflow as `otelcol.node.file.writer.start`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-core-nodes
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/file_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.grpc.channels
+  brief: The otlp.exporter.grpc.channels internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: endpoint
+    requirement_level: required
+  - ref: num_connections
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_grpc
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/otlp_grpc_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.grpc.export_error
+  brief: Emitted by OTAP Dataflow as `otlp.exporter.grpc.export_error`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: code
+    requirement_level: recommended
+  - ref: error
+    requirement_level: recommended
+  - ref: error_msg
+    requirement_level: recommended
+  - ref: source
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_grpc
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otlp_grpc_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.grpc.header_skip
+  brief: The otlp.exporter.grpc.header_skip internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: header_name
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_grpc
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/exporters/otlp_grpc_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.grpc.invalid_bearer_token
+  brief: Emitted by OTAP Dataflow as `otlp.exporter.grpc.invalid_bearer_token`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_grpc
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otlp_grpc_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.grpc.receive
+  brief: >
+    Emitted by the OTLP gRPC exporter when it receives a message from its
+    upstream channel.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_grpc
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/exporters/otlp_grpc_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.grpc.shutdown
+  brief: The otlp.exporter.grpc.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_grpc
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/otlp_grpc_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.grpc.start
+  brief: The otlp.exporter.grpc.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: grpc_endpoint
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_grpc
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/otlp_grpc_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.grpc.token_stream_closed
+  brief: Emitted by OTAP Dataflow as `otlp.exporter.grpc.token_stream_closed`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_grpc
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otlp_grpc_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.http.export_error
+  brief: Emitted when an OTLP exporter request fails.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: retryable
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_http
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.http.invalid_bearer_token
+  brief: Emitted by OTAP Dataflow as `otlp.exporter.http.invalid_bearer_token`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_http
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.http.notification_error
+  brief: Emitted by OTAP Dataflow as `otlp.exporter.http.notification_error`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_http
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.http.receive
+  brief: The otlp.exporter.http.receive internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_http
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.http.shutdown
+  brief: The otlp.exporter.http.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_http
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.http.start
+  brief: The otlp.exporter.http.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: logs_endpoint
+    requirement_level: required
+  - ref: metrics_endpoint
+    requirement_level: required
+  - ref: traces_endpoint
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_http
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.http.token_stream_closed
+  brief: Emitted by OTAP Dataflow as `otlp.exporter.http.token_stream_closed`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_http
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.http.validate_insecure_flag
+  brief: The otlp.exporter.http.validate_insecure_flag internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_http
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs
+        availability: []
+- name: otlp.exporter.http.zero_partial_rejected
+  brief: The otlp.exporter.http.zero_partial_rejected internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: details
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.otlp_http
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/exporters/otlp_http_exporter/mod.rs
+        availability: []
+- name: otlp.receiver.drain_ingress
+  brief: The otlp.receiver.drain_ingress internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.otlp
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/otlp_receiver/mod.rs
+        availability: []
+- name: otlp.receiver.grpc.start
+  brief: The otlp.receiver.grpc.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: endpoint
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.otlp
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/otlp_receiver/mod.rs
+        availability: []
+- name: otlp.receiver.http.start
+  brief: The otlp.receiver.http.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: endpoint
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.otlp
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/otlp_receiver/mod.rs
+        availability: []
+- name: otlp.receiver.shutdown
+  brief: The otlp.receiver.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.otlp
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/otlp_receiver/mod.rs
+        availability: []
+- name: parquet.exporter.retry_ignored_for_file_storage
+  brief: The parquet.exporter.retry_ignored_for_file_storage internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.parquet
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/parquet_exporter/mod.rs
+        availability: []
+- name: perf_exporter.start
+  brief: The perf_exporter.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: frequency_ms
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.perf
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/perf_exporter/mod.rs
+        availability: []
+- name: syslog_cef_receiver.arrow_records.build_failed
+  brief: The syslog_cef_receiver.arrow_records.build_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.syslog_cef
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs
+        availability: []
+- name: syslog_cef_receiver.drain_ingress.timeout
+  brief: The syslog_cef_receiver.drain_ingress.timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: active_tasks
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.syslog_cef
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs
+        availability: []
+- name: syslog_cef_receiver.memory_pressure.disconnect
+  brief: The syslog_cef_receiver.memory_pressure.disconnect internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: peer
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.syslog_cef
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs
+        availability: []
+- name: syslog_cef_receiver.rate_limit.drop
+  brief: Emitted by OTAP Dataflow as `syslog_cef_receiver.rate_limit.drop`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: peer
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.syslog_cef
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs
+        availability: []
+- name: syslog_cef_receiver.start
+  brief: The syslog_cef_receiver.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: listening_addr
+    requirement_level: required
+  - ref: protocol
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.syslog_cef
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs
+        availability: []
+- name: syslog_cef_receiver.tls.handshake.failed
+  brief: The syslog_cef_receiver.tls.handshake.failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: peer
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.syslog_cef
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs
+        availability: []
+- name: syslog_cef_receiver.tls.handshake.success
+  brief: The syslog_cef_receiver.tls.handshake.success internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: peer
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.syslog_cef
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs
+        availability: []
+- name: syslog_cef_receiver.tls_enabled
+  brief: The syslog_cef_receiver.tls_enabled internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.syslog_cef
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs
+        availability: []
+- name: temporal_reaggregation.ack.erroneous
+  brief: The temporal_reaggregation.ack.erroneous internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.temporal_reaggregation
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/temporal_reaggregation_processor/mod.rs
+        availability: []
+- name: temporal_reaggregation.attribute.encode_failed
+  brief: The temporal_reaggregation.attribute.encode_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: errors
+    requirement_level: required
+  - ref: total_errors
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.temporal_reaggregation
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/temporal_reaggregation_processor/builder.rs
+        availability: []
+- name: temporal_reaggregation.calldata.invalid
+  brief: The temporal_reaggregation.calldata.invalid internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.temporal_reaggregation
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/temporal_reaggregation_processor/mod.rs
+        availability: []
+- name: temporal_reaggregation.view.creation_failed
+  brief: The temporal_reaggregation.view.creation_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.processor.temporal_reaggregation
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/processors/temporal_reaggregation_processor/mod.rs
+        availability: []
+- name: topic_exporter.drop_newest
+  brief: The topic_exporter.drop_newest internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/topic_exporter/mod.rs
+        availability: []
+- name: topic_exporter.outcome_capacity_full
+  brief: The topic_exporter.outcome_capacity_full internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/exporters/topic_exporter/mod.rs
+        availability: []
+- name: topic_exporter.start
+  brief: The topic_exporter.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: ack_propagation
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: queue_on_full
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.exporter.topic
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/exporters/topic_exporter/mod.rs
+        availability: []
+- name: topic_receiver.bridge_ack_failed
+  brief: The topic_receiver.bridge_ack_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.bridge_ack_missing_calldata
+  brief: The topic_receiver.bridge_ack_missing_calldata internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.bridge_ack_untracked_or_invalid_id
+  brief: The topic_receiver.bridge_ack_untracked_or_invalid_id internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: message_id
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.bridge_nack_failed
+  brief: The topic_receiver.bridge_nack_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.bridge_nack_missing_calldata
+  brief: The topic_receiver.bridge_nack_missing_calldata internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.bridge_nack_untracked_or_invalid_id
+  brief: The topic_receiver.bridge_nack_untracked_or_invalid_id internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: message_id
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.downstream_backpressure
+  brief: The topic_receiver.downstream_backpressure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: blocked_ms
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.drain_ingress.timeout
+  brief: The topic_receiver.drain_ingress.timeout internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: node
+    requirement_level: required
+  - ref: pending_tracked
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.drain_ingress_drop_pending_forward
+  brief: The topic_receiver.drain_ingress_drop_pending_forward internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: blocked_ms
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  - ref: tracked
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.drain_ingress_force_nack_failed
+  brief: The topic_receiver.drain_ingress_force_nack_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.drain_ingress_pending_forward_nack_failed
+  brief: The topic_receiver.drain_ingress_pending_forward_nack_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.forward_failed
+  brief: The topic_receiver.forward_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.lag_disconnect
+  brief: The topic_receiver.lag_disconnect internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: missed
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.lagged
+  brief: The topic_receiver.lagged internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: missed
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: topic_receiver.start
+  brief: The topic_receiver.start internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: ack_propagation
+    requirement_level: required
+  - ref: node
+    requirement_level: required
+  - ref: subscription
+    requirement_level: required
+  - ref: topic
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node.topic
+    - otap.node.custom.topic
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.topic
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/topic_receiver/mod.rs
+        availability: []
+- name: traffic_generator.drain_ingress
+  brief: The traffic_generator.drain_ingress internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.traffic_generator
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/traffic_generator/mod.rs
+        availability:
+        - feature = "dev-tools"
+- name: traffic_generator.open_run_behind
+  brief: The traffic_generator.open_run_behind internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: remaining
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.traffic_generator
+        severity_levels:
+        - debug
+        sources:
+        - crates/core-nodes/src/receivers/traffic_generator/mod.rs
+        availability:
+        - feature = "dev-tools"
+- name: traffic_generator.shutdown
+  brief: The traffic_generator.shutdown internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.traffic_generator
+        severity_levels:
+        - info
+        sources:
+        - crates/core-nodes/src/receivers/traffic_generator/mod.rs
+        availability:
+        - feature = "dev-tools"
+- name: traffic_generator.smooth_fallback_open
+  brief: The traffic_generator.smooth_fallback_open internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.traffic_generator
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/traffic_generator/mod.rs
+        availability:
+        - feature = "dev-tools"
+- name: traffic_generator.smooth_run_behind
+  brief: The traffic_generator.smooth_run_behind internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: remaining
+    requirement_level: required
+  - ref: remaining_items
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.receiver.traffic_generator
+        severity_levels:
+        - warn
+        sources:
+        - crates/core-nodes/src/receivers/traffic_generator/mod.rs
+        availability:
+        - feature = "dev-tools"

@@ -1,0 +1,82 @@
+file_format: definition/2
+metrics:
+- name: processor.fanout.active
+  brief: Current number of active pipeline messages tracked by the processor.
+  instrument: gauge
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.fanout
+- name: processor.fanout.max.inflight.config
+  brief: Configured max_inflight value (0 means unlimited).
+  instrument: gauge
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.fanout
+- name: processor.fanout.throttle.episodes
+  brief: Increments on transition from not-throttled to throttled.
+  instrument: counter
+  unit: '{episode}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.fanout
+- name: processor.fanout.throttled
+  brief: 1 when fanout is currently refusing new pdata via accept_pdata(), else 0.
+  instrument: gauge
+  unit: '1'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.fanout
+- name: processor.fanout.timed.out
+  brief: Destination message attempts that timed out.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: destination
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.fanout

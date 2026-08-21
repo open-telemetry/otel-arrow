@@ -1,0 +1,254 @@
+file_format: definition/2
+metrics:
+- name: receiver.traffic_generator.logs.bytes.produced
+  brief: Total uncompressed bytes of log payloads produced (protobuf-encoded size before compression).
+    Together with `logs_produced`, this yields the average uncompressed bytes per log record for compression-ratio
+    analysis.
+  instrument: counter
+  unit: By
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.logs.produced
+  brief: Number of logs generated.
+  instrument: counter
+  unit: '{log}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.metrics.produced
+  brief: Number of metrics generated.
+  instrument: counter
+  unit: '{metric}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.smooth.batch.interval
+  brief: Smooth-mode configured interval between batches.
+  instrument: gauge
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+      rust:
+        field: smooth_batch_interval_ns
+- name: receiver.traffic_generator.smooth.batch.tick.lateness.duration
+  brief: Lateness of smooth-mode batch ticks relative to their scheduled instant.
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+      rust:
+        field: smooth_batch_tick_lateness_duration_ns
+- name: receiver.traffic_generator.smooth.behind.remaining.batches
+  brief: Number of batches remaining when smooth mode detects that a run is behind.
+  instrument: histogram
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.smooth.behind.remaining.items
+  brief: Number of signal items remaining when smooth mode detects that a run is behind.
+  instrument: histogram
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.smooth.payload.generate.duration
+  brief: Wall-clock time spent generating or cloning one smooth-mode payload.
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+      rust:
+        field: smooth_payload_generate_duration_ns
+        instrument: HistogramNormal
+- name: receiver.traffic_generator.smooth.payload.send.duration
+  brief: Wall-clock time spent sending one smooth-mode payload into the downstream channel.
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+      rust:
+        field: smooth_payload_send_duration_ns
+        instrument: HistogramNormal
+- name: receiver.traffic_generator.smooth.payload.send.full
+  brief: Number of smooth-mode payload send attempts rejected because the downstream channel was full.
+  instrument: counter
+  unit: '{attempt}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.smooth.payload.send.retry
+  brief: Number of smooth-mode payloads retried after a previous full-channel send.
+  instrument: counter
+  unit: '{payload}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.smooth.run.batches
+  brief: Smooth-mode configured batches per one-second run.
+  instrument: gauge
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.smooth.runs.behind
+  brief: Number of smooth-mode production runs that still had work at the next run tick.
+  instrument: counter
+  unit: '{run}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.smooth.runs.completed
+  brief: Number of smooth-mode production runs that completed before the next run tick.
+  instrument: counter
+  unit: '{run}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.smooth.runs.started
+  brief: Number of smooth-mode production runs started.
+  instrument: counter
+  unit: '{run}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator
+- name: receiver.traffic_generator.spans.produced
+  brief: Number of spans generated.
+  instrument: counter
+  unit: '{span}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.traffic_generator

@@ -1,0 +1,22 @@
+file_format: definition/2
+metrics:
+- name: admission.rate_limiter.refusals
+  brief: Admission attempts declined, or that would have been declined in observe-only mode.
+  instrument: counter
+  unit: '{decision}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: dimension
+    requirement_level: recommended
+  - ref: refusal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: admission.rate_limiter

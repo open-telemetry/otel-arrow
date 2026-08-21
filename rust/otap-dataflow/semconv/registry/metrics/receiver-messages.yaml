@@ -1,0 +1,56 @@
+file_format: definition/2
+metrics:
+- name: receiver.messages.bytes
+  brief: Encoded transport payload bytes admitted to the pipeline send path.
+  instrument: counter
+  unit: By
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.messages
+- name: receiver.messages.completed
+  brief: Number of admitted messages whose receiver work terminated.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.messages
+- name: receiver.messages.started
+  brief: Number of decoded messages admitted to the pipeline send path.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.messages

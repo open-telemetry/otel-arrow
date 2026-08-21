@@ -1,0 +1,107 @@
+file_format: definition/2
+metrics:
+- name: processor.durable_buffer.flush.failures
+  brief: Number of segment finalization failures.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer
+- name: processor.durable_buffer.in.flight
+  brief: Current number of bundles in flight to downstream.
+  instrument: gauge
+  unit: '{bundle}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer
+- name: processor.durable_buffer.read.errors
+  brief: Number of read errors.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer
+- name: processor.durable_buffer.retries.scheduled
+  brief: Number of retry attempts scheduled.
+  instrument: counter
+  unit: '{retry}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer
+- name: processor.durable_buffer.storage.bytes.cap
+  brief: Configured storage capacity cap.
+  instrument: gauge
+  unit: By
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer
+- name: processor.durable_buffer.storage.bytes.used
+  brief: Current bytes used by persistent storage.
+  instrument: gauge
+  unit: By
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer
+- name: processor.durable_buffer.storage.utilization
+  brief: Current storage utilization ratio.
+  instrument: gauge
+  unit: '{1}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: processor.durable_buffer

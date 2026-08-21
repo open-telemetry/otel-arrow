@@ -1,0 +1,2018 @@
+file_format: definition/2
+attributes:
+- key: abandoned_writes
+  type: int
+  stability: development
+  brief: The abandoned_writes value recorded by OTAP Dataflow internal telemetry.
+- key: account
+  type: string
+  stability: development
+  brief: The account value recorded by OTAP Dataflow internal telemetry.
+- key: ack_propagation
+  type: string
+  stability: development
+  brief: The ack_propagation value recorded by OTAP Dataflow internal telemetry.
+- key: action
+  type:
+    members:
+    - id: renamed
+      value: "renamed"
+      stability: development
+    - id: deleted
+      value: "deleted"
+      stability: development
+    - id: inserted
+      value: "inserted"
+      stability: development
+    - id: upserted
+      value: "upserted"
+      stability: development
+    - id: updated
+      value: "updated"
+      stability: development
+    - id: hashed
+      value: "hashed"
+      stability: development
+  stability: development
+  brief: The action value recorded by OTAP Dataflow internal telemetry.
+- key: active_tasks
+  type: int
+  stability: development
+  brief: The active_tasks value recorded by OTAP Dataflow internal telemetry.
+- key: actual_len
+  type: int
+  stability: development
+  brief: The actual_len value recorded by OTAP Dataflow internal telemetry.
+- key: added
+  type: int
+  stability: development
+  brief: The added value recorded by OTAP Dataflow internal telemetry.
+- key: aggregate_bytes
+  type: int
+  stability: development
+  brief: The aggregate_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: attempt
+  type: int
+  stability: development
+  brief: The attempt value recorded by OTAP Dataflow internal telemetry.
+- key: attempts
+  type: int
+  stability: development
+  brief: The attempts value recorded by OTAP Dataflow internal telemetry.
+- key: attribute_key
+  type: string
+  stability: development
+  brief: The attribute_key value recorded by OTAP Dataflow internal telemetry.
+- key: audience
+  type: string
+  stability: development
+  brief: The audience value recorded by OTAP Dataflow internal telemetry.
+- key: audiences
+  type: string
+  stability: development
+  brief: The audiences value recorded by OTAP Dataflow internal telemetry.
+- key: backoff
+  type: string
+  stability: development
+  brief: The backoff value recorded by OTAP Dataflow internal telemetry.
+- key: backoff_ms
+  type: int
+  stability: development
+  brief: The backoff_ms value recorded by OTAP Dataflow internal telemetry.
+- key: balanced_group_count
+  type: int
+  stability: development
+  brief: The balanced_group_count value recorded by OTAP Dataflow internal telemetry.
+- key: batch_id
+  type: int
+  stability: development
+  brief: The batch_id value recorded by OTAP Dataflow internal telemetry.
+- key: batch_max_duration_ms
+  type: int
+  stability: development
+  brief: The batch_max_duration_ms value recorded by OTAP Dataflow internal telemetry.
+- key: batch_max_size
+  type: int
+  stability: development
+  brief: The batch_max_size value recorded by OTAP Dataflow internal telemetry.
+- key: batch_size_avg_bytes
+  type: double
+  stability: development
+  brief: The batch_size_avg_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: batch_size_count
+  type: int
+  stability: development
+  brief: The batch_size_count value recorded by OTAP Dataflow internal telemetry.
+- key: batch_size_max_bytes
+  type: double
+  stability: development
+  brief: The batch_size_max_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: batch_size_min_bytes
+  type: double
+  stability: development
+  brief: The batch_size_min_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: bind_address
+  type: string
+  stability: development
+  brief: The bind_address value recorded by OTAP Dataflow internal telemetry.
+- key: blocked_ms
+  type: int
+  stability: development
+  brief: The blocked_ms value recorded by OTAP Dataflow internal telemetry.
+- key: blocking
+  type: boolean
+  stability: development
+  brief: The blocking value recorded by OTAP Dataflow internal telemetry.
+- key: bound_nodes
+  type: string
+  stability: development
+  brief: The bound_nodes value recorded by OTAP Dataflow internal telemetry.
+- key: brokers
+  type: string
+  stability: development
+  brief: The brokers value recorded by OTAP Dataflow internal telemetry.
+- key: budget_cap
+  type: int
+  stability: development
+  brief: The budget_cap value recorded by OTAP Dataflow internal telemetry.
+- key: budget_ms
+  type: int
+  stability: development
+  brief: The budget_ms value recorded by OTAP Dataflow internal telemetry.
+- key: bundle_index
+  type: int
+  stability: development
+  brief: The bundle_index value recorded by OTAP Dataflow internal telemetry.
+- key: bundles_drained
+  type: int
+  stability: development
+  brief: The bundles_drained value recorded by OTAP Dataflow internal telemetry.
+- key: bundles_processed
+  type: int
+  stability: development
+  brief: The bundles_processed value recorded by OTAP Dataflow internal telemetry.
+- key: bytes_written
+  type: int
+  stability: development
+  brief: The bytes_written value recorded by OTAP Dataflow internal telemetry.
+- key: ca_file
+  type: string
+  stability: development
+  brief: The ca_file value recorded by OTAP Dataflow internal telemetry.
+- key: ca_path
+  type: string
+  stability: development
+  brief: The ca_path value recorded by OTAP Dataflow internal telemetry.
+- key: cert
+  type: string
+  stability: development
+  brief: The cert value recorded by OTAP Dataflow internal telemetry.
+- key: cert_file
+  type: string
+  stability: development
+  brief: The cert_file value recorded by OTAP Dataflow internal telemetry.
+- key: cert_path
+  type: string
+  stability: development
+  brief: The cert_path value recorded by OTAP Dataflow internal telemetry.
+- key: changes
+  type: int
+  stability: development
+  brief: The changes value recorded by OTAP Dataflow internal telemetry.
+- key: channel.id
+  type: string
+  stability: development
+  brief: Unique channel identifier within the host scope.
+- key: channel.impl
+  type:
+    members:
+    - id: internal
+      value: "internal"
+      brief: "OTAP Dataflow's internal local channel implementation."
+      stability: development
+    - id: tokio
+      value: "tokio"
+      brief: "Tokio's channel implementation."
+      stability: development
+    - id: flume
+      value: "flume"
+      brief: "Flume's channel implementation."
+      stability: development
+  stability: development
+  brief: Channel implementation ("tokio", "flume", "internal").
+- key: channel.kind
+  type:
+    members:
+    - id: control
+      value: "control"
+      brief: "Engine control messages."
+      stability: development
+    - id: pdata
+      value: "pdata"
+      brief: "Pipeline telemetry data."
+      stability: development
+  stability: development
+  brief: Channel payload kind ("control" or "pdata").
+- key: channel.mode
+  type:
+    members:
+    - id: local
+      value: "local"
+      brief: "Both endpoints run on the same local executor."
+      stability: development
+    - id: shared
+      value: "shared"
+      brief: "The channel can cross thread or executor boundaries."
+      stability: development
+  stability: development
+  brief: Concurrency mode of the channel ("local" or "shared").
+- key: channel.type
+  type:
+    members:
+    - id: mpsc
+      value: "mpsc"
+      brief: "Multiple producers and a single consumer."
+      stability: development
+    - id: mpmc
+      value: "mpmc"
+      brief: "Multiple producers and multiple consumers."
+      stability: development
+  stability: development
+  brief: Channel type ("mpsc", "mpmc", "spsc", "spmc").
+- key: client_success_latency_avg_ms
+  type: double
+  stability: development
+  brief: The client_success_latency_avg_ms value recorded by OTAP Dataflow internal telemetry.
+- key: client_success_latency_count
+  type: int
+  stability: development
+  brief: The client_success_latency_count value recorded by OTAP Dataflow internal telemetry.
+- key: client_success_latency_max_ms
+  type: double
+  stability: development
+  brief: The client_success_latency_max_ms value recorded by OTAP Dataflow internal telemetry.
+- key: client_success_latency_min_ms
+  type: double
+  stability: development
+  brief: The client_success_latency_min_ms value recorded by OTAP Dataflow internal telemetry.
+- key: code
+  type: string
+  stability: development
+  brief: The code value recorded by OTAP Dataflow internal telemetry.
+- key: columns
+  type: int
+  stability: development
+  brief: The columns value recorded by OTAP Dataflow internal telemetry.
+- key: command
+  type: string
+  stability: development
+  brief: The command value recorded by OTAP Dataflow internal telemetry.
+- key: command_type
+  type: string
+  stability: development
+  brief: The command_type value recorded by OTAP Dataflow internal telemetry.
+- key: completeness
+  type: string
+  stability: development
+  brief: The completeness value recorded by OTAP Dataflow internal telemetry.
+- key: condensed_items
+  type: int
+  stability: development
+  brief: The condensed_items value recorded by OTAP Dataflow internal telemetry.
+- key: config
+  type: string
+  stability: development
+  brief: The config value recorded by OTAP Dataflow internal telemetry.
+- key: config_path
+  type: string
+  stability: development
+  brief: The config_path value recorded by OTAP Dataflow internal telemetry.
+- key: confirmed
+  type: string
+  stability: development
+  brief: The confirmed value recorded by OTAP Dataflow internal telemetry.
+- key: consecutive_failures
+  type: int
+  stability: development
+  brief: The consecutive_failures value recorded by OTAP Dataflow internal telemetry.
+- key: context
+  type: string
+  stability: development
+  brief: The context value recorded by OTAP Dataflow internal telemetry.
+- key: core
+  type: int
+  stability: development
+  brief: The core value recorded by OTAP Dataflow internal telemetry.
+- key: core.id
+  type: int
+  stability: development
+  brief: Core identifier.
+- key: core_allocation
+  type: string
+  stability: development
+  brief: The core_allocation value recorded by OTAP Dataflow internal telemetry.
+- key: core_id
+  type: int
+  stability: development
+  brief: The core_id value recorded by OTAP Dataflow internal telemetry.
+- key: count
+  type: int
+  stability: development
+  brief: The count value recorded by OTAP Dataflow internal telemetry.
+- key: create_directories
+  type: boolean
+  stability: development
+  brief: The create_directories value recorded by OTAP Dataflow internal telemetry.
+- key: cumulative_segment_bytes
+  type: int
+  stability: development
+  brief: The cumulative_segment_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: current
+  type: string
+  stability: development
+  brief: The current value recorded by OTAP Dataflow internal telemetry.
+- key: current_identity
+  type: int
+  stability: development
+  brief: The current_identity value recorded by OTAP Dataflow internal telemetry.
+- key: cursor
+  type: string
+  stability: development
+  brief: The cursor value recorded by OTAP Dataflow internal telemetry.
+- key: cursor_position
+  type: int
+  stability: development
+  brief: The cursor_position value recorded by OTAP Dataflow internal telemetry.
+- key: custom
+  type: any
+  stability: development
+  brief: Custom user-defined attributes
+- key: database
+  type: string
+  stability: development
+  brief: The database value recorded by OTAP Dataflow internal telemetry.
+- key: dcr
+  type: string
+  stability: development
+  brief: The dcr value recorded by OTAP Dataflow internal telemetry.
+- key: deadline
+  type: string
+  stability: development
+  brief: The deadline value recorded by OTAP Dataflow internal telemetry.
+- key: default_ms
+  type: int
+  stability: development
+  brief: The default_ms value recorded by OTAP Dataflow internal telemetry.
+- key: definition
+  type: string
+  stability: development
+  brief: The definition value recorded by OTAP Dataflow internal telemetry.
+- key: delay_ms
+  type: int
+  stability: development
+  brief: The delay_ms value recorded by OTAP Dataflow internal telemetry.
+- key: delete_missing
+  type: boolean
+  stability: development
+  brief: The delete_missing value recorded by OTAP Dataflow internal telemetry.
+- key: deleted
+  type: int
+  stability: development
+  brief: The deleted value recorded by OTAP Dataflow internal telemetry.
+- key: deleted_count
+  type: int
+  stability: development
+  brief: The deleted_count value recorded by OTAP Dataflow internal telemetry.
+- key: denominator
+  type: int
+  stability: development
+  brief: The denominator value recorded by OTAP Dataflow internal telemetry.
+- key: deployment.generation
+  type: int
+  stability: development
+  brief: Deployment generation for this runtime instance.
+- key: deployment_generation
+  type: int
+  stability: development
+  brief: The deployment_generation value recorded by OTAP Dataflow internal telemetry.
+- key: destination
+  type: string
+  stability: development
+  brief: The destination value recorded by OTAP Dataflow internal telemetry.
+- key: detail
+  type: string
+  stability: development
+  brief: The detail value recorded by OTAP Dataflow internal telemetry.
+- key: details
+  type: string
+  stability: development
+  brief: The details value recorded by OTAP Dataflow internal telemetry.
+- key: dimension
+  type:
+    members:
+    - id: bytes
+      value: "bytes"
+      brief: "Payload bytes, as measured by the component at its admission point."
+      stability: development
+    - id: messages
+      value: "messages"
+      brief: "Framed application messages, one unit per message."
+      stability: development
+  stability: development
+  brief: Weight dimension the limiter meters.
+- key: domain
+  type:
+    members:
+    - id: signal
+      value: "signal"
+      stability: development
+    - id: resource
+      value: "resource"
+      stability: development
+    - id: scope
+      value: "scope"
+      stability: development
+  stability: development
+  brief: The domain value recorded by OTAP Dataflow internal telemetry.
+- key: dropped_events
+  type: int
+  stability: development
+  brief: The dropped_events value recorded by OTAP Dataflow internal telemetry.
+- key: dropped_existing_destination_items
+  type: int
+  stability: development
+  brief: The dropped_existing_destination_items value recorded by OTAP Dataflow internal telemetry.
+- key: dropped_items
+  type: int
+  stability: development
+  brief: The dropped_items value recorded by OTAP Dataflow internal telemetry.
+- key: durability
+  type: string
+  stability: development
+  brief: The durability value recorded by OTAP Dataflow internal telemetry.
+- key: duration_ms
+  type: int
+  stability: development
+  brief: The duration_ms value recorded by OTAP Dataflow internal telemetry.
+- key: elapsed_ms
+  type: int
+  stability: development
+  brief: The elapsed_ms value recorded by OTAP Dataflow internal telemetry.
+- key: encoding
+  type: string
+  stability: development
+  brief: The encoding value recorded by OTAP Dataflow internal telemetry.
+- key: endpoint
+  type: string
+  stability: development
+  brief: The endpoint value recorded by OTAP Dataflow internal telemetry.
+- key: endpoint_source
+  type: string
+  stability: development
+  brief: The endpoint_source value recorded by OTAP Dataflow internal telemetry.
+- key: entry_count
+  type: int
+  stability: development
+  brief: The entry_count value recorded by OTAP Dataflow internal telemetry.
+- key: error
+  type: string
+  stability: development
+  brief: The error value recorded by OTAP Dataflow internal telemetry.
+- key: error.type
+  type:
+    members:
+    - id: authentication
+      value: "authentication"
+      brief: "Authentication credentials were absent, unusable, or rejected."
+      stability: development
+    - id: authorization
+      value: "authorization"
+      brief: "The destination denied the authenticated principal."
+      stability: development
+    - id: closed
+      value: "closed"
+      brief: "The receiving endpoint was closed."
+      stability: development
+    - id: compression
+      value: "compression"
+      brief: "The request body could not be compressed."
+      stability: development
+    - id: concurrency_limit
+      value: "concurrency_limit"
+      brief: "No configured admission or concurrency capacity is available."
+      stability: development
+    - id: encoding
+      value: "encoding"
+      brief: "An OTAP Arrow payload could not be encoded as OTLP protobuf."
+      stability: development
+    - id: formatting
+      value: "formatting"
+      brief: "The selected output formatter could not encode the logs payload."
+      stability: development
+    - id: full
+      value: "full"
+      brief: "The bounded channel had no capacity for a non-blocking send."
+      stability: development
+    - id: id_decode
+      value: "id_decode"
+      brief: "Transport-optimized identifiers could not be decoded."
+      stability: development
+    - id: inbound_capacity
+      value: "inbound_capacity"
+      brief: "No configured inbound request slot was available."
+      stability: development
+    - id: insufficient_replicas
+      value: "insufficient_replicas"
+      brief: "The broker could not meet the configured in-sync replica requirement."
+      stability: development
+    - id: internal
+      value: "internal"
+      brief: "An internal stream-coordination channel failed."
+      stability: development
+    - id: invalid_request
+      value: "invalid_request"
+      brief: "The request is malformed or otherwise invalid."
+      stability: development
+    - id: invalid_topic
+      value: "invalid_topic"
+      brief: "A dynamic topic supplied by a transport header was invalid."
+      stability: development
+    - id: memory_pressure
+      value: "memory_pressure"
+      brief: "The process is refusing ingress because memory pressure is active."
+      stability: development
+    - id: message_too_large
+      value: "message_too_large"
+      brief: "The encoded Kafka record exceeded a client or broker size limit."
+      stability: development
+    - id: offset
+      value: "offset"
+      brief: "The stored or requested consumer offset cannot be used."
+      stability: development
+    - id: otap_view_creation
+      value: "otap_view_creation"
+      brief: "An OTAP Arrow payload could not be exposed as a logs view."
+      stability: development
+    - id: other
+      value: "other"
+      brief: "The delivery failure does not fit another bounded category."
+      stability: development
+    - id: otlp_view_creation
+      value: "otlp_view_creation"
+      brief: "An OTLP byte payload could not be exposed as a logs view."
+      stability: development
+    - id: outbound_capacity
+      value: "outbound_capacity"
+      brief: "No configured outbound request slot was available."
+      stability: development
+    - id: output_send
+      value: "output_send"
+      brief: "An immediate default or routed output send failed."
+      stability: development
+    - id: partial_rejection
+      value: "partial_rejection"
+      brief: "The destination accepted only part of the export request."
+      stability: development
+    - id: payload_conversion
+      value: "payload_conversion"
+      brief: "The incoming PData payload could not be converted to OTAP Arrow records."
+      stability: development
+    - id: payload_too_large
+      value: "payload_too_large"
+      brief: "The encoded or decoded payload exceeds the configured size limit."
+      stability: development
+    - id: poll_exceeded
+      value: "poll_exceeded"
+      brief: "The consumer exceeded its configured maximum polling interval."
+      stability: development
+    - id: query_execution
+      value: "query_execution"
+      brief: "The configured query pipeline failed while executing."
+      stability: development
+    - id: queue_full
+      value: "queue_full"
+      brief: "The local librdkafka producer queue stayed full until the enqueue deadline."
+      stability: development
+    - id: rate_limit
+      value: "rate_limit"
+      brief: "The receiver-local rate limit refused the request."
+      stability: development
+    - id: rejected
+      value: "rejected"
+      brief: "The destination permanently rejected the batch."
+      stability: development
+    - id: response_decode
+      value: "response_decode"
+      brief: "The successful response body was not valid OTLP protobuf."
+      stability: development
+    - id: response_too_large
+      value: "response_too_large"
+      brief: "The successful response exceeded the configured body-size limit."
+      stability: development
+    - id: route_not_configured
+      value: "route_not_configured"
+      brief: "A query referenced an output route that is not configured."
+      stability: development
+    - id: server_error
+      value: "server_error"
+      brief: "The destination reported a server-side failure."
+      stability: development
+    - id: shutdown
+      value: "shutdown"
+      brief: "The export was abandoned during exporter shutdown."
+      stability: development
+    - id: throttled
+      value: "throttled"
+      brief: "The destination refused the batch because capacity was exhausted."
+      stability: development
+    - id: timeout
+      value: "timeout"
+      brief: "A consumer or broker request deadline expired."
+      stability: development
+    - id: transport
+      value: "transport"
+      brief: "Broker connectivity, name resolution, or network transport failed."
+      stability: development
+    - id: unavailable
+      value: "unavailable"
+      brief: "The destination or gateway was temporarily unavailable."
+      stability: development
+    - id: unconfigured_signal
+      value: "unconfigured_signal"
+      brief: "The incoming signal has no Kafka exporter configuration."
+      stability: development
+    - id: unknown_topic_or_partition
+      value: "unknown_topic_or_partition"
+      brief: "A subscribed topic or partition is unavailable."
+      stability: development
+    - id: unsupported_signal
+      value: "unsupported_signal"
+      brief: "The exporter received a signal that it cannot render."
+      stability: development
+    - id: write
+      value: "write"
+      brief: "The rendered output could not be written to stdout."
+      stability: development
+  stability: development
+  brief: Bounded Kafka export failure category.
+- key: error_kind
+  type: string
+  stability: development
+  brief: The error_kind value recorded by OTAP Dataflow internal telemetry.
+- key: error_msg
+  type: string
+  stability: development
+  brief: The error_msg value recorded by OTAP Dataflow internal telemetry.
+- key: error_type
+  type: string
+  stability: development
+  brief: The error_type value recorded by OTAP Dataflow internal telemetry.
+- key: errors
+  type: string
+  stability: development
+  brief: The errors value recorded by OTAP Dataflow internal telemetry.
+- key: event
+  type: string
+  stability: development
+  brief: The event value recorded by OTAP Dataflow internal telemetry.
+- key: event_name
+  type: string
+  stability: development
+  brief: The event_name value recorded by OTAP Dataflow internal telemetry.
+- key: event_paths
+  type: string
+  stability: development
+  brief: The event_paths value recorded by OTAP Dataflow internal telemetry.
+- key: event_type
+  type: string
+  stability: development
+  brief: The event_type value recorded by OTAP Dataflow internal telemetry.
+- key: expected
+  type: string
+  stability: development
+  brief: The expected value recorded by OTAP Dataflow internal telemetry.
+- key: expected_key
+  type: string
+  stability: development
+  brief: The expected_key value recorded by OTAP Dataflow internal telemetry.
+- key: expired
+  type: int
+  stability: development
+  brief: The expired value recorded by OTAP Dataflow internal telemetry.
+- key: explicitly_opted_out_nodes
+  type: string
+  stability: development
+  brief: The explicitly_opted_out_nodes value recorded by OTAP Dataflow internal telemetry.
+- key: exporter_refs
+  type: int
+  stability: development
+  brief: The exporter_refs value recorded by OTAP Dataflow internal telemetry.
+- key: extension
+  type: string
+  stability: development
+  brief: The extension value recorded by OTAP Dataflow internal telemetry.
+- key: extension.id
+  type: string
+  stability: development
+  brief: Extension unique identifier within its host scope.
+- key: extension.variant
+  type: string
+  stability: development
+  brief: Physical variant of the extension (`"local"` or `"shared"`).
+- key: extension_id
+  type: string
+  stability: development
+  brief: The extension_id value recorded by OTAP Dataflow internal telemetry.
+- key: extension_type
+  type: string
+  stability: development
+  brief: The extension_type value recorded by OTAP Dataflow internal telemetry.
+- key: failed_batches
+  type: int
+  stability: development
+  brief: The failed_batches value recorded by OTAP Dataflow internal telemetry.
+- key: failed_generation
+  type: int
+  stability: development
+  brief: The failed_generation value recorded by OTAP Dataflow internal telemetry.
+- key: failed_items
+  type: int
+  stability: development
+  brief: The failed_items value recorded by OTAP Dataflow internal telemetry.
+- key: failed_messages
+  type: int
+  stability: development
+  brief: The failed_messages value recorded by OTAP Dataflow internal telemetry.
+- key: failure
+  type:
+    members:
+    - id: error
+      value: "error"
+      stability: development
+    - id: backpressure
+      value: "backpressure"
+      stability: development
+  stability: development
+  brief: The failure value recorded by OTAP Dataflow internal telemetry.
+- key: failure_reason
+  type: string
+  stability: development
+  brief: The failure_reason value recorded by OTAP Dataflow internal telemetry.
+- key: field
+  type: string
+  stability: development
+  brief: The field value recorded by OTAP Dataflow internal telemetry.
+- key: file
+  type: string
+  stability: development
+  brief: The file value recorded by OTAP Dataflow internal telemetry.
+- key: file_size
+  type: int
+  stability: development
+  brief: The file_size value recorded by OTAP Dataflow internal telemetry.
+- key: file_type
+  type: string
+  stability: development
+  brief: The file_type value recorded by OTAP Dataflow internal telemetry.
+- key: first
+  type: string
+  stability: development
+  brief: The first value recorded by OTAP Dataflow internal telemetry.
+- key: first_cursor
+  type: string
+  stability: development
+  brief: The first_cursor value recorded by OTAP Dataflow internal telemetry.
+- key: flow.id
+  type: string
+  stability: development
+  brief: User-given flow identifier.
+- key: flow.node.decision
+  type: string
+  stability: development
+  brief: 'Name of the decision node that recorded `signals.dropped`. Always emitted as the `flow.node.decision`
+    scope attribute; carries an empty value for the flow''s incoming/outgoing/duration entity (which is
+    not attributed to a specific decision node). Lets a single flow contain multiple decision nodes without
+    conflation. `signals.dropped` aggregates correctly across this attribute: drops at different decision
+    nodes are disjoint (a dropped item never reaches a later node), so the sum equals the flow''s total
+    removed = `signals.incoming - signals.outgoing`. There is deliberately no per-node "kept" metric:
+    a survivor count is non-additive across series nodes (nested subsets double-count) and undefined under
+    fan-out, and the flow-wide kept count is simply `signals.outgoing`.'
+- key: flow.node.end
+  type: string
+  stability: development
+  brief: Name of the processor node where the measurement ends.
+- key: flow.node.start
+  type: string
+  stability: development
+  brief: Name of the processor node where the measurement begins.
+- key: flow.purpose
+  type: string
+  stability: development
+  brief: Per-flow purpose differentiator (e.g. `filter`, `transform`). Always emitted as the `flow.purpose`
+    scope attribute; carries an empty value when the flow declares no purpose. Lets OTel View selectors
+    target distinct flavors of processor work while all flows share the single `flow` scope.
+- key: flushed
+  type: int
+  stability: development
+  brief: The flushed value recorded by OTAP Dataflow internal telemetry.
+- key: force_dropped_bundles
+  type: int
+  stability: development
+  brief: The force_dropped_bundles value recorded by OTAP Dataflow internal telemetry.
+- key: force_dropped_segments
+  type: int
+  stability: development
+  brief: The force_dropped_segments value recorded by OTAP Dataflow internal telemetry.
+- key: format
+  type:
+    members:
+    - id: pretty
+      value: "pretty"
+      brief: "Human-readable hierarchical output intended for interactive inspection."
+      stability: development
+    - id: record_json
+      value: "record_json"
+      brief: "One compact log record JSON object per line."
+      stability: development
+  stability: development
+  brief: The format value recorded by OTAP Dataflow internal telemetry.
+- key: found
+  type: string
+  stability: development
+  brief: The found value recorded by OTAP Dataflow internal telemetry.
+- key: frequency_ms
+  type: int
+  stability: development
+  brief: The frequency_ms value recorded by OTAP Dataflow internal telemetry.
+- key: from_generation
+  type: int
+  stability: development
+  brief: The from_generation value recorded by OTAP Dataflow internal telemetry.
+- key: grace_secs
+  type: int
+  stability: development
+  brief: The grace_secs value recorded by OTAP Dataflow internal telemetry.
+- key: grpc_endpoint
+  type: string
+  stability: development
+  brief: The grpc_endpoint value recorded by OTAP Dataflow internal telemetry.
+- key: gzip_compression_level
+  type: int
+  stability: development
+  brief: The gzip_compression_level value recorded by OTAP Dataflow internal telemetry.
+- key: handle
+  type: int
+  stability: development
+  brief: The handle value recorded by OTAP Dataflow internal telemetry.
+- key: hard_limit_bytes
+  type: int
+  stability: development
+  brief: The hard_limit_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: has_auth
+  type: boolean
+  stability: development
+  brief: The has_auth value recorded by OTAP Dataflow internal telemetry.
+- key: has_broadcast_receivers
+  type: boolean
+  stability: development
+  brief: The has_broadcast_receivers value recorded by OTAP Dataflow internal telemetry.
+- key: has_unknown_receiver_mode
+  type: boolean
+  stability: development
+  brief: The has_unknown_receiver_mode value recorded by OTAP Dataflow internal telemetry.
+- key: header
+  type: int
+  stability: development
+  brief: The header value recorded by OTAP Dataflow internal telemetry.
+- key: header_key
+  type: string
+  stability: development
+  brief: The header_key value recorded by OTAP Dataflow internal telemetry.
+- key: header_name
+  type: string
+  stability: development
+  brief: The header_name value recorded by OTAP Dataflow internal telemetry.
+- key: header_names
+  type: string
+  stability: development
+  brief: The header_names value recorded by OTAP Dataflow internal telemetry.
+- key: header_topic
+  type: string
+  stability: development
+  brief: The header_topic value recorded by OTAP Dataflow internal telemetry.
+- key: host
+  type: string
+  stability: development
+  brief: The host value recorded by OTAP Dataflow internal telemetry.
+- key: ignored
+  type: int
+  stability: development
+  brief: The ignored value recorded by OTAP Dataflow internal telemetry.
+- key: in_flight
+  type: int
+  stability: development
+  brief: The in_flight value recorded by OTAP Dataflow internal telemetry.
+- key: input_items
+  type: int
+  stability: development
+  brief: The input_items value recorded by OTAP Dataflow internal telemetry.
+- key: interval
+  type: string
+  stability: development
+  brief: The interval value recorded by OTAP Dataflow internal telemetry.
+- key: is_canceled
+  type: boolean
+  stability: development
+  brief: The is_canceled value recorded by OTAP Dataflow internal telemetry.
+- key: is_new_file
+  type: boolean
+  stability: development
+  brief: The is_new_file value recorded by OTAP Dataflow internal telemetry.
+- key: is_panic
+  type: boolean
+  stability: development
+  brief: The is_panic value recorded by OTAP Dataflow internal telemetry.
+- key: journal_root_path
+  type: string
+  stability: development
+  brief: The journal_root_path value recorded by OTAP Dataflow internal telemetry.
+- key: key
+  type: string
+  stability: development
+  brief: The key value recorded by OTAP Dataflow internal telemetry.
+- key: key_file
+  type: string
+  stability: development
+  brief: The key_file value recorded by OTAP Dataflow internal telemetry.
+- key: key_path
+  type: string
+  stability: development
+  brief: The key_path value recorded by OTAP Dataflow internal telemetry.
+- key: kind
+  type: string
+  stability: development
+  brief: The kind value recorded by OTAP Dataflow internal telemetry.
+- key: language
+  type:
+    members:
+    - id: kql
+      value: "kql"
+      brief: "Kusto Query Language."
+      stability: development
+    - id: opl
+      value: "opl"
+      brief: "OpenTelemetry Pipeline Language."
+      stability: development
+    - id: ottl
+      value: "ottl"
+      brief: "OpenTelemetry Transformation Language."
+      stability: development
+  stability: development
+  brief: The language value recorded by OTAP Dataflow internal telemetry.
+- key: last_cursor
+  type: string
+  stability: development
+  brief: The last_cursor value recorded by OTAP Dataflow internal telemetry.
+- key: lifecycle
+  type: string
+  stability: development
+  brief: The lifecycle value recorded by OTAP Dataflow internal telemetry.
+- key: listed_count
+  type: int
+  stability: development
+  brief: The listed_count value recorded by OTAP Dataflow internal telemetry.
+- key: listening_addr
+  type: string
+  stability: development
+  brief: The listening_addr value recorded by OTAP Dataflow internal telemetry.
+- key: live_pipelines
+  type: int
+  stability: development
+  brief: The live_pipelines value recorded by OTAP Dataflow internal telemetry.
+- key: logs
+  type: string
+  stability: development
+  brief: The logs value recorded by OTAP Dataflow internal telemetry.
+- key: logs_endpoint
+  type: string
+  stability: development
+  brief: The logs_endpoint value recorded by OTAP Dataflow internal telemetry.
+- key: mapping
+  type:
+    members:
+    - id: batch_to_message
+      value: "batch_to_message"
+      stability: development
+    - id: message_to_batch
+      value: "message_to_batch"
+      stability: development
+    - id: message_to_data
+      value: "message_to_data"
+      stability: development
+  stability: development
+  brief: The mapping value recorded by OTAP Dataflow internal telemetry.
+- key: max_age
+  type: string
+  stability: development
+  brief: The max_age value recorded by OTAP Dataflow internal telemetry.
+- key: max_age_secs
+  type: int
+  stability: development
+  brief: The max_age_secs value recorded by OTAP Dataflow internal telemetry.
+- key: max_concurrent
+  type: int
+  stability: development
+  brief: The max_concurrent value recorded by OTAP Dataflow internal telemetry.
+- key: max_frame_bytes
+  type: int
+  stability: development
+  brief: The max_frame_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: max_in_flight
+  type: int
+  stability: development
+  brief: The max_in_flight value recorded by OTAP Dataflow internal telemetry.
+- key: max_len
+  type: int
+  stability: development
+  brief: The max_len value recorded by OTAP Dataflow internal telemetry.
+- key: max_restarts
+  type: int
+  stability: development
+  brief: The max_restarts value recorded by OTAP Dataflow internal telemetry.
+- key: max_rotated_files
+  type: int
+  stability: development
+  brief: The max_rotated_files value recorded by OTAP Dataflow internal telemetry.
+- key: max_segment_open_duration
+  type: string
+  stability: development
+  brief: The max_segment_open_duration value recorded by OTAP Dataflow internal telemetry.
+- key: max_wal_size
+  type: int
+  stability: development
+  brief: The max_wal_size value recorded by OTAP Dataflow internal telemetry.
+- key: message_id
+  type: int
+  stability: development
+  brief: The message_id value recorded by OTAP Dataflow internal telemetry.
+- key: metrics_endpoint
+  type: string
+  stability: development
+  brief: The metrics_endpoint value recorded by OTAP Dataflow internal telemetry.
+- key: min_budget
+  type: int
+  stability: development
+  brief: The min_budget value recorded by OTAP Dataflow internal telemetry.
+- key: min_header_size
+  type: int
+  stability: development
+  brief: The min_header_size value recorded by OTAP Dataflow internal telemetry.
+- key: missed
+  type: int
+  stability: development
+  brief: The missed value recorded by OTAP Dataflow internal telemetry.
+- key: msg_id
+  type: int
+  stability: development
+  brief: The msg_id value recorded by OTAP Dataflow internal telemetry.
+- key: name
+  type: string
+  stability: development
+  brief: The name value recorded by OTAP Dataflow internal telemetry.
+- key: namespace
+  type: string
+  stability: development
+  brief: The namespace value recorded by OTAP Dataflow internal telemetry.
+- key: new_instance_id
+  type: string
+  stability: development
+  brief: The new_instance_id value recorded by OTAP Dataflow internal telemetry.
+- key: next_segment_seq
+  type: int
+  stability: development
+  brief: The next_segment_seq value recorded by OTAP Dataflow internal telemetry.
+- key: next_sequence
+  type: int
+  stability: development
+  brief: The next_sequence value recorded by OTAP Dataflow internal telemetry.
+- key: node
+  type: string
+  stability: development
+  brief: The node value recorded by OTAP Dataflow internal telemetry.
+- key: node.id
+  type: string
+  stability: development
+  brief: Node unique identifier (in scope of the pipeline).
+- key: node.port
+  type: string
+  stability: development
+  brief: Port name for the channel endpoint. On the sender side, this is the port to which the channel
+    is connected. On the receiver side, this defaults to the node's input port.
+- key: node.type
+  type: string
+  stability: development
+  brief: Node type (e.g., "receiver", "processor", "exporter").
+- key: node.urn
+  type: string
+  stability: development
+  brief: Node plugin URN.
+- key: node_id
+  type: any
+  stability: development
+  brief: The node_id value recorded by OTAP Dataflow internal telemetry.
+- key: node_kind
+  type: string
+  stability: development
+  brief: The node_kind value recorded by OTAP Dataflow internal telemetry.
+- key: num_connections
+  type: int
+  stability: development
+  brief: The num_connections value recorded by OTAP Dataflow internal telemetry.
+- key: num_cores
+  type: int
+  stability: development
+  brief: The num_cores value recorded by OTAP Dataflow internal telemetry.
+- key: num_pipeline_groups
+  type: int
+  stability: development
+  brief: The num_pipeline_groups value recorded by OTAP Dataflow internal telemetry.
+- key: num_pipelines
+  type: int
+  stability: development
+  brief: The num_pipelines value recorded by OTAP Dataflow internal telemetry.
+- key: num_rows
+  type: int
+  stability: development
+  brief: The num_rows value recorded by OTAP Dataflow internal telemetry.
+- key: numa.node.id
+  type: int
+  stability: development
+  brief: NUMA node identifier.
+- key: numerator
+  type: int
+  stability: development
+  brief: The numerator value recorded by OTAP Dataflow internal telemetry.
+- key: observed_pipelines
+  type: int
+  stability: development
+  brief: The observed_pipelines value recorded by OTAP Dataflow internal telemetry.
+- key: offset
+  type: int
+  stability: development
+  brief: The offset value recorded by OTAP Dataflow internal telemetry.
+- key: open_mode
+  type: string
+  stability: development
+  brief: The open_mode value recorded by OTAP Dataflow internal telemetry.
+- key: operation
+  type:
+    members:
+    - id: delivery
+      value: "delivery"
+      brief: "Enqueue the encoded record and wait for its broker delivery result."
+      stability: development
+    - id: encoding
+      value: "encoding"
+      brief: "Convert pdata into the configured Kafka wire encoding."
+      stability: development
+    - id: open
+      value: "open"
+      brief: "File acquisition, directory creation, open, or tail validation."
+      stability: development
+    - id: rollback
+      value: "rollback"
+      brief: "Failed-write rollback."
+      stability: development
+    - id: sync
+      value: "sync"
+      brief: "Data synchronization."
+      stability: development
+    - id: write
+      value: "write"
+      brief: "Frame write or flush."
+      stability: development
+  stability: development
+  brief: Timed exporter phase.
+- key: operation_id
+  type: string
+  stability: development
+  brief: The operation_id value recorded by OTAP Dataflow internal telemetry.
+- key: operation_kind
+  type: string
+  stability: development
+  brief: The operation_kind value recorded by OTAP Dataflow internal telemetry.
+- key: original_key_type
+  type: string
+  stability: development
+  brief: The original_key_type value recorded by OTAP Dataflow internal telemetry.
+- key: outcome
+  type:
+    members:
+    - id: acked
+      value: "acked"
+      stability: development
+    - id: deferred
+      value: "deferred"
+      stability: development
+    - id: failure
+      value: "failure"
+      brief: "The component itself failed the operation."
+      stability: development
+    - id: permanently_rejected
+      value: "permanently_rejected"
+      stability: development
+    - id: refused
+      value: "refused"
+      brief: "A downstream component refused the operation."
+      stability: development
+    - id: success
+      value: "success"
+      brief: "The component completed the operation successfully."
+      stability: development
+  stability: development
+  brief: Terminal outcome of the phase.
+- key: output_items
+  type: int
+  stability: development
+  brief: The output_items value recorded by OTAP Dataflow internal telemetry.
+- key: partition
+  type: int
+  stability: development
+  brief: The partition value recorded by OTAP Dataflow internal telemetry.
+- key: partitions
+  type: string
+  stability: development
+  brief: The partitions value recorded by OTAP Dataflow internal telemetry.
+- key: path
+  type: string
+  stability: development
+  brief: The path value recorded by OTAP Dataflow internal telemetry.
+- key: pattern
+  type: string
+  stability: development
+  brief: The pattern value recorded by OTAP Dataflow internal telemetry.
+- key: payload_len
+  type: int
+  stability: development
+  brief: The payload_len value recorded by OTAP Dataflow internal telemetry.
+- key: peer
+  type: string
+  stability: development
+  brief: The peer value recorded by OTAP Dataflow internal telemetry.
+- key: pending_batches
+  type: int
+  stability: development
+  brief: The pending_batches value recorded by OTAP Dataflow internal telemetry.
+- key: pending_deletes_cleared
+  type: int
+  stability: development
+  brief: The pending_deletes_cleared value recorded by OTAP Dataflow internal telemetry.
+- key: pending_tracked
+  type: int
+  stability: development
+  brief: The pending_tracked value recorded by OTAP Dataflow internal telemetry.
+- key: per_core_size_cap
+  type: int
+  stability: development
+  brief: The per_core_size_cap value recorded by OTAP Dataflow internal telemetry.
+- key: permanent
+  type: boolean
+  stability: development
+  brief: The permanent value recorded by OTAP Dataflow internal telemetry.
+- key: phase
+  type: string
+  stability: development
+  brief: The phase value recorded by OTAP Dataflow internal telemetry.
+- key: pipeline.group.id
+  type: string
+  stability: development
+  brief: Pipeline group identifier.
+- key: pipeline.id
+  type: string
+  stability: development
+  brief: Pipeline identifier as defined in the configuration.
+- key: pipeline_core
+  type: int
+  stability: development
+  brief: The pipeline_core value recorded by OTAP Dataflow internal telemetry.
+- key: pipeline_group_id
+  type: string
+  stability: development
+  brief: The pipeline_group_id value recorded by OTAP Dataflow internal telemetry.
+- key: pipeline_id
+  type: string
+  stability: development
+  brief: The pipeline_id value recorded by OTAP Dataflow internal telemetry.
+- key: platform
+  type: string
+  stability: development
+  brief: The platform value recorded by OTAP Dataflow internal telemetry.
+- key: policy
+  type: string
+  stability: development
+  brief: The policy value recorded by OTAP Dataflow internal telemetry.
+- key: poll_interval
+  type: string
+  stability: development
+  brief: The poll_interval value recorded by OTAP Dataflow internal telemetry.
+- key: port
+  type: any
+  stability: development
+  brief: The port value recorded by OTAP Dataflow internal telemetry.
+- key: post_purge_usage_bytes
+  type: int
+  stability: development
+  brief: The post_purge_usage_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: pre_purge_usage_bytes
+  type: int
+  stability: development
+  brief: The pre_purge_usage_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: prev_identity
+  type: int
+  stability: development
+  brief: The prev_identity value recorded by OTAP Dataflow internal telemetry.
+- key: previous
+  type: string
+  stability: development
+  brief: The previous value recorded by OTAP Dataflow internal telemetry.
+- key: projected_bytes
+  type: int
+  stability: development
+  brief: The projected_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: protocol
+  type:
+    members:
+    - id: grpc
+      value: "grpc"
+      brief: "OTLP over gRPC."
+      stability: development
+    - id: http
+      value: "http"
+      brief: "OTLP over HTTP."
+      stability: development
+  stability: development
+  brief: The protocol value recorded by OTAP Dataflow internal telemetry.
+- key: provider_count
+  type: int
+  stability: development
+  brief: The provider_count value recorded by OTAP Dataflow internal telemetry.
+- key: provider_name
+  type: string
+  stability: development
+  brief: The provider_name value recorded by OTAP Dataflow internal telemetry.
+- key: proxy
+  type: string
+  stability: development
+  brief: The proxy value recorded by OTAP Dataflow internal telemetry.
+- key: purge_duration_ms
+  type: int
+  stability: development
+  brief: The purge_duration_ms value recorded by OTAP Dataflow internal telemetry.
+- key: purged_bytes
+  type: int
+  stability: development
+  brief: The purged_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: query_column_number
+  type: int
+  stability: development
+  brief: The query_column_number value recorded by OTAP Dataflow internal telemetry.
+- key: query_line_number
+  type: int
+  stability: development
+  brief: The query_line_number value recorded by OTAP Dataflow internal telemetry.
+- key: queue_on_full
+  type: string
+  stability: development
+  brief: The queue_on_full value recorded by OTAP Dataflow internal telemetry.
+- key: raw_os_error
+  type: string
+  stability: development
+  brief: The raw_os_error value recorded by OTAP Dataflow internal telemetry.
+- key: raw_value
+  type: string
+  stability: development
+  brief: The raw_value value recorded by OTAP Dataflow internal telemetry.
+- key: ready_pipelines
+  type: int
+  stability: development
+  brief: The ready_pipelines value recorded by OTAP Dataflow internal telemetry.
+- key: reason
+  type:
+    members:
+    - id: conversion_error
+      value: "conversion_error"
+      brief: "NACKed due to an internal conversion error."
+      stability: development
+    - id: deadline
+      value: "deadline"
+      brief: "The next retry would exceed the configured deadline."
+      stability: development
+    - id: decode
+      value: "decode"
+      brief: "The payload could not be decoded using the configured signal encoding."
+      stability: development
+    - id: default_route_missing_key
+      value: "default_route_missing_key"
+      brief: "Routed to default because the routing key was missing."
+      stability: development
+    - id: default_route_no_match
+      value: "default_route_no_match"
+      brief: "Routed to default because no configured route matched."
+      stability: development
+    - id: default_route_unwired
+      value: "default_route_unwired"
+      brief: "Routed to default because named port was not connected."
+      stability: development
+    - id: drop_oldest
+      value: "drop_oldest"
+      stability: development
+    - id: empty_payload
+      value: "empty_payload"
+      brief: "The Kafka record contained no payload."
+      stability: development
+    - id: expired
+      value: "expired"
+      stability: development
+    - id: internal
+      value: "internal"
+      brief: "An unexpected receiver-local condition rejected the message."
+      stability: development
+    - id: invalid_state
+      value: "invalid_state"
+      brief: "Retry state in call data was absent or malformed."
+      stability: development
+    - id: matched_route
+      value: "matched_route"
+      brief: "Routed to a matched route."
+      stability: development
+    - id: missing_routing_key
+      value: "missing_routing_key"
+      brief: "NACKed because the routing key was missing and no default was set."
+      stability: development
+    - id: mixed_batch
+      value: "mixed_batch"
+      brief: "NACKed because the batch contained mixed destinations."
+      stability: development
+    - id: named_route
+      value: "named_route"
+      brief: "Routed to a named port."
+      stability: development
+    - id: no_available_route
+      value: "no_available_route"
+      brief: "Dropped because no matching named or default route exists."
+      stability: development
+    - id: no_matching_route
+      value: "no_matching_route"
+      brief: "NACKed because no configured route matched and no default was set."
+      stability: development
+    - id: node_shutdown
+      value: "node_shutdown"
+      brief: "NACKed because the node was shutting down."
+      stability: development
+    - id: payload_missing
+      value: "payload_missing"
+      brief: "Downstream did not return the payload required for a retry."
+      stability: development
+    - id: permanent_refusal
+      value: "permanent_refusal"
+      brief: "Downstream permanently refused the request."
+      stability: development
+    - id: retry_limit
+      value: "retry_limit"
+      brief: "The configured retry-count safety limit was reached."
+      stability: development
+    - id: route_closed
+      value: "route_closed"
+      brief: "NACKed because the selected route was closed."
+      stability: development
+    - id: route_full
+      value: "route_full"
+      brief: "NACKed because the selected route was full."
+      stability: development
+    - id: send_failure
+      value: "send_failure"
+      brief: "The processor could not send the PData message or convert the failure into a NACK."
+      stability: development
+    - id: topic_id_exhausted
+      value: "topic_id_exhausted"
+      brief: "The receiver exhausted the compact topic ID space used in acknowledgement routing."
+      stability: development
+    - id: unknown_topic
+      value: "unknown_topic"
+      brief: "The Kafka topic did not map to a configured signal."
+      stability: development
+  stability: development
+  brief: The reason value recorded by OTAP Dataflow internal telemetry.
+- key: received
+  type: string
+  stability: development
+  brief: The received value recorded by OTAP Dataflow internal telemetry.
+- key: receiver_refs
+  type: int
+  stability: development
+  brief: The receiver_refs value recorded by OTAP Dataflow internal telemetry.
+- key: receiver_urn
+  type: string
+  stability: development
+  brief: The receiver_urn value recorded by OTAP Dataflow internal telemetry.
+- key: receiver_was_inner
+  type: boolean
+  stability: development
+  brief: The receiver_was_inner value recorded by OTAP Dataflow internal telemetry.
+- key: records
+  type: int
+  stability: development
+  brief: The records value recorded by OTAP Dataflow internal telemetry.
+- key: recovered_bytes
+  type: int
+  stability: development
+  brief: The recovered_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: refusal
+  type:
+    members:
+    - id: would_throttle
+      value: "would_throttle"
+      brief: "Over limit, but enforcement was inactive so the request was still admitted."
+      stability: development
+    - id: throttle
+      value: "throttle"
+      brief: "Over limit and refused; the client may retry later."
+      stability: development
+    - id: oversized
+      value: "oversized"
+      brief: "Larger than total burst capacity; retrying cannot help."
+      stability: development
+  stability: development
+  brief: Why the request was declined.
+- key: remaining
+  type: int
+  stability: development
+  brief: The remaining value recorded by OTAP Dataflow internal telemetry.
+- key: remaining_items
+  type: int
+  stability: development
+  brief: The remaining_items value recorded by OTAP Dataflow internal telemetry.
+- key: remaining_rotated_files
+  type: int
+  stability: development
+  brief: The remaining_rotated_files value recorded by OTAP Dataflow internal telemetry.
+- key: removed_count
+  type: int
+  stability: development
+  brief: The removed_count value recorded by OTAP Dataflow internal telemetry.
+- key: replayed
+  type: int
+  stability: development
+  brief: The replayed value recorded by OTAP Dataflow internal telemetry.
+- key: replayed_count
+  type: int
+  stability: development
+  brief: The replayed_count value recorded by OTAP Dataflow internal telemetry.
+- key: replayed_so_far
+  type: int
+  stability: development
+  brief: The replayed_so_far value recorded by OTAP Dataflow internal telemetry.
+- key: resolved_cores
+  type: string
+  stability: development
+  brief: The resolved_cores value recorded by OTAP Dataflow internal telemetry.
+- key: resolved_numa_nodes
+  type: string
+  stability: development
+  brief: The resolved_numa_nodes value recorded by OTAP Dataflow internal telemetry.
+- key: response
+  type:
+    members:
+    - id: http_2xx
+      value: "http_2xx"
+      brief: "A successful 2xx response."
+      stability: development
+    - id: http_400
+      value: "http_400"
+      brief: "A bad-request response."
+      stability: development
+    - id: http_401
+      value: "http_401"
+      brief: "An unauthorized response."
+      stability: development
+    - id: http_403
+      value: "http_403"
+      brief: "A forbidden response."
+      stability: development
+    - id: http_404
+      value: "http_404"
+      brief: "A not-found response."
+      stability: development
+    - id: http_413
+      value: "http_413"
+      brief: "A payload-too-large response."
+      stability: development
+    - id: http_429
+      value: "http_429"
+      brief: "A rate-limited response."
+      stability: development
+    - id: http_5xx
+      value: "http_5xx"
+      brief: "A server-error response."
+      stability: development
+    - id: network_error
+      value: "network_error"
+      brief: "A transport failure before a response was received."
+      stability: development
+    - id: other
+      value: "other"
+      brief: "A response that is not otherwise classified."
+      stability: development
+  stability: development
+  brief: Result category for the recorded HTTP request attempt.
+- key: restart_count
+  type: int
+  stability: development
+  brief: The restart_count value recorded by OTAP Dataflow internal telemetry.
+- key: retry_count
+  type: int
+  stability: development
+  brief: The retry_count value recorded by OTAP Dataflow internal telemetry.
+- key: retry_in
+  type: string
+  stability: development
+  brief: The retry_in value recorded by OTAP Dataflow internal telemetry.
+- key: retry_scheduled
+  type: int
+  stability: development
+  brief: The retry_scheduled value recorded by OTAP Dataflow internal telemetry.
+- key: retryable
+  type: boolean
+  stability: development
+  brief: The retryable value recorded by OTAP Dataflow internal telemetry.
+- key: role_instance
+  type: string
+  stability: development
+  brief: The role_instance value recorded by OTAP Dataflow internal telemetry.
+- key: role_name
+  type: string
+  stability: development
+  brief: The role_name value recorded by OTAP Dataflow internal telemetry.
+- key: rollback_error
+  type: string
+  stability: development
+  brief: The rollback_error value recorded by OTAP Dataflow internal telemetry.
+- key: rollout_id
+  type: string
+  stability: development
+  brief: The rollout_id value recorded by OTAP Dataflow internal telemetry.
+- key: rotated_file_bytes
+  type: int
+  stability: development
+  brief: The rotated_file_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: rotated_file_count
+  type: int
+  stability: development
+  brief: The rotated_file_count value recorded by OTAP Dataflow internal telemetry.
+- key: rotation_id
+  type: int
+  stability: development
+  brief: The rotation_id value recorded by OTAP Dataflow internal telemetry.
+- key: rotation_target_bytes
+  type: int
+  stability: development
+  brief: The rotation_target_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: row_count
+  type: int
+  stability: development
+  brief: The row_count value recorded by OTAP Dataflow internal telemetry.
+- key: rows
+  type: int
+  stability: development
+  brief: The rows value recorded by OTAP Dataflow internal telemetry.
+- key: schema
+  type: string
+  stability: development
+  brief: The schema value recorded by OTAP Dataflow internal telemetry.
+- key: schema_source
+  type: string
+  stability: development
+  brief: The schema_source value recorded by OTAP Dataflow internal telemetry.
+- key: scope
+  type: string
+  stability: development
+  brief: The scope value recorded by OTAP Dataflow internal telemetry.
+- key: scope.kind
+  type: string
+  stability: development
+  brief: Scope kind discriminator. Always paired with the populated payload field that matches it.
+- key: segment
+  type: int
+  stability: development
+  brief: The segment value recorded by OTAP Dataflow internal telemetry.
+- key: segment_count
+  type: int
+  stability: development
+  brief: The segment_count value recorded by OTAP Dataflow internal telemetry.
+- key: segment_seq
+  type: int
+  stability: development
+  brief: The segment_seq value recorded by OTAP Dataflow internal telemetry.
+- key: segment_size
+  type: int
+  stability: development
+  brief: The segment_size value recorded by OTAP Dataflow internal telemetry.
+- key: selected_mode
+  type: string
+  stability: development
+  brief: The selected_mode value recorded by OTAP Dataflow internal telemetry.
+- key: selection_policy
+  type: string
+  stability: development
+  brief: The selection_policy value recorded by OTAP Dataflow internal telemetry.
+- key: sender_was_inner
+  type: boolean
+  stability: development
+  brief: The sender_was_inner value recorded by OTAP Dataflow internal telemetry.
+- key: sequence
+  type: int
+  stability: development
+  brief: The sequence value recorded by OTAP Dataflow internal telemetry.
+- key: session_name
+  type: string
+  stability: development
+  brief: The session_name value recorded by OTAP Dataflow internal telemetry.
+- key: set_permissions_supported
+  type: boolean
+  stability: development
+  brief: The set_permissions_supported value recorded by OTAP Dataflow internal telemetry.
+- key: setting
+  type: string
+  stability: development
+  brief: The setting value recorded by OTAP Dataflow internal telemetry.
+- key: signal
+  type:
+    members:
+    - id: logs
+      value: "logs"
+      stability: development
+    - id: metrics
+      value: "metrics"
+      stability: development
+    - id: traces
+      value: "traces"
+      stability: development
+    - id: unknown
+      value: "unknown"
+      brief: "The signal could not be established before rejection."
+      stability: development
+  stability: development
+  brief: The signal value recorded by OTAP Dataflow internal telemetry.
+- key: signal_type
+  type: string
+  stability: development
+  brief: The signal_type value recorded by OTAP Dataflow internal telemetry.
+- key: size_bytes
+  type: int
+  stability: development
+  brief: The size_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: size_hint
+  type: int
+  stability: development
+  brief: The size_hint value recorded by OTAP Dataflow internal telemetry.
+- key: skipped_expired
+  type: int
+  stability: development
+  brief: The skipped_expired value recorded by OTAP Dataflow internal telemetry.
+- key: slot_count
+  type: int
+  stability: development
+  brief: The slot_count value recorded by OTAP Dataflow internal telemetry.
+- key: slot_id
+  type: int
+  stability: development
+  brief: The slot_id value recorded by OTAP Dataflow internal telemetry.
+- key: soft_limit_bytes
+  type: int
+  stability: development
+  brief: The soft_limit_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: source
+  type: string
+  stability: development
+  brief: The source value recorded by OTAP Dataflow internal telemetry.
+- key: source_id
+  type: string
+  stability: development
+  brief: The source_id value recorded by OTAP Dataflow internal telemetry.
+- key: spans
+  type: string
+  stability: development
+  brief: The spans value recorded by OTAP Dataflow internal telemetry.
+- key: state
+  type: string
+  stability: development
+  brief: The state value recorded by OTAP Dataflow internal telemetry.
+- key: stats
+  type: string
+  stability: development
+  brief: The stats value recorded by OTAP Dataflow internal telemetry.
+- key: status
+  type: any
+  stability: development
+  brief: The status value recorded by OTAP Dataflow internal telemetry.
+- key: status_code
+  type: int
+  stability: development
+  brief: The status_code value recorded by OTAP Dataflow internal telemetry.
+- key: status_line
+  type: string
+  stability: development
+  brief: The status_line value recorded by OTAP Dataflow internal telemetry.
+- key: status_message
+  type: string
+  stability: development
+  brief: The status_message value recorded by OTAP Dataflow internal telemetry.
+- key: stopped_at_corruption
+  type: boolean
+  stability: development
+  brief: The stopped_at_corruption value recorded by OTAP Dataflow internal telemetry.
+- key: stream
+  type: string
+  stability: development
+  brief: The stream value recorded by OTAP Dataflow internal telemetry.
+- key: subject
+  type: string
+  stability: development
+  brief: The subject value recorded by OTAP Dataflow internal telemetry.
+- key: subscriber_id
+  type: string
+  stability: development
+  brief: The subscriber_id value recorded by OTAP Dataflow internal telemetry.
+- key: subscription
+  type: string
+  stability: development
+  brief: The subscription value recorded by OTAP Dataflow internal telemetry.
+- key: subscriptions
+  type: int
+  stability: development
+  brief: The subscriptions value recorded by OTAP Dataflow internal telemetry.
+- key: successful_batches
+  type: int
+  stability: development
+  brief: The successful_batches value recorded by OTAP Dataflow internal telemetry.
+- key: successful_items
+  type: int
+  stability: development
+  brief: The successful_items value recorded by OTAP Dataflow internal telemetry.
+- key: successful_messages
+  type: int
+  stability: development
+  brief: The successful_messages value recorded by OTAP Dataflow internal telemetry.
+- key: table
+  type: string
+  stability: development
+  brief: The table value recorded by OTAP Dataflow internal telemetry.
+- key: tail_recovery
+  type: string
+  stability: development
+  brief: The tail_recovery value recorded by OTAP Dataflow internal telemetry.
+- key: target
+  type: string
+  stability: development
+  brief: The target value recorded by OTAP Dataflow internal telemetry.
+- key: target_generation
+  type: int
+  stability: development
+  brief: The target_generation value recorded by OTAP Dataflow internal telemetry.
+- key: task_id
+  type: string
+  stability: development
+  brief: The task_id value recorded by OTAP Dataflow internal telemetry.
+- key: telemetry_entities
+  type: int
+  stability: development
+  brief: The telemetry_entities value recorded by OTAP Dataflow internal telemetry.
+- key: telemetry_metric_sets
+  type: int
+  stability: development
+  brief: The telemetry_metric_sets value recorded by OTAP Dataflow internal telemetry.
+- key: timeout
+  type: string
+  stability: development
+  brief: The timeout value recorded by OTAP Dataflow internal telemetry.
+- key: timeout_ms
+  type: int
+  stability: development
+  brief: The timeout_ms value recorded by OTAP Dataflow internal telemetry.
+- key: timeout_secs
+  type: int
+  stability: development
+  brief: The timeout_secs value recorded by OTAP Dataflow internal telemetry.
+- key: timestamp_nanos
+  type: int
+  stability: development
+  brief: The timestamp_nanos value recorded by OTAP Dataflow internal telemetry.
+- key: token_url
+  type: string
+  stability: development
+  brief: The token_url value recorded by OTAP Dataflow internal telemetry.
+- key: topic
+  type: string
+  stability: development
+  brief: Topic name associated with the node metrics.
+- key: topic.source
+  type:
+    members:
+    - id: header
+      value: "header"
+      brief: "A captured transport header supplied the destination topic."
+      stability: development
+    - id: static_config
+      value: "static_config"
+      brief: "Static per-signal configuration supplied the destination topic."
+      stability: development
+  stability: development
+  brief: Bounded source of the resolved topic.
+- key: topology_mode
+  type: string
+  stability: development
+  brief: The topology_mode value recorded by OTAP Dataflow internal telemetry.
+- key: total_errors
+  type: int
+  stability: development
+  brief: The total_errors value recorded by OTAP Dataflow internal telemetry.
+- key: total_size_cap
+  type: int
+  stability: development
+  brief: The total_size_cap value recorded by OTAP Dataflow internal telemetry.
+- key: total_values
+  type: int
+  stability: development
+  brief: The total_values value recorded by OTAP Dataflow internal telemetry.
+- key: tracepoint
+  type: string
+  stability: development
+  brief: The tracepoint value recorded by OTAP Dataflow internal telemetry.
+- key: traces_endpoint
+  type: string
+  stability: development
+  brief: The traces_endpoint value recorded by OTAP Dataflow internal telemetry.
+- key: tracked
+  type: boolean
+  stability: development
+  brief: The tracked value recorded by OTAP Dataflow internal telemetry.
+- key: truncated
+  type: boolean
+  stability: development
+  brief: The truncated value recorded by OTAP Dataflow internal telemetry.
+- key: type
+  type: string
+  stability: development
+  brief: The type value recorded by OTAP Dataflow internal telemetry.
+- key: usage_bytes
+  type: int
+  stability: development
+  brief: The usage_bytes value recorded by OTAP Dataflow internal telemetry.
+- key: username
+  type: string
+  stability: development
+  brief: The username value recorded by OTAP Dataflow internal telemetry.
+- key: variant
+  type: string
+  stability: development
+  brief: The variant value recorded by OTAP Dataflow internal telemetry.
+- key: visible_cpu_count
+  type: int
+  stability: development
+  brief: The visible_cpu_count value recorded by OTAP Dataflow internal telemetry.
+- key: visible_node_count
+  type: int
+  stability: development
+  brief: The visible_node_count value recorded by OTAP Dataflow internal telemetry.
+- key: wait
+  type: boolean
+  stability: development
+  brief: The wait value recorded by OTAP Dataflow internal telemetry.
+- key: wakeup_revision
+  type: int
+  stability: development
+  brief: The wakeup_revision value recorded by OTAP Dataflow internal telemetry.
+- key: wakeup_slot
+  type: string
+  stability: development
+  brief: The wakeup_slot value recorded by OTAP Dataflow internal telemetry.
+- key: wal_end
+  type: int
+  stability: development
+  brief: The wal_end value recorded by OTAP Dataflow internal telemetry.
+- key: watched_path
+  type: string
+  stability: development
+  brief: The watched_path value recorded by OTAP Dataflow internal telemetry.
+- key: watching_parent
+  type: string
+  stability: development
+  brief: The watching_parent value recorded by OTAP Dataflow internal telemetry.
+- key: widened_key_type
+  type: string
+  stability: development
+  brief: The widened_key_type value recorded by OTAP Dataflow internal telemetry.
+- key: will_retry
+  type: boolean
+  stability: development
+  brief: The will_retry value recorded by OTAP Dataflow internal telemetry.

@@ -1,0 +1,83 @@
+file_format: definition/2
+metrics:
+- name: engine.cpu.utilization
+  brief: Process-wide CPU utilization as a ratio in [0, 1], normalized across all logical CPU cores on
+    the system (not just engine-assigned cores). Aligned with the OTel semantic convention `process.cpu.utilization`.
+    The `cpu.mode` attribute is not set; this reports combined user + system time.
+  instrument: gauge
+  unit: '{1}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.engine
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: engine
+- name: engine.memory.pressure.state
+  brief: Process-wide memory limiter state encoded as `0=normal`, `1=soft`, `2=hard`.
+  instrument: gauge
+  unit: '{state}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.engine
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: engine
+- name: engine.memory.rss
+  brief: Process-wide Resident Set Size -- physical RAM currently used by the process. Matches what external
+    tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
+  instrument: updowncounter
+  unit: '{By}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.engine
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: engine
+- name: engine.process.memory.hard.limit.bytes
+  brief: Effective process-wide memory limiter hard limit, in bytes.
+  instrument: gauge
+  unit: '{By}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.engine
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: engine
+- name: engine.process.memory.soft.limit.bytes
+  brief: Effective process-wide memory limiter soft limit, in bytes.
+  instrument: gauge
+  unit: '{By}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.engine
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: engine
+- name: engine.process.memory.usage.bytes
+  brief: Most recent process-wide memory limiter sample, in bytes.
+  instrument: gauge
+  unit: '{By}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.engine
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: engine
