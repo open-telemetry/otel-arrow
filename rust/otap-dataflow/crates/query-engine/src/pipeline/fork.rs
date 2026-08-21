@@ -8,7 +8,7 @@ use datafusion::{
     config::ConfigOptions,
     execution::{TaskContext, context::SessionContext},
 };
-use otap_df_pdata::{
+use otel_arrow_dfe_pdata::{
     OtapArrowRecords, OtapPayloadHelpers,
     otap::{Logs, Metrics, Traces},
 };
@@ -121,12 +121,14 @@ impl PipelineStage for ForkPipelineStage {
 #[cfg(test)]
 mod test {
 
-    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::Metric;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
-    use otap_df_pdata::testing::round_trip::{to_logs_data, to_metrics_data, to_traces_data};
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::Metric;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{Span, Status};
+    use otel_arrow_dfe_pdata::testing::round_trip::{
+        to_logs_data, to_metrics_data, to_traces_data,
+    };
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::test::{exec_logs_pipeline, exec_metrics_pipeline, exec_traces_pipeline};
 

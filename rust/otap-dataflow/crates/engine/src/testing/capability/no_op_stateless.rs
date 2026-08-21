@@ -18,7 +18,7 @@
 //! - `local_entry::<E>` / `shared_entry::<E>` factory bridges
 //! - A `KNOWN_CAPABILITIES` distributed-slice entry
 
-use otap_df_engine_macros::capability;
+use otel_arrow_dfe_engine_macros::capability;
 
 /// No-op test capability with no internal state.
 ///

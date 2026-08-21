@@ -19,7 +19,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use otap_df_engine::capability::auth::AuthzDecision;
+use otel_arrow_dfe_engine::capability::auth::AuthzDecision;
 use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 

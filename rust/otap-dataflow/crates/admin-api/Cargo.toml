@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-admin-api"
+name = "otel-arrow-dfe-admin-api"
 description = "Public admin API and SDK for the OTAP dataflow engine"
 version.workspace = true
 authors.workspace = true
@@ -24,8 +24,8 @@ crypto-openssl = ["dep:rustls", "dep:rustls-openssl"]
 crypto-symcrypt = ["dep:rustls", "dep:rustls-symcrypt"]
 
 [dependencies]
-otap-df-admin-types = { workspace = true }
-otap-df-config = { workspace = true }
+otel-arrow-dfe-admin-types = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
 
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -40,7 +40,7 @@ rustls-openssl = { workspace = true, optional = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 wiremock = { workspace = true }
-otap-test-tls-certs = { workspace = true }
+otel-arrow-dfe-test-tls-certs = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 tempfile = { workspace = true }

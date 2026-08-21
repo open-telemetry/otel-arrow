@@ -26,7 +26,7 @@
 use super::BearerToken;
 use crate::capability::error::CapabilityError;
 use futures::Stream;
-use otap_df_engine_macros::capability;
+use otel_arrow_dfe_engine_macros::capability;
 use std::pin::Pin;
 use std::time::Duration;
 

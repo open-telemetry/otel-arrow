@@ -83,7 +83,7 @@ including allowed `component:` values and skip conditions.
 
 ## Telemetry and logging
 
-All internal logging MUST use the `otel_*` macros from `otap_df_telemetry`
+All internal logging MUST use the `otel_*` macros from `otel_arrow_dfe_telemetry`
 (not `tracing::info!` or `println!`). See the
 [Events Guide](docs/telemetry/events-guide.md) details.
 

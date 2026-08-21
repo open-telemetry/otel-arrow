@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-core-nodes"
+name = "otel-arrow-dfe-core-nodes"
 description = "OTAP Core nodes"
 version.workspace = true
 authors.workspace = true
@@ -13,17 +13,17 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-otap-df-channel = { workspace = true }
-otap-df-config = { workspace = true }
-otap-df-engine = { workspace = true }
-otap-df-query-engine-languages = { workspace = true }
-otap-df-otap = { workspace = true }
-otap-df-pdata = { workspace = true }
-otap-df-pdata-views = { workspace = true }
-otap-df-query-engine = { workspace = true }
-otap-df-quiver = { workspace = true }
-otap-df-telemetry = { workspace = true }
-otap-df-telemetry-macros = { workspace = true }
+otel-arrow-dfe-channel = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-query-engine-languages = { workspace = true }
+otel-arrow-dfe-otap = { workspace = true }
+otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-pdata-views = { workspace = true }
+otel-arrow-dfe-query-engine = { workspace = true }
+otel-arrow-dfe-quiver = { workspace = true }
+otel-arrow-dfe-telemetry = { workspace = true }
+otel-arrow-dfe-telemetry-macros = { workspace = true }
 
 arrow = { workspace = true }
 async-trait.workspace = true
@@ -83,7 +83,7 @@ dev-tools = [
     "dep:weaver_semconv",
 ]
 # Azure Blob Storage backend for the Parquet exporter.
-azure = ["otap-df-otap/azure"]
+azure = ["otel-arrow-dfe-otap/azure"]
 bench = []
 
 [dev-dependencies]
@@ -91,11 +91,11 @@ arrow-ipc.workspace = true
 arrow-schema.workspace = true
 fluke-hpack.workspace = true
 flume.workspace = true
-otap-df-channel = { workspace = true }
-otap-df-engine = { workspace = true, features = ["test-utils"] }
-otap-df-otap = { workspace = true, features = ["test-utils", "crypto-ring"] }
-otap-df-pdata = { workspace = true, features = ["testing"] }
-otap-df-telemetry = { workspace = true }
+otel-arrow-dfe-channel = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-otap = { workspace = true, features = ["test-utils", "crypto-ring"] }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-telemetry = { workspace = true }
 flate2.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
@@ -104,8 +104,8 @@ tokio-stream.workspace = true
 zstd.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
-otap-df-test-net.workspace = true
-otap-test-tls-certs.workspace = true
+otel-arrow-dfe-test-net.workspace = true
+otel-arrow-dfe-test-tls-certs.workspace = true
 criterion.workspace = true
 
 [[bench]]

@@ -17,11 +17,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use otap_df_engine::capability::CapabilityError;
-use otap_df_engine::capability::auth::{AuthzDecision, BearerToken};
-use otap_df_engine::local::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as LocalBearerTokenAuthorizer;
-use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
-use otap_df_telemetry::otel_debug;
+use otel_arrow_dfe_engine::capability::CapabilityError;
+use otel_arrow_dfe_engine::capability::auth::{AuthzDecision, BearerToken};
+use otel_arrow_dfe_engine::local::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as LocalBearerTokenAuthorizer;
+use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
+use otel_arrow_dfe_telemetry::otel_debug;
 
 use super::cache::{LocalDecisionCache, SharedDecisionCache, digest};
 use super::config::AudienceConfig;

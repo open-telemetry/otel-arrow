@@ -50,7 +50,7 @@
 //!
 //! Run with:
 //! ```sh
-//! cargo test -p otap-df-core-nodes --features dev-tools \
+//! cargo test -p otel-arrow-dfe-core-nodes --features dev-tools \
 //!     -- receivers::traffic_generator::compression_ratio_tests --nocapture
 //! ```
 

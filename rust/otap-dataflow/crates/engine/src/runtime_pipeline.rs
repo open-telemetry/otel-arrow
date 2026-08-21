@@ -35,12 +35,12 @@ use crate::pipeline_ctrl::{
 use crate::processor::FlowMetricHook;
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
-use otap_df_config::DeployedPipelineKey;
-use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::TelemetryPolicy;
-use otap_df_telemetry::event::ObservedEventReporter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
-use otap_df_telemetry::reporter::{MetricsReporter, ReportOutcome};
+use otel_arrow_dfe_config::DeployedPipelineKey;
+use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::policy::TelemetryPolicy;
+use otel_arrow_dfe_telemetry::event::ObservedEventReporter;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -178,7 +178,7 @@ pub struct RuntimePipeline<PData: Debug> {
     /// spawned themselves.
     extensions: Vec<(
         crate::extension::ExtensionWrapper,
-        otap_df_telemetry::registry::EntityKey,
+        otel_arrow_dfe_telemetry::registry::EntityKey,
     )>,
 
     /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
@@ -201,7 +201,7 @@ async fn flush_metrics_reporter(
         .flush_until(terminal_metrics_deadline.get())
         .await
     {
-        otap_df_telemetry::otel_warn!(
+        otel_arrow_dfe_telemetry::otel_warn!(
             "metrics.collection.flush.fail",
             phase,
             error = err.to_string()
@@ -243,14 +243,14 @@ async fn report_metric_snapshots(
         {
             Ok(ReportOutcome::Sent) => {}
             Ok(ReportOutcome::Deferred) => {
-                otap_df_telemetry::otel_warn!(
+                otel_arrow_dfe_telemetry::otel_warn!(
                     "metrics.terminal.reporting.deferred",
                     phase,
                     message = "Terminal metric snapshot was deferred because the standalone reporter channel is full"
                 );
             }
             Err(err) => {
-                otap_df_telemetry::otel_warn!(
+                otel_arrow_dfe_telemetry::otel_warn!(
                     "metrics.terminal.reporting.fail",
                     phase,
                     error = err.to_string()
@@ -259,7 +259,7 @@ async fn report_metric_snapshots(
         }
     }
     if let Err(err) = metrics_reporter.flush_until(deadline).await {
-        otap_df_telemetry::otel_warn!(
+        otel_arrow_dfe_telemetry::otel_warn!(
             "metrics.collection.flush.fail",
             phase,
             error = err.to_string()
@@ -270,7 +270,7 @@ async fn report_metric_snapshots(
 /// Build a flat edge list from a pipeline's connections, resolving node
 /// names to indices. Names not found in the map are silently skipped.
 fn connection_edges<'a>(
-    connections: impl Iterator<Item = &'a otap_df_config::pipeline::PipelineConnection>,
+    connections: impl Iterator<Item = &'a otel_arrow_dfe_config::pipeline::PipelineConnection>,
     node_name_to_index: &HashMap<String, usize>,
 ) -> Vec<(usize, usize)> {
     let mut edges = Vec::new();
@@ -317,7 +317,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         exporters: Vec<ExporterWrapper<PData>>,
         extensions: Vec<(
             crate::extension::ExtensionWrapper,
-            otap_df_telemetry::registry::EntityKey,
+            otel_arrow_dfe_telemetry::registry::EntityKey,
         )>,
         nodes: NodeDefs<PData, PipeNode>,
         telemetry_policy: TelemetryPolicy,
@@ -933,7 +933,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         )
                         .await
                     {
-                        otap_df_telemetry::otel_warn!(
+                        otel_arrow_dfe_telemetry::otel_warn!(
                             "extension.lifecycle.metrics.final_reporting.fail",
                             error = err.to_string()
                         );
@@ -1082,12 +1082,12 @@ mod tests {
     use crate::attributes::EngineEntityAttributeSet;
     use crate::channel_metrics::ChannelSenderMetrics;
     use crate::entity_context::{NodeTelemetryGuard, NodeTelemetryHandle};
-    use otap_df_config::SignalType;
-    use otap_df_config::observed_state::SendPolicy;
-    use otap_df_config::pipeline::telemetry::TelemetryConfig;
-    use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::{InternalTelemetrySystem, LogContext};
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::observed_state::SendPolicy;
+    use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
+    use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
 
     /// Scenario: a pipeline has pending terminal metrics when telemetry cleanup starts.
     /// Guarantees: the final snapshot reaches the registry before entity handles are released.

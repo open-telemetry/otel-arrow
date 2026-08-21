@@ -17,7 +17,7 @@
 //!   node, each holding a cloned produce closure and a shared
 //!   consumption cell.
 
-use otap_df_config::ExtensionId;
+use otel_arrow_dfe_config::ExtensionId;
 use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;

@@ -21,7 +21,7 @@
 //! - dynamic configuration updates
 //!   See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = PARQUET_EXPORTER_URN,
     target = "otel.exporter.parquet",
 );
@@ -45,25 +45,25 @@ use async_trait::async_trait;
 use futures::{FutureExt, pin_mut};
 use futures_timer::Delay;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::{Error, ExporterErrorKind, format_error_sources};
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterExportMetrics;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ExporterFactory;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -75,7 +75,7 @@ const PARQUET_EXPORTER_URN: &str = "urn:otel:exporter:parquet";
 pub struct ParquetExporter {
     config: config::Config,
     token_provider: Option<
-        Box<dyn otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider>,
+        Box<dyn otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider>,
     >,
     pdata_metrics: Option<MeasurementMetricSet<ExporterExportMetrics>>,
     io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
@@ -86,7 +86,7 @@ pub struct ParquetExporter {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: PARQUET_EXPORTER_URN,
@@ -94,13 +94,13 @@ pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig,
-             capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
         let mut exporter = ParquetExporter::from_config(pipeline, &node_config.config)?;
         if exporter.config.storage.requires_bearer_token_provider() {
             exporter.token_provider = Some(
                 capabilities
                     .require_shared::<BearerTokenProvider>()
-                    .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                    .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: e.to_string(),
                     })?,
             );
@@ -112,8 +112,8 @@ pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<config::Config>,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<config::Config>,
 };
 
 impl ParquetExporter {
@@ -134,9 +134,9 @@ impl ParquetExporter {
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let config: config::Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -184,7 +184,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
         if self.config.retry.is_some()
             && matches!(
                 &self.config.storage,
-                otap_df_otap::object_store::StorageType::File { .. }
+                otel_arrow_dfe_otap::object_store::StorageType::File { .. }
             )
         {
             otel_warn!(
@@ -193,7 +193,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
             );
         }
         let object_store =
-            otap_df_otap::object_store::from_storage_type_with_retry_and_token_provider(
+            otel_arrow_dfe_otap::object_store::from_storage_type_with_retry_and_token_provider(
                 &self.config.storage,
                 self.config.retry.as_ref(),
                 self.token_provider.take(),
@@ -545,28 +545,30 @@ mod test {
     use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
     use fixtures::SimpleDataGenOptions;
     use futures::StreamExt;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::Interests;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::control::{
         Controllable, PipelineCompletionMsgSender, RuntimeControlMsg, RuntimeCtrlMsgReceiver,
         RuntimeCtrlMsgSender, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::message::{Receiver, Sender};
-    use otap_df_engine::node::NodeWithPDataReceiver;
-    use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime};
-    use otap_df_engine::testing::{
+    use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+    use otel_arrow_dfe_engine::message::{Receiver, Sender};
+    use otel_arrow_dfe_engine::node::NodeWithPDataReceiver;
+    use otel_arrow_dfe_engine::testing::{create_not_send_channel, setup_test_runtime};
+    use otel_arrow_dfe_engine::testing::{
         exporter::{TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::object_store;
-    use otap_df_pdata::Consumer;
-    use otap_df_pdata::otap::from_record_messages;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
-    use otap_df_pdata::schema::consts;
-    use otap_df_pdata::{TryFromWithOptions, TryIntoWithOptions};
+    use otel_arrow_dfe_otap::object_store;
+    use otel_arrow_dfe_pdata::Consumer;
+    use otel_arrow_dfe_pdata::otap::from_record_messages;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
+        AnyValue, KeyValue, any_value::Value,
+    };
+    use otel_arrow_dfe_pdata::schema::consts;
+    use otel_arrow_dfe_pdata::{TryFromWithOptions, TryIntoWithOptions};
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
@@ -1031,7 +1033,7 @@ mod test {
             pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
-                otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+                otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
                 .start(
                     runtime_ctrl_msg_tx,
@@ -1193,7 +1195,7 @@ mod test {
             pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
-                otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
+                otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
             exporter
                 .start(
                     runtime_ctrl_msg_tx,
@@ -1462,21 +1464,21 @@ mod test {
     /// Guarantees: File-backed pipelines start without any capability binding declared on the node.
     #[test]
     fn factory_creates_file_storage_exporter_without_a_bound_capability() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::testing::test_node;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::testing::test_node;
         use serde_json::json;
 
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
 
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
         let pipeline_ctx = controller_ctx
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
             .with_node_context(
                 "parquet_exporter".into(),
                 PARQUET_EXPORTER_URN.into(),
-                otap_df_config::node::NodeKind::Exporter,
+                otel_arrow_dfe_config::node::NodeKind::Exporter,
                 std::collections::HashMap::new(),
             );
 
@@ -1488,7 +1490,7 @@ mod test {
             test_node("parquet_exporter"),
             Arc::new(node_config),
             &ExporterConfig::new("parquet_exporter"),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         );
 
         assert!(
@@ -1501,18 +1503,18 @@ mod test {
     /// Guarantees: The node fails at wiring time rather than starting with an unusable storage config.
     #[test]
     fn factory_rejects_an_invalid_storage_config() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::testing::test_node;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::testing::test_node;
         use serde_json::json;
 
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
         let pipeline_ctx = controller_ctx
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
             .with_node_context(
                 "parquet_exporter".into(),
                 PARQUET_EXPORTER_URN.into(),
-                otap_df_config::node::NodeKind::Exporter,
+                otel_arrow_dfe_config::node::NodeKind::Exporter,
                 std::collections::HashMap::new(),
             );
 
@@ -1524,7 +1526,7 @@ mod test {
             test_node("parquet_exporter"),
             Arc::new(node_config),
             &ExporterConfig::new("parquet_exporter"),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         );
 
         assert!(created.is_err(), "invalid storage config must be rejected");
@@ -1535,18 +1537,18 @@ mod test {
     #[test]
     #[cfg(feature = "azure")]
     fn factory_rejects_azure_storage_without_a_bound_capability() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::testing::test_node;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::testing::test_node;
         use serde_json::json;
 
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
         let pipeline_ctx = controller_ctx
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
             .with_node_context(
                 "parquet_exporter".into(),
                 PARQUET_EXPORTER_URN.into(),
-                otap_df_config::node::NodeKind::Exporter,
+                otel_arrow_dfe_config::node::NodeKind::Exporter,
                 std::collections::HashMap::new(),
             );
 
@@ -1564,7 +1566,7 @@ mod test {
             test_node("parquet_exporter"),
             Arc::new(node_config),
             &ExporterConfig::new("parquet_exporter"),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         );
 
         assert!(
@@ -1577,8 +1579,8 @@ mod test {
     /// Guarantees: The shared terminal export metric set is reported.
     #[test]
     fn test_collect_telemetry_reports_metrics() {
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::testing::test_node;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::testing::test_node;
         use serde_json::json;
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -1586,7 +1588,7 @@ mod test {
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
 
         // Telemetry system: registry + reporter + background collector
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let telemetry_registry = metrics_system.registry();
         let reporter = metrics_system.reporter();
 
@@ -1597,7 +1599,7 @@ mod test {
             .with_node_context(
                 "parquet_exporter".into(),
                 PARQUET_EXPORTER_URN.into(),
-                otap_df_config::node::NodeKind::Exporter,
+                otel_arrow_dfe_config::node::NodeKind::Exporter,
                 std::collections::HashMap::new(),
             );
 
@@ -1635,7 +1637,7 @@ mod test {
             exporter: ExporterWrapper<OtapPdata>,
             runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
             pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
-            metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
+            metrics_reporter: otel_arrow_dfe_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
             exporter
                 .start(
@@ -1651,7 +1653,7 @@ mod test {
         async fn drive_test(
             control_sender: Sender<NodeControlMsg<OtapPdata>>,
             pdata_tx: Sender<OtapPdata>,
-            reporter: otap_df_telemetry::reporter::MetricsReporter,
+            reporter: otel_arrow_dfe_telemetry::reporter::MetricsReporter,
         ) {
             // Send minimal pdata to increment export outcome metrics.
             let logs = Consumer::default()

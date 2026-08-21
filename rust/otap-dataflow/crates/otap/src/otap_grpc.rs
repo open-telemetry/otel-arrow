@@ -14,12 +14,12 @@ use crate::pdata::{Context, OtapPdata};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt as FuturesStreamExt};
-use otap_df_config::SignalType;
-use otap_df_engine::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
     memory_limiter::SharedReceiverAdmissionState, shared::receiver as shared,
 };
-use otap_df_pdata::{
+use otel_arrow_dfe_pdata::{
     Consumer,
     otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces, from_record_messages},
     proto::opentelemetry::arrow::v1::{
@@ -28,7 +28,7 @@ use otap_df_pdata::{
         arrow_traces_service_server::ArrowTracesService,
     },
 };
-use otap_df_telemetry::{otel_error, otel_warn};
+use otel_arrow_dfe_telemetry::{otel_error, otel_warn};
 use prost::Message;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -52,7 +52,7 @@ use crate::memory_pressure_layer::{ReceiverRejectionMetrics, grpc_memory_pressur
 use crate::otap_grpc::common::peer_addr_from_extensions;
 use crate::otap_grpc::otlp::server::SharedState;
 pub use client_settings::GrpcClientSettings;
-use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
+use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
 pub use server_settings::GrpcServerSettings;
 
 /// Records lifecycle and rejection telemetry for OTAP receiver batches.
@@ -695,7 +695,7 @@ where
 async fn wait_for_pending_response(
     batch_id: i64,
     _cancel_guard: otlp::server::SlotGuard,
-    rx: oneshot::Receiver<Result<(), otap_df_engine::control::NackMsg<OtapPdata>>>,
+    rx: oneshot::Receiver<Result<(), otel_arrow_dfe_engine::control::NackMsg<OtapPdata>>>,
     completion_guard: Option<OtapBatchCompletionGuard>,
 ) -> PendingResponse {
     match rx.await {
@@ -764,8 +764,8 @@ async fn send_pending_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::policy::MemoryLimiterMode;
-    use otap_df_engine::memory_limiter::{
+    use otel_arrow_dfe_config::policy::MemoryLimiterMode;
+    use otel_arrow_dfe_engine::memory_limiter::{
         MemoryPressureBehaviorConfig, MemoryPressureLevel, MemoryPressureState,
     };
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};

@@ -3,7 +3,7 @@
 
 //! Shared pipeline-scoped admin models.
 
-use otap_df_config::{PipelineGroupId, PipelineId, pipeline::PipelineConfig};
+use otel_arrow_dfe_config::{PipelineGroupId, PipelineId, pipeline::PipelineConfig};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::BTreeMap;

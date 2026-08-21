@@ -77,7 +77,7 @@
 //! # Generated code paths
 //!
 //! The macro generates `crate::capability::*` paths, so it must be invoked
-//! from within the `otap-df-engine` crate. Each capability should be defined
+//! from within the `otel-arrow-dfe-engine` crate. Each capability should be defined
 //! in its own file under `capability/` to avoid `mod local`/`mod shared`
 //! name collisions.
 
@@ -482,7 +482,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             /// envelope the registry expects.
             #[allow(non_snake_case, clippy::missing_errors_doc)]
             #vis fn shared_entry<E>(
-                extension_id: ::otap_df_config::ExtensionId,
+                extension_id: ::otel_arrow_dfe_config::ExtensionId,
                 factory: crate::capability::SharedInstanceFactory,
             ) -> crate::capability::registry::SharedCapabilityEntry
             where
@@ -526,7 +526,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             /// under the double-`Box` envelope expected by the registry.
             #[allow(non_snake_case, clippy::missing_errors_doc)]
             #vis fn local_entry<E>(
-                extension_id: ::otap_df_config::ExtensionId,
+                extension_id: ::otel_arrow_dfe_config::ExtensionId,
                 factory: crate::capability::LocalInstanceFactory,
             ) -> crate::capability::registry::LocalCapabilityEntry
             where

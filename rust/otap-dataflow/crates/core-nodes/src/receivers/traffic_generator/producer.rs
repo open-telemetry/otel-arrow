@@ -3,11 +3,11 @@
 
 use std::collections::HashMap;
 
-use otap_df_config::SignalType;
-use otap_df_pdata::OtapPayload;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::OtapPayload;
 #[cfg(test)]
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use prost::EncodeError;
 use weaver_forge::registry::ResolvedRegistry;
 
@@ -757,8 +757,8 @@ mod tests {
     #[test]
     fn test_resource_attribute_rotation_across_batches() {
         use super::super::config::{ResourceAttributeSet, build_rotation_table};
-        use otap_df_pdata::OtlpProtoBytes;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
         use prost::Message;
         use std::num::NonZeroU32;
 
@@ -799,7 +799,7 @@ mod tests {
                 .find(|kv| kv.key == "tenant.id")
                 .and_then(|kv| kv.value.as_ref())
                 .and_then(|v| {
-                    use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;
+                    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
                     match v.value.as_ref()? {
                         Value::StringValue(s) => Some(s.clone()),
                         _ => None,
@@ -844,8 +844,8 @@ mod tests {
 
     #[test]
     fn test_resource_attribute_rotation_empty_attrs() {
-        use otap_df_pdata::OtlpProtoBytes;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
         use prost::Message;
 
         // synthetic_generator() has empty entries and rotation -- no custom resource attrs.

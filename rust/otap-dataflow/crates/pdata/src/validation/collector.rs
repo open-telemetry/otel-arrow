@@ -294,7 +294,7 @@ where
     // Note that the OpenTelemetry Collector will respect a `:0` port
     // designator, however it will not print the port that it has selected
     // in Info-level logs, making it difficult to use in this kind of test.
-    let receiver_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+    let receiver_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
 
     // Start the test receiver server and wrap it with a timeout to avoid tests getting stuck
     let (server_handle, request_rx, exporter_port, server_shutdown_tx) =

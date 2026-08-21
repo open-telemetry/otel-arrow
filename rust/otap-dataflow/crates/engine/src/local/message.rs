@@ -9,9 +9,9 @@ use crate::channel_metrics::{
     ChannelSenderMetricsState, LocalChannelQueueDepth, LocalChannelReceiverMetricsHandle,
     LocalChannelSenderMetricsHandle,
 };
-use otap_df_channel::error::{RecvError, SendError};
-use otap_df_channel::{mpmc, mpsc};
-use otap_df_config::SignalType;
+use otel_arrow_dfe_channel::error::{RecvError, SendError};
+use otel_arrow_dfe_channel::{mpmc, mpsc};
+use otel_arrow_dfe_config::SignalType;
 use std::cell::RefCell;
 use std::rc::Rc;
 

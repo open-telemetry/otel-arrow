@@ -56,7 +56,7 @@
 //! memory:
 //!
 //! ```ignore
-//! use quiver::segment::{OpenSegment, SegmentWriter, SegmentSeq};
+//! use otel_arrow_dfe_quiver::segment::{OpenSegment, SegmentWriter, SegmentSeq};
 //!
 //! // Build an open segment
 //! let mut open_segment = OpenSegment::new();

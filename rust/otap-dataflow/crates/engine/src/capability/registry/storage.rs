@@ -6,7 +6,7 @@
 //! split into local (!Send) and shared (Send + Sync) buckets.
 
 use super::{Error, LocalCapabilityEntry, SharedCapabilityEntry};
-use otap_df_config::ExtensionId;
+use otel_arrow_dfe_config::ExtensionId;
 use std::any::TypeId;
 use std::collections::HashMap;
 

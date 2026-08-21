@@ -41,8 +41,8 @@ use crate::views::otlp::bytes::decode::{
     read_len_delim, read_varint, to_nonzero_range, validate_message_wire_format,
 };
 use crate::views::otlp::bytes::resource::RawResource;
-use otap_df_pdata_views::views::common::Str;
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_pdata_views::views::common::Str;
+use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
     ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
     HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,

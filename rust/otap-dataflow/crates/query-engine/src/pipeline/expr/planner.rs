@@ -31,9 +31,9 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
 use datafusion::prelude::{binary_expr, lit_timestamp_nano};
-use otap_df_config::SignalType;
-use otap_df_pdata::otlp::metrics::MetricType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
+use otel_arrow_dfe_pdata::schema::consts;
 
 #[cfg(feature = "sha1-hash")]
 use crate::consts::SHA1_FUNC_NAME;
@@ -1649,7 +1649,7 @@ impl ExprPlanner {
                     ValueType::Array | ValueType::Map | ValueType::Null
                 ) {
                     use crate::pipeline::functions::is_type::IsTypeFunc;
-                    use otap_df_pdata::otlp::attributes::AttributeValueType;
+                    use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 
                     if !matches!(
                         expr_source.expr_type,
@@ -2240,7 +2240,7 @@ fn get_literal_any_val_field(planned: &PlannedOp) -> Option<&'static str> {
 /// - Float64 -> "double"
 /// - Boolean -> "bool"
 fn attr_value_column_for_expr_type(expr_type: &ExprLogicalType) -> Option<&'static str> {
-    use otap_df_pdata::schema::consts as pdata_consts;
+    use otel_arrow_dfe_pdata::schema::consts as pdata_consts;
 
     match expr_type {
         ExprLogicalType::String => Some(pdata_consts::ATTRIBUTE_STR),
@@ -2316,11 +2316,11 @@ mod test {
     use datafusion::common::cast::as_boolean_array;
     use datafusion::logical_expr::ColumnarValue;
     use datafusion::scalar::ScalarValue;
-    use otap_df_pdata::otap::filter::IdBitmapPool;
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
-    use otap_df_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
+    use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otel_arrow_dfe_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
 
     use crate::pipeline::Pipeline;
     use crate::pipeline::expr::{DataScope, ScopedExpr, ShortCircuitStrategy};
@@ -2368,7 +2368,7 @@ mod test {
     }
 
     /// Test OTAP batch: 3 log records with severity fields and attributes.
-    fn test_otap() -> otap_df_pdata::OtapArrowRecords {
+    fn test_otap() -> otel_arrow_dfe_pdata::OtapArrowRecords {
         let logs = to_logs_data(vec![
             LogRecord::build()
                 .severity_text("WARN")

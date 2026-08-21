@@ -12,8 +12,8 @@ use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use bytemuck::Pod;
-use otap_df_channel::error::SendError;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -830,7 +830,7 @@ pub struct ShutdownPayload {
 /// [`ExtensionControlSender`] on the regular control channel instead.
 pub(crate) struct ExtensionShutdownChannel {
     /// Unique identifier of the extension (used for diagnostic logs).
-    pub(crate) name: otap_df_config::ExtensionId,
+    pub(crate) name: otel_arrow_dfe_config::ExtensionId,
     /// The shutdown signal sender. Consuming the sender on `send` is
     /// the type-level expression of "shutdown is a one-shot event".
     pub(crate) sender: tokio::sync::oneshot::Sender<ShutdownPayload>,

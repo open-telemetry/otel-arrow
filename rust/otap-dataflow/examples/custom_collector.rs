@@ -5,7 +5,7 @@
 //! used as a library.
 //!
 //! This example demonstrates how to embed the engine in a custom binary
-//! using the `otap_df_controller::startup` helpers, without copying any
+//! using the `otel_arrow_dfe_controller::startup` helpers, without copying any
 //! startup logic from the default `src/main.rs`.
 //!
 //! # Usage
@@ -17,21 +17,21 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_config::policy::{CoreAllocation, CoreRange};
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_config::policy::{CoreAllocation, CoreRange};
 // Side-effect imports: link the crates so their `linkme` distributed-slice
 // registrations (component factories) are visible in `OTAP_PIPELINE_FACTORY`.
-use otap_df_contrib_nodes as _;
-use otap_df_controller::Controller;
-use otap_df_controller::startup;
-use otap_df_core_nodes as _;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_contrib_nodes as _;
+use otel_arrow_dfe_controller::Controller;
+use otel_arrow_dfe_controller::startup;
+use otel_arrow_dfe_core_nodes as _;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 
 /// A minimal custom OTAP dataflow collector.
 ///
 /// Shows how the engine can be embedded as a library. All startup logic
 /// (validation, CLI overrides, system info) comes from
-/// `otap_df_controller::startup`.
+/// `otel_arrow_dfe_controller::startup`.
 #[derive(Parser, Debug)]
 #[command(
     author,
@@ -101,7 +101,7 @@ fn memory_allocator_name() -> &'static str {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Install the TLS crypto provider before any network operations.
-    otap_df_otap::crypto::install_crypto_provider()
+    otel_arrow_dfe_otap::crypto::install_crypto_provider()
         .map_err(|e| format!("Failed to install rustls crypto provider: {e}"))?;
 
     let args = Args::parse();

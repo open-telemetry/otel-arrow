@@ -26,7 +26,7 @@
 //! (Send + Sync) variants, a `SharedAsLocal` adapter, a zero-sized registration
 //! handle, and a `KNOWN_CAPABILITIES` distributed-slice entry.
 
-use otap_df_engine_macros::capability;
+use otel_arrow_dfe_engine_macros::capability;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 

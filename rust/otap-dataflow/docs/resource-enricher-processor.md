@@ -794,7 +794,7 @@ to an `EnrichmentRecord` in the extension's cache. The semantics are:
 
 The processor reads each rule's referenced attribute names from the Arrow
 resource attribute batch via
-[`otap_df_pdata::otap::transform::apply_attribute_transform`](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/crates/pdata/src/otap/transform.rs)-style
+[`otel_arrow_dfe_pdata::otap::transform::apply_attribute_transform`](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/crates/pdata/src/otap/transform.rs)-style
 helpers, batched across resources to avoid per-row dispatch. Per-rule
 attribute name sets are precomputed at `Config` time into a single
 rule-scan plan so the hot path performs at most one O(R) pass per resource

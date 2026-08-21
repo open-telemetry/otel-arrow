@@ -151,10 +151,10 @@ API stays unchanged and infallible for the built-in in-memory backend.
 ### 1. Work distribution (balanced)
 
 ```rust
-use otap_df_engine::topic::{
+use otel_arrow_dfe_engine::topic::{
     SubscriberOptions, SubscriptionMode, TopicBroker, TopicOptions,
 };
-use otap_df_config::SubscriptionGroupName;
+use otel_arrow_dfe_config::SubscriptionGroupName;
 
 let broker = TopicBroker::<u64>::new();
 let topic = broker.create_in_memory_topic(
@@ -182,7 +182,7 @@ let mut worker_b = topic.subscribe(
 ### 2. Fan-out analytics (broadcast)
 
 ```rust
-use otap_df_engine::topic::{
+use otel_arrow_dfe_engine::topic::{
     SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy,
     TopicBroker, TopicOptions,
 };
@@ -211,11 +211,11 @@ let mut sink_b = topic.subscribe(
 ### 3. Mixed criticality (balanced + broadcast on one topic)
 
 ```rust
-use otap_df_engine::topic::{
+use otel_arrow_dfe_engine::topic::{
     SubscriberOptions, SubscriptionMode, TopicBroadcastOnLagPolicy,
     TopicBroker, TopicOptions,
 };
-use otap_df_config::SubscriptionGroupName;
+use otel_arrow_dfe_config::SubscriptionGroupName;
 
 let broker = TopicBroker::<u64>::new();
 let topic = broker.create_in_memory_topic(
@@ -246,7 +246,7 @@ let mut anomaly = topic.subscribe(
 ### 4. Backend selection per topic
 
 ```rust
-use otap_df_engine::topic::{
+use otel_arrow_dfe_engine::topic::{
     InMemoryBackend, TopicBroker, TopicOptions,
 };
 

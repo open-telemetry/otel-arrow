@@ -202,14 +202,14 @@ pub struct ExtensionCapabilities {
     /// Register all shared-variant capabilities into the registry.
     /// No-op when `shared` is empty.
     pub register_shared: fn(
-        ext_id: otap_df_config::ExtensionId,
+        ext_id: otel_arrow_dfe_config::ExtensionId,
         factory: SharedInstanceFactory,
         registry: &mut registry::CapabilityRegistry,
     ) -> Result<(), registry::Error>,
     /// Register all local-variant capabilities into the registry.
     /// No-op when `local` is empty.
     pub register_local: fn(
-        ext_id: otap_df_config::ExtensionId,
+        ext_id: otel_arrow_dfe_config::ExtensionId,
         factory: LocalInstanceFactory,
         registry: &mut registry::CapabilityRegistry,
     ) -> Result<(), registry::Error>,

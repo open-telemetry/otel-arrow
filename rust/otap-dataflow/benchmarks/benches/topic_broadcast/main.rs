@@ -35,7 +35,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_engine::topic::{
+use otel_arrow_dfe_engine::topic::{
     InMemoryBackend, RecvItem, SubscriberOptions, SubscriptionMode, TopicBroadcastAckMode,
     TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
 };
@@ -181,9 +181,9 @@ async fn setup_consensus_cleanup_case(
     pending_count: usize,
     on_lag: TopicBroadcastOnLagPolicy,
 ) -> (
-    otap_df_engine::topic::Subscription<Vec<u8>>,
-    Vec<otap_df_engine::topic::TrackedPublishReceipt>,
-    otap_df_engine::topic::TopicHandle<Vec<u8>>,
+    otel_arrow_dfe_engine::topic::Subscription<Vec<u8>>,
+    Vec<otel_arrow_dfe_engine::topic::TrackedPublishReceipt>,
+    otel_arrow_dfe_engine::topic::TopicHandle<Vec<u8>>,
 ) {
     let capacity = pending_count.max(2).next_power_of_two();
     let broker = TopicBroker::new();

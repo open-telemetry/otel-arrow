@@ -8,14 +8,14 @@
 use crate::context::ExtensionContext;
 use crate::control::{ExtensionControlMsg, ExtensionControlSender};
 use crate::extension::wrapper::ExtensionVariant;
-use otap_df_config::ExtensionId;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_warn;
-use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_config::ExtensionId;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::otel_warn;
+use otel_arrow_dfe_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::future;
 use std::time::{Duration, Instant};
 use tokio::time::{Interval, MissedTickBehavior, interval_at};
@@ -390,7 +390,7 @@ mod tests {
     use super::*;
     use crate::control::ExtensionControlSender;
     use crate::message::Sender;
-    use otap_df_channel::mpsc;
+    use otel_arrow_dfe_channel::mpsc;
     use std::time::Duration;
 
     fn fresh_monitor() -> (ExtensionMetricsMonitor, ExtensionContext) {

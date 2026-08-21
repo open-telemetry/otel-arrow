@@ -12,22 +12,22 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-otap-df-core-nodes = { workspace = true, features = ["dev-tools", "bench"] }
-otap-df-otap = { workspace = true }
+otel-arrow-dfe-core-nodes = { workspace = true, features = ["dev-tools", "bench"] }
+otel-arrow-dfe-otap = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 tonic = { workspace = true }
 prost = { workspace = true }
 
-otap-df-control-channel = { workspace = true }
-otap-df-config = { workspace = true }
-otap-df-channel = { workspace = true }
-otap-df-engine = { workspace = true }
-otap-df-telemetry = { workspace = true }
-otap-df-telemetry-macros = { workspace = true }
-otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
-otap-df-pdata-views = { workspace = true }
+otel-arrow-dfe-control-channel = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-channel = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-telemetry = { workspace = true }
+otel-arrow-dfe-telemetry-macros = { workspace = true }
+otel-arrow-dfe-pdata = { workspace = true, features = ["bench", "testing"] }
+otel-arrow-dfe-pdata-views = { workspace = true }
 
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
@@ -41,7 +41,7 @@ local-sync.workspace = true
 async-unsync.workspace = true
 roaring.workspace = true
 unsync.workspace = true
-otap-df-test-net.workspace = true
+otel-arrow-dfe-test-net.workspace = true
 tokio-stream.workspace = true
 weaver_common.workspace = true
 bytes.workspace = true
