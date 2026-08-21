@@ -22,12 +22,15 @@ pub enum OutputFanoutRule {
 pub struct WiringContract {
     /// Constraint on per-output destination fanout.
     pub output_fanout: OutputFanoutRule,
+    /// Minimum number of output ports the node must declare.
+    pub minimum_declared_outputs: usize,
 }
 
 impl WiringContract {
-    /// Unrestricted wiring contract (no per-output destination limit).
+    /// Unrestricted wiring contract.
     pub const UNRESTRICTED: Self = Self {
         output_fanout: OutputFanoutRule::Unrestricted,
+        minimum_declared_outputs: 0,
     };
 
     /// Creates an unrestricted wiring contract.
@@ -41,7 +44,34 @@ impl WiringContract {
     pub const fn at_most_per_output(max: usize) -> Self {
         Self {
             output_fanout: OutputFanoutRule::AtMostPerOutput(max),
+            minimum_declared_outputs: 0,
         }
+    }
+
+    /// Creates a contract requiring a minimum number of declared output ports.
+    #[must_use]
+    pub const fn at_least_declared_outputs(minimum: usize) -> Self {
+        Self {
+            output_fanout: OutputFanoutRule::Unrestricted,
+            minimum_declared_outputs: minimum,
+        }
+    }
+
+    /// Validates the node's declared output ports against this contract.
+    pub fn validate_declared_outputs(
+        &self,
+        node: &NodeName,
+        outputs: &[PortName],
+    ) -> Result<(), Error> {
+        if outputs.len() >= self.minimum_declared_outputs {
+            return Ok(());
+        }
+
+        Err(Error::InsufficientDeclaredOutputs {
+            node: node.clone(),
+            minimum_outputs: self.minimum_declared_outputs,
+            actual_outputs: outputs.len(),
+        })
     }
 
     /// Validates a source output against this contract.

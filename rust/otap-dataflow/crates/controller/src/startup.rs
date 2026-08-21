@@ -81,13 +81,14 @@ pub fn apply_cli_overrides(
 
 /// Validates that every node and extension in a single pipeline references a
 /// component URN registered in the given [`PipelineFactory`], and runs
-/// per-component config validation.
+/// per-component config and wiring-contract validation.
 ///
 /// Structural config validation (connections, node references, policies) is
 /// already performed during config deserialization
 /// ([`OtelDataflowSpec::from_file`]).  This function adds the semantic check
 /// that all referenced components are actually compiled into the binary, and
-/// validates their node/extension-specific config statically.
+/// validates their node/extension-specific config and node wiring contracts
+/// statically.
 ///
 /// This per-pipeline helper does not validate node rate-limiter bindings because
 /// it does not receive the effective policy catalog. Use
@@ -185,6 +186,17 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
             }
         }
     }
+
+    factory
+        .validate_wiring_contracts(pipeline_cfg)
+        .map_err(|e| {
+            std::io::Error::other(format!(
+                "Invalid wiring in pipeline_group={} pipeline={}: {}",
+                pipeline_group_id.as_ref(),
+                pipeline_id.as_ref(),
+                e
+            ))
+        })?;
 
     Ok(())
 }

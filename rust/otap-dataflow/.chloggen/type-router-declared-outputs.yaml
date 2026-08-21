@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: pipeline
+note: "Reject signal type router configurations without declared outputs during startup validation."
+issues: [3569]
+subtext:
