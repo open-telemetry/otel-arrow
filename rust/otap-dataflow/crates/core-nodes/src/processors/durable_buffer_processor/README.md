@@ -128,7 +128,6 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `durable_buffer.shutdown.*` | `info`, `warn`, `error` | Shutdown flush, drain, deadline, and engine termination progress or failure. |
 | `durable_buffer.timer.started` | `debug` | Periodic poll timer started on first processed message. |
 | `durable_buffer.config.update` | `debug` | Runtime config update received. |
-| `durable_buffer.delayed_data.unexpected` | `warn` | Unexpected delayed data was received and discarded. |
 
 See [telemetry.md](telemetry.md) for maintenance notes and the expanded event inventory.
 

@@ -175,7 +175,7 @@ impl TrafficGeneratorReceiver {
                     _ = run_ticker.tick() => {
                         let remaining_batches = current_run.len() + usize::from(next_pdata.is_some());
                         let remaining_items = current_run.remaining_signal_count()
-                            + next_pdata.as_ref().map_or(0, |pdata| pdata.num_items() as u64);
+                            + next_pdata.as_mut().map_or(0, |pdata| pdata.num_items() as u64);
                         if remaining_batches > 0 {
                             self.metrics.smooth_runs_behind.inc();
                             self.metrics
@@ -385,11 +385,11 @@ impl TrafficGeneratorReceiver {
     fn export_pdata(
         &mut self,
         handler: &local::EffectHandler<OtapPdata>,
-        pdata: OtapPdata,
+        mut pdata: OtapPdata,
     ) -> Result<Result<u64, OtapPdata>, Error> {
         let signal = pdata.signal_type();
         let count = pdata.num_items() as u64;
-        let payload_bytes = pdata.payload_ref().num_bytes();
+        let payload_bytes = pdata.num_bytes();
         match handler.try_send_message_with_source_node(pdata) {
             Ok(()) => {
                 match signal {

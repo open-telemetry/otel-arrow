@@ -1790,11 +1790,43 @@ impl<
     }
 
     /// Starts a tracked shutdown operation for one logical pipeline.
+    #[cfg(test)]
     pub(super) fn request_shutdown_pipeline(
         self: &Arc<Self>,
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
+    ) -> Result<ShutdownStatus, ControlPlaneError> {
+        self.request_shutdown_pipeline_for_initiator(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            None,
+        )
+    }
+
+    /// Starts a tracked shutdown with its external initiator.
+    pub(super) fn request_shutdown_pipeline_with_initiator(
+        self: &Arc<Self>,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+        initiator: PipelineShutdownInitiator,
+    ) -> Result<ShutdownStatus, ControlPlaneError> {
+        self.request_shutdown_pipeline_for_initiator(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            Some(initiator),
+        )
+    }
+
+    fn request_shutdown_pipeline_for_initiator(
+        self: &Arc<Self>,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+        initiator: Option<PipelineShutdownInitiator>,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
         // Keep the reservation alive until active_shutdowns contains the
         // accepted operation. A failure in the cancel-to-insert window is then
@@ -1811,6 +1843,7 @@ impl<
             pipeline_id,
             timeout_secs,
             None,
+            initiator,
         )
     }
 
@@ -1820,6 +1853,7 @@ impl<
         pipeline_id: &str,
         timeout_secs: u64,
         engine_operation_id: Option<&str>,
+        initiator: Option<PipelineShutdownInitiator>,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
         self.cancel_runtime_recoveries_for_pipeline(&PipelineKey::new(
             pipeline_group_id.to_owned().into(),
@@ -1830,6 +1864,7 @@ impl<
             pipeline_id,
             timeout_secs,
             engine_operation_id,
+            initiator,
         )?;
         self.spawn_shutdown_for_engine_operation(plan, engine_operation_id)
     }

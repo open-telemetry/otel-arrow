@@ -58,6 +58,30 @@ and
 [`configs/trafficgen-parquet-s3.yaml`](../../../../../configs/trafficgen-parquet-s3.yaml)
 for backend-specific configuration examples.
 
+Azure storage authentication is supplied by a bound `bearer_token_provider`
+capability. The top-level `azure` feature enables the Azure identity extension
+for you; you still need to declare it and bind it on the node. Configure it with
+the storage scope, and do not place identity credentials in the exporter config:
+
+```yaml
+extensions:
+  azure_identity:
+    type: urn:microsoft:extension:azure_identity_auth
+    config:
+      method: managed_identity
+      scope: https://storage.azure.com/.default
+
+nodes:
+  parquet:
+    type: exporter:parquet
+    capabilities:
+      bearer_token_provider: azure_identity
+    config:
+      storage:
+        azure:
+          base_uri: https://account.blob.core.windows.net/container/prefix
+```
+
 ## Examples
 
 Partition by schema metadata:

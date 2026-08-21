@@ -22,7 +22,6 @@ use otap_df_engine::testing::node::test_node;
 pub(super) use otap_df_engine::testing::processor::TestRuntime;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
-use otap_df_pdata::OtapPayload;
 pub(super) use otap_df_pdata::otap::OtapArrowRecords;
 pub(super) use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
 use otap_df_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
@@ -37,6 +36,7 @@ use otap_df_pdata::testing::equiv::assert_equivalent;
 pub(super) use otap_df_pdata::testing::round_trip::{
     otap_to_otlp, otlp_message_to_bytes, otlp_to_otap,
 };
+use otap_df_pdata::{OtapPayload, PayloadData};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use serde_json;
 
@@ -169,9 +169,9 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
                             match pdata_action {
                                 PdataAction::AssertSubscribers(expected) => {
                                     assert_eq!(
-                                        output.has_subscribers(),
+                                        output.has_ack_or_nack_interests(),
                                         expected,
-                                        "has_subscribers mismatch"
+                                        "has_ack_or_nack_interests mismatch"
                                     );
                                 }
                                 PdataAction::Nack(reason) => {
@@ -261,7 +261,7 @@ pub(super) fn drain_upstream(
     ack_count: &mut usize,
     nack_count: &mut usize,
 ) {
-    // Drain runtime control (e.g. DelayData) -- just consume for now
+    // Drain runtime control -- just consume for now
     while runtime_ctrl_rx.try_recv().is_ok() {}
 
     // Drain pipeline completion (upstream ack/nack delivery)
@@ -305,7 +305,7 @@ pub(super) fn try_create_processor(
 
 /// Wrap [`OtapArrowRecords`] in an [`OtapPdata`].
 pub(super) fn make_pdata(records: OtapArrowRecords) -> OtapPdata {
-    OtapPdata::new_default(OtapPayload::OtapArrowRecords(records))
+    OtapPdata::new_default(OtapPayload::from(records))
 }
 
 /// Convert OTLP [`MetricsData`] into an [`OtapPdata`] via OTAP encoding.
@@ -313,7 +313,7 @@ pub(super) fn make_otlp_pdata(metrics_data: MetricsData) -> OtapPdata {
     let otap_records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
         metrics_data,
     ));
-    OtapPdata::new_default(OtapPayload::OtapArrowRecords(otap_records))
+    OtapPdata::new_default(OtapPayload::from(otap_records))
 }
 
 pub(super) fn create_traces_payload() -> OtapPayload {
@@ -337,9 +337,9 @@ pub(super) fn create_test_pipeline_context() -> PipelineContext {
 /// Convert any [`OtapPayload`] variant into an [`OtlpProtoMessage`] for
 /// equivalence comparison.
 fn payload_to_otlp(payload: &OtapPayload) -> otap_df_pdata::proto::OtlpProtoMessage {
-    match payload {
-        OtapPayload::OtapArrowRecords(records) => otap_to_otlp(records),
-        OtapPayload::OtlpBytes(bytes) => {
+    match payload.data() {
+        PayloadData::OtapArrowRecords(records) => otap_to_otlp(records),
+        PayloadData::OtlpBytes(bytes) => {
             otap_df_pdata::testing::round_trip::otlp_bytes_to_message(bytes.clone())
         }
     }
@@ -348,8 +348,8 @@ fn payload_to_otlp(payload: &OtapPayload) -> otap_df_pdata::proto::OtlpProtoMess
 /// Assert that the processor output is semantically equivalent to the
 /// expected set of [`OtapArrowRecords`] batches combined.
 pub(super) fn assert_output_equivalent(output: &OtapPdata, expected: &[OtapArrowRecords]) {
-    let actual = match output.payload_ref() {
-        OtapPayload::OtapArrowRecords(r) => r,
+    let actual = match output.payload_ref().data() {
+        PayloadData::OtapArrowRecords(r) => r,
         _ => panic!("expected OtapArrowRecords payload"),
     };
     let expected_msgs: Vec<_> = expected.iter().map(otap_to_otlp).collect();
@@ -359,8 +359,8 @@ pub(super) fn assert_output_equivalent(output: &OtapPdata, expected: &[OtapArrow
 /// Assert that the processor output is semantically equivalent to the
 /// expected OTLP [`MetricsData`].
 pub(super) fn assert_output_otlp_equivalent(output: &OtapPdata, expected: MetricsData) {
-    let actual = match output.payload_ref() {
-        OtapPayload::OtapArrowRecords(r) => r,
+    let actual = match output.payload_ref().data() {
+        PayloadData::OtapArrowRecords(r) => r,
         _ => panic!("expected OtapArrowRecords payload"),
     };
     assert_equivalent(
@@ -374,7 +374,7 @@ pub(super) fn assert_output_otlp_equivalent(output: &OtapPdata, expected: Metric
 pub(super) fn make_otlp_bytes_pdata(metrics_data: MetricsData) -> OtapPdata {
     let msg = otap_df_pdata::proto::OtlpProtoMessage::Metrics(metrics_data);
     let otlp_bytes = otlp_message_to_bytes(&msg);
-    OtapPdata::new_default(OtapPayload::OtlpBytes(otlp_bytes))
+    OtapPdata::new_default(OtapPayload::from(otlp_bytes))
 }
 
 /// Build an OTLP [`MetricsData`] with `n` unique gauge metrics, each with
@@ -519,14 +519,14 @@ pub(super) fn make_otap_payload_from_metrics(metrics_data: MetricsData) -> OtapP
     let records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
         metrics_data,
     ));
-    OtapPayload::OtapArrowRecords(records)
+    OtapPayload::from(records)
 }
 
 /// Convert OTLP [`MetricsData`] into an [`OtapPayload`] via OTAP encoding.
 pub(super) fn make_otlp_payload_from_metrics(metrics_data: MetricsData) -> OtapPayload {
     let msg = otap_df_pdata::proto::OtlpProtoMessage::Metrics(metrics_data);
     let otlp_bytes = otlp_message_to_bytes(&msg);
-    OtapPayload::OtlpBytes(otlp_bytes)
+    OtapPayload::from(otlp_bytes)
 }
 
 /// Build a mixed metrics OtapPayload (aggregatable + non-aggregatable).
@@ -534,7 +534,7 @@ pub(super) fn make_mixed_metrics_payload() -> OtapPayload {
     let records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
         make_mixed_metrics(),
     ));
-    OtapPayload::OtapArrowRecords(records)
+    OtapPayload::from(records)
 }
 
 /// Assert that the total number of metrics in the processor output matches

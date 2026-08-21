@@ -35,6 +35,8 @@ pub struct HttpAdminClientSettings {
     pub timeout: Option<Duration>,
     /// Optional TLS/mTLS configuration for HTTPS endpoints.
     pub tls: Option<TlsClientConfig>,
+    /// Optional HTTP User-Agent used for best-effort client attribution.
+    pub user_agent: Option<String>,
 }
 
 impl HttpAdminClientSettings {
@@ -53,6 +55,7 @@ impl HttpAdminClientSettings {
             tcp_keepalive_interval: None,
             timeout: None,
             tls: None,
+            user_agent: None,
         }
     }
 
@@ -117,6 +120,13 @@ impl HttpAdminClientSettings {
     #[must_use]
     pub fn with_tls(mut self, tls: TlsClientConfig) -> Self {
         self.tls = Some(tls);
+        self
+    }
+
+    /// Sets the HTTP User-Agent sent with admin requests.
+    #[must_use]
+    pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        self.user_agent = Some(user_agent.into());
         self
     }
 }
