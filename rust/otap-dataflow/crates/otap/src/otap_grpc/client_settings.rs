@@ -274,6 +274,14 @@ impl GrpcClientSettings {
 
         let mut metadata = MetadataMap::with_capacity(self.headers.len());
         for (name, value) in &self.headers {
+            if value.expose_secret() == REDACTED_VALUE {
+                otap_df_telemetry::otel_debug!(
+                    "grpc.client.static_header_skip",
+                    reason = "display-only redaction placeholder",
+                    header_name = name.as_str()
+                );
+                continue;
+            }
             let Ok(key) = name.parse::<MetadataKey<tonic::metadata::Ascii>>() else {
                 otap_df_telemetry::otel_debug!(
                     "grpc.client.static_header_skip",
@@ -980,6 +988,28 @@ mod tests {
             .build_static_metadata()
             .expect("the valid header should remain");
         assert_eq!(metadata.len(), 1);
+        assert_eq!(metadata.get("x-valid").unwrap().to_str().unwrap(), "ok");
+    }
+
+    /// Scenario: a programmatic caller bypasses validation with the display-only
+    /// redaction marker as a static credential.
+    /// Guarantees: metadata construction drops the marker so it cannot be sent
+    /// as an authorization value.
+    #[test]
+    fn build_static_metadata_skips_redaction_placeholder() {
+        let mut headers = HashMap::new();
+        let _ = headers.insert("authorization".to_string(), REDACTED_VALUE.into());
+        let _ = headers.insert("x-valid".to_string(), "ok".into());
+        let settings = GrpcClientSettings {
+            headers,
+            ..GrpcClientSettings::default()
+        };
+
+        let metadata = settings
+            .build_static_metadata()
+            .expect("the valid metadata entry should remain");
+        assert_eq!(metadata.len(), 1);
+        assert!(metadata.get("authorization").is_none());
         assert_eq!(metadata.get("x-valid").unwrap().to_str().unwrap(), "ok");
     }
 

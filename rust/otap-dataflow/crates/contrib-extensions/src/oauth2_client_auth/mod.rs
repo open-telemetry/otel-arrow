@@ -27,7 +27,8 @@ use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_config::redaction::{
-    CONFIG_REDACTORS, ConfigRedactor, RedactionError, redact_typed_config_in_place,
+    CONFIG_REDACTORS, ConfigRedactor, RedactedString, RedactionError,
+    redact_typed_config_in_place_with_snapshot,
 };
 use otap_df_engine::ExtensionFactory;
 use otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
@@ -117,13 +118,26 @@ pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     validate_config,
 };
 
+#[derive(serde::Serialize)]
+struct OAuth2ClientAuthSecretSnapshot<'a> {
+    client_secret: Option<&'a RedactedString>,
+    client_certificate_key: Option<&'a RedactedString>,
+}
+
 fn redact_oauth2_client_auth_config(config: &mut serde_json::Value) -> Result<(), RedactionError> {
-    redact_typed_config_in_place::<Config>(
+    redact_typed_config_in_place_with_snapshot::<Config>(
         config,
         &[
             otap_df_config::optional_secret_field!(Config, client_secret),
             otap_df_config::optional_secret_field!(Config, client_certificate_key),
         ],
+        |typed| {
+            serde_json::to_value(OAuth2ClientAuthSecretSnapshot {
+                client_secret: typed.client_secret.as_ref(),
+                client_certificate_key: typed.client_certificate_key.as_ref(),
+            })
+            .map_err(|_| RedactionError::Serialization)
+        },
     )
 }
 

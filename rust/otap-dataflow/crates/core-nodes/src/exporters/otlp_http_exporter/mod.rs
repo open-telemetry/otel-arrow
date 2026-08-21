@@ -28,6 +28,7 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::redaction::REDACTED_VALUE;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -1011,6 +1012,12 @@ impl HttpClientPool {
     ) -> Result<HeaderMap, HttpClientError> {
         let mut headers = HeaderMap::with_capacity(client_settings.headers.len() + reserve_extra);
         for (name, value) in &client_settings.headers {
+            if value.expose_secret() == REDACTED_VALUE {
+                return Err(HttpClientError::InvalidConfig(format!(
+                    "header \"{name}\" contains the display-only redaction placeholder; provide \
+                     the secret again"
+                )));
+            }
             let header_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
                 HttpClientError::InvalidConfig(format!("invalid header name \"{name}\": {e}"))
             })?;
@@ -2062,6 +2069,24 @@ mod test {
             built.get("x-scope-orgid").unwrap().is_sensitive(),
             "every static header value must be marked sensitive, not just the first"
         );
+    }
+
+    /// Scenario: a programmatic caller bypasses validation with the display-only
+    /// redaction marker as a static HTTP credential.
+    /// Guarantees: request-header construction fails before the marker can be
+    /// attached to an outbound client.
+    #[test]
+    fn build_static_headers_rejects_redaction_placeholder() {
+        let mut headers = HashMap::new();
+        _ = headers.insert("authorization".to_string(), REDACTED_VALUE.into());
+        let settings = HttpClientSettings {
+            headers,
+            ..Default::default()
+        };
+
+        let error = HttpClientPool::build_static_headers(&settings, 0)
+            .expect_err("display-only marker must not become a wire credential");
+        assert!(error.to_string().contains("display-only"));
     }
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that

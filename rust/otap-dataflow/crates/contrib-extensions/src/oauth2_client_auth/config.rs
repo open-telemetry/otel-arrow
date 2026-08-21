@@ -102,7 +102,7 @@ pub enum SignatureAlgorithm {
 }
 
 /// Configuration for the OAuth 2.0 Client Auth extension.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Grant type used to acquire tokens.

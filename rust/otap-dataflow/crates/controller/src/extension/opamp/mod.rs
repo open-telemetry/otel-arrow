@@ -1322,8 +1322,7 @@ fn heartbeat_message(
         &mut remote_config_status,
         session_state.last_reconcile_result.as_ref(),
     );
-    let mut health = component_health(session_state, &status_snapshot);
-    let _ = effective_config(context, &mut health);
+    let health = component_health(session_state, &status_snapshot);
     AgentToServer {
         instance_uid: session_state.instance_uid.to_vec(),
         sequence_num: session_state.sequence_num,
@@ -1808,10 +1807,9 @@ mod test {
         );
     }
 
-    /// Scenario: a registered component's config cannot be deserialized for
-    /// snapshot redaction.
-    /// Guarantees: the AgentToServer message omits effective config rather than
-    /// reporting an empty map or serializing the raw secret-bearing snapshot.
+    /// Scenario: effective-config redaction fails and a later heartbeat is built.
+    /// Guarantees: the requested effective config is omitted without exposing
+    /// cleartext, and the heartbeat does not rebuild the full config snapshot.
     #[test]
     fn effective_config_omits_report_when_redaction_fails() {
         let engine_config: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
@@ -1841,12 +1839,13 @@ mod test {
             &ObservedStateSettings::default(),
             telemetry_registry.clone(),
         );
+        let control_plane = Arc::new(MockControlPlane::new(engine_config));
         let context = ControllerExtensionContext {
             extension_id: Cow::Borrowed("opamp"),
             extension: Arc::new(ExtensionUserConfig::with_type(
                 ExtensionUrn::parse(CONTROL_EXTENSION_URN).expect("extension URN should parse"),
             )),
-            control_plane: Arc::new(MockControlPlane::new(engine_config)),
+            control_plane: control_plane.clone(),
             observed_state: observed_state_store.handle(),
             telemetry_registry,
             engine_config: empty_engine_config(),
@@ -1872,10 +1871,15 @@ mod test {
         .expect("OpAMP config should deserialize");
         let session_state =
             SessionState::try_new(&opamp_config).expect("session state should initialize");
+        let snapshot_count = control_plane.engine_config_snapshot_count();
         let heartbeat = heartbeat_message(&session_state, &context);
         let heartbeat_health = heartbeat.health.expect("heartbeat should include health");
-        assert!(!heartbeat_health.healthy);
-        assert!(heartbeat_health.last_error.contains("snapshot redaction"));
+        assert!(heartbeat_health.last_error.is_empty());
+        assert_eq!(
+            control_plane.engine_config_snapshot_count(),
+            snapshot_count,
+            "heartbeat must not rebuild an effective-config snapshot"
+        );
     }
 
     #[tokio::test]

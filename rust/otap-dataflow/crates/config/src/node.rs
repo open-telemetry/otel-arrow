@@ -418,7 +418,7 @@ pub const REDACTED_HEADER_VALUE: &str = crate::redaction::REDACTED_VALUE;
 ///
 /// Other subtrees are traversed so a `headers` field is redacted regardless of
 /// nesting depth. Shared with
-/// [`ExtensionUserConfig::redacted_for_snapshot`](crate::extension::ExtensionUserConfig::redacted_for_snapshot).
+/// [`ExtensionUserConfig::try_redacted_for_snapshot`](crate::extension::ExtensionUserConfig::try_redacted_for_snapshot).
 pub(crate) fn redact_secret_headers(value: &mut Value) {
     match value {
         Value::Object(map) => {

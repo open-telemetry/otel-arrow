@@ -287,10 +287,30 @@ pub fn redact_typed_config_in_place<T>(
 where
     T: DeserializeOwned + Serialize,
 {
+    redact_typed_config_in_place_with_snapshot(config, secret_fields, |typed| {
+        serde_json::to_value(typed).map_err(|_| RedactionError::Serialization)
+    })
+}
+
+/// Redacts declared top-level `RedactedString` fields using a type-owned
+/// snapshot view.
+///
+/// This variant lets a runtime config remain deserialize-only. The snapshot
+/// function must serialize each declared secret under its raw config field
+/// name through `RedactedString` so the marker-backed identity check remains
+/// fail closed.
+pub fn redact_typed_config_in_place_with_snapshot<T>(
+    config: &mut Value,
+    secret_fields: &[SecretField<T>],
+    snapshot: impl FnOnce(&T) -> Result<Value, RedactionError>,
+) -> Result<(), RedactionError>
+where
+    T: DeserializeOwned,
+{
     let (typed, deserialized_secrets) = track_deserialized_secrets(|| {
         T::deserialize(&*config).map_err(|_| RedactionError::Deserialization)
     })?;
-    let typed_json = serde_json::to_value(&typed).map_err(|_| RedactionError::Serialization)?;
+    let typed_json = snapshot(&typed)?;
     let typed_object = typed_json
         .as_object()
         .ok_or(RedactionError::ShapeMismatch)?;
@@ -368,6 +388,17 @@ mod tests {
         label: String,
     }
 
+    #[derive(Deserialize)]
+    struct DeserializeOnlyConfig {
+        password: RedactedString,
+        label: String,
+    }
+
+    #[derive(Serialize)]
+    struct SecretSnapshot<'a> {
+        password: &'a RedactedString,
+    }
+
     const TEST_SECRET_FIELDS: &[SecretField<TestConfig>] = &[
         crate::required_secret_field!(TestConfig, password),
         crate::optional_secret_field!(TestConfig, optional_token),
@@ -442,6 +473,36 @@ mod tests {
         assert_eq!(redacted["password"], REDACTED_VALUE);
         assert!(redacted.get("optional_token").is_none());
         assert_eq!(redacted["label"], "visible");
+    }
+
+    /// Scenario: a runtime config intentionally implements only Deserialize.
+    /// Guarantees: a private secret-only snapshot view preserves marker-backed
+    /// field identity without exposing Serialize on the runtime config.
+    #[test]
+    fn typed_redaction_accepts_private_snapshot_view() {
+        let mut raw = serde_json::json!({
+            "password": "required-secret",
+            "label": "visible"
+        });
+
+        redact_typed_config_in_place_with_snapshot::<DeserializeOnlyConfig>(
+            &mut raw,
+            &[crate::required_secret_field!(
+                DeserializeOnlyConfig,
+                password
+            )],
+            |typed| {
+                assert_eq!(typed.label, "visible");
+                serde_json::to_value(SecretSnapshot {
+                    password: &typed.password,
+                })
+                .map_err(|_| RedactionError::Serialization)
+            },
+        )
+        .expect("private snapshot view should support typed redaction");
+
+        assert_eq!(raw["password"], REDACTED_VALUE);
+        assert_eq!(raw["label"], "visible");
     }
 
     /// Scenario: a secret-bearing typed field is not declared by its component

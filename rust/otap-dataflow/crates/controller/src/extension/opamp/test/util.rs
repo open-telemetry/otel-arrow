@@ -52,6 +52,7 @@ pub fn empty_engine_config() -> OtelDataflowSpec {
 pub(crate) struct MockControlPlane {
     current_config: Mutex<OtelDataflowSpec>,
     reconcile_result: Mutex<Result<EngineConfigReconcileStatus, ControlPlaneError>>,
+    engine_config_snapshot_count: AtomicUsize,
 }
 
 impl MockControlPlane {
@@ -66,6 +67,7 @@ impl MockControlPlane {
         Self {
             current_config: Mutex::new(initial_config),
             reconcile_result: Mutex::new(default_result),
+            engine_config_snapshot_count: AtomicUsize::new(0),
         }
     }
 
@@ -75,10 +77,17 @@ impl MockControlPlane {
     ) {
         *self.reconcile_result.lock().unwrap() = result;
     }
+
+    pub fn engine_config_snapshot_count(&self) -> usize {
+        self.engine_config_snapshot_count.load(Ordering::Relaxed)
+    }
 }
 
 impl ControlPlane for MockControlPlane {
     fn engine_config_snapshot(&self) -> Result<OtelDataflowSpec, ControlPlaneError> {
+        let _ = self
+            .engine_config_snapshot_count
+            .fetch_add(1, Ordering::Relaxed);
         Ok(self.current_config.lock().unwrap().clone())
     }
 
