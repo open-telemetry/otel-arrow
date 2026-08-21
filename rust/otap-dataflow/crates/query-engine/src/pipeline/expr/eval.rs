@@ -264,8 +264,8 @@ pub(super) fn join_and_eval_value(
             None => {
                 if default_null_children {
                     ScopedValue::new_scalar(ScalarValue::Null)
-                } else if let Some((strategy, default)) = short_circuit
-                    .and_then(|s| s.absent_child_default().map(|d| (s, d)))
+                } else if let Some((strategy, default)) =
+                    short_circuit.and_then(|s| s.absent_child_default().map(|d| (s, d)))
                 {
                     // The short-circuit strategy can handle absent children (e.g. OR
                     // treats absent data as "no match"/false). For the 2-child OR
@@ -279,8 +279,7 @@ pub(super) fn join_and_eval_value(
                     {
                         // The other child is either already evaluated (in
                         // child_results) or is the next child to evaluate.
-                        let other = if let Some(sv) = child_results.into_iter().next()
-                        {
+                        let other = if let Some(sv) = child_results.into_iter().next() {
                             Some(sv)
                         } else {
                             children[i + 1].execute_as_value(otap_batch, session_ctx)?
