@@ -20,8 +20,6 @@ type MetricsWriter<'a> = PrettyWriter<'a, dyn Write + 'a>;
 const PERCENTILE_NUMERATORS: [u64; 3] = [50, 90, 99];
 const PERCENTILE_LABELS: [&str; 3] = ["p50", "p90", "p99"];
 const PERCENTILE_DENOMINATOR: u64 = 100;
-const MIN_EXPONENTIAL_HISTOGRAM_SCALE: i32 = -10;
-const MAX_EXPONENTIAL_HISTOGRAM_SCALE: i32 = 20;
 
 #[derive(Default)]
 struct PercentileEstimates([Option<f64>; PERCENTILE_NUMERATORS.len()]);
@@ -583,13 +581,6 @@ fn estimate_exponential_percentiles<P: ExponentialHistogramDataPointView>(
     }
 
     let scale = point.scale();
-    let has_non_zero_buckets = negative_total > 0 || positive_total > 0;
-    if has_non_zero_buckets
-        && !(MIN_EXPONENTIAL_HISTOGRAM_SCALE..=MAX_EXPONENTIAL_HISTOGRAM_SCALE).contains(&scale)
-    {
-        return PercentileEstimates::default();
-    }
-
     let mut estimates = PercentileEstimates::default();
     for (slot, rank) in estimates.0.iter_mut().zip(percentile_ranks(count)) {
         let estimate = if rank <= negative_total {
@@ -665,7 +656,7 @@ fn bucket_at_rank<B: BucketsView>(buckets: &B, rank: u64) -> Option<i32> {
 }
 
 fn exponential_bucket_midpoint(scale: i32, index: i32, negative: bool) -> Option<f64> {
-    let bucket_width = 2.0_f64.powi(-scale);
+    let bucket_width = 2.0_f64.powf(-f64::from(scale));
     let exponent = (f64::from(index) + 0.5) * bucket_width;
     let magnitude = 2.0_f64.powf(exponent);
     if !magnitude.is_finite() || magnitude == 0.0 {

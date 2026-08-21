@@ -1157,11 +1157,10 @@ mod tests {
         assert!(text.contains("p50~=0 p90~=0 p99~=0"));
     }
 
-    /// Scenario: A non-zero exponential histogram reports a scale outside the OTLP range.
-    /// Guarantees: Invalid geometry suppresses all percentile estimates without affecting summary
-    /// statistics.
+    /// Scenario: An exponential histogram uses a scale finer than common SDK producer limits.
+    /// Guarantees: The protocol's unrestricted scale is accepted and produces finite estimates.
     #[test]
-    fn pretty_metrics_omit_percentiles_for_invalid_exponential_scale() {
+    fn pretty_metrics_render_percentiles_beyond_sdk_scale_limits() {
         let mut metrics_data = metrics_with_all_data_types();
         let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
         metrics.retain(|metric| metric.name == "size_distribution");
@@ -1173,7 +1172,29 @@ mod tests {
         let text = format_pretty_metrics(&metrics_data);
 
         assert!(text.contains("count=6 sum=30 avg=5"));
-        assert!(!text.contains("p50~="));
+        assert!(text.contains("p50~=0"));
+        assert!(text.contains("p90~="));
+        assert!(text.contains("p99~="));
+    }
+
+    /// Scenario: A non-zero exponential histogram uses the minimum protocol i32 scale.
+    /// Guarantees: Formatting never panics, preserves representable zero-bucket estimates, and
+    /// omits only non-zero bucket midpoints that cannot be represented as finite f64 values.
+    #[test]
+    fn pretty_metrics_omit_unrepresentable_extreme_scale_midpoints() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "size_distribution");
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        histogram.data_points[0].scale = i32::MIN;
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(text.contains("count=6 sum=30 avg=5 p50~=0"));
+        assert!(!text.contains("p90~="), "{text}");
+        assert!(!text.contains("p99~="), "{text}");
     }
 
     /// Scenario: Equivalent metrics use compact and raw formatting through both payload models.
