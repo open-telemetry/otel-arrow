@@ -322,7 +322,7 @@ fn invoke_for_dict_source<K: ArrowDictionaryKeyType>(
     groups: &ColumnarValue,
 ) -> Result<ArrayRef> {
     let dict_arr = source_arr.as_dictionary::<K>();
-let dict_vals = dict_arr.values();
+    let dict_vals = dict_arr.values();
 
     let all_extra_scalar = matches!(patterns, ColumnarValue::Scalar(_))
         && matches!(starts, ColumnarValue::Scalar(_))
