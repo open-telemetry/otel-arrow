@@ -50,7 +50,7 @@ use super::error::{Result, SubscriberError};
 use super::handle::{BundleHandle, ResolutionCallback};
 use super::progress::{
     delete_progress_file, progress_file_path, read_progress_file, scan_progress_files,
-    write_progress_file,
+    serialize_progress_file, write_progress_file_content,
 };
 use super::state::{SegmentProgress, SubscriberState};
 use super::types::{AckOutcome, BundleIndex, BundleRef, SubscriberId};
@@ -839,18 +839,15 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         for (sub_id, state_lock) in to_flush {
             // Get state data with per-subscriber lock
-            let (entries, oldest_incomplete) = {
+            let content = {
                 let state = state_lock.read();
-                let entries = state.to_progress_entries();
                 let oldest = state
                     .oldest_incomplete_segment()
                     .unwrap_or_else(|| SegmentSeq::new(0));
-                (entries, oldest)
+                serialize_progress_file(oldest, state.to_progress_entries())
             };
 
-            match write_progress_file(&self.config.data_dir, &sub_id, oldest_incomplete, &entries)
-                .await
-            {
+            match write_progress_file_content(&self.config.data_dir, &sub_id, content).await {
                 Ok(()) => {
                     flushed += 1;
                 }

@@ -43,6 +43,7 @@
 //! Progress is written via temp file -> fsync -> rename to ensure crash-safe
 //! updates. This avoids partial writes and provides atomic visibility.
 
+use std::borrow::Borrow;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -551,28 +552,44 @@ pub async fn write_progress_file(
     oldest_incomplete_seg: SegmentSeq,
     entries: &[SegmentProgressEntry],
 ) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
+    let content = serialize_progress_file(oldest_incomplete_seg, entries.iter());
+    write_progress_file_content(dir, subscriber_id, content).await
+}
 
-    let final_path = progress_file_path(dir, subscriber_id);
-    let temp_path = temp_progress_file_path(dir, subscriber_id);
-
-    // Build the complete file content (in memory - typically small)
+pub(super) fn serialize_progress_file<T>(
+    oldest_incomplete_seg: SegmentSeq,
+    entries: impl ExactSizeIterator<Item = T>,
+) -> Vec<u8>
+where
+    T: Borrow<SegmentProgressEntry>,
+{
     let mut content = Vec::new();
 
-    // Header
     let header = ProgressHeader::new(oldest_incomplete_seg, entries.len() as u32);
     content.extend_from_slice(&header.serialize());
 
-    // Entries
     for entry in entries {
+        let entry = entry.borrow();
         content.extend_from_slice(&entry.serialize());
     }
 
-    // CRC (of header + entries)
     let mut hasher = Crc32Hasher::new();
     hasher.update(&content);
     let crc = hasher.finalize();
     content.extend_from_slice(&crc.to_le_bytes());
+
+    content
+}
+
+pub(super) async fn write_progress_file_content(
+    dir: &Path,
+    subscriber_id: &SubscriberId,
+    content: Vec<u8>,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let final_path = progress_file_path(dir, subscriber_id);
+    let temp_path = temp_progress_file_path(dir, subscriber_id);
 
     // Write to temp file using tokio
     {
