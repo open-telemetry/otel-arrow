@@ -1,5 +1,5 @@
 # Temporary dedicated-runner single-core ClickHouse saturation test.
-# CPU layout: DFE=1 core, loadgen=24 cores, ClickHouse=12 cores.
+# CPU layout: DFE=1 core, loadgen=64 cores, ClickHouse=12 cores.
 name: ClickHouse Single-Core Saturation
 components:
   load-generator:
@@ -15,12 +15,12 @@ components:
           - "--config"
           - "./config.yaml"
           - "--core-id-range"
-          - "32-55"
+          - "32-63,96-127"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
       docker_component:
-        allocated_cores: 24
+        allocated_cores: 64
       prometheus:
         endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
 
