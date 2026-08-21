@@ -846,7 +846,7 @@ mod tests {
     use super::*;
     use crate::config::tls::{TlsClientConfig, TlsConfig};
     use crate::{AdminClient, engine, groups, operations, pipelines, telemetry};
-    use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
+    use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca};
     use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
     use serde_json::json;
     use std::sync::Arc;

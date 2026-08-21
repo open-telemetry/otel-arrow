@@ -1,23 +1,26 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-otap_df_telemetry::otel_component_scope!(urn = ERROR_EXPORTER_URN, target = "otel.exporter.error",);
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = ERROR_EXPORTER_URN,
+    target = "otel.exporter.error",
+);
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -39,13 +42,13 @@ struct ErrorExporterConfig {
 
 /// Declare the Error Exporter as a local exporter factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static ERROR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: ERROR_EXPORTER_URN,
     create: ErrorExporter::create_exporter,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<ErrorExporterConfig>,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<ErrorExporterConfig>,
 };
 
 impl ErrorExporter {
@@ -54,10 +57,10 @@ impl ErrorExporter {
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
-        _capabilities: &otap_df_engine::capability::registry::Capabilities,
-    ) -> Result<ExporterWrapper<OtapPdata>, otap_df_config::error::Error> {
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ExporterWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
         let config: ErrorExporterConfig = serde_json::from_value(node_config.config.clone())
-            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+            .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!("Failed to parse error-exporter configuration: {e}"),
             })?;
 
@@ -106,8 +109,10 @@ impl Exporter<OtapPdata> for ErrorExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::Interests;
-    use otap_df_otap::testing::{test_exporter_no_subscription, test_exporter_with_subscription};
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_otap::testing::{
+        test_exporter_no_subscription, test_exporter_with_subscription,
+    };
     use serde_json::json;
 
     #[test]

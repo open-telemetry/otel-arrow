@@ -168,7 +168,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 - Metric filtering is not currently supported.
 - Include and exclude semantics depend on the signal-specific filter type in
-  `otap-df-pdata`.
+  `otel-arrow-dfe-pdata`.
 
 ## Related Docs
 

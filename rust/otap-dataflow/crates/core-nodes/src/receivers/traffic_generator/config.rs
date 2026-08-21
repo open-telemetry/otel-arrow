@@ -413,9 +413,9 @@ impl TrafficConfig {
     ///
     /// Currently checks that at least one signal weight is non-zero so the
     /// producer has something to generate.
-    pub fn validate(&self) -> Result<(), otap_df_config::error::Error> {
+    pub fn validate(&self) -> Result<(), otel_arrow_dfe_config::error::Error> {
         if self.metric_weight + self.trace_weight + self.log_weight == 0 {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "at least one of metric_weight, trace_weight, or log_weight must be > 0"
                     .to_string(),
             });

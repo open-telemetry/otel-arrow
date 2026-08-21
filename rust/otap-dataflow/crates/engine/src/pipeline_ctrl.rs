@@ -27,17 +27,17 @@ use crate::memory_limiter::MemoryPressureChanged;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use crate::terminal_state::TerminalMetricsDeadline;
 use crate::{Interests, RequestOutcome, Unwindable};
-use otap_df_config::DeployedPipelineKey;
-use otap_df_config::MetricLevel;
-use otap_df_config::SignalType;
-use otap_df_config::policy::TelemetryPolicy;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::event::{EngineEvent, ObservedEventReporter};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{otel_debug, otel_warn};
+use otel_arrow_dfe_config::DeployedPipelineKey;
+use otel_arrow_dfe_config::MetricLevel;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::policy::TelemetryPolicy;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::event::{EngineEvent, ObservedEventReporter};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::{otel_debug, otel_warn};
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
@@ -861,7 +861,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         if let Some(sender) = self.control_senders.get(node_id) {
             match sender.try_send(msg) {
                 Ok(()) => {}
-                Err(otap_df_channel::error::SendError::Full(msg)) => {
+                Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                     self.pending_sends.push_back((node_id, msg));
                     self.runtime_control_metrics
                         .set_pending_sends_buffered(self.pending_sends.len());
@@ -874,7 +874,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                         );
                     }
                 }
-                Err(otap_df_channel::error::SendError::Closed(_)) => {
+                Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {
                     // Ignore closed channel
                 }
             }
@@ -892,10 +892,10 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             if let Some(sender) = self.control_senders.get(node_id) {
                 match sender.try_send(msg) {
                     Ok(()) => {}
-                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                    Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                         self.pending_sends.push_back((node_id, msg));
                     }
-                    Err(otap_df_channel::error::SendError::Closed(_)) => {
+                    Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {
                         // Drop message for closed channel
                     }
                 }
@@ -965,7 +965,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                         self.completion_metrics.record_nack_delivered();
                     }
                 }
-                Err(otap_df_channel::error::SendError::Full(msg)) => {
+                Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                     // Completion delivery cannot block the dispatcher for the
                     // same reason runtime-control cannot: a full node-control
                     // inbox would otherwise stall unwinding for unrelated
@@ -981,7 +981,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                         );
                     }
                 }
-                Err(otap_df_channel::error::SendError::Closed(_)) => {}
+                Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {}
             }
         }
     }
@@ -1003,10 +1003,10 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                             self.completion_metrics.record_nack_delivered();
                         }
                     }
-                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                    Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                         self.pending_sends.push_back((node_id, msg));
                     }
-                    Err(otap_df_channel::error::SendError::Closed(_)) => {}
+                    Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {}
                 }
             }
         }
@@ -1310,17 +1310,17 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
-    use otap_df_channel::error::RecvError;
-    use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-    use otap_df_config::{PipelineGroupId, PipelineId};
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::event::{
+    use otel_arrow_dfe_channel::error::RecvError;
+    use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+    use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::event::{
         EngineEvent, ErrorEvent as TelemetryErrorEvent, EventType, ObservedEventReporter,
         RequestEvent as TelemetryRequestEvent, SuccessEvent as TelemetrySuccessEvent,
     };
-    use otap_df_telemetry::metrics::{MetricSetSnapshot, MetricValue};
-    use otap_df_telemetry::registry::MetricSetKey;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::metrics::{MetricSetSnapshot, MetricValue};
+    use otel_arrow_dfe_telemetry::registry::MetricSetKey;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -1360,7 +1360,7 @@ mod tests {
 
     fn create_test_pipeline_context()
     -> (PipelineContext, crate::entity_context::PipelineEntityScope) {
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_context_params = PipelineContextParams {
             pipeline_group_id: Default::default(),
@@ -1411,7 +1411,7 @@ mod tests {
         let (_memory_pressure_tx, memory_pressure_rx) =
             watch::channel(MemoryPressureChanged::initial());
 
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
         let observed_state_store =
             ObservedStateStore::new(&ObservedStateSettings::default(), metrics_system.registry());
@@ -1885,7 +1885,7 @@ mod tests {
             .run_until(async {
                 let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(10);
                 // Create a dummy MetricsReporter for testing
-                let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+                let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
                 let metrics_reporter = metrics_system.reporter();
                 let observed_state_store = ObservedStateStore::new(
                     &ObservedStateSettings::default(),
@@ -2840,7 +2840,7 @@ mod tests {
             control_senders.register(node.clone(), *nt, sender);
         }
 
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         // Create a reporter with a receiver so tests can collect snapshots.
         let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let observed_state_store =
@@ -3056,11 +3056,11 @@ mod tests {
         values: &[MetricValue],
         index: usize,
         msg: &str,
-    ) -> otap_df_telemetry::instrument::Mmsc {
+    ) -> otel_arrow_dfe_telemetry::instrument::Mmsc {
         match &values[index] {
-            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
-                mmsc,
-            )) => **mmsc,
+            MetricValue::Distribution(
+                otel_arrow_dfe_telemetry::instrument::DistributionValue::Basic(mmsc),
+            ) => **mmsc,
             other => panic!("{msg}: expected a basic-tier distribution, got {other:?}"),
         }
     }
@@ -3180,7 +3180,7 @@ mod tests {
         flush_interval: Duration,
     ) -> RuntimeControlTelemetryHarness<PData> {
         let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(16);
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
@@ -3261,7 +3261,7 @@ mod tests {
         node_specs: Vec<(&'static str, NodeType, usize)>,
     ) -> MemoryPressureFanoutHarness<PData> {
         let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(16);
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
@@ -3386,7 +3386,7 @@ mod tests {
         reporter_channel_size: usize,
     ) -> CompletionTelemetryHarness {
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(16);
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let (snapshot_rx, metrics_reporter) =
             MetricsReporter::create_new_and_receiver(reporter_channel_size);
         let controller_context = ControllerContext::new(metrics_system.registry());

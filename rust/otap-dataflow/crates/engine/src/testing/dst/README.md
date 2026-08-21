@@ -12,7 +12,7 @@ directory are wired from `mod.rs` with `#[cfg(test)]`. In practice, that means:
 
 - the seeded scenario suites in this directory are compiled for engine test
   builds such as `cargo test`
-- they are not part of normal production builds of `otap-df-engine`
+- they are not part of normal production builds of `otel-arrow-dfe-engine`
 
 ## What DST is
 

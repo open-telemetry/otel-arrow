@@ -5,7 +5,7 @@
 //! OTAP data / record batches
 
 use arrow::array::RecordBatch;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use transform::transport_optimize::{
     RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH, apply_transport_optimized_encodings, remap_parent_ids,
     remove_transport_optimized_encodings,

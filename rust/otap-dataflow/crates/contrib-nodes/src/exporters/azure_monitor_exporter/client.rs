@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 
-use otap_df_telemetry::common_attributes::HttpResponse;
+use otel_arrow_dfe_telemetry::common_attributes::HttpResponse;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use reqwest::{
     Client,
@@ -334,8 +334,8 @@ fn http_response_for_status(status: u16) -> HttpResponse {
 mod tests {
     use super::super::metrics::AzureMonitorExporterMetricsTracker;
     use super::*;
-    use otap_df_engine::context::{ControllerContext, PipelineContext};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use reqwest::header::HeaderValue;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -367,7 +367,7 @@ mod tests {
     }
 
     fn create_test_http_client() -> Client {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn test_pool_create_http_clients() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
         let result = pool.create_http_clients(4, None);
@@ -736,7 +736,7 @@ mod tests {
 
     #[test]
     fn test_pool_create_http_clients_zero() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
         let result = pool.create_http_clients(0, None);
@@ -748,7 +748,7 @@ mod tests {
 
     #[test]
     fn test_pool_create_http_clients_with_user_agent() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
         let result = pool.create_http_clients(4, Some("my-app/1.0"));

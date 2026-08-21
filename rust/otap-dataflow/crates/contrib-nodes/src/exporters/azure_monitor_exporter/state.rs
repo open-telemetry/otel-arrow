@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use ahash::{AHashMap as HashMap, AHashSet as HashSet};
-use otap_df_otap::pdata::Context;
-use otap_df_pdata::OtapPayload;
+use otel_arrow_dfe_otap::pdata::Context;
+use otel_arrow_dfe_pdata::OtapPayload;
 
 /// Tracks relationships between batches <-> messages + their data.
 /// High-perf: uses AHashMap/AHashSet (fastest hashing for u64 keys).
@@ -143,9 +143,9 @@ impl AzureMonitorExporterState {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use otap_df_otap::pdata::Context;
-    use otap_df_pdata::PayloadData;
-    use otap_df_pdata::otlp::OtlpProtoBytes;
+    use otel_arrow_dfe_otap::pdata::Context;
+    use otel_arrow_dfe_pdata::PayloadData;
+    use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 
     /// Helper to create a test OtapPayload from bytes
     fn test_payload(data: &'static [u8]) -> OtapPayload {
@@ -154,7 +154,7 @@ mod tests {
 
     /// Helper to create an empty OtapPayload
     fn empty_payload() -> OtapPayload {
-        OtapPayload::empty(otap_df_config::SignalType::Logs)
+        OtapPayload::empty(otel_arrow_dfe_config::SignalType::Logs)
     }
 
     #[test]

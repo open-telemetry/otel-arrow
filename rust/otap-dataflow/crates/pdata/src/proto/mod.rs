@@ -92,7 +92,7 @@ pub mod opentelemetry {
 /// into OtapArrowRecords, this type does not.
 ///
 /// Note this could be considered for #[cfg(test)], however we are
-/// aware of uses in otap-df-otap's traffic generator and
+/// aware of uses in otel-arrow-dfe-otap's traffic generator and
 /// debug_processor.
 #[derive(Clone, Debug)]
 pub enum OtlpProtoMessage {
@@ -127,8 +127,8 @@ impl OtlpProtoMessage {
 
     /// Get the signal type.
     #[must_use]
-    pub fn signal_type(&self) -> otap_df_config::SignalType {
-        use otap_df_config::SignalType;
+    pub fn signal_type(&self) -> otel_arrow_dfe_config::SignalType {
+        use otel_arrow_dfe_config::SignalType;
         match self {
             Self::Logs(_) => SignalType::Logs,
             Self::Metrics(_) => SignalType::Metrics,

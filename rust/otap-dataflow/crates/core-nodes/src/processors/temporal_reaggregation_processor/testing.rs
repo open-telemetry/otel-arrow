@@ -7,37 +7,37 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use otap_df_config::SignalType;
-pub(super) use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::Interests;
-use otap_df_engine::context::{ControllerContext, PipelineContext};
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::SignalType;
+pub(super) use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::Interests;
+use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, NackMsg, NodeControlMsg, PipelineCompletionMsg, RouteData, UnwindData,
     pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
-use otap_df_engine::message::Message;
-pub(super) use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::testing::node::test_node;
-pub(super) use otap_df_engine::testing::processor::TestRuntime;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
-pub(super) use otap_df_pdata::otap::OtapArrowRecords;
-pub(super) use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
-pub(super) use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
-pub(super) use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+use otel_arrow_dfe_engine::message::Message;
+pub(super) use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_engine::testing::node::test_node;
+pub(super) use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::testing::{TestCallData, next_ack, next_nack};
+pub(super) use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+pub(super) use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
+pub(super) use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
+pub(super) use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
     HistogramDataPoint, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
     Summary, SummaryDataPoint,
 };
-pub(super) use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-use otap_df_pdata::testing::equiv::assert_equivalent;
-pub(super) use otap_df_pdata::testing::round_trip::{
+pub(super) use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
+pub(super) use otel_arrow_dfe_pdata::testing::round_trip::{
     otap_to_otlp, otlp_message_to_bytes, otlp_to_otap,
 };
-use otap_df_pdata::{OtapPayload, PayloadData};
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_pdata::{OtapPayload, PayloadData};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use serde_json;
 
 use super::{TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY, TEMPORAL_REAGGREGATION_PROCESSOR_URN};
@@ -256,8 +256,10 @@ pub(super) fn run_test(config: serde_json::Value, actions: Vec<Action>) {
 /// Drain the runtime control and pipeline completion channels, accumulating
 /// upstream ack/nack counts.
 pub(super) fn drain_upstream(
-    runtime_ctrl_rx: &mut otap_df_engine::control::RuntimeCtrlMsgReceiver<OtapPdata>,
-    pipeline_completion_rx: &mut otap_df_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
+    runtime_ctrl_rx: &mut otel_arrow_dfe_engine::control::RuntimeCtrlMsgReceiver<OtapPdata>,
+    pipeline_completion_rx: &mut otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<
+        OtapPdata,
+    >,
     ack_count: &mut usize,
     nack_count: &mut usize,
 ) {
@@ -298,7 +300,7 @@ pub(super) fn try_create_processor(
         node,
         Arc::new(node_config),
         rt.config(),
-        &otap_df_engine::capability::registry::Capabilities::empty(),
+        &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
     )
     .map(|proc| (rt, proc))
 }
@@ -310,22 +312,28 @@ pub(super) fn make_pdata(records: OtapArrowRecords) -> OtapPdata {
 
 /// Convert OTLP [`MetricsData`] into an [`OtapPdata`] via OTAP encoding.
 pub(super) fn make_otlp_pdata(metrics_data: MetricsData) -> OtapPdata {
-    let otap_records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
+    let otap_records = otlp_to_otap(&otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(
         metrics_data,
     ));
     OtapPdata::new_default(OtapPayload::from(otap_records))
 }
 
 pub(super) fn create_traces_payload() -> OtapPayload {
-    let mut datagen = otap_df_pdata::testing::fixtures::DataGenerator::new(3);
+    let mut datagen = otel_arrow_dfe_pdata::testing::fixtures::DataGenerator::new(3);
     let traces_data = datagen.generate_traces();
-    otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Traces(traces_data)).into()
+    otlp_to_otap(&otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Traces(
+        traces_data,
+    ))
+    .into()
 }
 
 pub(super) fn create_logs_payload() -> OtapPayload {
-    let mut datagen = otap_df_pdata::testing::fixtures::DataGenerator::new(3);
+    let mut datagen = otel_arrow_dfe_pdata::testing::fixtures::DataGenerator::new(3);
     let logs_data = datagen.generate_logs();
-    otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Logs(logs_data)).into()
+    otlp_to_otap(&otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Logs(
+        logs_data,
+    ))
+    .into()
 }
 
 pub(super) fn create_test_pipeline_context() -> PipelineContext {
@@ -336,11 +344,11 @@ pub(super) fn create_test_pipeline_context() -> PipelineContext {
 
 /// Convert any [`OtapPayload`] variant into an [`OtlpProtoMessage`] for
 /// equivalence comparison.
-fn payload_to_otlp(payload: &OtapPayload) -> otap_df_pdata::proto::OtlpProtoMessage {
+fn payload_to_otlp(payload: &OtapPayload) -> otel_arrow_dfe_pdata::proto::OtlpProtoMessage {
     match payload.data() {
         PayloadData::OtapArrowRecords(records) => otap_to_otlp(records),
         PayloadData::OtlpBytes(bytes) => {
-            otap_df_pdata::testing::round_trip::otlp_bytes_to_message(bytes.clone())
+            otel_arrow_dfe_pdata::testing::round_trip::otlp_bytes_to_message(bytes.clone())
         }
     }
 }
@@ -365,14 +373,16 @@ pub(super) fn assert_output_otlp_equivalent(output: &OtapPdata, expected: Metric
     };
     assert_equivalent(
         &[otap_to_otlp(actual)],
-        &[otap_df_pdata::proto::OtlpProtoMessage::Metrics(expected)],
+        &[otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(
+            expected,
+        )],
     );
 }
 
 /// Encode OTLP [`MetricsData`] into serialized protobuf bytes and wrap
 /// as an [`OtapPdata`] with an [`OtlpBytes`] payload.
 pub(super) fn make_otlp_bytes_pdata(metrics_data: MetricsData) -> OtapPdata {
-    let msg = otap_df_pdata::proto::OtlpProtoMessage::Metrics(metrics_data);
+    let msg = otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(metrics_data);
     let otlp_bytes = otlp_message_to_bytes(&msg);
     OtapPdata::new_default(OtapPayload::from(otlp_bytes))
 }
@@ -516,7 +526,7 @@ pub(super) fn make_mixed_metrics() -> MetricsData {
 
 /// Convert OTLP [`MetricsData`] into an [`OtapPayload`] via OTAP encoding.
 pub(super) fn make_otap_payload_from_metrics(metrics_data: MetricsData) -> OtapPayload {
-    let records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
+    let records = otlp_to_otap(&otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(
         metrics_data,
     ));
     OtapPayload::from(records)
@@ -524,14 +534,14 @@ pub(super) fn make_otap_payload_from_metrics(metrics_data: MetricsData) -> OtapP
 
 /// Convert OTLP [`MetricsData`] into an [`OtapPayload`] via OTAP encoding.
 pub(super) fn make_otlp_payload_from_metrics(metrics_data: MetricsData) -> OtapPayload {
-    let msg = otap_df_pdata::proto::OtlpProtoMessage::Metrics(metrics_data);
+    let msg = otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(metrics_data);
     let otlp_bytes = otlp_message_to_bytes(&msg);
     OtapPayload::from(otlp_bytes)
 }
 
 /// Build a mixed metrics OtapPayload (aggregatable + non-aggregatable).
 pub(super) fn make_mixed_metrics_payload() -> OtapPayload {
-    let records = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Metrics(
+    let records = otlp_to_otap(&otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(
         make_mixed_metrics(),
     ));
     OtapPayload::from(records)
@@ -542,7 +552,7 @@ pub(super) fn make_mixed_metrics_payload() -> OtapPayload {
 pub(super) fn assert_output_metric_count(output: &OtapPdata, expected: usize) {
     let otlp = payload_to_otlp(output.payload_ref());
     let md = match otlp {
-        otap_df_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
+        otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
         other => panic!("expected Metrics, got {other:?}"),
     };
     let count: usize = md
@@ -609,7 +619,7 @@ pub(super) fn nack_with_calldata(calldata: CallData, reason: &str) -> NackMsg<Ot
             return_time_ns: 0,
         },
         permanent: false,
-        cause: otap_df_engine::control::NackCause::Unspecified,
+        cause: otel_arrow_dfe_engine::control::NackCause::Unspecified,
     }
 }
 pub(super) fn make_n_histogram_metrics_with_offset(n: usize, offset: usize) -> MetricsData {

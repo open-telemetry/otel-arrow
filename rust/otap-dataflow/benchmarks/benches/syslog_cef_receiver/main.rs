@@ -30,9 +30,9 @@
 #![allow(missing_docs)]
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_core_nodes::receivers::syslog_cef_receiver::arrow_records_encoder::ArrowRecordsBuilder;
-use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::bench_support;
-use otap_df_core_nodes::receivers::syslog_cef_receiver::parser::cef::parse_cef;
+use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::arrow_records_encoder::ArrowRecordsBuilder;
+use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::parser::bench_support;
+use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::parser::cef::parse_cef;
 use std::hint::black_box;
 
 #[cfg(not(windows))]

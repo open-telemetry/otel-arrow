@@ -20,17 +20,19 @@ use std::collections::HashMap;
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_config::observed_state::SendPolicy;
-use otap_df_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
-use otap_df_config::pipeline::telemetry::TelemetryConfig;
-use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc, ObserveCounter, ObserveUpDownCounter};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::metrics::otlp::{
+use otel_arrow_dfe_config::observed_state::SendPolicy;
+use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
+use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
+use otel_arrow_dfe_telemetry::instrument::{
+    Counter, Gauge, Mmsc, ObserveCounter, ObserveUpDownCounter,
+};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::metrics::otlp::{
     MetricView, MetricViewSelector, MetricViewStream, MetricsOtlpEncoder,
 };
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::{InternalTelemetrySystem, LogContext};
-use otap_df_telemetry_macros::{attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
+use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -108,8 +110,8 @@ impl BenchmarkMetrics {
 struct BridgeBenchmark {
     _telemetry: InternalTelemetrySystem,
     registry: TelemetryRegistryHandle,
-    collector: std::sync::Arc<otap_df_telemetry::collector::InternalCollector>,
-    reporter: otap_df_telemetry::reporter::MetricsReporter,
+    collector: std::sync::Arc<otel_arrow_dfe_telemetry::collector::InternalCollector>,
+    reporter: otel_arrow_dfe_telemetry::reporter::MetricsReporter,
     metric_sets: Vec<MetricSet<BenchmarkMetrics>>,
     encoder: MetricsOtlpEncoder,
 }

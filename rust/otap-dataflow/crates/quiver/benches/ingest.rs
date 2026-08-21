@@ -25,10 +25,12 @@ use arrow_array::RecordBatch;
 use arrow_array::builder::{Int64Builder, StringBuilder};
 use arrow_schema::{DataType, Field, Schema};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use quiver::budget::DiskBudget;
-use quiver::config::{QuiverConfig, RetentionPolicy, SegmentConfig, WalConfig};
-use quiver::engine::QuiverEngine;
-use quiver::record_bundle::{BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId};
+use otel_arrow_dfe_quiver::budget::DiskBudget;
+use otel_arrow_dfe_quiver::config::{QuiverConfig, RetentionPolicy, SegmentConfig, WalConfig};
+use otel_arrow_dfe_quiver::engine::QuiverEngine;
+use otel_arrow_dfe_quiver::record_bundle::{
+    BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
+};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 

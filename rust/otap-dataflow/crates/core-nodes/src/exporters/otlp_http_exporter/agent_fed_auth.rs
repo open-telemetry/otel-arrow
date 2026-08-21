@@ -6,9 +6,9 @@
 use std::time::{Duration, Instant};
 
 use http::HeaderValue;
-use otap_df_engine::capability::CapabilityError;
-use otap_df_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
-use otap_df_engine::local::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider;
+use otel_arrow_dfe_engine::capability::CapabilityError;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
+use otel_arrow_dfe_engine::local::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider;
 
 const CREDENTIAL_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 const CREDENTIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -140,9 +140,9 @@ pub(crate) enum AgentFedAuthError {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use otap_df_engine::capability::CapabilityErrorSource;
-    use otap_df_engine::capability::auth::BearerToken;
-    use otap_df_engine::capability::auth::agent_fed_credential_provider::{
+    use otel_arrow_dfe_engine::capability::CapabilityErrorSource;
+    use otel_arrow_dfe_engine::capability::auth::BearerToken;
+    use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::{
         AgentFedCredentialProvider as AgentFedCredentialProviderCap, AgentFedCredentialSnapshot,
     };
     use serde_json::Map;

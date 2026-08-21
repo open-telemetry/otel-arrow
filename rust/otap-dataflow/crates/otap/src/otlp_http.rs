@@ -16,7 +16,7 @@ use crate::otap_grpc::otlp::server_new::AckSlot;
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
 use crate::socket_options;
-use otap_df_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
+use otel_arrow_dfe_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
 
 use bytes::Bytes;
 use http::{HeaderValue, Method, Request, Response, StatusCode};
@@ -25,19 +25,19 @@ use hyper::body::Body;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use otap_df_config::SignalType;
-use otap_df_config::byte_units;
-use otap_df_config::transport_headers::TransportHeaders;
-use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
-use otap_df_engine::shared::receiver::EffectHandler;
-use otap_df_engine::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::byte_units;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState;
+use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
+use otel_arrow_dfe_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
-use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
-use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
-use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
+use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use prost::Message;
 use prost_types::Any;
@@ -52,7 +52,7 @@ use tokio_util::task::TaskTracker;
 use zstd::stream::read::Decoder as ZstdDecoder;
 
 use crate::tls_utils::build_tls_acceptor;
-use otap_df_config::tls::TlsServerConfig;
+use otel_arrow_dfe_config::tls::TlsServerConfig;
 
 pub mod client_settings;
 
@@ -402,7 +402,7 @@ fn decode_content_encoding(
             let err_msg = e.to_string();
             if err_msg.contains("decoded body too large") {
                 // Size limit exceeded
-                otap_df_telemetry::otel_debug!(
+                otel_arrow_dfe_telemetry::otel_debug!(
                     "otlp_http_receiver.request_rejected",
                     reason = "decompressed_size_exceeded",
                     encoding = "gzip",
@@ -412,7 +412,7 @@ fn decode_content_encoding(
                 DecodeContentError::payload_too_large(limited_body_too_large())
             } else {
                 // Format/corruption error
-                otap_df_telemetry::otel_debug!(
+                otel_arrow_dfe_telemetry::otel_debug!(
                     "otlp_http_receiver.request_rejected",
                     reason = "invalid_encoding",
                     encoding = "gzip",
@@ -432,7 +432,7 @@ fn decode_content_encoding(
             let err_msg = e.to_string();
             if err_msg.contains("decoded body too large") {
                 // Size limit exceeded
-                otap_df_telemetry::otel_debug!(
+                otel_arrow_dfe_telemetry::otel_debug!(
                     "otlp_http_receiver.request_rejected",
                     reason = "decompressed_size_exceeded",
                     encoding = "deflate",
@@ -442,7 +442,7 @@ fn decode_content_encoding(
                 DecodeContentError::payload_too_large(limited_body_too_large())
             } else {
                 // Format/corruption error
-                otap_df_telemetry::otel_debug!(
+                otel_arrow_dfe_telemetry::otel_debug!(
                     "otlp_http_receiver.request_rejected",
                     reason = "invalid_encoding",
                     encoding = "deflate",
@@ -459,7 +459,7 @@ fn decode_content_encoding(
     } else if encoding.eq_ignore_ascii_case("zstd") {
         let mut decoder = ZstdDecoder::new(body.as_ref()).map_err(|e| {
             let err_msg = e.to_string();
-            otap_df_telemetry::otel_debug!(
+            otel_arrow_dfe_telemetry::otel_debug!(
                 "otlp_http_receiver.request_rejected",
                 reason = "invalid_encoding",
                 encoding = "zstd",
@@ -475,7 +475,7 @@ fn decode_content_encoding(
         let decoded = read_to_end_limited(&mut decoder, max_len).map_err(|e| {
             let err_msg = e.to_string();
             if err_msg.contains("decoded body too large") {
-                otap_df_telemetry::otel_debug!(
+                otel_arrow_dfe_telemetry::otel_debug!(
                     "otlp_http_receiver.request_rejected",
                     reason = "decompressed_size_exceeded",
                     encoding = "zstd",
@@ -484,7 +484,7 @@ fn decode_content_encoding(
                 );
                 DecodeContentError::payload_too_large(limited_body_too_large())
             } else {
-                otap_df_telemetry::otel_debug!(
+                otel_arrow_dfe_telemetry::otel_debug!(
                     "otlp_http_receiver.request_rejected",
                     reason = "invalid_encoding",
                     encoding = "zstd",
@@ -629,7 +629,7 @@ impl HttpHandler {
                     Ok(Ok(permit)) => Some(permit),
                     Ok(Err(_)) => {
                         // Semaphore closed (shouldn't happen)
-                        otap_df_telemetry::otel_error!(
+                        otel_arrow_dfe_telemetry::otel_error!(
                             "otlp_http_receiver.semaphore_closed",
                             kind = "global",
                             path = path_for_fut.as_str()
@@ -638,7 +638,7 @@ impl HttpHandler {
                         return Err(internal_error());
                     }
                     Err(_) => {
-                        otap_df_telemetry::otel_warn!(
+                        otel_arrow_dfe_telemetry::otel_warn!(
                             "otlp_http_receiver.request_rejected",
                             reason = "global_concurrency_limit_timeout",
                             path = path_for_fut.as_str(),
@@ -669,7 +669,7 @@ impl HttpHandler {
                 Ok(Ok(permit)) => permit,
                 Ok(Err(_)) => {
                     // Semaphore closed (shouldn't happen)
-                    otap_df_telemetry::otel_error!(
+                    otel_arrow_dfe_telemetry::otel_error!(
                         "otlp_http_receiver.semaphore_closed",
                         kind = "local",
                         path = path_for_fut.as_str()
@@ -679,7 +679,7 @@ impl HttpHandler {
                 }
                 Err(_) => {
                     // Timeout waiting for permit
-                    otap_df_telemetry::otel_warn!(
+                    otel_arrow_dfe_telemetry::otel_warn!(
                         "otlp_http_receiver.request_rejected",
                         reason = "concurrency_limit_timeout",
                         path = path_for_fut.as_str(),
@@ -717,7 +717,7 @@ impl HttpHandler {
             let size_hint = body.size_hint();
             if let Some(upper) = size_hint.upper() {
                 if (upper as usize) > max_len {
-                    otap_df_telemetry::otel_debug!(
+                    otel_arrow_dfe_telemetry::otel_debug!(
                         "otlp_http_receiver.request_rejected",
                         reason = "body_too_large_hint",
                         max_len = max_len,
@@ -731,7 +731,7 @@ impl HttpHandler {
 
             let collected = Limited::new(body, max_len).collect().await.map_err(|e| {
                 if e.downcast_ref::<LengthLimitError>().is_some() {
-                    otap_df_telemetry::otel_debug!(
+                    otel_arrow_dfe_telemetry::otel_debug!(
                         "otlp_http_receiver.request_rejected",
                         reason = "body_too_large_collected",
                         max_len = max_len,
@@ -741,7 +741,7 @@ impl HttpHandler {
                     return limited_body_too_large();
                 }
 
-                otap_df_telemetry::otel_warn!(
+                otel_arrow_dfe_telemetry::otel_warn!(
                     "otlp_http_receiver.body_collection_failed",
                     error = e.to_string()
                 );
@@ -851,7 +851,7 @@ impl HttpHandler {
                 .await
                 .is_err()
             {
-                otap_df_telemetry::otel_warn!(
+                otel_arrow_dfe_telemetry::otel_warn!(
                     "otlp_http_receiver.pipeline_send_failed",
                     path = parts.uri.path().to_string(),
                     signal = format!("{:?}", signal)
@@ -863,7 +863,7 @@ impl HttpHandler {
                 match rx.await {
                     Ok(Ok(())) => {}
                     Ok(Err(nack)) => {
-                        otap_df_telemetry::otel_debug!(
+                        otel_arrow_dfe_telemetry::otel_debug!(
                             "otlp_http_receiver.request_nacked",
                             reason = nack.reason.as_str(),
                             signal = format!("{:?}", signal)
@@ -888,7 +888,7 @@ impl HttpHandler {
             match tokio::time::timeout(timeout_duration, fut).await {
                 Ok(inner) => inner,
                 Err(_) => {
-                    otap_df_telemetry::otel_warn!(
+                    otel_arrow_dfe_telemetry::otel_warn!(
                         "otlp_http_receiver.request_timeout",
                         path = path.as_str(),
                         timeout_ms = timeout_duration.as_millis() as u64,
@@ -984,7 +984,7 @@ pub async fn serve(
                 ) {
                     Ok(s) => s,
                     Err(e) => {
-                        otap_df_telemetry::otel_warn!(
+                        otel_arrow_dfe_telemetry::otel_warn!(
                             "otlp_http_receiver.socket_options_failed",
                             peer = peer_addr.to_string(),
                             error = e.to_string(),
@@ -1024,7 +1024,7 @@ pub async fn serve(
                         tokio::select! {
                             res = &mut conn => {
                                 if let Err(err) = res {
-                                    otap_df_telemetry::otel_debug!("otlp_http_receiver.connection_error", error = err.to_string());
+                                    otel_arrow_dfe_telemetry::otel_debug!("otlp_http_receiver.connection_error", error = err.to_string());
                                 }
                             },
                             _ = shutdown.cancelled() => {
@@ -1047,7 +1047,7 @@ pub async fn serve(
                     tokio::select! {
                         res = &mut conn => {
                             if let Err(err) = res {
-                                otap_df_telemetry::otel_debug!("otlp_http_receiver.connection_error", error = err.to_string());
+                                otel_arrow_dfe_telemetry::otel_debug!("otlp_http_receiver.connection_error", error = err.to_string());
                             }
                         },
                         _ = shutdown.cancelled() => {
@@ -1073,7 +1073,7 @@ pub async fn serve(
         .await
         .is_err()
     {
-        otap_df_telemetry::otel_warn!(
+        otel_arrow_dfe_telemetry::otel_warn!(
             "otlp_http_receiver.shutdown_timeout",
             timeout_ms = drain_timeout.as_millis() as u64,
             message = "Timed out waiting for in-flight HTTP requests to drain"
@@ -1087,14 +1087,14 @@ pub async fn serve(
 mod tests {
     use super::*;
 
-    use otap_df_engine::admission::{AdmissionBinder, AdmissionDimension};
-    use otap_df_engine::memory_limiter::{MemoryPressureLevel, MemoryPressureState};
+    use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionDimension};
+    use otel_arrow_dfe_engine::memory_limiter::{MemoryPressureLevel, MemoryPressureState};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
 
     fn shared_rate_gate(
-        policy: otap_df_config::policy::RateLimiterPolicy,
+        policy: otel_arrow_dfe_config::policy::RateLimiterPolicy,
         admission: SharedReceiverAdmissionState,
     ) -> SharedAdmissionGate {
         AdmissionBinder::configured("test", policy)
@@ -1117,17 +1117,17 @@ mod tests {
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST};
         use hyper_util::rt::TokioIo;
-        use otap_df_engine::control::runtime_ctrl_msg_channel;
-        use otap_df_engine::shared::message::SharedSender;
-        use otap_df_engine::testing::test_node;
-        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
         use tokio::net::TcpStream;
         use tokio::sync::mpsc as tokio_mpsc;
         use tokio_util::sync::CancellationToken;
 
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
         // Minimal shared receiver plumbing.
@@ -1149,7 +1149,7 @@ mod tests {
 
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
@@ -1223,7 +1223,7 @@ mod tests {
 
         // Send ACK back
         if let Some((_, ack)) =
-            crate::testing::next_ack(otap_df_engine::control::AckMsg::new(received))
+            crate::testing::next_ack(otel_arrow_dfe_engine::control::AckMsg::new(received))
         {
             let _ = crate::otap_grpc::common::route_ack_response(&ack_registry, ack);
         }
@@ -1245,18 +1245,18 @@ mod tests {
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST};
         use hyper_util::rt::TokioIo;
-        use otap_df_engine::control::runtime_ctrl_msg_channel;
-        use otap_df_engine::shared::message::SharedSender;
-        use otap_df_engine::testing::test_node;
-        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
         use tokio::net::TcpStream;
         use tokio::sync::mpsc as tokio_mpsc;
         use tokio_util::sync::CancellationToken;
 
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
         let (msg_tx, mut msg_rx) = tokio_mpsc::channel(1);
@@ -1282,7 +1282,7 @@ mod tests {
 
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
@@ -1366,19 +1366,19 @@ mod tests {
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
         use hyper_util::rt::TokioIo;
-        use otap_df_engine::control::runtime_ctrl_msg_channel;
-        use otap_df_engine::memory_limiter::MemoryPressureLevel;
-        use otap_df_engine::shared::message::SharedSender;
-        use otap_df_engine::testing::test_node;
-        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
         use tokio::net::TcpStream;
         use tokio::sync::Semaphore;
         use tokio::sync::mpsc as tokio_mpsc;
         use tokio_util::sync::CancellationToken;
 
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
         let gate = Arc::new(Semaphore::new(1));
@@ -1411,7 +1411,7 @@ mod tests {
 
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
@@ -1472,12 +1472,14 @@ mod tests {
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        admission_state.apply(otap_df_engine::memory_limiter::MemoryPressureChanged {
-            generation: 1,
-            level: MemoryPressureLevel::Hard,
-            retry_after_secs: 1,
-            usage_bytes: 0,
-        });
+        admission_state.apply(
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged {
+                generation: 1,
+                level: MemoryPressureLevel::Hard,
+                retry_after_secs: 1,
+                usage_bytes: 0,
+            },
+        );
         drop(held_permit);
 
         let (status, retry_after) = tokio::time::timeout(Duration::from_secs(2), response)
@@ -1520,17 +1522,17 @@ mod tests {
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST};
         use hyper_util::rt::TokioIo;
-        use otap_df_engine::control::runtime_ctrl_msg_channel;
-        use otap_df_engine::shared::message::SharedSender;
-        use otap_df_engine::testing::test_node;
-        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
         use tokio::net::TcpStream;
         use tokio::sync::mpsc as tokio_mpsc;
         use tokio_util::sync::CancellationToken;
 
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
         let (msg_tx, mut msg_rx) = tokio_mpsc::channel(4);
@@ -1551,7 +1553,7 @@ mod tests {
 
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
@@ -1611,12 +1613,14 @@ mod tests {
             tokio::spawn(async move { sender.send_request(req).await.unwrap().status() });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        admission_state.apply(otap_df_engine::memory_limiter::MemoryPressureChanged {
-            generation: 1,
-            level: MemoryPressureLevel::Soft,
-            retry_after_secs: 1,
-            usage_bytes: 0,
-        });
+        admission_state.apply(
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged {
+                generation: 1,
+                level: MemoryPressureLevel::Soft,
+                retry_after_secs: 1,
+                usage_bytes: 0,
+            },
+        );
         drop(held_permit);
 
         let status = tokio::time::timeout(Duration::from_secs(2), response)
@@ -1661,21 +1665,21 @@ mod tests {
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
         use hyper_util::rt::TokioIo;
-        use otap_df_config::policy::{
+        use otel_arrow_dfe_config::policy::{
             RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
             RateLimiterPolicy, TokenBucketPolicy,
         };
-        use otap_df_engine::control::runtime_ctrl_msg_channel;
-        use otap_df_engine::memory_limiter::MemoryPressureChanged;
-        use otap_df_engine::shared::message::SharedSender;
-        use otap_df_engine::testing::test_node;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
         use tokio::net::TcpStream;
         use tokio::sync::mpsc as tokio_mpsc;
         use tokio_util::sync::CancellationToken;
 
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
         let (msg_tx, _msg_rx) = tokio_mpsc::channel(4);
@@ -1701,7 +1705,7 @@ mod tests {
 
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
@@ -1817,21 +1821,21 @@ mod tests {
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
         use hyper_util::rt::TokioIo;
-        use otap_df_config::policy::{
+        use otel_arrow_dfe_config::policy::{
             RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
             RateLimiterPolicy, TokenBucketPolicy,
         };
-        use otap_df_engine::control::runtime_ctrl_msg_channel;
-        use otap_df_engine::memory_limiter::MemoryPressureChanged;
-        use otap_df_engine::shared::message::SharedSender;
-        use otap_df_engine::testing::test_node;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
         use tokio::net::TcpStream;
         use tokio::sync::mpsc as tokio_mpsc;
         use tokio_util::sync::CancellationToken;
 
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
         let (msg_tx, _msg_rx) = tokio_mpsc::channel(4);
@@ -1857,7 +1861,7 @@ mod tests {
 
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));

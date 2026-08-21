@@ -9,7 +9,7 @@ use super::table::{TableColumn, render_table, visible_width};
 use crate::args::ColorChoice;
 use crate::style::HumanStyle;
 use crate::troubleshoot::{GroupShutdownWatchPipeline, GroupShutdownWatchSnapshot};
-use otap_df_admin_api::{engine, pipelines, telemetry};
+use otel_arrow_dfe_admin_api::{engine, pipelines, telemetry};
 use serde_json::json;
 
 fn no_color_style() -> HumanStyle {

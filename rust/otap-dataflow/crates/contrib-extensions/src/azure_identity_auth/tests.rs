@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
 use azure_core::time::{Duration as AzureDuration, OffsetDateTime};
 use futures::StreamExt;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::testing::EmptyAttributes;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use tokio::sync::watch;
 
 use super::auth::Auth;
@@ -140,8 +140,8 @@ fn factory_is_registered_with_capability() {
 /// Invokes the factory's `create` hook with `config` against a throwaway
 /// extension context, mirroring how the engine wires the extension.
 fn create_bundle(config: serde_json::Value) -> Result<ExtensionBundle, ConfigError> {
-    let (ext_ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
-    let name: otap_df_config::ExtensionId = "azure-identity-auth".into();
+    let (ext_ctx, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
+    let name: otel_arrow_dfe_config::ExtensionId = "azure-identity-auth".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
         AZURE_IDENTITY_AUTH_URN.into(),
         config,
@@ -154,7 +154,7 @@ fn create_bundle(config: serde_json::Value) -> Result<ExtensionBundle, ConfigErr
 // Guarantees: Wiring succeeds and yields a shared, active extension bundle usable by the engine.
 #[test]
 fn create_builds_a_shared_active_bundle() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let bundle = create_bundle(serde_json::json!({ "method": "managed_identity" }))
         .expect("a valid config wires successfully");
     assert!(
@@ -187,14 +187,14 @@ fn create_rejects_an_invalid_config() {
 
 #[test]
 fn managed_identity_system_assigned_credential_constructs() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let cfg = config_from_json(serde_json::json!({ "method": "managed_identity" })).unwrap();
     assert!(Auth::new(&cfg).is_ok());
 }
 
 #[test]
 fn managed_identity_user_assigned_credential_constructs() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let cfg = config_from_json(serde_json::json!({
         "method": "managed_identity",
         "client_id": "00000000-0000-0000-0000-000000000000",
@@ -205,14 +205,14 @@ fn managed_identity_user_assigned_credential_constructs() {
 
 #[test]
 fn development_credential_constructs() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let cfg = config_from_json(serde_json::json!({ "method": "development" })).unwrap();
     assert!(Auth::new(&cfg).is_ok());
 }
 
 #[test]
 fn workload_identity_credential_construct_is_attempted() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let cfg = config_from_json(serde_json::json!({
         "method": "workload_identity",
         "client_id": "test-client",
@@ -419,7 +419,7 @@ fn metrics_tracker_records_snapshots_and_reports() {
 
     // Reporting flushes the recorded metrics to the telemetry channel.
     let (rx, mut reporter) =
-        otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
     tracker.report(&mut reporter).expect("report succeeds");
     assert!(
         rx.try_recv().is_ok(),

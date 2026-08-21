@@ -4,8 +4,8 @@
 //! Reusable bounded-cardinality attributes and attribute sets for internal telemetry metrics.
 
 use crate::attributes::AttributeEnum;
-use otap_df_config::SignalType;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set};
 
 // SignalType belongs to the configuration model because it describes pipeline
 // data independently of telemetry. Implement the telemetry-specific trait here

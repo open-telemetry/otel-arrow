@@ -444,7 +444,7 @@ pub trait RegistrationMetricSetHandler: MetricSetHandler + Default {
     type RegistrationAttributes: AttributeSetHandler;
 }
 
-/// Implementation detail used by generated [`metric_set`](otap_df_telemetry_macros::metric_set)
+/// Implementation detail used by generated [`metric_set`](otel_arrow_dfe_telemetry_macros::metric_set)
 /// `register` methods.
 ///
 /// This trait is public so macro expansions can use it outside this crate.

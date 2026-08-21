@@ -17,9 +17,9 @@ use arrow::array::{
     UInt8Builder, make_array,
 };
 use arrow::datatypes::{DataType, Field, Schema};
-use otap_df_pdata::otap::transform::util::take_record_batch_ranges;
-use otap_df_pdata::otlp::attributes::AttributeValueType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_pdata::otap::transform::util::take_record_batch_ranges;
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::schema::consts;
 use smallvec::SmallVec;
 
 use crate::error::{Error, Result};

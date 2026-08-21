@@ -7,28 +7,28 @@
 use crate::ValidationInstructions;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::NodeId as NodeName;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::transport_headers::TransportHeaders;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::TryFromWithOptions;
-use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_error;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_config::NodeId as NodeName;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_engine::ExporterFactory;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::TryFromWithOptions;
+use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::otel_error;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -64,20 +64,20 @@ fn default_idle_timeout_secs() -> u64 {
 struct ValidationExporterMetrics {
     /// Number of validation checks that did not match expectation
     #[metric(name = "check.failed", unit = "{check}")]
-    failed_checks: otap_df_telemetry::instrument::Counter<u64>,
+    failed_checks: otel_arrow_dfe_telemetry::instrument::Counter<u64>,
     /// Number of validation checks that did match expectation
     #[metric(name = "check.passed", unit = "{check}")]
-    passed_checks: otap_df_telemetry::instrument::Counter<u64>,
+    passed_checks: otel_arrow_dfe_telemetry::instrument::Counter<u64>,
     /// The value of the last comparison result
     /// 0 -> not valid
     /// 1 -> valid
     #[metric(unit = "{input}")]
-    valid: otap_df_telemetry::instrument::Gauge<u64>,
+    valid: otel_arrow_dfe_telemetry::instrument::Gauge<u64>,
     /// Whether the exporter has finished processing
     /// 0 -> still receiving / processing
     /// 1 -> idle timeout reached, final validation performed
     #[metric(unit = "{state}")]
-    finished: otap_df_telemetry::instrument::Gauge<u64>,
+    finished: otel_arrow_dfe_telemetry::instrument::Gauge<u64>,
 }
 
 /// Exporter that compares control and suv pipeline outputs and reports equivalence metrics.
@@ -102,20 +102,23 @@ pub struct ValidationExporter {
 /// Distributed-slice factory that registers the validation exporter with the engine.
 pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory {
     name: VALIDATION_EXPORTER_URN,
-    create: |pipeline_ctx: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ExporterWrapper::local(
-            ValidationExporter::from_config(pipeline_ctx, &node_config.config)?,
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<ValidationExporterConfig>,
+    create:
+        |pipeline_ctx: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ExporterWrapper::local(
+                ValidationExporter::from_config(pipeline_ctx, &node_config.config)?,
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+        ValidationExporterConfig,
+    >,
 };
 
 impl ValidationExporter {
@@ -153,7 +156,7 @@ impl ValidationExporter {
         let metrics = pipeline_ctx.register_metrics::<ValidationExporterMetrics>();
         let config: ValidationExporterConfig =
             serde_json::from_value(config.clone()).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: e.to_string(),
                 }
             })?;

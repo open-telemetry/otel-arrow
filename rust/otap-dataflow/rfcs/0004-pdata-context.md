@@ -160,7 +160,7 @@ policies:
 
 ### Authorized Identity context entries
 
-The new policies match `otap_df_engine::capability::auth::models::authorized_identity`.
+The new policies match `otel_arrow_dfe_engine::capability::auth::models::authorized_identity`.
 
 ```yaml
 policies:
@@ -430,7 +430,7 @@ As an example, the context arrival source binding consists of:
 
 ```rust
 /// Pdata context is an existing type.
-type PdataContext = otap_df_pdata::pdata::Context;
+type PdataContext = otel_arrow_dfe_pdata::pdata::Context;
 
 /// Compute a context for a new arrival.
 pub trait PdataContextArrivalSource {

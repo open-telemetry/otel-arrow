@@ -14,7 +14,7 @@ use crate::mapping::Scale;
 /// `HistogramView` can be shared freely once obtained.
 ///
 /// ```
-/// use otap_df_expohisto::HistogramNN;
+/// use otel_arrow_dfe_expohisto::HistogramNN;
 ///
 /// let mut h: HistogramNN<16> = HistogramNN::new();
 /// h.update(1.5).unwrap();
@@ -86,7 +86,7 @@ impl<const N: usize> HistogramView<'_, N> {
     /// push them straight into its output.
     ///
     /// ```
-    /// use otap_df_expohisto::HistogramNN;
+    /// use otel_arrow_dfe_expohisto::HistogramNN;
     ///
     /// let mut h: HistogramNN<16> = HistogramNN::new();
     /// for v in [0.0, 0.0, 1.5, 2.7] {

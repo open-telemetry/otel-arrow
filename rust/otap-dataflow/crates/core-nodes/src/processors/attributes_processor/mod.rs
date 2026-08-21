@@ -32,39 +32,41 @@
 //!   # apply_to: ["signal", "resource"]  # Optional; defaults to ["signal"]
 //! ```
 //!
-//! Implementation uses otap_df_pdata::otap::transform::transform_attributes for
+//! Implementation uses otel_arrow_dfe_pdata::otap::transform::transform_attributes for
 //! efficient batch processing of Arrow record batches.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = ATTRIBUTES_PROCESSOR_URN,
     target = "otel.processor.attribute",
 );
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::process_duration::ComputeDuration;
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, opaque_string::OpaqueString, pdata::OtapPdata};
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otap::transform::apply_attribute_transform;
-use otap_df_pdata::otap::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::process_duration::ComputeDuration;
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_otap::{
+    OTAP_PROCESSOR_FACTORIES, opaque_string::OpaqueString, pdata::OtapPdata,
+};
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otap::transform::apply_attribute_transform;
+use otel_arrow_dfe_pdata::otap::{
     OtapArrowRecords,
     transform::{
         AttributesTransform, DeleteTransform, HashSpec, HashTransform, InsertTransform,
         LiteralValue, RenameTransform, UpdateTransform, UpsertTransform,
     },
 };
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::SmallVec;
@@ -202,7 +204,7 @@ impl AttributesProcessor {
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let cfg: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse AttributesProcessor configuration: {e}"),
@@ -214,7 +216,7 @@ impl AttributesProcessor {
     fn new(
         pipeline_ctx: PipelineContext,
         config: Config,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
         let mut inserts = BTreeMap::new();
@@ -303,11 +305,11 @@ impl AttributesProcessor {
             },
         };
 
-        transform
-            .validate()
-            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+        transform.validate().map_err(|e| {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!("Invalid attribute transform configuration: {e}"),
-            })?;
+            }
+        })?;
 
         Ok(Self {
             transform,
@@ -398,7 +400,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
     ) -> Result<(), EngineError> {
         match msg {
             Message::Control(control_msg) => match control_msg {
-                otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                otel_arrow_dfe_engine::control::NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
                     let _ = self.metrics.report(&mut metrics_reporter);
@@ -469,12 +471,12 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                             }
                         }
                         self.metrics.record_transform_outcome(
-                            otap_df_telemetry::common_attributes::Outcome::Success,
+                            otel_arrow_dfe_telemetry::common_attributes::Outcome::Success,
                         );
                     }
                     Err(e) => {
                         self.metrics.record_transform_outcome(
-                            otap_df_telemetry::common_attributes::Outcome::Failure,
+                            otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
                         );
                         return Err(e);
                     }
@@ -548,26 +550,26 @@ pub fn create_attributes_processor(
 
 /// Register AttributesProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
+pub static ATTRIBUTES_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
+    otel_arrow_dfe_engine::ProcessorFactory {
         name: ATTRIBUTES_PROCESSOR_URN,
         create:
             |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+        wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };
 
 // Per-domain payload slices used by apply_transform_with_stats.
 mod payload_sets {
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
 
     // Signal payloads per signal type
     pub(super) const LOGS_SIGNAL: &[A] = &[A::LogAttrs];
@@ -592,22 +594,22 @@ mod payload_sets {
 mod tests {
     use super::*;
     use bytes::BytesMut;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::testing::{node::test_node, processor::TestRuntime};
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
     };
-    use otap_df_pdata::proto::opentelemetry::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
-    use otap_df_pdata::{OtlpProtoBytes, PayloadData};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_pdata::{OtlpProtoBytes, PayloadData};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
 
@@ -1152,7 +1154,7 @@ mod tests {
                 assert!(log_attrs.iter().any(|kv| {
                     if kv.key != "b" { return false; }
                     match kv.value.as_ref().and_then(|v| v.value.as_ref()) {
-                        Some(otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s == "keep",
+                        Some(otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s)) => s == "keep",
                         _ => false,
                     }
                 }));
@@ -1645,7 +1647,7 @@ mod tests {
                 let count_kv = log_attrs.iter().find(|kv| kv.key == "count").unwrap();
                 let inner_val = count_kv.value.as_ref().unwrap().value.as_ref().unwrap();
                 match inner_val {
-                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::IntValue(
+                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::IntValue(
                         i,
                     ) => {
                         assert_eq!(*i, 42);
@@ -1715,7 +1717,7 @@ mod tests {
                 let ratio_kv = log_attrs.iter().find(|kv| kv.key == "ratio").unwrap();
                 let inner_val = ratio_kv.value.as_ref().unwrap().value.as_ref().unwrap();
                 match inner_val {
-                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::DoubleValue(d) => {
+                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::DoubleValue(d) => {
                         assert!((d - 1.2345).abs() < f64::EPSILON);
                     }
                     _ => panic!("expected DoubleValue, got {:?}", inner_val),
@@ -1783,7 +1785,7 @@ mod tests {
                 let enabled_kv = log_attrs.iter().find(|kv| kv.key == "enabled").unwrap();
                 let inner_val = enabled_kv.value.as_ref().unwrap().value.as_ref().unwrap();
                 match inner_val {
-                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::BoolValue(b) => {
+                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::BoolValue(b) => {
                         assert!(*b);
                     }
                     _ => panic!("expected BoolValue, got {:?}", inner_val),
@@ -1866,7 +1868,7 @@ mod tests {
                     .as_ref()
                     .expect("inner value");
                 match value {
-                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                         s,
                     ) => {
                         assert_eq!(s, "original_value");
@@ -2385,7 +2387,7 @@ mod tests {
                     .as_ref()
                     .expect("inner value");
                 match value {
-                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                         s,
                     ) => {
                         assert_eq!(s, "updated_value");
@@ -2494,13 +2496,13 @@ mod tests {
 mod telemetry_tests {
     use super::*;
     use bytes::BytesMut;
-    use otap_df_engine::config::ProcessorConfig;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::NodeControlMsg;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_engine::config::ProcessorConfig;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::NodeControlMsg;
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::testing::{node::test_node, processor::TestRuntime};
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use prost::Message as _;
     use serde_json::json;
 
@@ -2535,7 +2537,7 @@ mod telemetry_tests {
 
         // 4) Build a minimal OTLP logs request that has a signal-level attribute 'a'
         let input_bytes = {
-            use otap_df_pdata::proto::opentelemetry::{
+            use otel_arrow_dfe_pdata::proto::opentelemetry::{
                 collector::logs::v1::ExportLogsServiceRequest,
                 common::v1::{
                     AnyValue, InstrumentationScope, KeyValue, any_value::Value as AnyVal,
