@@ -404,20 +404,17 @@ impl SubscriberState {
 
     /// Converts this subscriber's state to progress entries for persistence.
     ///
-    /// Returns a vector of segment progress entries in segment order (oldest first).
+    /// Returns segment progress entries in segment order (oldest first).
     /// Used by the registry to serialize state to progress files.
     #[must_use]
-    pub fn to_progress_entries(&self) -> Vec<SegmentProgressEntry> {
-        self.segments
-            .iter()
-            .map(|(&seg_seq, progress)| {
-                SegmentProgressEntry::from_bitmap(
-                    seg_seq,
-                    progress.bundle_count(),
-                    progress.resolved_bitmap(),
-                )
-            })
-            .collect()
+    pub fn to_progress_entries(&self) -> impl ExactSizeIterator<Item = SegmentProgressEntry> + '_ {
+        self.segments.iter().map(|(&seg_seq, progress)| {
+            SegmentProgressEntry::from_bitmap(
+                seg_seq,
+                progress.bundle_count(),
+                progress.resolved_bitmap(),
+            )
+        })
     }
 }
 
@@ -550,6 +547,29 @@ mod tests {
 
         assert_eq!(state.segment_count(), 2);
         assert_eq!(state.pending_count(), 15);
+    }
+
+    /// Scenario: Progress entries are requested for state containing multiple segments.
+    /// Guarantees: The iterator reports its exact length and yields entries oldest first.
+    #[test]
+    fn subscriber_state_progress_entries_are_exact_size_and_ordered() {
+        let mut state = make_state("test-sub");
+        state.add_segment(SegmentSeq::new(2), 3);
+        state.add_segment(SegmentSeq::new(1), 2);
+        assert!(state.record_outcome(
+            BundleRef::new(SegmentSeq::new(1), BundleIndex::new(0)),
+            AckOutcome::Acked,
+        ));
+
+        let entries = state.to_progress_entries();
+        assert_eq!(entries.len(), 2);
+
+        let entries = entries.collect::<Vec<_>>();
+        assert_eq!(entries[0].seg_seq, SegmentSeq::new(1));
+        assert_eq!(entries[0].bundle_count, 2);
+        assert!(entries[0].is_acked(0));
+        assert_eq!(entries[1].seg_seq, SegmentSeq::new(2));
+        assert_eq!(entries[1].bundle_count, 3);
     }
 
     #[test]
