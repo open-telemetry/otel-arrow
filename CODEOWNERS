@@ -15,15 +15,8 @@
 * @open-telemetry/arrow-approvers
 
 # OTAP Dataflow runtime architecture
-/rust/otap-dataflow/crates/engine*/ @lquerel @jmacd @lalitb @utpilla
-/rust/otap-dataflow/crates/controller/ @lquerel @jmacd @lalitb @utpilla
-/rust/otap-dataflow/crates/config/ @lquerel @jmacd @lalitb @utpilla
-/rust/otap-dataflow/crates/channel/ @lquerel @jmacd @lalitb @utpilla
-/rust/otap-dataflow/crates/state/ @lquerel @jmacd @lalitb @utpilla
+/rust/otap-dataflow/crates/ @lquerel @jmacd @lalitb @utpilla
 /rust/otap-dataflow/crates/telemetry*/ @lquerel @jmacd @drewrelmas @cijothomas
-/rust/otap-dataflow/crates/admin*/ @lquerel @jmacd @lalitb @utpilla
-/rust/otap-dataflow/crates/control-channel/ @lquerel @jmacd @lalitb @utpilla
-/rust/otap-dataflow/crates/ctl/ @lquerel @jmacd @lalitb @utpilla
 /rust/otap-dataflow/crates/pdata*/ @lquerel @jmacd @albertlockett @JakeDern
 /rust/otap-dataflow/crates/query-engine*/ @lquerel @jmacd @albertlockett
 /rust/otap-dataflow/crates/quiver/ @lquerel @jmacd
