@@ -75,6 +75,31 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>, // ToDo : Use a more specific error type if possible
     },
 
+    /// A console writer stopped on an I/O error and queued output was abandoned.
+    ///
+    /// Reported through the run result because a dead writer may have no console
+    /// stream left to report on: stderr is gone and stdout may carry records.
+    #[error("Console output writer failed; {frames_pending} accepted frame(s) were not written")]
+    ConsoleOutputWriterFailed {
+        /// Frames the writer accepted but never wrote.
+        frames_pending: u64,
+    },
+
+    /// The run failed and a console writer also abandoned queued output.
+    ///
+    /// The engine failure stays the displayed cause because it is the actionable
+    /// one, while the console loss remains visible instead of being dropped.
+    #[error(
+        "{source}; additionally, a console writer failed with {frames_pending} accepted frame(s) not written"
+    )]
+    RunFailedWithConsoleOutputLoss {
+        /// Frames the writer accepted but never wrote.
+        frames_pending: u64,
+        /// The engine failure that ended the run.
+        #[source]
+        source: Box<Error>,
+    },
+
     /// A topic declaration requests a backend this runtime does not provide.
     #[error("Unsupported topic backend `{backend}` for topic `{topic}`")]
     #[diagnostic(code(data_plane::unsupported_topic_backend), url(docsrs))]

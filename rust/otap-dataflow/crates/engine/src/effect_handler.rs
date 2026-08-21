@@ -18,6 +18,7 @@ use crate::{WakeupError, WakeupSetOutcome};
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::output_service::{Frame, OutputService};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -144,17 +145,16 @@ impl<PData> EffectHandlerCore<PData> {
         self.node_id.clone()
     }
 
-    /// Print an info message to stdout.
+    /// Print an info message to the engine's diagnostic stream.
     ///
     /// This method provides a standardized way for all nodes in the pipeline
     /// to output informational messages without blocking the async runtime.
     pub(crate) async fn info(&self, message: &str) {
-        use tokio::io::{AsyncWriteExt, stdout};
-        let mut out = stdout();
-        // Ignore write errors as they're typically not recoverable for stdout
-        let _ = out.write_all(message.as_bytes()).await;
-        let _ = out.write_all(b"\n").await;
-        let _ = out.flush().await;
+        // One frame per message so the line is written whole, and the caller
+        // waits for queue capacity instead of performing blocking I/O here.
+        let _ = OutputService::diagnostics()
+            .submit(Frame::line(message))
+            .await;
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the

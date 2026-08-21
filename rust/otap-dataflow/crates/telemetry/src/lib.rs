@@ -52,6 +52,7 @@ pub mod log_filter;
 /// Internal log tap for admin-side log queries.
 pub mod log_tap;
 pub mod metrics;
+pub mod output_service;
 pub mod registry;
 pub mod reporter;
 pub mod resource_detectors;

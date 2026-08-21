@@ -42,6 +42,7 @@ otap-df-controller.workspace = true
 otap-df-core-nodes.workspace = true
 otap-df-engine.workspace = true
 otap-df-otap.workspace = true
+otap-df-telemetry.workspace = true
 otap-df-wasm-host = { workspace = true, optional = true }
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }

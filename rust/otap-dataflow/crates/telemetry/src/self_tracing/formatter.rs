@@ -7,6 +7,7 @@ use super::encoder::level_to_severity_number;
 use super::{
     BorrowedLogRecord, LOG_BUFFER_SIZE, LogContext, LogContextFn, LogRecord, SavedCallsite,
 };
+use crate::output_service::{Frame, OutputService, StreamId};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
 use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
@@ -599,14 +600,23 @@ impl StyledBufWriter<'_> {
 }
 
 impl ConsoleWriter {
-    /// Write a log line to stdout or stderr.
+    /// Select the stream a log line at this level belongs on.
+    ///
+    /// Every level uses the diagnostics stream: prose must stay off stdout even
+    /// before an exporter has claimed stdout for machine-readable records.
+    fn target_stream(_level: &Level) -> StreamId {
+        OutputService::diagnostics().stream_id()
+    }
+
+    /// Hand a formatted log line to the process-wide writer.
     fn write_line(&self, level: &Level, data: &[u8]) {
-        let use_stderr = matches!(*level, Level::ERROR | Level::WARN);
-        let _ = if use_stderr {
-            std::io::stderr().write_all(data)
-        } else {
-            std::io::stdout().write_all(data)
+        let handle = match Self::target_stream(level) {
+            StreamId::Stderr => OutputService::stderr(),
+            StreamId::Stdout => OutputService::stdout(),
         };
+        // This runs in a synchronous tracing callback on an engine core thread,
+        // so a full queue drops the diagnostic rather than stalling the thread.
+        let _ = handle.try_submit(Frame::new(data.to_vec()));
     }
 }
 
@@ -950,6 +960,23 @@ mod tests {
         assert!(w.is_full());
         w.finish_line();
         assert_eq!(&buf, b"abc\n");
+    }
+
+    /// Scenario: log lines are routed by level, with the structured-stdout policy owned
+    /// by the output service.
+    /// Guarantees: every level reaches stderr, so no log line can land on stdout even
+    /// during startup, before any exporter has claimed stdout for records.
+    #[test]
+    fn console_writer_routes_levels_to_the_expected_stream() {
+        for level in [
+            Level::ERROR,
+            Level::WARN,
+            Level::INFO,
+            Level::DEBUG,
+            Level::TRACE,
+        ] {
+            assert_eq!(ConsoleWriter::target_stream(&level), StreamId::Stderr);
+        }
     }
 
     static TEST_CALLSITE: TestCallsite = TestCallsite;
