@@ -14,7 +14,6 @@
 //!
 //! With the default `max_in_flight = 10` the exporter pipelines up to ten
 //! deliveries for throughput.
-
 use super::producer::{ExporterDeliveryFuture, ExporterFutureProducer, ExporterFutureRecord};
 
 use super::config::{KafkaExporterConfig, SignalConfig};
@@ -67,18 +66,10 @@ use std::time::Duration;
 /// or returns `None` when the signal configures no patterns (avoiding an
 /// empty-vector allocation for the common case).
 ///
-/// Each operator pattern is anchored to require a **whole-topic** match via
-/// [`topic_regex::compile_anchor_and_validate`], which wraps it as
-/// `\A(?:<pattern>)\z`. The dynamic-routing allowlist is an authorization
-/// boundary for a client-controlled destination, so an unanchored pattern
-/// (which the `regex` crate would match as a substring) must not permit
-/// unintended topics -- e.g. `tenant_.*` must permit `tenant_a` but reject
-/// `evil-tenant_a-x`. To keep the anchors from being escaped, each operator
-/// pattern is first validated as a self-contained regex before being wrapped (a
-/// pattern that balances its parentheses against the wrapper, e.g.
-/// `tenant_.)\z|(?:evil.`, is rejected rather than allowed to drop the `\A`
-/// anchor on an alternation). Entries must be valid standalone regular
-/// expressions.
+/// Each pattern is anchored to a **whole-topic** match via
+/// [`topic_regex::compile_anchor_and_validate`] (see it for the authorization
+/// rationale: the allowlist guards a client-controlled destination, so
+/// substring matches and anchor-breakout patterns must be rejected).
 ///
 /// # Errors
 ///
@@ -132,7 +123,6 @@ fn retire_producer_blocking(producer: ExporterProducer, flush_timeout: Duration)
         producer.purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
     }
     // Dropping the producer here (on the blocking thread) joins its poll thread;
-    // doing it off the event loop is the point of this task.
     drop(producer);
 }
 
@@ -202,10 +192,8 @@ async fn await_pending_retirement(
                 error = %join_err,
             );
         }
-        // Deadline reached before the retirement finished. The in-progress
-        // librdkafka flush runs to completion on its own blocking thread and
-        // finishes independently of shutdown; record that the deadline was
-        // exceeded so the outcome is observable.
+        // Deadline reached first; the retirement continues on its own blocking
+        // thread. Record that the deadline was exceeded.
         Err(_elapsed) => {
             otap_df_telemetry::otel_warn!(
                 "kafka.exporter.shutdown.retirement_deadline_exceeded",
@@ -295,27 +283,13 @@ struct SendMeta {
     pdata: OtapPdata,
 }
 
-/// Bounded, self-managing set of in-flight Kafka deliveries.
+/// Bounded set of in-flight Kafka deliveries.
 ///
 /// Wraps a [`FuturesUnordered`] of boxed futures that each await a delivery and
-/// yield its [`SendMeta`] paired with the delivery outcome. The delivery
-/// outcome flattens as: `Ok(Ok(..))` delivered successfully; `Ok(Err(..))`
-/// delivery failed carrying a [`rdkafka::error::KafkaError`]; `Err(Canceled)`
-/// the delivery future was cancelled because the producer was dropped or purged
-/// (treated as a transient failure, matching the purge-on-shutdown semantics).
-///
-/// The set is constructed with the configured `max_in_flight` bound. The bound
-/// is enforced by the event loop's admission gate: the loop computes
-/// `accepting_pdata = !`[`Self::is_full`] and passes it to
-/// `ExporterInbox::recv_when`, so while the set is full no new pdata is dequeued
-/// and only control messages and delivery completions are processed. [`Self::push`]
-/// is therefore a non-blocking append: it never awaits a drain, so a stalled
-/// delivery (e.g. an unavailable broker) can never block the event loop and
-/// starve control-message handling (`Config`/`Shutdown`). The only path that can
-/// reach `push` while the set is full is the engine's shutdown force-drain of
-/// buffered pdata, which admits past the gate; that transient overshoot is
-/// bounded and finalized by the deadline-bounded [`KafkaExporter::drain_in_flight_until`],
-/// so it does not need `push` to self-enforce the bound.
+/// yield its [`SendMeta`] paired with the delivery outcome (see
+/// [`KafkaExporter::finalize_send_completion`] for how the outcome is
+/// classified). The `max_in_flight` bound is enforced by the event loop's
+/// admission gate, not by this set; [`Self::push`] is a non-blocking append.
 struct InFlightSends {
     #[allow(clippy::type_complexity)]
     futures: FuturesUnordered<
@@ -326,10 +300,7 @@ struct InFlightSends {
     max_in_flight: usize,
 }
 
-/// An empty set with a zero admission bound, for the event loop's retiring
-/// in-flight set. That set's bound is never consulted -- it is drained, not
-/// admission-gated (`is_full`/`push` are never called on it) -- so the zero
-/// bound is inert.
+/// An empty set with a zero admission bound
 impl Default for InFlightSends {
     fn default() -> Self {
         Self::new(0)
@@ -346,27 +317,13 @@ impl InFlightSends {
     }
 
     /// Adjusts the concurrency bound in place.
-    ///
-    /// Used on live reconfiguration when `max_in_flight` changes. The set only
-    /// ever holds current-generation deliveries (a cutover moves the retiring
-    /// generation's deliveries out via [`Self::retire`]), so this is a pure
-    /// bound change: a lowered bound takes effect for subsequent admissions; a
-    /// raised bound applies immediately.
     fn retune(&mut self, max_in_flight: usize) {
         self.max_in_flight = max_in_flight;
     }
 
     /// Retires this (live) generation into `retiring` at a cutover: moves this
     /// set's still-outstanding deliveries into `retiring` (folding with any prior
-    /// retiring generation already tracked there) and leaves `self` empty.
-    ///
-    /// `retiring` is the event loop's retiring set: its deliveries no longer
-    /// count against the live generation's `max_in_flight` admission bound (its
-    /// bound is never consulted -- it is drained, not admission-gated), so a
-    /// stalled retiring producer cannot starve new-generation delivery. Each
-    /// delivery keeps the producer/topic it was committed to at enqueue time;
-    /// this only changes which set polls its completion, so a folded prior batch
-    /// is still delivered to its original topic.
+    /// retiring generation) and leaves `self` empty.
     fn retire(&mut self, retiring: &mut InFlightSends) {
         for delivery in std::mem::take(&mut self.futures) {
             retiring.futures.push(delivery);
@@ -392,24 +349,17 @@ impl InFlightSends {
         self.futures.len() >= self.max_in_flight
     }
 
-    /// Track an in-flight delivery by appending it to the set.
+    /// Track an in-flight delivery by appending it to the set (non-blocking; it
+    /// never awaits a drain).
     ///
-    /// This is a non-blocking append: it never awaits a drain. The
-    /// `max_in_flight` bound is enforced by the event loop's admission gate
-    /// (`accepting_pdata = !`[`Self::is_full`], fed to
-    /// `ExporterInbox::recv_when`), so in steady state `push` is reached only
-    /// when the set has spare capacity. Draining a stalled delivery here would
-    /// block the event loop and starve control-message handling
-    /// (`Config`/`Shutdown`) whenever every in-flight delivery is stuck (e.g. an
-    /// unavailable broker), so the drain must stay in the loop's `select`
-    /// (via [`Self::next_completion`]), never in `push`.
-    ///
-    /// The only path that reaches `push` while the set is already full is the
-    /// engine's shutdown force-drain of buffered pdata, which admits past the
-    /// gate. That transient overshoot is acceptable: it is finalized by the
-    /// deadline-bounded [`KafkaExporter::drain_in_flight_until`] on shutdown.
-    /// The stored delivery's future is polled by [`Self::next_completion`] until
-    /// it resolves, at which point `meta` is paired with the delivery outcome.
+    /// The `max_in_flight` bound is enforced by the event loop's admission gate
+    /// ([`Self::is_full`] fed to `ExporterInbox::recv_when`), not here. Draining a
+    /// stalled delivery inside `push` would block the loop and starve control
+    /// (`Config`/`Shutdown`) when every delivery is stuck (e.g. an unavailable
+    /// broker), so draining stays in the loop's `select` (via
+    /// [`Self::next_completion`]). The one path that reaches `push` while full is
+    /// the engine's shutdown force-drain, whose transient overshoot is finalized
+    /// by the deadline-bounded [`KafkaExporter::drain_in_flight_until`].
     fn push(&mut self, delivery: ExporterDeliveryFuture, meta: SendMeta) {
         // Box the delivery future paired with its `meta` so the resolved
         // completion yields both for finalization.
@@ -429,8 +379,6 @@ impl InFlightSends {
         if self.futures.is_empty() {
             std::future::pending().await
         } else {
-            // Safe to unwrap: the set is non-empty, and FuturesUnordered only
-            // yields None when empty.
             self.futures
                 .next()
                 .await
@@ -668,43 +616,23 @@ impl KafkaExporter {
     }
 
     /// Encodes a single PData message and enqueues it to Kafka, returning the
-    /// resulting [`InFlightSend`] whose delivery future the caller tracks in the
-    /// bounded in-flight set.
+    /// delivery future the caller tracks in the bounded in-flight set.
     ///
-    /// This performs all the synchronous pre-send work -- config lookup, topic
-    /// resolution, partition-key derivation, header building, and encoding --
-    /// and then enqueues the record via
-    /// [`ExporterFutureProducer::send_result`], which returns immediately once
-    /// the record is accepted by librdkafka (the delivery itself completes
-    /// asynchronously and is finalized later by
-    /// [`Self::finalize_send_completion`]).
-    ///
-    /// Uses the [`TopicRouter`] to resolve the destination topic:
-    /// 1. Transport header (highest priority): used when the configured header
-    ///    key is present in the pdata context. If the key is present but its
-    ///    value is not a valid Kafka topic, the batch is permanently nacked
-    ///    (no fallback to the static topic).
-    /// 2. Static per-signal topic: fallback used only when the configured header
-    ///    key is absent (or no header routing is configured).
-    ///
-    /// When the exporter's [`EffectHandler`] has a propagation policy and the
-    /// pdata context carries transport headers, matching headers are emitted as
-    /// Kafka record headers alongside the mandatory `MessageFormat` header.
-    ///
-    /// Both text and binary transport header values are emitted as-is since
-    /// Kafka headers are opaque byte sequences with string keys (unlike gRPC,
-    /// which requires a `-bin` suffix convention for binary metadata).
+    /// Performs the synchronous pre-send work (config lookup, topic resolution
+    /// via [`TopicRouter`], partition-key derivation, header building, encoding),
+    /// then enqueues via [`ExporterFutureProducer::send_result`], which returns
+    /// once librdkafka accepts the record; the delivery is finalized later by
+    /// [`Self::finalize_send_completion`]. Topic routing and header propagation
+    /// follow the crate README (transport header > static topic).
     ///
     /// # Return value
     ///
-    /// * `Ok(Some((delivery, meta)))` -- the record was accepted by librdkafka;
-    ///   the caller must push the delivery future and its [`SendMeta`] into the
-    ///   in-flight set so the delivery is finalized.
-    /// * `Ok(None)` -- the message was terminally handled synchronously (an
-    ///   enqueue failure was already reported as a nack); there is no in-flight
-    ///   delivery to track.
+    /// * `Ok(Some((delivery, meta)))` -- accepted; the caller pushes it into the
+    ///   in-flight set.
+    /// * `Ok(None)` -- terminally handled synchronously (enqueue failure already
+    ///   nacked); nothing to track.
     /// * `Err(e)` -- a pre-send failure (unconfigured signal, invalid dynamic
-    ///   topic, or encode failure) was already reported as a permanent nack.
+    ///   topic, or encode failure) already reported as a permanent nack.
     async fn enqueue_pdata(
         &mut self,
         pdata: OtapPdata,
@@ -805,16 +733,10 @@ impl KafkaExporter {
             record = record.key(key);
         }
 
-        // Enqueue the record to librdkafka without awaiting delivery. The
-        // returned delivery future resolves asynchronously and is finalized by
-        // `finalize_send_completion`; bounding the number of outstanding
-        // futures (see `max_in_flight`) is what provides backpressure here.
-        //
-        // Note: unlike the previous inline `send`, `send_result` does not retry
-        // a full producer queue. A queue-full (or any other) enqueue error is
-        // reported as a transient nack so an upstream `processor:retry` can
-        // resend; the bounded in-flight set already keeps the queue from being
-        // driven unboundedly deep.
+        // Enqueue to librdkafka without awaiting delivery; the returned future is
+        // finalized later by `finalize_send_completion`. `send_result` does not
+        // retry a full queue -- a queue-full (or any) enqueue error is reported as
+        // a transient nack for an upstream `processor:retry` to resend.
         match self.producer.send_result(record) {
             Ok(delivery) => Ok(Some((
                 delivery,
@@ -1008,54 +930,24 @@ impl KafkaExporter {
     /// [`NodeControlMsg::Config`].
     ///
     /// Reconfiguration is a generation cutover of the librdkafka producer that
-    /// preserves per-configuration delivery and never blocks the event loop:
+    /// never blocks the event loop:
     ///
-    /// 1. **Build.** A new producer and compiled dynamic-routing allowlists are
-    ///    constructed from the incoming config before the running producer is
-    ///    touched. Building only spawns the new poll thread; it does not contact
-    ///    the broker, so it cannot block.
-    /// 2. **Swap (new generation).** The new producer, config, and allowlists are
-    ///    installed. Every batch is routed
-    ///    and enqueued under the generation active when the exporter DEQUEUES it
-    ///    (see [`Self::enqueue_pdata`]): a batch already in flight on the retiring
-    ///    generation's producer resolved its topic and was handed to librdkafka
-    ///    at dequeue time, so it is permanently committed to the old
-    ///    topic/credentials/tenant and cannot be rerouted by this swap. pdata
-    ///    dequeued after the swap uses the new generation. There is no pre-swap
-    ///    drain barrier, so normal processing and backpressure keep flowing on the
-    ///    new generation while the old generation's tail delivers.
-    /// 3. **Non-blocking retirement.** The retiring generation's producer is
-    ///    retired off the event loop via [`spawn_producer_retirement`]: its
-    ///    bounded `flush` (which delivers the generation's still in-flight batches
-    ///    to the OLD destination), `purge`, and drop (the drop joins its poll
-    ///    thread) run on a [`tokio::task::spawn_blocking`] thread, so a slow or
-    ///    unavailable broker cannot stall normal processing or backpressure. The
-    ///    generation's delivery futures are moved OUT of the live in-flight set
-    ///    into the event loop's separate `retiring_in_flight` set (so they no
-    ///    longer count against the new generation's `max_in_flight` admission
-    ///    bound -- a stalled retiring producer cannot starve new-generation
-    ///    delivery) and are finalized (acked/nacked) by the event loop as they
-    ///    resolve. Each delivery was committed to its own generation's
-    ///    producer/topic at enqueue time, so it is still delivered to that
-    ///    original topic regardless of which set now polls its completion. If a
-    ///    prior generation is still retiring, its still-outstanding deliveries are
-    ///    folded into `retiring_in_flight` (so they stay tracked and finalized --
-    ///    delivered by the prior producer's flush or transiently nacked when it
-    ///    drops, never silently lost) and its producer-teardown task is chained
-    ///    (bounded by the old flush timeout, so at most one producer flushes at a
-    ///    time).
+    /// 1. **Build.** A new producer and compiled allowlists are built from the
+    ///    incoming config before the running producer is touched. Building only
+    ///    spawns the poll thread; it does not contact the broker, so it cannot
+    ///    block.
+    /// 2. **Swap.** The new producer, config, and allowlists are installed. pdata
+    ///    dequeued after the swap uses the new generation; a batch already handed
+    ///    to librdkafka (see [`Self::enqueue_pdata`]) stays committed to its old
+    ///    topic. There is no pre-swap drain barrier.
+    /// 3. **Retirement.** The old producer is retired off the event loop via
+    ///    [`spawn_producer_retirement`], and its still-outstanding deliveries are
+    ///    moved into `retiring_in_flight` (see [`InFlightSends::retire`]). Any
+    ///    prior retiring generation is folded in and its teardown chained.
     ///
-    /// The flush is bounded by the retiring (old) config's `timeout_ms`, matching
-    /// the per-message delivery bound. In-flight records get one final bounded
-    /// chance to deliver; anything still queued after the bound is purged (its
-    /// delivery callback fires with a purge error, which the send path reports as
-    /// a transient nack).
-    ///
-    /// Reconfiguration is best-effort: if the incoming config fails to
-    /// deserialize/validate, or the new producer fails to build, the error is
-    /// logged and the existing producer keeps running. This mirrors the
-    /// reconfiguration posture of sibling nodes (e.g. the condense-attributes
-    /// and retry processors), which warn-and-keep rather than failing the node.
+    /// Best-effort: if the incoming config fails to deserialize/validate or the
+    /// new producer fails to build, the error is logged and the existing producer
+    /// keeps running (matching sibling nodes' warn-and-keep posture).
     async fn reconfigure(
         &mut self,
         config: serde_json::Value,
@@ -1144,59 +1036,24 @@ impl KafkaExporter {
         // per-message delivery bound.
         let flush_timeout = Duration::from_millis(self.config.timeout_ms());
 
-        // Capture the new concurrency bound before `new_config` is moved into
-        // `self.config` below.
-        let new_max_in_flight = if self.config.max_in_flight() != new_config.max_in_flight() {
-            Some(new_config.max_in_flight())
-        } else {
-            None
-        };
+        // Move the live generation's in-flight deliveries into `retiring_in_flight`
+        // (folding any prior retiring generation). See `InFlightSends::retire`.
+        in_flight.retire(retiring_in_flight);
+        in_flight.retune(new_config.max_in_flight());
 
-        // Generation cutover. Each configuration is a "generation"; a batch is
-        // routed and enqueued to the generation that is active when the exporter
-        // DEQUEUES it (see `enqueue_pdata`). Because `enqueue_pdata` resolves the
-        // destination topic and hands the record to librdkafka at dequeue time,
-        // a batch already in flight on the retiring generation's producer is
-        // permanently committed to that generation's topic/credentials/tenant and
-        // can never be rerouted by this swap.
-        //
-        // The swap therefore takes effect immediately for pdata dequeued AFTER
-        // this `Config` (they use the new generation), while the retiring
-        // generation's producer is kept alive off the event loop until its
-        // already in-flight batches drain to the old destination. There is no
-        // pre-swap barrier: normal processing and backpressure keep flowing on
-        // the new generation while the old generation's tail delivers.
+        // Swap in the new generation. Takes effect for pdata dequeued after this
+        // point; batches already handed to librdkafka stay committed to the old
+        // topic (see `enqueue_pdata`).
         let old_producer = std::mem::replace(&mut self.producer, new_producer);
         self.config = new_config;
         self.traces_allowed_topics_regex = new_traces_regex;
         self.metrics_allowed_topics_regex = new_metrics_regex;
         self.logs_allowed_topics_regex = new_logs_regex;
 
-        // Retire the live generation's in-flight deliveries: `retire` moves them
-        // out of the live set (leaving it empty) and folds them into
-        // `retiring_in_flight` alongside any prior retiring generation. They no
-        // longer count against the live generation's `max_in_flight` admission
-        // bound, so a stalled retiring producer can no longer starve
-        // new-generation delivery; the retiring producer below stays alive off the
-        // event loop to drive them to completion (or purge), and the event loop
-        // drains `retiring_in_flight` to report each batch's ack/nack. Folding the
-        // prior generation in preserves its still-tracked deliveries; each was
-        // committed to its own generation's producer/topic at enqueue time, so it
-        // is still delivered to that original topic regardless of which set now
-        // polls its completion.
-        in_flight.retire(retiring_in_flight);
 
-        // The live set is now empty and holds only current-generation
-        // deliveries, so applying the new `max_in_flight` is a pure bound change.
-        if let Some(max_in_flight) = new_max_in_flight {
-            in_flight.retune(max_in_flight);
-        }
 
-        // Retire the old generation's producer off the event loop without ever
-        // blocking it. If a prior generation is still retiring, only its
-        // producer-teardown task is chained (bounded by the flush timeout, so at
-        // most one producer flushes at a time); its deliveries were already folded
-        // into `retiring_in_flight` above.
+        // Retire the old producer off the event loop. A prior generation's
+        // teardown (if any) is chained; its deliveries were already folded above.
         *retiring_producer = Some(spawn_producer_retirement(
             retiring_producer.take(),
             old_producer,
@@ -1235,24 +1092,14 @@ impl Exporter<OtapPdata> for KafkaExporter {
 
         let ack_nack_reporter = EffectHandlerReporter::new(&effect_handler);
 
-        // Bounded, self-managing set of pipelined deliveries. It owns the
-        // `max_in_flight` bound: while it reports `is_full()` the loop stops
-        // admitting new pdata (via `recv_when`), which bounds in-flight memory
-        // and propagates backpressure upstream. The default of 1 preserves the
-        // historical serial behavior.
+        // Live generation's bounded in-flight set (see `InFlightSends`). Its
+        // `is_full()` gates pdata admission via `recv_when` below.
         let mut in_flight = InFlightSends::new(self.config.max_in_flight());
 
-        // The retiring generation from the most recent live reconfiguration(s):
-        // its still-outstanding in-flight deliveries, moved out of the live set
-        // at each cutover (via `InFlightSends::retire`) so they never gate
-        // new-generation admission -- its `max_in_flight` bound is never consulted
-        // (it is drained, not admission-gated), hence `default()`. The event loop
-        // drains these to report acks/nacks; each delivery was committed to its
-        // own generation's producer/topic at enqueue time, so it still delivers to
-        // that original topic. Successive cutovers fold their prior deliveries in
-        // here, so a single set holds all still-outstanding retiring deliveries;
-        // it stays bounded because each retiring producer's chained teardown drops
-        // it (resolving its deliveries) within the flush timeout.
+        // Retiring generations' still-outstanding deliveries, moved here at each
+        // cutover (see `InFlightSends::retire`). Stays bounded
+        // because each retiring producer's chained teardown resolves its
+        // deliveries within the flush timeout.
         let mut retiring_in_flight = InFlightSends::default();
 
         // At most one outstanding producer-retirement task (a `spawn_blocking`
@@ -1275,14 +1122,9 @@ impl Exporter<OtapPdata> for KafkaExporter {
                 retiring_producer = None;
             }
 
-            // Gate pdata admission on spare capacity: while the live set is full
-            // only control messages (and shutdown-time force-drained pdata) can
-            // arrive, so the `max_in_flight` bound is respected. Admission is
-            // gated ONLY by the live generation's in-flight set -- the retiring
-            // generation's deliveries are tracked separately and never count
-            // toward the bound, so a stalled retiring producer cannot starve
-            // new-generation delivery. Completions win ties so acks/nacks drain
-            // promptly and in-flight memory is released.
+            // Gate pdata admission on spare capacity in the live set only (the
+            // retiring set is drained, never admission-gated). Completions win
+            // ties so acks/nacks drain promptly.
             let accepting_pdata = !in_flight.is_full();
             let msg = if in_flight.is_empty() && retiring_in_flight.is_empty() {
                 inbox.recv_when(accepting_pdata).await?
@@ -1323,21 +1165,10 @@ impl Exporter<OtapPdata> for KafkaExporter {
 
             match msg {
                 Message::PData(pdata) => {
-                    // On `Ok(Some((delivery, meta)))` track the delivery; an
-                    // enqueue failure or a synchronous pre-send nack (`Ok(None)`
-                    // / `Err(_)`) was already reported, so there is nothing to
-                    // track.
-                    //
-                    // `push` is a non-blocking append. The `max_in_flight` bound
-                    // is enforced by the `accepting_pdata` admission gate above,
-                    // so in steady state this is reached only with spare
-                    // capacity. Draining a completion here (as a full set would
-                    // require) is deliberately avoided: with every in-flight
-                    // delivery stalled (e.g. an unavailable broker) it would
-                    // block the loop and starve `Config`/`Shutdown`. Completions
-                    // are drained only by the `select_biased!` arms above; a
-                    // shutdown force-drain that admits past the gate is bounded
-                    // by `drain_in_flight_until`.
+                    // On `Ok(Some(..))` track the delivery; an enqueue failure or
+                    // synchronous pre-send nack (`Ok(None)`/`Err(_)`) was already
+                    // reported. `push` is a non-blocking append (see its doc for
+                    // why draining stays in the select above, not here).
                     if let Ok(Some((delivery, meta))) = self
                         .enqueue_pdata(pdata, &ack_nack_reporter, Some(&effect_handler))
                         .await
@@ -1378,18 +1209,9 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // ack/nack is reported before we return.
                     self.drain_and_flush(deadline, &effect_handler).await;
 
-                    // Finalize tracked in-flight deliveries, bounded by the
-                    // shutdown `deadline`. Deliveries resolve only when their
-                    // producer's off-loop flush/purge completes (bounded by its
-                    // own, possibly larger, timeout), so an unbounded drain could
-                    // overrun the deadline. Per the engine shutdown contract
-                    // (deadline-boundedness wins), stop at the deadline and abandon
-                    // the rest: their futures resolve as Canceled when the
-                    // producers drop (a best-effort transient nack).
-                    //
-                    // Drain sequentially under a single deadline: first the live
-                    // generation, then the retiring generation's deliveries, then
-                    // await the retiring producer's teardown task.
+                    // Drain the live then the retiring set under a single
+                    // deadline (see `drain_in_flight_until`), then await the
+                    // retiring producer's teardown.
                     let deadline_at = tokio::time::Instant::from_std(deadline);
                     self.drain_in_flight_until(
                         &mut in_flight,
@@ -1406,16 +1228,9 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     )
                     .await;
 
-                    // Wait for any in-flight producer retirement from a recent
-                    // reconfiguration to finish, bounded by the remaining shutdown
-                    // deadline. The prior drain steps may have already consumed
-                    // the budget (so `remaining` can be zero); in that case this
-                    // only checks whether the retirement already completed. If the
-                    // deadline is exceeded, the retirement continues to completion
-                    // on its own blocking thread (a
-                    // `retirement_deadline_exceeded` warning is emitted) while we
-                    // return, keeping shutdown deadline-bounded even against an
-                    // unavailable broker.
+                    // Await any outstanding producer retirement, bounded by the
+                    // remaining deadline (may be zero). See
+                    // `await_pending_retirement`.
                     let remaining = deadline
                         .checked_duration_since(std::time::Instant::now())
                         .unwrap_or(Duration::ZERO);
@@ -1428,14 +1243,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     ));
                 }
                 Message::Control(NodeControlMsg::Config { config }) => {
-                    // Live reconfiguration: generation cutover of the librdkafka
-                    // producer (see `reconfigure`). A batch already in flight on
-                    // the retiring generation stays committed to the old
-                    // topic/credentials/tenant; pdata processed after the swap
-                    // uses the new generation. The old producer is retired off the
-                    // event loop so a slow broker cannot block the pipeline.
-                    // Invalid configs are logged and ignored (the current producer
-                    // keeps running).
+                    // Live reconfiguration: generation cutover (see `reconfigure`).
                     self.reconfigure(
                         config,
                         &mut in_flight,
@@ -4671,6 +4479,74 @@ pub mod test_support {
                     );
 
                     exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): a batch is accepted
+        /// (still buffered in the inbox, not yet dequeued -- no settle) immediately
+        /// before a `Config` repoints the logs topic; the control-preferred
+        /// `Config` is applied before the buffered batch is dequeued.
+        /// Guarantees: a batch accepted before the `Config` is handled under the
+        /// OLD configuration and lands on the ORIGINAL topic (the
+        /// accept-before-`Config` ordering invariant). Ignored: the engine prefers
+        /// the control channel over buffered pdata, so a `Config` can be applied
+        /// before earlier-buffered pdata is dequeued -- this fails until the
+        /// InboxCore Config-latch (see docs/config-cutover-ordering-design.md)
+        /// lands. This is the regression guard for that fix.
+        #[ignore = "cross-topic config-cutover gap: engine prefers control over \
+                    buffered pdata, so a pre-Config buffered batch is dequeued \
+                    after the swap and routed to the new topic; passes once the \
+                    InboxCore Config-latch lands"]
+        #[tokio::test]
+        async fn reconfigure_buffered_pre_config_batch_routes_to_original_topic() {
+            let original_topic = "it-reconfig-buffered-original";
+            let new_topic = "it-reconfig-buffered-new";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(original_topic)
+                    .topic(new_topic),
+                |cluster| async move {
+                    let original_consumer = cluster.consumer().subscribe(&[original_topic]);
+                    let new_consumer = cluster.consumer().subscribe(&[new_topic]);
+                    let cfg = logs_config_mif(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(original_topic.into(), MessageFormat::OtlpProto),
+                        1,
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Send the pre-config batch and the Config back-to-back with NO
+                    // settle in between. On the single-threaded LocalSet both land
+                    // in their channels before the exporter loop next runs, so the
+                    // batch is still BUFFERED (not in flight) when the Config is
+                    // processed. The engine prefers the control channel, so the
+                    // Config is dequeued first and the swap applies before the
+                    // buffered batch is dequeued.
+                    let pre = logs_request_bytes_seq(1);
+                    exporter
+                        .send_pdata(logs_pdata(pre.clone(), None))
+                        .await
+                        .expect("send pre-config pdata");
+                    exporter
+                        .send_config(logs_reconfig_json(cluster.bootstrap_servers(), new_topic))
+                        .await;
+
+                    // The accept-before-Config invariant: the pre-config batch must
+                    // be handled under the OLD config and land on the ORIGINAL
+                    // topic, and the new topic must never receive it.
+                    let _ = original_consumer
+                        .recv()
+                        .await
+                        .assert_topic(original_topic)
+                        .assert_payload(&pre);
+                    new_consumer
+                        .assert_no_more_messages(Duration::from_millis(500))
+                        .await;
+
+                    exporter.shutdown(Duration::from_secs(2)).await;
                     exporter.await_stopped().await;
                 },
             )

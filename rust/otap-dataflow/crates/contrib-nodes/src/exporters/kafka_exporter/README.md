@@ -307,14 +307,12 @@ producer_config:
 
 ### Backpressure and concurrency
 
-The exporter encodes and enqueues each accepted pdata to librdkafka and then
-tracks the delivery in a bounded in-flight set. The `max_in_flight` config caps
-how many deliveries may be outstanding at once:
-
-- **`max_in_flight > 1` (default `10`).** Deliveries are pipelined for higher
-  throughput. When the in-flight set is full the exporter stops accepting new
-  pdata and only drains completions, so in-flight memory stays bounded and
-  backpressure propagates upstream.
+The exporter enqueues each accepted pdata to librdkafka and tracks the delivery
+in a bounded in-flight set. The `max_in_flight` config (default `10`) caps how
+many deliveries may be outstanding at once and pipelines them for throughput.
+When the set is full the exporter stops accepting new pdata and only drains
+completions, so in-flight memory stays bounded and backpressure propagates
+upstream.
 
 ### Live Reconfiguration
 
@@ -654,10 +652,8 @@ This node does not emit structured events.
   interval as a workaround for high idle CPU utilization in the upstream
   rdkafka implementation.
 - Resource attribute-based partitioning is not yet implemented.
-- Live reconfiguration is a generation cutover: a batch already in flight when a
-  config change arrives stays on the old topic/credentials/tenant, and the old
-  producer is retired off the event loop so the swap does not block the pipeline.
-  Buffered but not-yet-processed pdata is concurrent with the change. See
+- Live reconfiguration is a non-blocking generation cutover; buffered
+  not-yet-processed pdata is concurrent with the change. See
   [Live Reconfiguration](#live-reconfiguration).
 - Compared to the Go Kafka exporter, this exporter delegates retry to an
   upstream `processor:retry` node (no built-in `retry_on_failure`), has no
