@@ -267,10 +267,9 @@ pub(super) fn join_and_eval_value(
                 } else if let Some((strategy, default)) = short_circuit
                     .and_then(|s| s.absent_child_default().map(|d| (s, d)))
                 {
-                    // The short-circuit strategy can handle absent children (e.g. OR
-                    // treats absent data as "no match"/false). For the common 2-child
-                    // case we can skip the join entirely: evaluate the remaining
-                    // child and return its result directly.
+                    // The short-circuit strategy can handle absent children (e.g. OR treats absent
+                    // data as "no match"/false). For the common 2-child case we can skip the join
+                    // entirely: evaluate the remaining child and return its result directly.
                     if num_children == 2 {
                         return resolve_or_with_absent_child(
                             &mut children[i + 1..],
