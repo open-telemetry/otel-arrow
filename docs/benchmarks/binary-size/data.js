@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787275159882,
+  "lastUpdate": 1787330489961,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -20431,6 +20431,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/26b710aa0c6e5900e94523992c018104db6cfe24"
         },
         "date": 1787275145608,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_core_nodes",
+            "value": 4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otap_df_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_core_nodes",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otap_df_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9c9163e49d8a7cc35ac6fb3e68964a3f02690ff8",
+          "message": "chore(ci): pin the Rust toolchain instead of tracking stable (#3839)\n\n## Why\n\nBoth Rust workspaces track the `stable` channel, so the compiler changes\nunder us without anyone deciding to change it. That causes two problems:\n\n**Local and CI don't run the same toolchain.** A contributor one release\nbehind gets a clean clippy run while CI fails on the identical command,\nso the failure can't be reproduced or pre-empted locally.\n\n**Toolchain upgrades show up unannounced, inside somebody else's PR.**\nWhen 1.98.0 reached the runners it broadened `drain_collect` and\n`result_large_err`, turning existing `core-nodes` code into hard errors.\nMain went red, and so did unrelated PRs whose authors neither caused the\nbreakage nor could fix it. #3835 is cleaning up this instance, and\nwithout pinning it recurs every six weeks.\n\nPinning makes the upgrade explicit: one PR bumps the version and carries\nthe lint fixes with it, reviewed together, instead of the change\narriving on its own and landing on whoever pushes next.\n\n## How\n\nPin an exact version in `rust-toolchain.toml` for both workspaces, and\ndocument the bump in `CONTRIBUTING.md`. No workflow changes are needed\n-- `rustup` treats the file as a directory override, which outranks the\n`rustup default stable` that `dtolnay/rust-toolchain` sets.\n`rust/experimental/query_engine` had no toolchain file at all and was\nfloating unconditionally; it now has one.\n\n## Staying current\n\nRenovate has a built-in `rust-toolchain` manager, so once a concrete\nversion is in these files it should start proposing bumps on the usual\nMonday batch, no custom config needed. That doesn't remove the upgrade\nwork, it inverts the failure mode: instead of a new compiler landing\nsilently on whoever pushes next, it arrives as its own PR that CI\nvalidates in isolation. Falling behind becomes visible and schedulable,\nand catching up is mostly clippy fixes anyway.",
+          "timestamp": "2026-08-21T14:53:56Z",
+          "tree_id": "9c7528ea5e27c273f3d6769497e8e017cde38349",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9c9163e49d8a7cc35ac6fb3e68964a3f02690ff8"
+        },
+        "date": 1787330476146,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
