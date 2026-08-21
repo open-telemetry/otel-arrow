@@ -1862,7 +1862,7 @@ mod test {
     /// Guarantees: the receive frame captures size only when both consumer metrics and size measurement are enabled.
     #[test]
     fn test_received_at_node_stamps_consumed_size() {
-        use otap_df_engine::ReceivedAtNode;
+        use otel_arrow_dfe_engine::ReceivedAtNode;
 
         let mut pdata = create_test_pdata();
         let size =
