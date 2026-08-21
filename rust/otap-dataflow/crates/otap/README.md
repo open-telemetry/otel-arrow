@@ -56,7 +56,7 @@ Receiver received omits `items` because decoded items are measured by
 One observation represents one attempt to submit an encoded application
 payload to an external backend or storage boundary. Component-internal retries
 produce additional observations, as does redelivery by a retry processor.
-`success` means the attempt was accepted or completed by the external boundary,
+`success` means the attempt was accepted and completed by the external boundary,
 `refused` means validation, policy, admission, or capacity at that boundary
 explicitly rejected it, and `failure` means an encoding, transport, timeout,
 backend, or other processing error prevented completion. Retryability is
