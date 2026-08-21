@@ -1240,8 +1240,21 @@ fn spawn_etw_session(
                                     result.event_data.event_data(),
                                 );
                             }
-                            Err(_) => {
+                            Err(e) => {
                                 let _ = telemetry.decode_failed.fetch_add(1, Ordering::Relaxed);
+                                // Per-event diagnostic, off by default. `NotFound`
+                                // is expected for unregistered-manifest, EventSource
+                                // in-band, and opaque events (e.g. EventWriteString);
+                                // `Malformed`/`Win32` signal a truncated payload or a
+                                // real TDH failure.
+                                otel_debug!(
+                                    "etw.event.decode_failed",
+                                    provider = %CanonicalGuid::from(anc.provider()),
+                                    event_id = event_id,
+                                    opcode = opcode,
+                                    version = version,
+                                    error = %e,
+                                );
                             }
                         }
                     }
