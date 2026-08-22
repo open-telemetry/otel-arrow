@@ -52,7 +52,7 @@ compromises:
 | D13 | Retain one receiver-wide in-flight batch in Phase 1 | This simplifies progress correctness but intentionally couples all files for Ack latency, failure, and drain |
 | D14 | Use periodic reconciliation as the Phase 1 discovery mechanism | Native notifications are a Phase 2 latency optimization, not a correctness source |
 | D15 | Use a namespace lock and process-local runtime leases for Phase 1 ownership | This prevents overlapping local readers but does not provide distributed fencing or lossless live-rollout readiness |
-| D16 | Fail closed on corrupt durable state and prefer replay over silent loss | Failure containment is explicit; ambiguous recovery never silently inherits an offset |
+| D16 | Fail closed on corrupt durable state and persist fail-policy quarantines | Ambiguous recovery never silently inherits an offset, and restart cannot bypass an operator-visible failure |
 
 ## Goals and non-goals
 
@@ -124,9 +124,10 @@ Exporters:
 The important boundary is simple: the receiver decides **which source bytes form a
 record**; processors decide **what that record means**; exporters decide **how that
 record is represented and delivered**. Ack or Nack returns to the receiver because
-only the receiver controls checkpoint advancement. In Phase 3, discovery and ownership
-assignment may move to the shared extension shown in the target architecture diagram;
-reading, decoding, framing, rotation and checkpoints remain receiver responsibilities.
+only the receiver controls logical checkpoint advancement. In Phase 3, discovery and
+ownership assignment may move to the shared services shown in the target architecture
+diagram. The receiver continues to calculate source progress and decide when Ack permits
+advancement; a shared fenced store becomes responsible for durable persistence.
 
 ## Why this design
 
@@ -201,7 +202,7 @@ handle the result like logs from other OTAP-native sources.
   applies size limits and emits raw OTAP. Processors parse timestamps, JSON and severity.
 - **Everything is bounded (D11).** File turns, readers, descriptors, record
   buffers, batches and channels have limits. Backpressure stops file reads.
-- **Rotation is explicit (D12, D14).** Move/create drains the old handle while reading
+- **Rotation is explicit (D12).** Move/create drains the old handle while reading
   the replacement. Copy-truncate detection is best-effort and reported.
 - **One live reader per file (D15-D16).** Local locks and leases prevent overlap. Corrupt
   state fails closed; ambiguous recovery defaults to replay rather than silent loss.
@@ -214,7 +215,7 @@ handle the result like logs from other OTAP-native sources.
 flowchart LR
   subgraph receiver["Receiver instance - one core"]
     subgraph discovery["Discovery thread"]
-      D["Watch and reconcile<br/>identify new files"]
+      D["Scan and reconcile<br/>identify new files"]
     end
     D -->|"bounded candidates"| W
     subgraph worker["Read and checkpoint thread"]
@@ -388,7 +389,9 @@ candidate's wait age and the queue depth are observable without using paths as m
 dimensions. With `checkpoint.retention: 0`, durable records are never automatically
 removed, so a full tracked table can remain saturated until the limit is raised or an
 operator explicitly removes state. This interaction is validated with a configuration
-warning and documented as an availability tradeoff.
+warning and documented as an availability tradeoff. Durable quarantines are also exempt
+from ordinary retention, so they consume tracked-file capacity until an operator resets
+or administratively removes the exact `file_id`.
 
 When engine-scope extensions exist, discovery may also move outside the receiver, but
 candidate discovery and ownership assignment remain separate concepts. The Phase 3
@@ -984,6 +987,9 @@ Each framed line becomes one OTAP log record built with `LogsRecordBatchBuilder`
   replay correlation. The offset is the first source byte represented by the record;
   fragments additionally carry their source range. Opaque `file_id` remains checkpoint
   state and is not exposed by default.
+- The receiver does not derive or attach host identity as part of file framing. Host
+  resource attributes come from standard OpenTelemetry resource detection or pipeline
+  enrichment.
 - Batch flush when any bound is hit: `batch.max_records` (default 1,024; hard cap
   65,535 from the `u16` id space), `batch.max_flush_period` (default
   1 s), or `batch.max_bytes` (default 8 MiB). The byte budget uses one documented
@@ -1102,11 +1108,21 @@ record:
   locator_kind u8,
   locator_len u16, locator bytes (POSIX device/inode or Windows volume/file ID),
   committed_offset u64, file_epoch u32,
-  framing_profile u64,
+  framing_profile_version u16,
+  framing_profile_digest [u8; 32],
   framing_resume_kind u8 (clean | continuation),
   continuation_record_start_offset u64, continuation_next_fragment_index u32
     (present only for continuation),
-  state u8 (active | rotated_finalized),
+  state:
+    active |
+    rotated_finalized |
+    quarantined {
+      reason_code u16,
+      runtime_locator,
+      observed_size u64,
+      file_epoch u32,
+      quarantined_at_unix_nano u64
+    },
   last_seen_unix_nano u64 (wall clock),
   last_path_len u16, last_path bytes (advisory)
 ```
@@ -1118,15 +1134,22 @@ Progress log transaction:
 [ sequence u64 ][ update_count u32 ][ updates... ][ crc32c u32 ]
 
 update:
-  register_file | update_progress | update_fingerprint | update_metadata | remove_file
+  register_file | update_progress | update_fingerprint | update_metadata |
+  quarantine_file | reset_quarantined_file | remove_file
   keyed by file_id, with operation-specific fields
 ```
 
 `update_progress` atomically advances `committed_offset`, `file_epoch`, and
-`framing_resume`. `framing_profile` identifies the versioned encoding, multiline, and
-oversize behavior needed to interpret that state. A configuration change that alters
-the profile while resumable state exists requires an explicit state migration or reset;
-it is not treated as an ordinary live reload.
+`framing_resume`. `framing_profile_version` identifies the canonical serialization
+format. `framing_profile_digest` is a SHA-256 digest of that canonical serialization of
+all framing-relevant configuration: encoding and decode policy, newline/raw mode,
+the exact configured multiline pattern bytes and regex profile, line/record/multiline
+limits, split/truncate policy, and partial-flush behavior. Canonical serialization uses
+field tags in fixed order, explicit option discriminants and lengths, duration
+nanoseconds, and no implementation-derived hashing. SHA-256 collision resistance is the
+durable compatibility assumption. A version or digest mismatch while resumable state
+exists fails closed and requires an explicit state migration or reset; it is not an
+ordinary live reload.
 
 - **Registration is durable before reading.** Creating a `file_id` appends and syncs a
   `register_file` update containing its initial offset. A reconciliation pass may place
@@ -1138,6 +1161,20 @@ it is not treated as an ordinary live reload.
   is synced before the batch is released and the next read begins. A nonzero interval
   may coalesce syncs; this widens only the crash-duplicate window for already-Acked
   data. Drain always syncs outstanding transactions.
+- **Fail-policy quarantine is durable.** `quarantine_file` is appended and synced before
+  the file is reported as quarantined. It records a bounded reason code and the observed
+  locator, size, epoch, and wall-clock time. A restart reconnecting the same runtime
+  locator to that `file_id` preserves quarantine and does not apply the general recovery
+  mismatch policy. A different locator at the same path is evaluated as a new candidate.
+  Ordinary retention never removes a quarantined record.
+- **Quarantine release is explicit and per file.** Configuration reload, including a
+  change to `on_truncate: read_new`, never releases existing quarantines. An operator
+  must invoke the state-management operation with the checkpoint namespace, exact
+  `file_id`, and one action: `reset_to_beginning`, `reset_to_end`, or `keep_failed`.
+  The operation requires exclusive ownership of the checkpoint namespace, appends and
+  syncs `reset_quarantined_file`, increments `file_epoch`, resets framing state, and
+  emits an auditable health event and counter. A bulk configuration switch cannot
+  authorize loss for every quarantined file.
 - **Torn tails are recoverable.** Recovery loads the selected snapshot, replays complete
   monotonically sequenced transactions, and ignores only trailing bytes that cannot
   form the transaction length declared by the final header. A complete transaction
@@ -1158,7 +1195,8 @@ it is not treated as an ordinary live reload.
   clock jump can expire state early; that can cause duplicate ingestion or intentional
   `start_at: end` skipping if the file later returns. This is an explicit retention
   tradeoff, not harmless behavior. Retention can be disabled for operators that require
-  indefinite resume state.
+  indefinite resume state. Quarantined records are exempt regardless of this setting and
+  remain until an explicit per-file reset or administrative removal.
 
 </details>
 
@@ -1173,8 +1211,9 @@ coordinated migration and remains Phase-3 work.
 
 On start: acquire the checkpoint-namespace lock (D15), load the latest valid snapshot
 and replay its WAL, then reconcile discovery output per INV-ID3/ID4. Resume matched
-`file_id`s at committed offsets; durably register unmatched files with new IDs before
-reading. Because `file_id` and checkpoint namespace contain no
+active `file_id`s at committed offsets; reconnect matching quarantined locators without
+reading them; durably register unmatched files with new IDs before reading. Because
+`file_id` and checkpoint namespace contain no
 core/instance/generation inputs, restarting under a different ambient CPU allocation
 resolves the same progress state. What this validates (and does not) is stated honestly
 in Phased implementation.
@@ -1188,8 +1227,9 @@ in Phased implementation.
   trailing partial remains uncommitted and is counted, its record is marked
   `rotated_finalized`, and the FD is released. The stable `file_id` keeps the offset
   attached to the rotated inode across the rename. If the rotated name matches
-  `include`, inode-dedup (D14) prevents a second reader; reading continues under the
-  new path. `rotate_wait` is not proof that no writer remains, so the README documents
+  `include`, runtime-locator dedup (D6) and the local lease (D15) prevent a second
+  reader; reading continues under the new path. `rotate_wait` is not proof that no
+  writer remains, so the README documents
   the possibility of later writes being missed after finalization.
 - **Copytruncate: detection is best-effort, and the doc says so plainly.** Detection
   fires when a poll observes `current_size < committed_offset` or fingerprint prefix
@@ -1203,15 +1243,28 @@ in Phased implementation.
   detectable, counts `filelog.rotation.copytruncate_detected`, documents that bytes
   written between copy and truncate are unrecoverable, and **recommends move/create
   rotation** in its README.
-- On detection, policy `on_truncate`, default **`fail`**. If the retained batch contains
-  an unacknowledged range for that file, the receiver stops reading the file and reports
-  a high-severity file error and quarantines it: the old bytes may already be destroyed, so a later process
-  crash could make that emitted batch impossible to reconstruct. The live retained
-  batch can still complete, but that does not restore crash recovery.
+- On detection, policy `on_truncate`, default **`fail`**. The receiver stops reading the
+  file, appends and syncs its durable `quarantined` state, then reports the high-severity
+  file error. If the retained batch contains an unacknowledged range for that file, the
+  old bytes may already be destroyed, so a later process crash could make that emitted
+  batch impossible to reconstruct. The live retained batch can still complete, but that
+  does not restore crash recovery.
 - Explicit `on_truncate: read_new` accepts this loss window. It increments `file_epoch`,
   resets offset and framing state to the start of the new stream, and emits a
   high-severity health event before reading new content. An Ack for a prior epoch never
-  advances the new epoch. Silent `ignore` (stanza's default) is rejected.
+  advances the new epoch. This policy applies to a newly detected truncation; changing
+  configuration does not release a previously quarantined `file_id`. Silent `ignore`
+  (stanza's default) is rejected.
+
+### Quarantine recovery operation
+
+Durable quarantine has no bulk configuration escape hatch. Recovery is an explicit
+state-management operation naming `checkpoint.id`, `file_id`, and exactly one action:
+resume from beginning, resume from current end, or remain quarantined. The receiver must
+be stopped, or the operation must otherwise acquire the same exclusive namespace lock,
+before it updates state. A successful resume increments the epoch, installs a clean
+framing boundary at the selected offset, syncs the WAL transaction, and emits an audit
+event and counter. Changing `on_truncate` during reload affects only later detections.
 
 ## Backpressure
 
@@ -1387,7 +1440,8 @@ original error.
 | Failure class | Phase 1 containment | Rule |
 | --- | --- | --- |
 | Oversize or malformed record under a non-failing policy | Record | Mark, split, truncate, or preserve according to explicit configuration |
-| Read, permission, decode-`fail`, or detected-truncation error | File | Quarantine or fail the affected file while other files continue |
+| Read, permission, or decode-`fail` error | File | Quarantine or fail the affected file while other files continue |
+| Detected truncation under `on_truncate: fail` | File | Durably quarantine the exact `file_id`; restart and configuration reload do not release it |
 | Ambiguous recovery match | File | Create a new identity or fail that file according to explicit recovery policy |
 | Retryable downstream Nack | Receiver-wide batch | Pause all reads and retry the retained batch within bounds |
 | Permanent Nack or retry exhaustion | Receiver | Default terminal policy prevents progress ambiguity across a mixed-file batch |
@@ -1412,7 +1466,8 @@ concurrency does not provide failure isolation.
 | Ambiguous identity match at load | Durably register a new `file_id`, count `filelog.identity.reset`, and apply `identity.on_recovery_mismatch` (default `beginning`) |
 | Retryable Nack | Resend retained batch after bounded exponential backoff |
 | Non-retryable Nack / retries exhausted | `on_nack`: terminal (default) or drop-and-continue with counter |
-| Truncation detected with an unacknowledged range | Fail the affected file by default; `read_new` explicitly accepts unrecoverable loss if the process crashes after source destruction |
+| Truncation detected under `fail` | Sync durable per-file quarantine before reporting; preserve it across restart until an explicit audited reset |
+| Truncation detected under explicit `read_new` | Reset epoch, offset, and framing state; accept unrecoverable loss if the process crashes after source destruction |
 | Rotation finalizes with an unterminated line | Do not emit it; count partial bytes left uncommitted and document possible capture loss |
 | Downstream channel closed | Terminal error |
 
@@ -1426,16 +1481,17 @@ retry attempts/exhaustion, stale completions, WAL bytes/transactions, compaction
 read-paused time (backpressure), discovery scan duration, namespace-lock wait, and
 runtime-file-lease wait. The inventory also includes named counters for
 `pattern_not_matched`, decode failures by policy/result, pending partial bytes at drain,
-and tracked-file candidate queue depth/wait age.
+tracked-file candidate queue depth/wait age, files quarantined by reason, and explicit
+quarantine resets by action.
 
-These are receiver-local telemetry instruments, not by themselves a promise that an end
-customer can query them. Product integration must define a customer-visible health
-surface, stable names, retention, and bounded dimensions at least by machine and data
-source. Per-file paths must not become unbounded metric dimensions; detailed file
-identity belongs in sampled/rate-limited health events. Required customer-visible
-conditions include pattern fallback, timeout/line/byte flushes, decode replacement,
-truncation, quarantine/unreadable files, identity resets, copytruncate detection,
-checkpoint failures, and tracked-file-limit saturation.
+The receiver emits bounded self-telemetry and health events. A distribution or product
+integration is responsible for exposing those signals through a customer-visible
+surface. That integration defines stable names, retention, and bounded dimensions at
+least by machine and data source. Per-file paths must not become unbounded metric
+dimensions; detailed file identity belongs in sampled/rate-limited health events.
+Required customer-visible conditions include pattern fallback, timeout/line/byte
+flushes, decode replacement, truncation, quarantine/unreadable files, identity resets,
+copytruncate detection, checkpoint failures, and tracked-file-limit saturation.
 
 ## Phased implementation
 
@@ -1449,16 +1505,19 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
   split/truncate oversize handling with fragment correlation; timestamp-processor
   integration for fractional seconds and explicit epoch seconds/milliseconds;
   retained-batch Ack/Nack with bounded retry; snapshot + progress-log checkpoints;
-  namespace lock and runtime file leases; move/create and best-effort copytruncate;
-  backpressure, drain, restart recovery, Linux/macOS/Windows identity, and telemetry.
+  durable per-file quarantine and audited reset; namespace lock and runtime file leases;
+  move/create and best-effort copytruncate; backpressure, drain, restart recovery,
+  Linux/macOS/Windows identity, and telemetry.
   Tests cover restart/crash-resume including torn WAL tail, Ack/Nack resend and retry
   exhaustion, backpressure with drain-during-backpressure, both rotation modes, growing
   and duplicate fingerprints, ambiguous recovery, initial `start_at: end` anchor,
   namespace-lock serialization, overlapping-pattern leases, every supported encoding,
   malformed bytes, multiline limits and fallback, restart after an Acked partial flush,
   restart between split fragments, truncation overlapping an unacknowledged range,
-  receiver-wide head-of-line behavior, hot-file fairness, and timestamp
-  success/fallback behavior on all supported platforms.
+  quarantine persistence across restart and configuration reload, same-locator and
+  replacement-locator recovery, audited per-file reset from beginning and end,
+  receiver-wide head-of-line behavior, hot-file fairness, and timestamp success/fallback
+  behavior on all supported platforms.
   **Resize honesty:** Phase 1 validates checkpoint-identity stability and
   single-instance restart continuity under a changed ambient core count; it cannot
   validate or claim multi-instance partition reassignment under CPU scale up/down -- that
