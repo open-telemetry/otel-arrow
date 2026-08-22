@@ -32,7 +32,8 @@ remain processor responsibilities.
 ## Delivery phases at a glance
 
 This table summarizes the proposed delivery sequence. The detailed
-**Phased implementation** section and its acceptance criteria remain authoritative.
+[Phase delivery and validation](#phase-delivery-and-validation) section defines the
+deliverables and required evidence for each phase.
 
 | Phase | Scope | Principal limitation or dependency |
 | --- | --- | --- |
@@ -1078,8 +1079,8 @@ active `file_id`s at committed offsets; reconnect matching quarantined locators 
 reading them; durably register unmatched files with new IDs before reading. Because
 `file_id` and checkpoint namespace contain no
 core/instance/generation inputs, restarting under a different ambient CPU allocation
-resolves the same progress state. What this validates (and does not) is stated honestly
-in Phased implementation.
+resolves the same progress state. What this validates (and does not) is stated under
+[Phase delivery and validation](#phase-delivery-and-validation).
 
 ## Rotation handling
 
@@ -1284,53 +1285,70 @@ copytruncate detection, checkpoint failures, and tracked-file-limit saturation.
 Pending-candidate overflow is also a required health condition because it indicates
 delayed admission even though reconciliation continues retrying eligibility.
 
-## Phased implementation
+## Phase delivery and validation
 
-These phases are delivery stages toward the architecture in #2844. Phase 1 completes
-the single-instance guarantees described by this document, not the epic's multi-instance
-discovery, virtual-partition ownership, or live CPU-resize criteria.
+These phases deliver the architecture in #2844 incrementally. The opening phase table
+is a navigation summary; this section defines completion evidence. Phase 1 completes
+the single-instance guarantees in this document, not the epic's multi-instance
+ownership or live-resize criteria.
 
-- **Phase 1:** single instance; discovery thread; newline and configurable
-  start- or end-pattern multiline framing; bounded idle, line, and byte flushes;
-  UTF-8, ASCII, UTF-16LE, UTF-16BE, and raw decoding; BOM and decode-error policies;
-  split/truncate oversize handling with fragment correlation; timestamp-processor
-  integration for fractional seconds and explicit epoch seconds/milliseconds;
-  retained-batch Ack/Nack with bounded retry; snapshot + progress-log checkpoints;
-  durable per-file quarantine and audited reset; namespace lock and runtime file leases;
-  move/create and best-effort copytruncate; backpressure, drain, restart recovery,
-  Linux/macOS/Windows identity, and telemetry.
-  Tests cover restart/crash-resume including torn WAL tail, Ack/Nack resend and retry
-  exhaustion, backpressure with drain-during-backpressure, both rotation modes, growing
-  and duplicate fingerprints, ambiguous recovery, initial `start_at: end` anchor,
-  namespace-lock serialization, overlapping-pattern leases, every supported encoding,
-  malformed bytes, multiline limits and fallback, restart after an Acked partial flush,
-  buffered multiline followed by an oversize physical line, fragment-ID stability and
-  uniqueness across retry/restart, restart between split fragments, truncation
-  overlapping an unacknowledged range,
-  quarantine persistence across restart and configuration reload, same-locator and
-  replacement-locator recovery, audited per-file reset from beginning and end,
-  bounded incremental scans, pending-candidate overflow and rediscovery, removal during
-  pending admission, overflow fairness under stable traversal order, process-local lease
-  contention, survival across temporary FD rotation, cleanup and integrity failure,
-  worst-case line-plus-multiline buffer accounting, receiver-wide head-of-line behavior,
-  and hot-file fairness on all supported platforms.
-  Separate processor/distribution conformance tests cover timestamp success, fallback,
-  timezone edges, and exporter precision.
-  **Resize honesty:** Phase 1 validates checkpoint-identity stability and
-  single-instance restart continuity under a changed ambient core count; it cannot
-  validate or claim multi-instance partition reassignment under CPU scale up/down -- that
-  requires Phase 3 and is deferred, not claimed.
-- **Phase 2:** read-ahead / multi-batch in-flight window with contiguous-Ack
-  cumulative commit (lifts the one-batch-per-round-trip throughput cap that Phase 1
-  accepts deliberately); filesystem-notification discovery backend with periodic
-  reconciliation retained as the correctness fallback; optional source-offset metadata;
-  optional background compaction if synchronous
-  compaction is measured to stall ingestion; full-path benchmark with allocation and
-  checkpoint-I/O accounting.
-- **Phase 3:** shared identity registry plus discovery/ownership coordination at engine
-  or group scope (blocked on extension-scope work); virtual-partition assignment
-  satisfying the Multi-instance requirements, enforced fencing, receiver readiness, and
-  checkpoint-store migration.
+### Phase 1: Single-instance correctness
+
+Phase 1 delivers:
+
+- Periodic discovery with bounded candidate admission.
+- Durable file identity, checkpoint-namespace ownership, and process-local runtime
+  leases.
+- Bounded decoding, newline and multiline framing, and split/truncate behavior.
+- One retained receiver-wide batch with Ack-gated checkpoint progress.
+- Snapshot/WAL recovery, durable quarantine, and audited per-file reset.
+- Move/create rotation and explicitly best-effort copy-truncate handling.
+- Bounded backpressure, lifecycle, drain, restart, and self-telemetry behavior.
+- Linux, macOS, and Windows identity and open-file lifecycle support.
+
+Phase 1 requires the following evidence:
+
+| Area | Required evidence |
+| --- | --- |
+| Discovery and identity | Growing and duplicate fingerprints; ambiguous recovery; initial `start_at: end`; bounded incremental scans; pending overflow, rediscovery, removal, and stable-order fairness |
+| Framing and encoding | Every supported encoding; malformed bytes; multiline limits and fallback; Acked partial-flush restart; oversize line after buffered multiline; stable and unique fragment IDs across retry and restart |
+| Delivery and checkpoints | Ack/Nack resend; retry exhaustion; torn WAL-tail recovery; restart between fragments; quarantine persistence across restart and reload; audited reset from beginning and end |
+| Rotation and recovery | Move/create and detectable copy-truncate; truncation over unacknowledged bytes; same-locator and replacement-locator recovery |
+| Ownership and lifecycle | Namespace serialization; overlapping-pattern lease contention; lease survival across temporary FD rotation; cleanup and registry-integrity failure; drain during backpressure; receiver-wide head-of-line behavior |
+| Resource bounds and platforms | Worst-case line-plus-multiline memory accounting; hot-file fairness; equivalent identity, rotation, and open-file lifecycle tests on Linux, macOS, and Windows |
+
+Timestamp parsing remains a processor and distribution-integration dependency. Separate
+conformance tests cover successful extraction, fallback behavior, fractional precision,
+timezone edge cases, and exporter precision.
+
+**Scope boundary:** Phase 1 validates checkpoint-identity stability and
+single-instance restart continuity when the ambient CPU count changes. It does not
+claim multi-instance reassignment or live-resize continuity; those require Phase 3.
+
+### Phase 2: Throughput and discovery efficiency
+
+Phase 2 adds:
+
+- Bounded read-ahead and multiple in-flight batches with contiguous-Ack commit
+  semantics, lifting the one-batch-per-round-trip Phase 1 limit.
+- Filesystem notifications as discovery hints, with reconciliation retained as the
+  correctness mechanism.
+- Optional source-offset metadata.
+- Optional background checkpoint compaction when measurements justify it.
+- Full-path benchmarks covering allocation, checkpoint I/O, throughput, and latency.
+
+### Phase 3: Distributed ownership
+
+Phase 3 adds:
+
+- Shared identity resolution before ownership assignment.
+- Fixed virtual partitions and versioned assign/revoke coordination.
+- Fenced checkpoint persistence that rejects stale owners.
+- Receiver readiness and handoff coordination.
+- Explicit, versioned migration from Phase 1 checkpoint state.
+
+The engine- or group-scoped coordination mechanism remains blocked on the extension
+scope decisions identified under Open questions.
 
 ## Alternatives considered
 
