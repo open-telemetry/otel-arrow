@@ -1519,8 +1519,6 @@ impl<
     }
 
     fn apply_reconcile_success(&self, desired_config: &OtelDataflowSpec, delete_missing: bool) {
-        self.log_filter_handle
-            .apply(&desired_config.engine.telemetry.logs.level);
         let mut state = self
             .state
             .lock()
@@ -1550,6 +1548,32 @@ impl<
             }
         }
         state.config_revision += 1;
+    }
+
+    // Rejects conflicting concurrent operations before the desired log level is
+    // applied. Placement feasibility is validated per pipeline by the planning
+    // loop below, which is reservation-aware; repeating a reservation-free
+    // placement check here would only duplicate it.
+    fn preflight_engine_reconciliation(
+        &self,
+        desired_pipeline_keys: &HashSet<PipelineKey>,
+        delete_missing: bool,
+        engine_operation_id: &str,
+    ) -> Result<(), ControlPlaneError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let conflicts = |pipeline_key: &PipelineKey| {
+            desired_pipeline_keys.contains(pipeline_key) || delete_missing
+        };
+        if !Self::engine_operation_allows(&state, Some(engine_operation_id))
+            || state.active_rollouts.keys().any(conflicts)
+            || state.active_shutdowns.keys().any(conflicts)
+        {
+            return Err(ControlPlaneError::RolloutConflict);
+        }
+        Ok(())
     }
 
     fn live_pipeline_keys(&self) -> Vec<PipelineKey> {
@@ -2020,6 +2044,15 @@ impl<
             .map(|(pipeline_key, _)| pipeline_key.clone())
             .collect();
 
+        self.preflight_engine_reconciliation(
+            &desired_key_set,
+            request.delete_missing,
+            guard.operation_id(),
+        )?;
+        let log_filter_update = self
+            .log_filter_handle
+            .apply_transactionally(&desired_config.engine.telemetry.logs.level);
+
         let mut projected_exclusive_core_ids = BTreeSet::new();
         let mut projected_controller_chosen_core_ids = BTreeSet::new();
         let mut rollout_plans = Vec::new();
@@ -2164,6 +2197,7 @@ impl<
         }
 
         self.apply_reconcile_success(&desired_config, request.delete_missing);
+        log_filter_update.commit();
         status.state = EngineConfigReconcileState::Succeeded;
         status.updated_at = timestamp_now();
         Ok(status)
