@@ -2288,6 +2288,45 @@ mod test {
         test_filter_with_or::<OplParser>().await;
     }
 
+    #[tokio::test]
+    async fn test_filter_attr_or_record_some_rows_no_attrs() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("INFO")
+                .attributes(vec![])
+                .finish(),
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("ERROR")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("z", AnyValue::new_int(4)),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where attributes["z"] + 1 > 0 or severity_text == "INFO""#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()],
+        );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where not(attributes["z"] + 1 > 0 or severity_text == "ERROR")"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()],
+        );
+    }
+
     async fn test_filter_with_not<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
@@ -2826,6 +2865,132 @@ mod test {
     #[tokio::test]
     async fn test_filter_no_attrs_opl_parser() {
         test_filter_no_attrs::<OplParser>().await;
+    }
+
+    /// Helper: build 3 log records with no attributes for OR-with-absent-attrs tests.
+    /// severity_text values: ["WARN", "ERROR", "WARN"].
+    fn logs_no_attrs() -> Vec<LogRecord> {
+        vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("WARN")
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .severity_text("ERROR")
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .severity_text("WARN")
+                .finish(),
+        ]
+    }
+
+    /// Scenario: OR expression where the left side references an absent attributes
+    /// payload and the right side matches root-scoped fields.
+    /// Guarantees: when evaluating `attributes["x"] == 10 or severity_text == "WARN"`
+    /// on a batch with no attributes payload at all, rows matching the right side of
+    /// the OR are still returned -- the absent left side does not suppress them.
+    async fn test_filter_or_with_absent_attrs_payload<P: Parser>() {
+        let log_records = logs_no_attrs();
+
+        // attributes["x"] == 10 or severity_text == "WARN"
+        //
+        // No log records have attributes, so the left side of the OR references an
+        // entirely absent attributes payload. The right side matches rows 0 and 2.
+        // The OR should still return rows 0 and 2.
+        let result = exec_logs_pipeline::<P>(
+            "logs | where attributes[\"x\"] == 10 or severity_text == \"WARN\"",
+            to_logs_data(log_records),
+        )
+        .await;
+        let result_records = &result.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_records.len(), 2);
+        assert_eq!(result_records[0].event_name, "1");
+        assert_eq!(result_records[1].event_name, "3");
+    }
+
+    /// Scenario: Evaluate an OR-with-absent-attrs predicate using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_or_with_absent_attrs_payload_opl_parser() {
+        test_filter_or_with_absent_attrs_payload::<OplParser>().await;
+    }
+
+    /// Scenario: Evaluate an OR-with-absent-attrs predicate using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_or_with_absent_attrs_payload_kql_parser() {
+        test_filter_or_with_absent_attrs_payload::<KqlParser>().await;
+    }
+
+    /// Scenario: OR expression where the right side references an absent attributes
+    /// payload and the left side matches root-scoped fields.
+    /// Guarantees: same correctness as the left-absent case, but exercises the code
+    /// path where the first child has already been evaluated when the second child
+    /// is found to be absent.
+    async fn test_filter_or_with_absent_attrs_payload_reversed<P: Parser>() {
+        let log_records = logs_no_attrs();
+
+        // severity_text == "WARN" or attributes["x"] == 10
+        let result = exec_logs_pipeline::<P>(
+            "logs | where severity_text == \"WARN\" or attributes[\"x\"] == 10",
+            to_logs_data(log_records),
+        )
+        .await;
+        let result_records = &result.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_records.len(), 2);
+        assert_eq!(result_records[0].event_name, "1");
+        assert_eq!(result_records[1].event_name, "3");
+    }
+
+    /// Scenario: Evaluate a reversed OR-with-absent-attrs predicate using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_or_with_absent_attrs_payload_reversed_opl_parser() {
+        test_filter_or_with_absent_attrs_payload_reversed::<OplParser>().await;
+    }
+
+    /// Scenario: Evaluate a reversed OR-with-absent-attrs predicate using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_or_with_absent_attrs_payload_reversed_kql_parser() {
+        test_filter_or_with_absent_attrs_payload_reversed::<KqlParser>().await;
+    }
+
+    /// Scenario: NOT(OR) expression where one side references an absent attributes
+    /// payload.
+    /// Guarantees: NOT(false OR severity_text == "WARN") correctly inverts to return
+    /// only the rows where severity_text != "WARN".
+    async fn test_filter_not_or_with_absent_attrs_payload<P: Parser>() {
+        let log_records = logs_no_attrs();
+
+        // not(attributes["x"] == 10 or severity_text == "WARN")
+        //
+        // With absent attrs: NOT(false OR severity_text == "WARN") = NOT(severity_text == "WARN")
+        // Only row 1 (ERROR) should pass.
+        let result = exec_logs_pipeline::<P>(
+            "logs | where not(attributes[\"x\"] == 10 or severity_text == \"WARN\")",
+            to_logs_data(log_records),
+        )
+        .await;
+        let result_records = &result.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_records.len(), 1);
+        assert_eq!(result_records[0].event_name, "2");
+    }
+
+    /// Scenario: Evaluate a NOT(OR)-with-absent-attrs predicate using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_not_or_with_absent_attrs_payload_opl_parser() {
+        test_filter_not_or_with_absent_attrs_payload::<OplParser>().await;
+    }
+
+    /// Scenario: Evaluate a NOT(OR)-with-absent-attrs predicate using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_not_or_with_absent_attrs_payload_kql_parser() {
+        test_filter_not_or_with_absent_attrs_payload::<KqlParser>().await;
     }
 
     async fn test_filter_property_is_null<P: Parser>(null_lit: &str) {
