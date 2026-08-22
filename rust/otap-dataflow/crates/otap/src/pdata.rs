@@ -123,6 +123,8 @@ impl Context {
             },
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -232,6 +234,8 @@ impl Context {
             route: RouteData::default(),
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -287,6 +291,8 @@ impl Context {
             },
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -316,6 +322,22 @@ impl Context {
         self.capture_signal(signal);
         if let Some(top) = self.stack.last_mut() {
             top.consumed_items = items;
+        }
+    }
+
+    /// Record the logical payload size produced by the current node at send
+    /// time onto the top frame.
+    pub(crate) fn stamp_produced_size(&mut self, size: u64) {
+        if let Some(top) = self.stack.last_mut() {
+            top.produced_size = size;
+        }
+    }
+
+    /// Record the logical payload size consumed by the current node at receive
+    /// time onto the top frame.
+    pub(crate) fn stamp_consumed_size(&mut self, size: u64) {
+        if let Some(top) = self.stack.last_mut() {
+            top.consumed_size = size;
         }
     }
 
@@ -361,6 +383,8 @@ impl Context {
             },
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -778,6 +802,13 @@ impl OtapPdata {
                 let signal = self.signal_type();
                 self.context.stamp_produced_items(items, signal);
             }
+            if node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
+                && node_interests.contains(Interests::PRODUCER_METRICS)
+                && let Some(size) = self.num_bytes()
+            {
+                self.context
+                    .stamp_produced_size(u64::try_from(size).unwrap_or(u64::MAX));
+            }
         }
     }
 
@@ -1068,6 +1099,13 @@ impl otel_arrow_dfe_engine::ReceivedAtNode for OtapPdata {
             let items = u32::try_from(self.num_items()).unwrap_or(u32::MAX);
             let signal = self.signal_type();
             self.context.stamp_consumed_items(items, signal);
+        }
+        if node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
+            && node_interests.contains(Interests::CONSUMER_METRICS)
+            && let Some(size) = self.num_bytes()
+        {
+            self.context
+                .stamp_consumed_size(u64::try_from(size).unwrap_or(u64::MAX));
         }
     }
 }
@@ -1820,6 +1858,37 @@ mod test {
         assert_eq!(pdata4.context.signal(), None);
     }
 
+    /// Scenario: a node opts into consumed payload size at the normal runtime metric level.
+    /// Guarantees: the receive frame captures size only when both consumer metrics and size measurement are enabled.
+    #[test]
+    fn test_received_at_node_stamps_consumed_size() {
+        use otel_arrow_dfe_engine::ReceivedAtNode;
+
+        let mut pdata = create_test_pdata();
+        let size =
+            u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
+        assert!(size > 0);
+        pdata.received_at_node(
+            42,
+            Interests::CONSUMER_METRICS | Interests::PRODUCED_CONSUMED_SIZE,
+        );
+        let frame = pdata.context.frames().last().expect("consumer frame");
+        assert_eq!(frame.consumed_size, size);
+
+        let mut pdata_no_optin = create_test_pdata();
+        pdata_no_optin.received_at_node(43, Interests::CONSUMER_METRICS);
+        let frame_no_optin = pdata_no_optin
+            .context
+            .frames()
+            .last()
+            .expect("consumer frame");
+        assert_eq!(frame_no_optin.consumed_size, 0);
+
+        let mut pdata_without_metrics = create_test_pdata();
+        pdata_without_metrics.received_at_node(44, Interests::PRODUCED_CONSUMED_SIZE);
+        assert!(pdata_without_metrics.context.frames().is_empty());
+    }
+
     /// Scenario: a source records normal-level produced messages without item-count opt-in.
     /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
     #[test]
@@ -1867,6 +1936,43 @@ mod test {
         let frame3 = pdata3.context.frames().last().expect("source frame");
         assert_eq!(frame3.produced_items, 0);
         assert_eq!(pdata3.context.signal(), None);
+    }
+
+    /// Scenario: a source opts into produced payload size at the normal runtime metric level.
+    /// Guarantees: the source frame captures size only when both producer metrics and size measurement are enabled.
+    #[test]
+    fn test_prepare_source_send_stamps_produced_size() {
+        let mut pdata = create_test_pdata();
+        let size =
+            u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
+        assert!(size > 0);
+        pdata.prepare_source_send(
+            Interests::PRODUCER_METRICS | Interests::PRODUCED_CONSUMED_SIZE,
+            5,
+        );
+        let frame = pdata.context.frames().last().expect("source frame");
+        assert_eq!(frame.produced_size, size);
+
+        let mut pdata_no_optin = create_test_pdata();
+        pdata_no_optin.prepare_source_send(Interests::PRODUCER_METRICS, 6);
+        let frame_no_optin = pdata_no_optin
+            .context
+            .frames()
+            .last()
+            .expect("source frame");
+        assert_eq!(frame_no_optin.produced_size, 0);
+
+        let mut pdata_without_metrics = create_test_pdata();
+        pdata_without_metrics.prepare_source_send(
+            Interests::SOURCE_TAGGING | Interests::PRODUCED_CONSUMED_SIZE,
+            7,
+        );
+        let frame_without_metrics = pdata_without_metrics
+            .context
+            .frames()
+            .last()
+            .expect("source tagging frame");
+        assert_eq!(frame_without_metrics.produced_size, 0);
     }
 
     #[test]

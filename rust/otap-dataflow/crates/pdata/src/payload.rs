@@ -182,8 +182,10 @@ impl PayloadData {
 /// - [`Self::take_payload`]'s returned value preserves the cache of the
 ///   payload version it contains.
 ///
-/// This makes it impossible for a processor to observe stale measurements
-/// without any manual invalidation step.
+/// [`Self::data`] exposes only a shared reference. Accessing the underlying
+/// representation for mutation requires consuming the wrapper through
+/// [`Self::into_data`] or [`Self::into_otap`], and wrapping the mutated
+/// representation creates a fresh cache. No manual invalidation is required.
 #[derive(Clone, Debug)]
 pub struct OtapPayload {
     data: PayloadData,

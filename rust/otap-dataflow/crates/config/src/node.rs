@@ -194,6 +194,16 @@ pub struct NodeTelemetryPolicy {
     /// enables it for every node without this flag.
     #[serde(default)]
     pub item_counts: bool,
+
+    /// Opt this node into per-signal produced/consumed logical payload size on
+    /// its `node.producer` / `node.consumer` metric sets.
+    ///
+    /// Off by default because measuring OTAP payloads requires walking their
+    /// Arrow arrays and buffers. Only recorded when the resolved
+    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
+    /// enables it for every node without this flag.
+    #[serde(default)]
+    pub size: bool,
 }
 
 /// Node kinds
@@ -519,23 +529,25 @@ mod tests {
         assert!(cfg.outputs.is_empty());
     }
 
-    /// Scenario: a node config opts into item counts through its restricted policy block.
-    /// Guarantees: node telemetry configuration stays namespaced under `policies`.
+    /// Scenario: a node config opts into item counts and payload size through its restricted policy block.
+    /// Guarantees: node telemetry configuration stays namespaced under `policies` with independent measurement controls.
     #[test]
-    fn node_user_config_parses_item_count_policy() {
+    fn node_user_config_parses_measurement_policy() {
         let yaml = r#"
 type: "processor:batch"
 policies:
   telemetry:
     item_counts: true
+    size: true
 "#;
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(
-            cfg.policies
-                .as_ref()
-                .and_then(|policies| policies.telemetry.as_ref())
-                .is_some_and(|telemetry| telemetry.item_counts)
-        );
+        let telemetry = cfg
+            .policies
+            .as_ref()
+            .and_then(|policies| policies.telemetry.as_ref())
+            .expect("node telemetry policy");
+        assert!(telemetry.item_counts);
+        assert!(telemetry.size);
     }
 
     #[test]

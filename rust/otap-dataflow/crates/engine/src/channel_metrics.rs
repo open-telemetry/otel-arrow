@@ -187,6 +187,18 @@ pub struct ConsumedItemMetrics {
     pub consumed_items: Counter<u64>,
 }
 
+/// Optional per-signal logical payload-size metrics for a node input channel.
+#[metric_set(
+    name = "node.consumer",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ConsumedSizeMetrics {
+    /// Consumed logical payload size, grouped by `signal` and `outcome`.
+    #[metric(name = "consumed.size", unit = "By")]
+    pub consumed_size: Counter<u64>,
+}
+
 /// Ack/nack metrics for produced messages, owned exclusively by the runtime control manager.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
@@ -218,6 +230,18 @@ pub struct ProducedItemMetrics {
     /// Produced signal items, grouped by the `signal` datapoint attribute.
     #[metric(name = "produced.items", unit = "{item}")]
     pub produced_items: Counter<u64>,
+}
+
+/// Optional per-signal logical payload-size metrics for a node output channel.
+#[metric_set(
+    name = "node.producer",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ProducedSizeMetrics {
+    /// Produced logical payload size, grouped by `signal` and `outcome`.
+    #[metric(name = "produced.size", unit = "By")]
+    pub produced_size: Counter<u64>,
 }
 
 pub(crate) fn control_channel_id(name: &str) -> Cow<'static, str> {
