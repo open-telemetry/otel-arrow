@@ -1231,41 +1231,60 @@ in Phased implementation.
 
 ## Rotation handling
 
-- **Move/create (logrotate `create`):** the open FD keeps reading the renamed file to
-  EOF. Discovery finds the new file at the old path as a new identity. The old
-  identity is finalized after EOF + `rotate_wait` (default 5 s, matching Fluent Bit's
-  `Rotate_Wait` precedent and remaining only a best-effort window for late writes), its
-  trailing partial remains uncommitted and is counted, its record is marked
-  `rotated_finalized`, and the FD is released. The stable `file_id` keeps the offset
-  attached to the rotated inode across the rename. If the rotated name matches
-  `include`, runtime-locator dedup (D6) and the local lease (D15) prevent a second
-  reader; reading continues under the new path. `rotate_wait` is not proof that no
-  writer remains, so the README documents
-  the possibility of later writes being missed after finalization.
-- **Copytruncate: detection is best-effort, and the doc says so plainly.** Detection
-  fires when a poll observes `current_size < committed_offset` or fingerprint prefix
-  re-validation fails. It **cannot** fire when a truncate-and-regrow completes between
-  two polls, ends at a size >= the old offset, and reproduces an identical fingerprint
-  window -- that sequence is observationally identical to a normal append on POSIX, and
-  no portable mechanism closes the gap (inotify surfaces truncate as `IN_MODIFY`;
-  a held FD reads EOF at the old offset until the file regrows past it, then silently
-  resumes). Prior art (stanza, Fluent Bit, Vector) has the same blind spot and none
-  guarantees copytruncate correctness. The receiver therefore: detects what is
-  detectable, counts `filelog.rotation.copytruncate_detected`, documents that bytes
-  written between copy and truncate are unrecoverable, and **recommends move/create
-  rotation** in its README.
-- On detection, policy `on_truncate`, default **`fail`**. The receiver stops reading the
-  file, appends and syncs its durable `quarantined` state, then reports the high-severity
-  file error. If the retained batch contains an unacknowledged range for that file, the
-  old bytes may already be destroyed, so a later process crash could make that emitted
-  batch impossible to reconstruct. The live retained batch can still complete, but that
-  does not restore crash recovery.
-- Explicit `on_truncate: read_new` accepts this loss window. It increments `file_epoch`,
-  resets offset and framing state to the start of the new stream, and emits a
-  high-severity health event before reading new content. An Ack for a prior epoch never
-  advances the new epoch. This policy applies to a newly detected truncation; changing
-  configuration does not release a previously quarantined `file_id`. Silent `ignore`
-  (stanza's default) is rejected.
+### Move/create
+
+For move/create rotation (the logrotate `create` pattern), the receiver continues
+reading the renamed file through its open handle while independently discovering and
+reading the replacement file at the original path.
+
+The rotated file retains its `file_id` and checkpoint across a same-filesystem or
+same-volume rename. POSIX continuity uses `(st_dev, st_ino)`. Windows continuity uses
+`(volume_serial, FILE_ID_INFO)`. On Windows, the receiver requests read access with
+`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`, allowing compatible writers
+and rotation tools to continue writing or rename the file. Opening still fails when
+another process uses incompatible sharing permissions. A copy/unlink operation across
+filesystems or volumes is treated as a new file.
+
+The rotated identity is finalized after EOF plus `rotate_wait` (default 5 seconds,
+matching Fluent Bit's `Rotate_Wait` precedent). Its unterminated trailing bytes remain
+uncommitted and are counted, its durable state becomes `rotated_finalized`, and its
+handle is released. If the rotated path also matches `include`, runtime-locator dedup
+(D6) and the local lease (D15) prevent a second reader.
+
+`rotate_wait` is a best-effort inactivity window, not proof that no writer remains.
+Writes arriving after finalization may be missed; the README documents this limitation.
+Incompatible Windows sharing permissions are reported as file-access or rotation errors.
+
+### Copy-truncate
+
+Copy-truncate detection is best-effort. The receiver detects observable truncation when
+a poll finds `current_size < committed_offset` or fingerprint-prefix revalidation fails.
+
+A truncate-and-regrow operation can complete between observations, reach a size greater
+than or equal to the old offset, and reproduce the fingerprint window. That sequence is
+observationally identical to a normal append on POSIX: inotify reports truncation as
+`IN_MODIFY`, and a held descriptor reads EOF at the old offset until the file regrows
+past it. No portable mechanism closes this gap. Stanza, Fluent Bit, and Vector have the
+same blind spot and do not guarantee copy-truncate correctness.
+
+The receiver therefore detects and reports what is observable, increments
+`filelog.rotation.copytruncate_detected`, documents that bytes destroyed before capture
+or recovery are unrecoverable, and recommends move/create rotation in its README.
+
+When truncation is detected:
+
+- **`on_truncate: fail` (default):** stop reading, append and sync durable `quarantined`
+  state, then report the high-severity file error. If truncation destroyed bytes covered
+  by the retained unacknowledged batch, that live batch can still complete, but a later
+  crash may make it impossible to reconstruct.
+- **`on_truncate: read_new`:** explicitly accept the recovery risk, increment
+  `file_epoch`, reset offset and framing state to the beginning of the new stream, emit a
+  high-severity health event, and resume reading. An Ack from an earlier epoch cannot
+  advance the new epoch.
+
+Changing configuration to `read_new` affects only later truncation detections; it does
+not release an already-quarantined `file_id`. Silent continuation from the previous
+offset is not supported.
 
 ### Quarantine recovery operation
 
