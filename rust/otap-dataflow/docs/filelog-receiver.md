@@ -1561,6 +1561,8 @@ does not persist the in-flight Arrow batch as a durable spool.
 
 ## Appendix B: Checkpoint storage format
 
+### Namespace layout
+
 The Phase 1 namespace is:
 
 ```text
@@ -1574,7 +1576,37 @@ ${engine.state_dir}/filelog/<checkpoint.id>/
 The ID is percent-encoded using the journald path convention. The namespace lock
 prevents two active configurations sharing an ID from writing concurrently.
 
-Snapshot envelope:
+### Format overview
+
+```mermaid
+flowchart LR
+  CURRENT["CURRENT<br/>selects active generation"]
+  SNAP["Snapshot<br/>complete identity and progress table"]
+  WAL["Progress WAL<br/>atomic incremental updates"]
+  LOCK["Ownership lock<br/>single Phase 1 writer"]
+
+  CURRENT --> SNAP
+  CURRENT --> WAL
+  LOCK -.->|"protects namespace"| CURRENT
+  LOCK -.->|"protects writes"| SNAP
+  LOCK -.->|"protects writes"| WAL
+
+  class CURRENT controlNode
+  class SNAP snapshotNode
+  class WAL walNode
+  class LOCK lockNode
+
+  classDef controlNode fill:#EDE9FE,stroke:#7C3AED,color:#111827
+  classDef snapshotNode fill:#DBEAFE,stroke:#2563EB,color:#111827
+  classDef walNode fill:#DCFCE7,stroke:#16A34A,color:#111827
+  classDef lockNode fill:#FEF3C7,stroke:#D97706,color:#111827
+```
+
+`CURRENT` identifies the active snapshot/WAL generation. The snapshot supplies the
+recovery base, the WAL records subsequent atomic changes, and `ownership.lock` prevents
+concurrent Phase 1 writers.
+
+### Snapshot envelope
 
 All fixed-width integers in the snapshot and progress log use little-endian byte order.
 
@@ -1582,7 +1614,21 @@ All fixed-width integers in the snapshot and progress log use little-endian byte
 [ magic "OTAPFLSN" (8) ][ version u16 ][ header_size u16 ][ generation u64 ]
 [ record_count u32 ]
 [ body: records... ][ crc32c u32 over all preceding bytes ]
+```
 
+Snapshot fields are organized into five contract groups:
+
+| Field group | Contents | Purpose |
+| --- | --- | --- |
+| Identity | `file_id`, fingerprint, ignored-header count, runtime locator | Reconnect candidates without treating path or matching evidence as durable identity |
+| Progress | Committed offset and file epoch | Record downstream-acknowledged source progress |
+| Framing | Profile version and digest, resume state | Preserve deterministic framing across restart |
+| Lifecycle | Active, rotated-finalized, or quarantined state | Enforce durable file-state transitions |
+| Advisory metadata | Last-seen time and path | Support matching, diagnostics, and retention without becoming identity |
+
+### Exact snapshot record layout
+
+```text
 record:
   file_id u128,
   fingerprint_len u16, fingerprint bytes (raw, mutable evidence),
@@ -1609,7 +1655,7 @@ record:
   last_path_len u16, last_path bytes (advisory)
 ```
 
-Progress log transaction:
+### WAL transaction envelope
 
 ```text
 [ magic "OTAPFLTX" (8) ][ version u16 ][ generation u64 ][ transaction_len u32 ]
@@ -1624,33 +1670,109 @@ envelope byte order; variable-width fields carry an explicit length and are boun
 the corresponding snapshot field. An implementation may add fields only under a new
 format version.
 
-| Tag | Operation | Required payload | Valid transition and replay effect |
+### Durable state transitions
+
+```mermaid
+flowchart LR
+  ABSENT["Absent"]
+  ACTIVE["Active"]
+  ROTATED["Rotated finalized"]
+  QUARANTINED["Quarantined"]
+
+  ABSENT -->|"register_file"| ACTIVE
+  ACTIVE -->|"progress, fingerprint<br/>or metadata update"| ACTIVE
+  ACTIVE -->|"finalizing update_progress"| ROTATED
+  ACTIVE -->|"quarantine_file"| QUARANTINED
+  QUARANTINED -->|"keep_failed"| QUARANTINED
+  QUARANTINED -->|"reset to beginning or end"| ACTIVE
+  ACTIVE -->|"remove_file"| ABSENT
+  ROTATED -->|"remove_file"| ABSENT
+  QUARANTINED -->|"administrative remove"| ABSENT
+
+  class ABSENT absentNode
+  class ACTIVE activeNode
+  class ROTATED rotatedNode
+  class QUARANTINED quarantineNode
+
+  classDef absentNode fill:#F3F4F6,stroke:#6B7280,color:#111827
+  classDef activeNode fill:#DCFCE7,stroke:#16A34A,color:#111827
+  classDef rotatedNode fill:#DBEAFE,stroke:#2563EB,color:#111827
+  classDef quarantineNode fill:#FEE2E2,stroke:#DC2626,color:#111827
+```
+
+Every transition is conditional on the expected current state and epoch. A stale,
+conflicting, or impossible transition fails recovery closed.
+
+### WAL operations
+
+| Tag | Operation | Payload summary | Effect |
 | --- | --- | --- | --- |
-| 1 | `register_file` | Initial fingerprint, ignored-header count, runtime locator, committed offset, file epoch, framing-profile version and digest, `clean` framing resume, active state, last-seen time, and advisory path | Creates an absent `file_id`. Encountering an existing `file_id` during replay is valid only when every persisted field is identical; otherwise recovery fails closed. |
-| 2 | `update_progress` | Expected committed offset and epoch; new committed offset, epoch, framing resume, last-seen time, and optional rotation-finalized state | Requires the stored offset and epoch to match the expected values. It advances progress monotonically within an epoch, or performs an explicitly encoded epoch transition. A mismatch, regression, or invalid framing continuation fails closed. |
-| 3 | `update_fingerprint` | Expected fingerprint length and bytes; replacement fingerprint length and bytes | Replaces mutable matching evidence only when the expected evidence matches. It never changes `file_id`, progress, epoch, or framing state. |
-| 4 | `update_metadata` | Runtime locator, last-seen time, and advisory path, each with its presence discriminator | Replaces only the supplied mutable locator and advisory metadata. It cannot change identity, progress, quarantine, or framing state. |
-| 5 | `quarantine_file` | Expected file epoch, reason code, runtime locator, observed size, quarantine epoch, and quarantine time | Requires an active record at the expected epoch and transitions it to durable quarantine. Replaying an identical quarantine is idempotent; conflicting quarantine data fails closed. |
-| 6 | `reset_quarantined_file` | Expected quarantine epoch, action (`reset_to_beginning`, `reset_to_end`, or `keep_failed`), resulting epoch and offset, `clean` framing resume, reset time, and audit reason | Requires the matching quarantined record. `keep_failed` preserves quarantine; either reset action increments the epoch and returns the record to active state at the explicitly recorded offset. A stale or conflicting reset fails closed. |
-| 7 | `remove_file` | Expected file epoch and prior state, removal reason, and removal time | Removes only a record matching the expected epoch and state. A replay against an already absent `file_id` is idempotent; a conflicting live record fails closed. |
+| 1 | `register_file` | Initial identity, progress, framing profile, and metadata | Create an absent `file_id` |
+| 2 | `update_progress` | Expected and resulting offset, epoch, framing resume, and state | Advance progress or perform an explicit epoch/state transition |
+| 3 | `update_fingerprint` | Expected and replacement fingerprint evidence | Change matching evidence only |
+| 4 | `update_metadata` | Optional locator, last-seen time, and path | Change advisory metadata only |
+| 5 | `quarantine_file` | Expected epoch, reason, locator, observed size, and time | Transition active to quarantined |
+| 6 | `reset_quarantined_file` | Expected quarantine epoch, action, resulting epoch, and offset | Preserve quarantine or return it to active |
+| 7 | `remove_file` | Expected epoch and state, reason, and time | Remove the matching record |
 
-Recovery validates the transaction envelope and CRC before applying any update in that
-transaction. Transactions are replayed in strictly increasing sequence order and apply
-atomically: a malformed tag, invalid length, missing required field, duplicate or
-out-of-order sequence, impossible state transition, CRC mismatch, or trailing data
-before the final torn transaction fails recovery closed. Only a structurally incomplete
-final transaction whose declared bytes extend beyond EOF may be discarded as a torn
-tail. Unknown operation tags require a newer format version; they are never skipped.
+Detailed transition and replay rules:
 
-`update_progress` atomically advances `committed_offset`, `file_epoch`, and
-`framing_resume`. `framing_profile_version` identifies the canonical serialization
-format. `framing_profile_digest` is a SHA-256 digest of all framing-relevant
-configuration: encoding and decode policy, newline/raw mode, exact multiline pattern
-bytes and regex profile, line/record/multiline limits, split/truncate policy, and
-partial-flush behavior. Canonical serialization uses fixed-order field tags, explicit
-option discriminants and lengths, duration nanoseconds, and no implementation-derived
-hashing. A version or digest mismatch with resumable state fails closed and requires an
-explicit migration or reset.
+- **`register_file`:** the payload contains the initial fingerprint, ignored-header
+  count, runtime locator, committed offset, file epoch, framing-profile version and
+  digest, `clean` framing resume, active state, last-seen time, and advisory path. It
+  creates an absent `file_id`. Encountering an existing `file_id` during replay is valid
+  only when every persisted field is identical; otherwise recovery fails closed.
+- **`update_progress`:** the payload contains the expected committed offset and epoch;
+  new committed offset, epoch, framing resume, and last-seen time; and an optional
+  rotated-finalized state. The stored offset and epoch must match the expected values.
+  Progress advances monotonically within an epoch or through an explicitly encoded
+  epoch transition. A mismatch, regression, or invalid framing continuation fails
+  closed. Offset, epoch, and framing resume advance atomically.
+- **`update_fingerprint`:** the payload contains the expected and replacement
+  fingerprint lengths and bytes. The expected evidence must match. The operation never
+  changes `file_id`, progress, epoch, or framing state.
+- **`update_metadata`:** the payload contains the runtime locator, last-seen time, and
+  advisory path with presence discriminators. It replaces only supplied mutable locator
+  and advisory metadata; it cannot change identity, progress, quarantine, or framing
+  state.
+- **`quarantine_file`:** the payload contains the expected file epoch, reason code,
+  runtime locator, observed size, quarantine epoch, and quarantine time. It requires an
+  active record at the expected epoch and transitions it to durable quarantine.
+  Replaying an identical quarantine is idempotent; conflicting data fails closed.
+- **`reset_quarantined_file`:** the payload contains the expected quarantine epoch,
+  action (`reset_to_beginning`, `reset_to_end`, or `keep_failed`), resulting epoch and
+  offset, `clean` framing resume, reset time, and audit reason. It requires the matching
+  quarantined record. `keep_failed` preserves quarantine; either reset action increments
+  the epoch and returns the record to active at the explicitly recorded offset. A stale
+  or conflicting reset fails closed.
+- **`remove_file`:** the payload contains the expected file epoch and prior state,
+  removal reason, and removal time. It removes only a matching record. Replay against an
+  already absent `file_id` is idempotent; a conflicting live record fails closed.
+
+### Recovery algorithm
+
+1. Read `CURRENT`, then load and validate the selected snapshot envelope, version, and
+   CRC.
+2. Replay complete WAL transactions atomically in strictly increasing sequence order.
+3. Discard only a structurally incomplete final transaction whose declared bytes extend
+   beyond EOF.
+4. Fail recovery closed on every other format, length, CRC, ordering, unknown-tag, or
+   state-transition error. Unknown tags require a newer format version and are never
+   skipped.
+
+No update from a transaction becomes visible unless its complete transaction validates.
+Trailing data before the final torn transaction also fails closed.
+
+### Framing-profile compatibility
+
+`framing_profile_version` identifies the canonical serialization format.
+`framing_profile_digest` is a SHA-256 digest of all framing-relevant configuration:
+encoding and decode policy, newline/raw mode, exact multiline pattern bytes and regex
+profile, line/record/multiline limits, split/truncate policy, and partial-flush behavior.
+Canonical serialization uses fixed-order field tags, explicit option discriminants and
+lengths, duration nanoseconds, and no implementation-derived hashing. A version or
+digest mismatch with resumable state fails closed and requires an explicit migration or
+reset.
 
 ## Appendix C: Complete Phase 1 configuration
 
