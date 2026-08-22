@@ -138,8 +138,9 @@ engine-level identity, ownership, and fencing services do not exist yet. The rea
 kept independent of glob traversal, but the local candidate-event interface is not the
 future distributed ownership protocol. Phase 3 preserves the reading, framing, rotation,
 and Ack-gated progress semantics while replacing identity resolution, ownership
-assignment, and checkpoint storage. Phase 1 delivers the complete priority-P0 product
-surface, but the epic's live multi-instance resize criteria remain Phase 3.
+assignment, and checkpoint storage. Phase 1 delivers the receiver and Ack-gated
+progress surface described here, but the epic's live multi-instance resize criteria
+remain Phase 3.
 
 ## Reuse from journald and Quiver
 
@@ -510,20 +511,20 @@ Changing identity configuration after checkpoints exist is a state migration, no
 ordinary config reload. Changing `fingerprint_bytes`, `ignored_header_bytes`, or the
 fingerprint algorithm/profile is rejected unless an explicit migration or state-reset
 policy acknowledges possible re-identification, duplicate ingestion, or skipped data.
-A versioned
-`LegacyCheckpointImporter` boundary may translate a prior path- or native-identity
-store into candidate `(path, locator, offset)` records, but each imported offset is used
-only after identity validation. An importer must report matched, ambiguous, reset, and
-rejected records and must be idempotent across restart. Filebeat 9.x path/native-to-
-fingerprint migration is prior art for the algorithm, not proof that an unrelated
-product's stored state contains enough evidence to migrate safely.
+Phase 1 defines migration of its own versioned checkpoint format, but it does not define
+a generic importer for unrelated path- or native-identity stores. A distribution that
+has legacy state may provide an explicit, versioned migration tool outside the receiver.
+Such a tool must validate identity before using an imported offset, report matched,
+ambiguous, reset, and rejected records, and be idempotent across restart. Filebeat 9.x
+path/native-to-fingerprint migration is prior art for the algorithm, not proof that an
+unrelated product's stored state contains enough evidence to migrate safely.
 
 Phase 1 supports Linux, macOS, and Windows durable identity. Linux and macOS use the
 runtime locator described above. Windows uses
 `GetFileInformationByHandleEx` + 128-bit `FILE_ID_INFO`, which is required for ReFS
 correctness. Equivalent restart and rotation tests are Phase-1 acceptance criteria on
 all three platforms. Reading a Windows file whose writer denies shared-read access
-remains a separate priority-P1 source contract and is not implied by Windows identity support.
+remains a separate source contract and is not implied by Windows identity support.
 
 ## Execution model
 
@@ -651,14 +652,19 @@ Invariants and constraints:
   next_fragment_index }`. Incomplete encoded characters are never committed. A reader
   must be able to resume from `(committed_offset, framing_resume)` and deterministically
   reproduce the same subsequent records.
-- `max_line_bytes` (default 1 MiB): a longer line is truncated at the limit, emitted
-  with attribute `log.record.truncated = true`, and the remainder up to the next
-  newline is discarded with a counter. The emitted record's `new_offset` is immediately
-  after that newline, not at the byte limit; only that delimiter boundary may be
-  committed. Re-reads therefore reproduce the same truncated record. Unbounded line
-  buffering is not permitted.
-- A trailing partial line (no `\n` yet) is held in the reader's buffer (capped at
-  `max_line_bytes`). The configured `force_flush_period` may emit it after idle time,
+- `max_line_bytes` (default 1 MiB) bounds the decoded physical-line buffer and is not an
+  independent loss policy. When a physical line exceeds it, the receiver applies
+  `max_log_size_behavior` exactly as it does for an oversized logical record. Under
+  `split`, it emits bounded fragments while scanning to the newline and preserves every
+  source byte. Under `truncate`, it emits the bounded prefix with
+  `log.record.truncated = true`, discards through the newline, and counts the discarded
+  bytes. The oversize physical line is a self-contained logical record; it does not
+  participate in start- or end-pattern matching because evaluating a regex over an
+  unbounded line would violate the memory contract. Re-reads reproduce the same result,
+  and unbounded line buffering is not permitted.
+- A trailing partial line (no `\n` yet) is held in the reader's buffer until
+  `max_line_bytes`; crossing that bound invokes the configured oversize policy. The
+  configured `force_flush_period` may emit it after idle time,
   with a reason marker and a committed partial boundary as defined by INV-FR1. Without
   partial flush, EOF plus `rotate_wait` remains only an inactivity heuristic: a process
   may retain the renamed FD and write again later, so the receiver cannot prove the
@@ -668,16 +674,15 @@ Invariants and constraints:
   so restart can resume if the source still exists.
 - Idle flush is the only sanctioned way to commit a mid-line offset on a non-terminal
   file. It trades latency for a documented slow-writer split risk and is included in
-  Phase 1 because the priority-P0 requirements require the final record to be released
-  without waiting indefinitely. The flush terminates that logical record and commits a
-  `clean` resume state; it does not require the next append to be merged with the
-  timeout-flushed record.
+  Phase 1 so a final record can be released without waiting indefinitely. The flush
+  terminates that logical record and commits a `clean` resume state; it does not require
+  the next append to be merged with the timeout-flushed record.
 - Phase 1 encoding supports UTF-8, ASCII, UTF-16LE, UTF-16BE, and raw mode using the
   decode-before-framing contract below. Raw byte preservation is not a substitute for
   selecting UTF-16.
 
 Multiline aggregation lives in the receiver's framing layer because it changes record
-boundaries and therefore offset accounting. It is part of the Phase 1 priority-P0 release.
+boundaries and therefore offset accounting. It is part of Phase 1.
 
 ### Phase-1 framing and encoding contract
 
@@ -728,9 +733,12 @@ operator-chain compatibility.
 - **Oversize policy.** `split` preserves all input by emitting bounded fragments;
   `truncate` emits the bounded prefix and discards through the logical record boundary.
   Both policies emit telemetry, and emitted records identify truncation or
-  fragmentation. Split fragments carry a stable record identifier derived from
-  `(file_id, file_epoch, record_start_offset)`, a zero-based fragment index, and a
-  final-fragment marker so processors or destinations can reconstruct them. When a
+  fragmentation. Split fragments carry receiver-defined attributes
+  `log.record.fragment.id` (a stable opaque string derived from
+  `(file_id, file_epoch, record_start_offset)`), `log.record.fragment.index` (a
+  zero-based unsigned integer), and `log.record.fragment.last` (a boolean). These names
+  and value types are part of the Phase 1 output contract. Together they let processors
+  or destinations reconstruct the original record without exposing `file_id`. When a
   split logical record crosses an Ack boundary, its next fragment index and original
   record start are durable framing-resume state.
   For decoded text, the byte limit is measured on the UTF-8 body emitted into OTAP; for
@@ -758,7 +766,7 @@ More elaborate state-machine parsers and built-in language-specific multiline pr
 can be added later. The initial generic contract is start-pattern or end-pattern
 framing with explicit bounds and deterministic source-offset advancement.
 
-### Timestamp processing contract
+### Processor dependency for end-to-end timestamp behavior
 
 Timestamp extraction remains semantic processing outside the receiver. The receiver
 sets `observed_time_unix_nano`; an OPL transform or dedicated parser may locate and
@@ -780,6 +788,13 @@ policy at daylight-saving transitions and any destination precision reduction ar
 explicit processor/exporter policies, never silent conversions. This preserves the
 receiver/processor boundary from #2844 while making the end-to-end filelog contract
 testable.
+
+These timestamp semantics are a public processor and distribution-integration
+dependency, not part of the receiver's framing or checkpoint contract. Receiver
+acceptance requires preserving the framed body and observed time needed by that
+processor. A distribution claims end-to-end timestamp support only after its selected
+processor profile, packaging, configuration, and exporter precision behavior pass the
+corresponding conformance tests.
 
 ## Ack-gated checkpoint progression
 
@@ -833,10 +848,12 @@ Each framed line becomes one OTAP log record built with `LogsRecordBatchBuilder`
   logical-size function: body bytes plus attribute-key bytes, attribute-value bytes,
   and a conservative fixed per-record overhead. It is not a claim about exact Arrow
   allocation size; memory bounds remain separately measured and tested.
-- A single record cannot exceed `batch.max_bytes`: the same logical-size function used
-  by runtime flushing validates `max_line_bytes` plus configured and fixed attributes
-  at config build time (reject otherwise), following journald's validate-at-build
-  convention.
+- A single emitted record or fragment cannot exceed `batch.max_bytes`: the same
+  logical-size function used by runtime flushing validates both `max_line_bytes` and
+  `max_record_bytes` with configured and fixed attributes at config build time (reject
+  otherwise), following journald's validate-at-build convention. Reaching either input
+  bound invokes `max_log_size_behavior`; neither bound introduces a separate hidden
+  truncation policy.
 
 ## Ack and checkpoint model
 
@@ -990,6 +1007,18 @@ same-volume rename. POSIX continuity uses `(st_dev, st_ino)`. Windows continuity
 and rotation tools to continue writing or rename the file. Opening still fails when
 another process uses incompatible sharing permissions. A copy/unlink operation across
 filesystems or volumes is treated as a new file.
+
+Removing a directory entry does not by itself revoke an active reader. On POSIX, an
+unlinked file remains readable through its open descriptor, so the receiver continues
+through EOF plus `rotate_wait` and then finalizes the identity. On Windows, a compatible
+rename or delete requested while the receiver holds a `FILE_SHARE_DELETE` handle may
+make the name disappear or leave deletion pending, but the receiver does not close the
+handle merely because discovery reports `Removed`; it continues reading while the
+handle remains usable. If an incompatible share mode blocks the operation, or a later
+read fails, the receiver reports the platform error and applies the per-file failure
+policy. It never advances a checkpoint for unread bytes. Platform acceptance tests must
+cover rename, delete-pending or name removal, late writes through a compatible writer,
+EOF finalization, and incompatible sharing behavior.
 
 The rotated identity is finalized after EOF plus `rotate_wait` (default 5 seconds,
 matching Fluent Bit's `Rotate_Wait` precedent). Its unterminated trailing bytes remain
@@ -1158,11 +1187,11 @@ copytruncate detection, checkpoint failures, and tracked-file-limit saturation.
 
 ## Phased implementation
 
-These phases are delivery stages toward the architecture in #2844. Phase 1 is the
-complete priority-P0 release, not completion of the epic's
-multi-instance discovery, virtual-partition ownership, or live CPU-resize criteria.
+These phases are delivery stages toward the architecture in #2844. Phase 1 completes
+the single-instance guarantees described by this document, not the epic's multi-instance
+discovery, virtual-partition ownership, or live CPU-resize criteria.
 
-- **Phase 1 (priority-P0 release):** single instance; discovery thread; newline and configurable
+- **Phase 1:** single instance; discovery thread; newline and configurable
   start- or end-pattern multiline framing; bounded idle, line, and byte flushes;
   UTF-8, ASCII, UTF-16LE, UTF-16BE, and raw decoding; BOM and decode-error policies;
   split/truncate oversize handling with fragment correlation; timestamp-processor
@@ -1179,13 +1208,14 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
   restart between split fragments, truncation overlapping an unacknowledged range,
   quarantine persistence across restart and configuration reload, same-locator and
   replacement-locator recovery, audited per-file reset from beginning and end,
-  receiver-wide head-of-line behavior, hot-file fairness, and timestamp success/fallback
-  behavior on all supported platforms.
+  receiver-wide head-of-line behavior, and hot-file fairness on all supported platforms.
+  Separate processor/distribution conformance tests cover timestamp success, fallback,
+  timezone edges, and exporter precision.
   **Resize honesty:** Phase 1 validates checkpoint-identity stability and
   single-instance restart continuity under a changed ambient core count; it cannot
   validate or claim multi-instance partition reassignment under CPU scale up/down -- that
   requires Phase 3 and is deferred, not claimed.
-- **Phase 2 (priority-P1 scale and discovery improvements):** read-ahead / multi-batch in-flight window with contiguous-Ack
+- **Phase 2:** read-ahead / multi-batch in-flight window with contiguous-Ack
   cumulative commit (lifts the one-batch-per-round-trip throughput cap that Phase 1
   accepts deliberately); filesystem-notification discovery backend with periodic
   reconciliation retained as the correctness fallback; optional source-offset metadata;
@@ -1243,10 +1273,11 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
    header): deferred; cheap to add as `read_from_offset` if required.
 8. **Delete-after-read policies:** deferred by the issue; the `rotated_finalized`
    state provides the hook for a future `delete_after_ack`. Needs its own issue.
-9. **Timestamp edge policies (Phase 1 priority-P0 exit criterion):** exact layout-profile
+9. **Timestamp processor and integration contract:** exact layout-profile
    directives, ambiguous/nonexistent local-time handling, and destination precision
-   reduction must be agreed with the OPL and exporter owners before the stated priority-P0
-   fractional-second and epoch timestamp outcomes are claimed end to end.
+   reduction must be agreed with the processor and exporter owners before
+   fractional-second and epoch timestamp outcomes are claimed end to end. This does not
+   block receiver framing or checkpoint acceptance.
 
 ## Deferred beyond Phase 1
 
@@ -1260,6 +1291,7 @@ they do not silently inherit the live local-file contract.
 | Network shares | Require filesystem-specific identity, outage behavior, and cross-agent ownership |
 | Windows files denying shared read | Require a driver, journal, snapshot, or other privileged capture mechanism |
 | Multi-instance ownership | Requires shared identity resolution, virtual partitions, fencing, readiness, and state migration |
+| Importing unrelated checkpoint formats | Depends on distribution-specific legacy identity evidence and requires an explicit, idempotent migration tool |
 | Advanced I/O and parsing | eBPF, `io_uring`, `mmap`, built-in language parsers, structured-file ingestion, and full header parsing need separate contracts and evidence |
 | Product parity and semantic processing | Stanza/Go receiver or Fluent Bit parity and the OPL function inventory remain separately scoped processor/product work |
 | Phase 2 throughput work | Read-ahead, multiple in-flight batches or shards, optional source metadata, and background compaction retain their Phase 2 contracts |
@@ -1268,8 +1300,9 @@ they do not silently inherit the live local-file contract.
 
 This table traces the target architecture as well as Phase 1. Rows
 that require Phase 3 remain open epic acceptance criteria; Phase 1 must not be presented
-as satisfying them. Phase 1 is the complete priority-P0 release on Linux, macOS, and Windows;
-Phase 3 is still required for the epic's multi-instance and live-resize criteria.
+as satisfying them. Phase 1 provides the single-instance guarantees on Linux, macOS,
+and Windows; Phase 3 is still required for the epic's multi-instance and live-resize
+criteria.
 
 | Epic criterion | Where addressed |
 | --- | --- |
@@ -1484,8 +1517,8 @@ receivers:
       encoding: utf-8                           # utf-8 | ascii | utf-16le | utf-16be | raw
       on_decode_error: preserve_raw             # preserve_raw | replace | fail
       framing:
-        max_line_bytes: 1MiB
-        max_record_bytes: 1MiB
+        max_line_bytes: 1MiB                  # physical-line buffer bound
+        max_record_bytes: 1MiB                # logical-record body bound
         max_log_size_behavior: split            # split | truncate
         force_flush_period: 500ms
         multiline:
@@ -1568,8 +1601,9 @@ rotation:
 Factory validation uses serde `deny_unknown_fields`, semantic checks returning
 `InvalidUserConfig`, and the same versioned profiles and conformance vectors as the
 control plane. Cross-field checks cover non-empty includes, bounded recursion, supported
-encoding and regex profiles, exactly one multiline boundary pattern, batch/record size
-compatibility, retry bounds, valid processor timezones, and nonzero compaction limits.
+encoding and regex profiles, exactly one multiline boundary pattern, batch/line/record
+size compatibility, retry bounds, valid processor timezones, and nonzero compaction
+limits.
 
 ## Appendix D: Implementation references
 
