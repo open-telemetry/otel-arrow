@@ -1,5 +1,5 @@
 # Demonstrates the per-signal produced/consumed item counts that a node emits
-# on its `node.producer` / `node.consumer` metric sets.
+# on its `node.produced` / `node.consumed` metric sets.
 #
 # Two pipelines in the same engine, each running: receiver -> sampler -> noop
 #   - `full`:    ALL three nodes opt in -> every node emits per-signal counts.
@@ -24,27 +24,27 @@
 #     or higher, since they extend the produced/consumed metric sets.
 #
 # Metrics emitted per opted-in node:
-#   node.producer: produced.items {item}, with `signal` = logs, metrics, or traces
-#   node.consumer: consumed.items {item}, with `signal` = logs, metrics, or traces
+#   node.produced: items {item}, with `signal` = logs, metrics, or traces
+#   node.consumed: items {item}, with `signal` = logs, metrics, or traces
 #
 # What to look for:
 #   - In `full`, every node reports per-signal counts. In `partial`, only the
 #     sampler does -- the receiver and noop have no per-signal counts because
 #     they did not opt in.
-#   - receiver `node.producer.produced.items` is the per-signal accepted volume
+#   - receiver `node.produced.items` is the per-signal accepted volume
 #     the traffic generator injected.
-#   - sampler `node.consumer.consumed.*` equals the receiver's produced counts
+#   - sampler `node.consumed.*` equals the receiver's produced counts
 #     (everything the sampler received), while sampler
-#     `node.producer.produced.items{signal="logs"}` is LOWER because the sampler
+#     `node.produced.items{signal="logs"}` is LOWER because the sampler
 #     keeps only ~1/3 of log records; metrics and traces pass through unchanged
 #     (sampling only targets logs). This shows the per-signal accounting
 #     isolating the affected signal.
-#   - noop `node.consumer.consumed.*` reflects the surviving per-signal volume.
+#   - noop `node.consumed.*` reflects the surviving per-signal volume.
 #
 # Query metrics while running (add `.attributes["pipeline.id"]` to tell the two
 # pipelines apart):
 #   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
-#     | jq '[.metric_sets[] | select(.name == "node.producer" or .name == "node.consumer")]'
+#     | jq '[.metric_sets[] | select(.name == "node.produced" or .name == "node.consumed")]'
 #
 # Run with:
 #   cargo run -- --config configs/trafficgen-per-signal-metrics-demo.yaml

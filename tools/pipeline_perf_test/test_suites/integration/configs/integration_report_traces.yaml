@@ -92,7 +92,7 @@ queries:
             SELECT
               * REPLACE (
               CASE
-                WHEN metric_name = 'consumed_items' THEN 'spans'
+                WHEN metric_name = 'items' THEN 'spans'
                 ELSE metric_name
               END AS metric_name
             ),
@@ -105,11 +105,11 @@ queries:
               'bytes_sent',
               'sent',
               'late_batches',
-              'consumed_items'
+              'items'
             ) AND (
-              metric_name <> 'consumed_items'
+              metric_name <> 'items'
               OR (
-                "metric_attributes.otel_scope_name" = 'node.consumer'
+                "metric_attributes.otel_scope_name" = 'node.consumed'
                 AND "metric_attributes.otel_scope_node_id" = 'perf'
                 AND "metric_attributes.signal" = 'traces'
                 AND "metric_attributes.outcome" = 'success'

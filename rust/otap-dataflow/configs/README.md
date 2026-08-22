@@ -98,8 +98,8 @@ emit:
 
 - Generates a mix of logs, metrics and traces -> log-sampling processor -> noop
   exporter
-- Only opted-in nodes report `node.producer.produced.items` and
-  `node.consumer.consumed.items`, each split by the `signal` datapoint attribute;
+- Only opted-in nodes report `node.produced.items` and
+  `node.consumed.items`, each split by the `signal` datapoint attribute;
   nodes that are not opted in omit these metrics
   (per-node `policies.telemetry.item_counts: true`, or globally via
   `runtime_metrics: detailed`); recording requires `runtime_metrics: normal` or

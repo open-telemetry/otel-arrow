@@ -186,7 +186,7 @@ pub struct NodePolicies {
 #[serde(deny_unknown_fields)]
 pub struct NodeTelemetryPolicy {
     /// Opt this node into per-signal produced/consumed item counts on its
-    /// `node.producer` / `node.consumer` metric sets.
+    /// `node.produced` / `node.consumed` metric sets.
     ///
     /// Off by default because counting items requires inspecting each batch,
     /// which is expensive for OTLP payloads. Only recorded when the resolved
