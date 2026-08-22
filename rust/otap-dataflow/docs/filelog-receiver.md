@@ -1163,9 +1163,10 @@ When truncation is detected:
   by the retained unacknowledged batch, that live batch can still complete, but a later
   crash may make it impossible to reconstruct.
 - **`on_truncate: read_new`:** explicitly accept the recovery risk, increment
-  `file_epoch`, reset offset and framing state to the beginning of the new stream, emit a
-  high-severity health event, and resume reading. An Ack from an earlier epoch cannot
-  advance the new epoch.
+  `file_epoch`, append and sync an explicit `reset_after_truncate` operation that resets
+  offset and framing state to the beginning of the new stream, emit a high-severity
+  health event, and resume reading. An Ack from an earlier epoch cannot advance the new
+  epoch. An ordinary Ack-driven progress update cannot change `file_epoch`.
 
 Changing configuration to `read_new` affects only later truncation detections; it does
 not release an already-quarantined `file_id`. Silent continuation from the previous
@@ -1595,16 +1596,18 @@ prevents two active configurations sharing an ID from writing concurrently.
 
 ```mermaid
 flowchart LR
-  CURRENT["CURRENT<br/>selects active generation"]
-  SNAP["Snapshot<br/>complete identity and progress table"]
-  WAL["Progress WAL<br/>atomic incremental updates"]
   LOCK["Ownership lock<br/>single Phase 1 writer"]
+  CURRENT["CURRENT<br/>selects active generation"]
 
+  subgraph generation["Active generation"]
+    direction TB
+    SNAP["Snapshot<br/>complete recovery base"]
+    WAL["Progress WAL<br/>atomic incremental updates"]
+  end
+
+  LOCK -.->|"guards checkpoint namespace"| CURRENT
   CURRENT --> SNAP
   CURRENT --> WAL
-  LOCK -.->|"protects namespace"| CURRENT
-  LOCK -.->|"protects writes"| SNAP
-  LOCK -.->|"protects writes"| WAL
 
   class CURRENT controlNode
   class SNAP snapshotNode
@@ -1617,9 +1620,9 @@ flowchart LR
   classDef lockNode fill:#FEF3C7,stroke:#D97706,color:#111827
 ```
 
-`CURRENT` identifies the active snapshot/WAL generation. The snapshot supplies the
+`CURRENT` identifies the active snapshot/WAL generation. The snapshot provides the
 recovery base, the WAL records subsequent atomic changes, and `ownership.lock` prevents
-concurrent Phase 1 writers.
+concurrent Phase 1 writers from modifying the checkpoint namespace.
 
 ### Logical snapshot model
 
@@ -1657,7 +1660,7 @@ flowchart LR
   QUARANTINED["Quarantined"]
 
   ABSENT -->|"register_file"| ACTIVE
-  ACTIVE -->|"progress, fingerprint<br/>or metadata update"| ACTIVE
+  ACTIVE -->|"progress, fingerprint,<br/>metadata, or truncate reset"| ACTIVE
   ACTIVE -->|"finalizing update_progress"| ROTATED
   ACTIVE -->|"quarantine_file"| QUARANTINED
   QUARANTINED -->|"keep_failed"| QUARANTINED
@@ -1685,12 +1688,13 @@ conflicting, or impossible transition fails recovery closed.
 | Operation | Valid state transition | Primary effect |
 | --- | --- | --- |
 | `register_file` | Absent to active | Create durable identity and initial progress |
-| `update_progress` | Active to active or rotated-finalized | Advance Acked progress and framing state |
-| `update_fingerprint` | State unchanged | Replace guarded matching evidence |
-| `update_metadata` | State unchanged | Update locator and advisory metadata |
+| `update_progress` | Active to active or rotated-finalized | Advance Acked progress within the current epoch and framing state |
+| `reset_after_truncate` | Active to active | Apply an explicit detected-truncation stream reset and epoch change |
+| `update_fingerprint` | Active to active | Replace guarded matching evidence |
+| `update_metadata` | Active to active or quarantined to quarantined | Update locator and advisory metadata without changing lifecycle state |
 | `quarantine_file` | Active to quarantined | Persist a fail-policy quarantine |
 | `reset_quarantined_file` | Quarantined to active or quarantined | Apply an explicit recovery action |
-| `remove_file` | Existing to absent | Remove a matching record |
+| `remove_file` | Active or rotated-finalized to absent; quarantined to absent only administratively | Remove a matching record under the applicable retention or administrative policy |
 
 Detailed transition and replay rules:
 
@@ -1700,18 +1704,26 @@ Detailed transition and replay rules:
   creates an absent `file_id`. Encountering an existing `file_id` during replay is valid
   only when every persisted field is identical; otherwise recovery fails closed.
 - **`update_progress`:** the operation contains the expected committed offset and epoch;
-  new committed offset, epoch, framing resume, and last-seen time; and an optional
+  new committed offset, framing resume, and last-seen time; and an optional
   rotated-finalized state. The stored offset and epoch must match the expected values.
-  Progress advances monotonically within an epoch or through an explicitly encoded
-  epoch transition. A mismatch, regression, or invalid framing continuation fails
-  closed. Offset, epoch, and framing resume advance atomically.
+  Progress advances monotonically within that epoch. An ordinary Ack-driven update
+  cannot change `file_epoch`. A mismatch, regression, epoch change, or invalid framing
+  continuation fails closed. Offset and framing resume advance atomically.
+- **`reset_after_truncate`:** the operation contains the expected active epoch, observed
+  truncation evidence, resulting incremented epoch, new offset, `clean` framing resume,
+  reset time, and the explicit `read_new` policy reason. It is synced before reading the
+  replacement stream. It is the only non-administrative operation that may change
+  `file_epoch`; an earlier-epoch Ack cannot advance the resulting stream.
 - **`update_fingerprint`:** the operation contains the expected and replacement
-  fingerprint lengths and bytes. The expected evidence must match. The operation never
-  changes `file_id`, progress, epoch, or framing state.
+  fingerprint lengths and bytes. It requires an active record and matching expected
+  evidence. The operation never changes `file_id`, progress, epoch, framing, or
+  lifecycle state.
 - **`update_metadata`:** the operation contains the runtime locator, last-seen time, and
-  advisory path with presence discriminators. It replaces only supplied mutable locator
-  and advisory metadata; it cannot change identity, progress, quarantine, or framing
-  state.
+  advisory path with presence discriminators. It requires an active or quarantined
+  record. An active record may update all supplied mutable locator and advisory
+  metadata. A quarantined record may refresh only last-seen time and advisory path; its
+  recorded quarantine locator, lifecycle state, and failure evidence remain immutable.
+  The operation cannot change identity, progress, epoch, or framing state.
 - **`quarantine_file`:** the operation contains the expected file epoch, reason code,
   runtime locator, observed size, quarantine epoch, and quarantine time. It requires an
   active record at the expected epoch and transitions it to durable quarantine.
@@ -1723,8 +1735,12 @@ Detailed transition and replay rules:
   the epoch and returns the record to active at the explicitly recorded offset. A stale
   or conflicting reset fails closed.
 - **`remove_file`:** the operation contains the expected file epoch and prior state,
-  removal reason, and removal time. It removes only a matching record. Replay against an
-  already absent `file_id` is idempotent; a conflicting live record fails closed.
+  removal reason, and removal time. Ordinary retention may remove only active or
+  rotated-finalized records. A quarantined record is exempt from ordinary retention;
+  removing it requires an explicit administrative operation naming the exact
+  `checkpoint.id` and `file_id` with an audit reason. The operation removes only a
+  matching record. Replay against an already absent `file_id` is idempotent; a
+  conflicting live record fails closed.
 
 ### Recovery algorithm
 
@@ -1733,7 +1749,7 @@ Detailed transition and replay rules:
 2. Replay complete WAL transactions atomically in strictly increasing sequence order.
 3. Discard only a structurally incomplete final transaction, as identified by the exact
    encoding specification's transaction-boundary rules.
-4. Fail recovery closed on every other integrity, bounds, ordering, version, unknown-
+4. Fail recovery closed on every other integrity, bounds, ordering, version, unknown
    operation, or state-transition error.
 
 No update from a transaction becomes visible unless its complete transaction validates.
@@ -1742,9 +1758,10 @@ Corruption before the structurally incomplete final transaction also fails close
 ### Durability, compaction, and migration
 
 Registration is durable before the receiver reads a new file. Ack-triggered progress
-updates atomically persist the committed offset, file epoch, and framing-resume state.
-Quarantine is durable before it is reported, and release requires an explicit per-file
-reset operation. These requirements do not depend on the physical encoding.
+updates atomically persist the committed offset and framing-resume state under the
+unchanged file epoch. Quarantine is durable before it is reported, and release requires
+an explicit per-file reset operation. These requirements do not depend on the physical
+encoding.
 
 Compaction writes and syncs a complete new snapshot/WAL generation before atomically
 selecting it through `CURRENT`. The previously selected generation remains recoverable
@@ -1757,14 +1774,11 @@ Recovery never guesses across unknown versions or silently resets durable progre
 
 ### Framing-profile compatibility
 
-`framing_profile_version` identifies the canonical serialization format.
-`framing_profile_digest` is a SHA-256 digest of all framing-relevant configuration:
-encoding and decode policy, newline/raw mode, exact multiline pattern bytes and regex
-profile, line/record/multiline limits, split/truncate policy, and partial-flush behavior.
-Canonical serialization uses fixed-order field tags, explicit option discriminants and
-lengths, duration nanoseconds, and no implementation-derived hashing. A version or
-digest mismatch with resumable state fails closed and requires an explicit migration or
-reset.
+Each checkpoint stores a framing-profile version and a collision-resistant digest that
+covers all configuration affecting record boundaries or deterministic replay. A version
+or digest mismatch with resumable state fails closed and requires an explicit migration
+or reset. The companion checkpoint-format specification defines the canonical
+serialization, digest algorithm, and compatibility vectors.
 
 ## Appendix C: Complete Phase 1 configuration
 
