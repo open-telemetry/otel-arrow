@@ -596,6 +596,11 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                         peer = %peer_addr,
                                                                         message = "Closing TCP syslog connection due to memory pressure"
                                                                     );
+                                                                    metrics.borrow_mut().record_rejection(
+                                                                        SyslogCefProtocol::Tcp,
+                                                                        ReceiverRejectionErrorType::MemoryPressure,
+                                                                        1,
+                                                                    );
                                                                     drop_syslog_batch(&metrics, &mut arrow_records_builder);
                                                                     metrics.borrow_mut().record_connection_rejection();
                                                                     task_active_count.set(task_active_count.get() - 1);
@@ -688,6 +693,11 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     "syslog_cef_receiver.memory_pressure.disconnect",
                                                                     peer = %peer_addr,
                                                                     message = "Closing TCP syslog connection due to memory pressure"
+                                                                );
+                                                                metrics.borrow_mut().record_rejection(
+                                                                    SyslogCefProtocol::Tcp,
+                                                                    ReceiverRejectionErrorType::MemoryPressure,
+                                                                    1,
                                                                 );
                                                                 line_bytes.clear();
                                                                 drop_syslog_batch(&metrics, &mut arrow_records_builder);
