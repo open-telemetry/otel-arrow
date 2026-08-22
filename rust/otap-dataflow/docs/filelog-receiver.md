@@ -173,7 +173,7 @@ flowchart LR
     subgraph worker["Read/checkpoint OS thread"]
       W["Resolve identity<br/>read, decode and frame<br/>build OTAP batches"]
       C[("Checkpoint snapshot<br/>and WAL")]
-      W --> C
+      W <-->|"load and persist"| C
     end
 
     A["Async engine task<br/>one pipeline core<br/>emit, correlate and drain"]
@@ -186,26 +186,67 @@ flowchart LR
   A -->|"raw OTAP logs"| P["Processors"]
   P --> E["Exporters"]
   E -.->|"Ack or Nack"| A
+
+  class D discoveryNode
+  class W workerNode
+  class A controlNode
+  class C stateNode
+  class P,E downstreamNode
+
+  classDef discoveryNode fill:#DBEAFE,stroke:#2563EB,color:#111827
+  classDef workerNode fill:#DCFCE7,stroke:#16A34A,color:#111827
+  classDef controlNode fill:#EDE9FE,stroke:#7C3AED,color:#111827
+  classDef stateNode fill:#FEF3C7,stroke:#D97706,color:#111827
+  classDef downstreamNode fill:#F3F4F6,stroke:#6B7280,color:#111827
 ```
 
 ### Target architecture from #2844
 
 ```mermaid
-flowchart LR
-  S["Candidate discovery"] --> I["Shared identity registry"]
-  I --> D["Ownership coordinator"]
-  D -->|"file_id + partition + fencing token"| R1["Receiver 1"]
-  D -->|"file_id + partition + fencing token"| R2["Receiver 2"]
+flowchart TB
+  subgraph coordination["Shared coordination"]
+    direction LR
+    S["Candidate discovery"] --> I["Shared identity registry"]
+    I --> O["Ownership coordinator"]
+    C[("Fenced partition<br/>checkpoint store")]
+  end
+
+  subgraph receivers["Assigned receiver instances"]
+    direction LR
+    R1["Receiver 1"]
+    R2["Receiver 2"]
+  end
+
+  O -->|"file_id, partition<br/>and fencing token"| R1
+  O -->|"file_id, partition<br/>and fencing token"| R2
+
+  R1 <-->|"load and persist<br/>with fencing token"| C
+  R2 <-->|"load and persist<br/>with fencing token"| C
+
   R1 -->|"raw OTAP logs"| P["Processors and OPL"]
   R2 -->|"raw OTAP logs"| P
   P --> E["Routing and exporters"]
+
   E -.->|"Ack or Nack"| R1
   E -.->|"Ack or Nack"| R2
-  C[("Partition checkpoints<br/>with fencing")] --- I
-  C --- D
-  C --- R1
-  C --- R2
+
+  class S discoveryNode
+  class I,O controlNode
+  class R1,R2 workerNode
+  class C stateNode
+  class P,E downstreamNode
+
+  classDef discoveryNode fill:#DBEAFE,stroke:#2563EB,color:#111827
+  classDef workerNode fill:#DCFCE7,stroke:#16A34A,color:#111827
+  classDef controlNode fill:#EDE9FE,stroke:#7C3AED,color:#111827
+  classDef stateNode fill:#FEF3C7,stroke:#D97706,color:#111827
+  classDef downstreamNode fill:#F3F4F6,stroke:#6B7280,color:#111827
 ```
+
+The diagram specifies the required fencing property, not a future service API. A
+receiver may resume from or modify partition progress only under current ownership, and
+every checkpoint write rejects stale fencing tokens. Whether receivers access the store
+directly or through a coordination service remains a Phase 3 decision.
 
 The target preserves receiver behavior below the ownership boundary -- file reading,
 framing, batching, Ack/Nack correlation, backpressure, and drain. It does not merely
@@ -233,25 +274,7 @@ the topic exporter/receiver fanout (`docs/topic-architecture.md`).
 
 Rationale: #2844's discovery/assignment extension requires engine- or group-scoped
 identity and ownership services, and the extension system has no such scope today.
-Phase 1 therefore isolates filesystem discovery behind a small internal boundary:
-
-```mermaid
-flowchart LR
-  subgraph discovery["Discovery OS thread"]
-    DS["Candidate discovery"]
-    CE["Ordered, bounded<br/>candidate events"]
-    DS --> CE
-  end
-
-  subgraph worker["Read/checkpoint OS thread"]
-    IR["Resolve or create file_id"]
-    L["Acquire runtime lease"]
-    R["Control file reader"]
-    IR --> L --> R
-  end
-
-  CE --> IR
-```
+Phase 1 therefore isolates filesystem discovery behind a small internal boundary.
 
 | Event | Meaning |
 | --- | --- |
@@ -259,8 +282,8 @@ flowchart LR
 | `Updated` | Path or relevant metadata changed for a known locator |
 | `Removed` | The locator disappeared or stopped matching |
 
-This diagram shows conceptual responsibilities, not proposed Rust types. Events travel
-through one ordered, bounded stream.
+Events travel through one ordered, bounded stream. The read/checkpoint thread resolves
+or creates `file_id`, acquires the runtime lease, and then controls the file reader.
 
 `DiscoverySource` is a required local architectural boundary: the read worker must not
 inspect glob configuration or perform directory traversal. It is deliberately only a
@@ -616,17 +639,6 @@ command channel with a short timeout while the handoff is full (journald's disci
 Phase 1 co-locates several logical components on the read/checkpoint thread, but their
 contracts remain distinct:
 
-```mermaid
-flowchart LR
-  D["Candidate discovery"]
-  I["Identity and<br/>local ownership"]
-  R["Reading and framing"]
-  B["Batch and Ack<br/>coordination"]
-  C["Checkpoint storage"]
-
-  D --> I --> R --> B --> C
-```
-
 - Discovery produces candidates and never grants distributed ownership.
 - Identity and local ownership resolve `file_id` and enforce one local reader.
 - Reading and framing produce deterministic records plus progress deltas.
@@ -784,8 +796,9 @@ operator-chain compatibility.
   file. The receiver contract ends at an OTAP bytes body. JSON escaping, base64, column
   mapping, and destination searchability are exporter/product contracts and must be
   validated end to end before claiming byte-for-byte recovery from a text destination.
-- **Multiline boundaries.** Configuration may set exactly one of
-  `line_start_pattern` or `line_end_pattern`; setting both is rejected at build time.
+- **Multiline boundaries.** Configuration may set zero or one of
+  `line_start_pattern` or `line_end_pattern`. Setting neither selects the default
+  newline-framing mode; setting both is rejected at build time.
   The regex contract is a versioned, RE2-compatible syntax profile shared by control
   plane validation and the agent. Unsupported constructs are rejected before rollout;
   the agent also compiles defensively and fails the affected data source rather than
@@ -793,13 +806,15 @@ operator-chain compatibility.
   emitted record's checkpoint delta ends after the last source byte included in that
   record.
 - **Bounded multiline state.** A multiline record is bounded by decoded output bytes,
-  physical line count, and `force_flush_period`, measured as idle time since the most
-  recent physical line. The first reached bound determines the result. A line-count or
+  physical line count, and, when nonzero, `force_flush_period`, measured as idle time
+  since the most recent physical line. `force_flush_period: 0s` disables idle partial
+  flushing. The first enabled bound reached determines the result. A line-count or
   timeout flush emits the complete buffer, marks the reason, and begins a new candidate
   record at the next physical line; no source bytes are discarded. A timeout is an
   explicit heuristic and can split a record written slowly. Byte overflow follows the
   oversize policy below. Rotation and drain use the same reason-marked flush contract
-  when partial flush is enabled; otherwise they retain the documented Phase 1 behavior.
+  when idle partial flushing is enabled; otherwise they retain the documented Phase 1
+  behavior.
 - **Oversize policy.** `split` preserves all input by emitting bounded fragments;
   `truncate` emits the bounded prefix and discards through the logical record boundary.
   Both policies emit telemetry, and emitted records identify truncation or
@@ -1554,6 +1569,8 @@ prevents two active configurations sharing an ID from writing concurrently.
 
 Snapshot envelope:
 
+All fixed-width integers in the snapshot and progress log use little-endian byte order.
+
 ```text
 [ magic "OTAPFLSN" (8) ][ version u16 ][ header_size u16 ][ generation u64 ]
 [ record_count u32 ]
@@ -1592,10 +1609,31 @@ Progress log transaction:
 [ sequence u64 ][ update_count u32 ][ updates... ][ crc32c u32 ]
 
 update:
-  register_file | update_progress | update_fingerprint | update_metadata |
-  quarantine_file | reset_quarantined_file | remove_file
-  keyed by file_id, with operation-specific fields
+  [ tag u8 ][ payload_len u32 ][ file_id u128 ][ operation-specific payload ]
 ```
+
+The operation tags and logical payloads are normative. Fixed-width integers use the
+envelope byte order; variable-width fields carry an explicit length and are bounded by
+the corresponding snapshot field. An implementation may add fields only under a new
+format version.
+
+| Tag | Operation | Required payload | Valid transition and replay effect |
+| --- | --- | --- | --- |
+| 1 | `register_file` | Initial fingerprint, ignored-header count, runtime locator, committed offset, file epoch, framing-profile version and digest, `clean` framing resume, active state, last-seen time, and advisory path | Creates an absent `file_id`. Encountering an existing `file_id` during replay is valid only when every persisted field is identical; otherwise recovery fails closed. |
+| 2 | `update_progress` | Expected committed offset and epoch; new committed offset, epoch, framing resume, last-seen time, and optional rotation-finalized state | Requires the stored offset and epoch to match the expected values. It advances progress monotonically within an epoch, or performs an explicitly encoded epoch transition. A mismatch, regression, or invalid framing continuation fails closed. |
+| 3 | `update_fingerprint` | Expected fingerprint length and bytes; replacement fingerprint length and bytes | Replaces mutable matching evidence only when the expected evidence matches. It never changes `file_id`, progress, epoch, or framing state. |
+| 4 | `update_metadata` | Runtime locator, last-seen time, and advisory path, each with its presence discriminator | Replaces only the supplied mutable locator and advisory metadata. It cannot change identity, progress, quarantine, or framing state. |
+| 5 | `quarantine_file` | Expected file epoch, reason code, runtime locator, observed size, quarantine epoch, and quarantine time | Requires an active record at the expected epoch and transitions it to durable quarantine. Replaying an identical quarantine is idempotent; conflicting quarantine data fails closed. |
+| 6 | `reset_quarantined_file` | Expected quarantine epoch, action (`reset_to_beginning`, `reset_to_end`, or `keep_failed`), resulting epoch and offset, `clean` framing resume, reset time, and audit reason | Requires the matching quarantined record. `keep_failed` preserves quarantine; either reset action increments the epoch and returns the record to active state at the explicitly recorded offset. A stale or conflicting reset fails closed. |
+| 7 | `remove_file` | Expected file epoch and prior state, removal reason, and removal time | Removes only a record matching the expected epoch and state. A replay against an already absent `file_id` is idempotent; a conflicting live record fails closed. |
+
+Recovery validates the transaction envelope and CRC before applying any update in that
+transaction. Transactions are replayed in strictly increasing sequence order and apply
+atomically: a malformed tag, invalid length, missing required field, duplicate or
+out-of-order sequence, impossible state transition, CRC mismatch, or trailing data
+before the final torn transaction fails recovery closed. Only a structurally incomplete
+final transaction whose declared bytes extend beyond EOF may be discarded as a torn
+tail. Unknown operation tags require a newer format version; they are never skipped.
 
 `update_progress` atomically advances `committed_offset`, `file_epoch`, and
 `framing_resume`. `framing_profile_version` identifies the canonical serialization
@@ -1636,10 +1674,10 @@ receivers:
         max_line_bytes: 1MiB                  # physical-line buffer bound
         max_record_bytes: 1MiB                # logical-record body bound
         max_log_size_behavior: split            # split | truncate
-        force_flush_period: 500ms
+        force_flush_period: 500ms               # 0s disables idle partial flushing
         multiline:
           regex_profile: re2-v1
-          line_start_pattern: null              # exactly one start/end pattern
+          line_start_pattern: null              # zero or one start/end pattern
           line_end_pattern: null
         max_multiline_lines: 500
       metadata:
@@ -1703,7 +1741,7 @@ encoding: raw
 # Epoch milliseconds in the first field
 timestamp:
   extract: { from: body, regex: '^(?<ts>\d+)', capture: ts }
-  parse: { format: epoch_ms }
+  parse: { profile: epoch_ms }
 
 # End-pattern multiline
 multiline:
@@ -1715,12 +1753,14 @@ rotation:
   on_truncate: read_new
 ```
 
-Factory validation uses serde `deny_unknown_fields`, semantic checks returning
-`InvalidUserConfig`, and the same versioned profiles and conformance vectors as the
-control plane. Cross-field checks cover non-empty includes, bounded recursion, supported
-encoding and regex profiles, exactly one multiline boundary pattern, batch/line/record
-size compatibility, nonzero resource and pending-candidate limits, retry bounds, valid
-processor timezones, and nonzero compaction limits.
+Each component factory validates its own configuration using serde
+`deny_unknown_fields`, semantic checks returning `InvalidUserConfig`, and the same
+versioned profiles and conformance vectors as the control plane. Receiver checks cover
+non-empty includes, bounded recursion, supported encoding and regex profiles, zero or
+one multiline boundary pattern, batch/line/record size compatibility, nonzero resource
+and pending-candidate limits, retry bounds, and nonzero compaction limits. The timestamp
+processor factory separately validates its parse profile, layout, capture configuration,
+and timezone names; receiver construction does not inspect processor configuration.
 
 ## Appendix D: Implementation references
 
