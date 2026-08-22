@@ -2313,6 +2313,16 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[1].clone()],
         );
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where not(attributes["z"] + 1 > 0 or severity_text == "ERROR")"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()],
+        );
     }
 
     async fn test_filter_with_not<P: Parser>() {
