@@ -2286,6 +2286,35 @@ mod test {
         test_filter_with_or::<OplParser>().await;
     }
 
+    #[tokio::test]
+    async fn test_filter_attr_or_record_some_rows_no_attrs() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("INFO")
+                .attributes(vec![])
+                .finish(),
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("ERROR")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("z", AnyValue::new_int(4)),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where attributes["z"] + 1 > 0 or severity_text == "INFO""#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()],
+        );
+    }
+
     async fn test_filter_with_not<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
