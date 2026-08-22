@@ -105,22 +105,11 @@ compromises:
 
 ## Responsibility split
 
-```text
-Phase 1 filelog receiver:
-  discover files
-  read and decode bytes
-  frame records
-  track identity and offsets
-  handle rotation and checkpoints
-  emit raw OTAP logs
-
-Processors:
-  parse timestamps and structured content
-  enrich, normalize, filter and route
-
-Exporters:
-  represent and deliver records to destinations
-```
+| Component | Responsibility |
+| --- | --- |
+| Receiver | Discover, decode, frame, and track Ack-gated source progress |
+| Processors | Parse timestamps and content; enrich, normalize, filter, and route |
+| Exporters | Represent and deliver records to destinations |
 
 The important boundary is simple: the receiver decides **which source bytes form a
 record**; processors decide **what that record means**; exporters decide **how that
@@ -175,20 +164,26 @@ after downstream Ack.
 
 ```mermaid
 flowchart LR
-  subgraph receiver["Receiver instance - one core"]
-    subgraph discovery["Discovery thread"]
-      D["Scan and reconcile<br/>identify new files"]
+  subgraph receiver["Phase 1 receiver"]
+    subgraph discovery["Discovery OS thread"]
+      D["Scan and reconcile<br/>identify candidates"]
     end
-    D -->|"bounded candidates"| W
-    subgraph worker["Read and checkpoint thread"]
-      W["Read, decode, frame<br/>build OTAP batches"]
-      W --> CK[("Checkpoint snapshot and WAL")]
+
+    subgraph worker["Read/checkpoint OS thread"]
+      W["Resolve identity<br/>read, decode and frame<br/>build OTAP batches"]
+      C[("Checkpoint snapshot<br/>and WAL")]
+      W --> C
     end
-    W -->|"bounded batch handoff"| A["Async engine task"]
-    A -->|"commit, resend, drain"| W
+
+    A["Async engine task<br/>one pipeline core<br/>emit, correlate and drain"]
+
+    D -->|"bounded candidate events"| W
+    W -->|"bounded batch handoff"| A
+    A -->|"bounded commands"| W
   end
-  A -->|"raw OTAP logs"| P["OPL and parsing processors"]
-  P --> R["Routing"] --> E["Exporters"]
+
+  A -->|"raw OTAP logs"| P["Processors"]
+  P --> E["Exporters"]
   E -.->|"Ack or Nack"| A
 ```
 
@@ -239,18 +234,32 @@ Rationale: #2844's discovery/assignment extension requires engine- or group-scop
 identity and ownership services, and the extension system has no such scope today.
 Phase 1 therefore isolates filesystem discovery behind a small internal boundary:
 
-```text
-DiscoverySource (Phase 1: discovery thread in-process)
-  -> stream of CandidateEvent
-       Observed { runtime_locator + path + fingerprint_evidence }
-       Updated { runtime_locator + path + metadata refresh }
-       Removed { runtime_locator, reason }
+```mermaid
+flowchart LR
+  subgraph discovery["Discovery OS thread"]
+    DS["Candidate discovery"]
+    CE["Ordered, bounded<br/>candidate events"]
+    DS --> CE
+  end
 
-LocalOwnershipResolver (Phase 1: read worker)
-  -> resolve or create file_id
-  -> acquire process-local runtime lease
-  -> start, update, or stop reader
+  subgraph worker["Read/checkpoint OS thread"]
+    IR["Resolve or create file_id"]
+    L["Acquire runtime lease"]
+    R["Control file reader"]
+    IR --> L --> R
+  end
+
+  CE --> IR
 ```
+
+| Event | Meaning |
+| --- | --- |
+| `Observed` | A new runtime locator matches the discovery configuration |
+| `Updated` | Path or relevant metadata changed for a known locator |
+| `Removed` | The locator disappeared or stopped matching |
+
+This diagram shows conceptual responsibilities, not proposed Rust types. Events travel
+through one ordered, bounded stream.
 
 `DiscoverySource` is a required local architectural boundary: the read worker must not
 inspect glob configuration or perform directory traversal. It is deliberately only a
@@ -260,20 +269,15 @@ claimed as the Phase 3 wire or extension protocol.
 Phase 3 adds a separate ownership contract. At minimum, that contract needs an
 assignment revision, an idempotency key, a fencing token, ordered snapshot/incremental
 semantics, reconciliation after missed events or reconnect, an enforceable revoke
-deadline, and receiver confirmation that reading has stopped. Its conceptual shape is:
+deadline, and receiver confirmation that reading has stopped. The existing Phase 3
+architecture diagram establishes the flow; the conceptual message contract is:
 
-```text
-IdentityRegistry
-  Candidate { runtime_locator + path + fingerprint_evidence }
-    -> ResolvedIdentity { file_id + identity_revision }
-
-OwnershipCoordinator
-  -> Assign { file_id, ownership_token, locator, assignment_revision }
-  -> Revoke { file_id, ownership_token, deadline, assignment_revision }
-
-Reader
-  -> Revoked { file_id, ownership_token, committed_offset }
-```
+| Message | Required conceptual fields |
+| --- | --- |
+| Resolved identity | `file_id`, identity revision |
+| Assign | `file_id`, ownership token, locator, assignment revision |
+| Revoke | `file_id`, ownership token, deadline, assignment revision |
+| Revoked | `file_id`, ownership token, committed offset |
 
 The Phase 3 protocol may replace the Phase 1 candidate-to-reader adapter without
 changing byte reading, framing, or the logical Ack-gated progress model. It will change
@@ -551,12 +555,15 @@ command channel with a short timeout while the handoff is full (journald's disci
 Phase 1 co-locates several logical components on the read/checkpoint thread, but their
 contracts remain distinct:
 
-```text
-DiscoverySource
-  -> IdentityAndLocalOwnership
-  -> ReaderAndFramer
-  -> BatchAndAckCoordinator
-  -> CheckpointStore
+```mermaid
+flowchart LR
+  D["Candidate discovery"]
+  I["Identity and<br/>local ownership"]
+  R["Reading and framing"]
+  B["Batch and Ack<br/>coordination"]
+  C["Checkpoint storage"]
+
+  D --> I --> R --> B --> C
 ```
 
 - Discovery produces candidates and never grants distributed ownership.
@@ -565,10 +572,11 @@ DiscoverySource
 - Batch/Ack coordination owns the receiver-wide delivery frontier.
 - The checkpoint store atomically persists progress and framing-resume state.
 
-This is a contract decomposition, not a requirement for five threads. Phase 1 accepts
-that synchronous WAL, `fsync`, and compaction latency pauses every reader. Moving a
-component to another thread in Phase 2 must preserve bounded queues, cancellation,
-ordering, and the single-writer progress contract.
+These are logical contracts, not separate threads or proposed Rust types. Phase 1
+co-locates identity, reading, batching, and checkpoint work on the read/checkpoint
+thread. It accepts that synchronous WAL, `fsync`, and compaction latency pauses every
+reader. Moving a component to another thread in Phase 2 must preserve bounded queues,
+cancellation, ordering, and the single-writer progress contract.
 
 Reader scheduling within the worker:
 
@@ -599,17 +607,9 @@ ordering, contiguous commit, memory, and failure-containment rules.
 
 ### Threading and NUMA placement
 
-Phase 1 follows the singleton-source pattern used by journald and host metrics:
-
-```text
-one-core source pipeline
-  async receiver task          control, Ack/Nack, emission, drain deadlines
-  discovery OS thread          scans, stat, fingerprint evidence
-  read/checkpoint OS thread    read, decode, frame, Arrow build, WAL and fsync
-
-multicore downstream pipeline
-  topic receiver -> processors -> exporters
-```
+The Phase 1 architecture diagram shows the execution topology: one async receiver task
+on the pipeline core plus fixed discovery and read/checkpoint OS threads. The workers are
+not pinned to that core.
 
 The factory rejects `pipeline.num_cores() > 1`; there is exactly one discovery thread
 and one read/checkpoint thread per Phase-1 receiver, never one thread per file, directory,
@@ -687,16 +687,21 @@ Fluent Bit tail/multiline implementations. Their inclusion does not imply Stanza
 operator-chain compatibility.
 
 - **Character encoding before framing.** Configuration supports `utf-8` (default),
-  `ascii`, `utf-16le`, `utf-16be`, and `raw`. A matching UTF-8 or UTF-16 byte-order mark
-  is detected and removed from the first decoded record. A byte-order mark that
-  conflicts with an explicitly configured UTF-16 endianness is a decode error; it does
-  not silently override configuration. `raw` performs no character validation, does
-  not strip a byte-order mark, frames physical lines on byte `0x0a`, and emits bytes;
-  it is not a substitute for selecting UTF-16. Decoding precedes newline and regex
-  framing because character boundaries, decoded record size, and UTF-16 newline
-  representation depend on the selected encoding. Checkpoint offsets always remain
-  offsets in source bytes. After detectable truncation, decoding restarts at source
-  offset zero so a new byte-order mark is handled as a new stream.
+  `ascii`, `utf-16le`, `utf-16be`, and `raw`. Encoding is selected by configuration and
+  is never inferred from file content. A matching UTF-8 or UTF-16 byte-order mark is
+  validated and removed only at the beginning of a new stream. A byte-order mark that
+  conflicts with the configured encoding follows `on_decode_error`; it never silently
+  changes the encoding. `raw` performs no character validation, does not strip a
+  byte-order mark, frames physical lines on byte `0x0a`, and emits bytes; it is not a
+  substitute for selecting UTF-16. Decoding precedes newline and regex framing because
+  character boundaries, decoded record size, and UTF-16 newline representation depend
+  on the selected encoding. Checkpoint offsets always remain offsets in source bytes.
+  After detectable truncation, decoding restarts at source offset zero so a new
+  byte-order mark is handled as a new stream.
+- **NUL is data, not termination.** In UTF-8 and ASCII modes, byte `0x00` decodes as
+  U+0000. In UTF-16 modes, code unit `0x0000` decodes as U+0000. In raw mode, byte
+  `0x00` is preserved unchanged. NUL never means EOF or a record boundary; only the
+  configured framing rules terminate a physical line or logical record.
 - **Decode errors preserve evidence.** Invalid source bytes never terminate a record
   silently. `on_decode_error: preserve_raw | replace | fail` is explicit; the generic
   default is `preserve_raw`, which emits the complete framed source slice as a bytes
