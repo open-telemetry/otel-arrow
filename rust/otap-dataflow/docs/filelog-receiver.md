@@ -86,7 +86,9 @@ compromises:
 - Multi-instance or multi-process ownership, virtual partitions, or fenced handoff in
   Phase 1.
 - Lossless live-rollout readiness semantics in Phase 1.
-- Network filesystem support, compressed archives, or delete-after-read behavior.
+- Separately scoped source contracts, including mounted network filesystems, archives,
+  and read-once/delete behavior; see
+  [Separately scoped capabilities](#separately-scoped-capabilities).
 
 ## Phase 1 guarantees and limitations
 
@@ -1423,10 +1425,11 @@ scope decisions identified under Open questions.
    fractional-second and epoch timestamp outcomes are claimed end to end. This does not
    block receiver framing or checkpoint acceptance.
 
-## Deferred beyond Phase 1
+## Separately scoped capabilities
 
-Deferred capabilities must define their own capture, delivery, and recovery guarantees;
-they do not silently inherit the live local-file contract.
+The following capabilities are not assigned to Phase 2 or Phase 3 by this design. Each
+requires a separate proposal defining its capture, delivery, recovery, security, and
+operational guarantees. They do not silently inherit the local growing-file contract.
 
 | Deferred capability | Why it needs separate work |
 | --- | --- |
@@ -1434,12 +1437,10 @@ they do not silently inherit the live local-file contract.
 | Compressed streams and archives | Require decompression bounds, member identity, and independent restart rules |
 | Network shares | Require filesystem-specific identity, outage behavior, and cross-agent ownership |
 | Windows files denying shared read | Require a driver, journal, snapshot, or other privileged capture mechanism |
-| Multi-instance ownership | Requires shared identity resolution, virtual partitions, fencing, readiness, and state migration |
 | Importing unrelated checkpoint formats | Depends on distribution-specific legacy identity evidence and requires an explicit, idempotent migration tool |
 | Header-content skipping | Requires an explicit identity, initial-offset, and restart contract |
 | Advanced I/O and parsing | eBPF, `io_uring`, `mmap`, built-in language parsers, structured-file ingestion, and full header parsing need separate contracts and evidence |
 | Product parity and semantic processing | Stanza/Go receiver or Fluent Bit parity and the OPL function inventory remain separately scoped processor/product work |
-| Phase 2 throughput work | Read-ahead, multiple in-flight batches or shards, optional source metadata, and background compaction retain their Phase 2 contracts |
 
 ## Acceptance-criteria coverage (traceability to #2844)
 
