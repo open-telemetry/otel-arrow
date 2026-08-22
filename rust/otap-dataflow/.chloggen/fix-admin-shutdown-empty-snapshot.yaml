@@ -1,0 +1,18 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: bug_fix
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: engine
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: >-
+  Fix `POST /api/v1/groups/shutdown?wait=true` incorrectly returning `504 Gateway
+  Timeout` when the observed state store is empty (no pipelines registered). An empty
+  snapshot is now treated as all-terminated, so the handler returns `200 OK`
+  immediately instead of polling until `timeout_secs` expires.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [3465]
