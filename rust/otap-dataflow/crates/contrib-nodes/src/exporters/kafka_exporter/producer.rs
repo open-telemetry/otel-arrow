@@ -620,6 +620,17 @@ impl ExporterDeliveryFuture {
         let _ = tx.send(result);
         ExporterDeliveryFuture { rx }
     }
+
+    /// Builds a delivery future backed by `rx`, so a test can control exactly
+    /// when (or whether) the delivery resolves.
+    ///
+    /// Test-only helper: keep the paired sender alive and unsent to model a
+    /// delivery that stays pending (e.g. a stalled/unflushable producer); drop
+    /// the sender to model a `Canceled` (purge) outcome.
+    #[must_use]
+    pub fn from_receiver_for_test(rx: oneshot::Receiver<OwnedDeliveryResult>) -> Self {
+        ExporterDeliveryFuture { rx }
+    }
 }
 
 #[cfg(test)]

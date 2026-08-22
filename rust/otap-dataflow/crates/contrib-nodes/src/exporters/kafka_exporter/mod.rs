@@ -23,19 +23,19 @@
 //! # Live reconfiguration
 //!
 //! The exporter accepts live configuration changes via `NodeControlMsg::Config`
-//! by building a new producer and swapping it in for the old one. This support
-//! does NOT yet provide two important guarantees:
+//! as a generation cutover: it builds a new producer, swaps it in for pdata
+//! processed after the change, and retires the old producer off the event loop.
 //!
-//! - It does not guarantee that pdata accepted before the config change is
-//!   flushed before the swap, so in-flight records can be sent using the new
-//!   topic, credentials, or tenant configuration.
-//! - It does not guarantee a non-blocking cutover: the bounded flush and
-//!   old-producer retirement run synchronously and can stall the pipeline for
-//!   up to the flush timeout.
+//! - Each configuration is a generation. A batch is routed and enqueued under
+//!   the generation active when the exporter processes it; once enqueued, its
+//!   destination is fixed. A batch already in flight on the retiring
+//!   generation's producer is therefore committed to the old topic,
+//!   credentials, and tenant and is never rerouted across the change.
+//! - The cutover is non-blocking: the retiring producer's flush and drop run on
+//!   a blocking thread, so a slow or unavailable broker cannot stall normal
+//!   processing or backpressure. At most one generation is retiring at a time.
 //!
-//! See [`exporter::KafkaExporter::reconfigure`] and the live-reconfiguration
-//! issue (<https://github.com/open-telemetry/otel-arrow/issues/3768>) for
-//! details.
+//! See [`exporter::KafkaExporter::reconfigure`] for details.
 //!
 //! # Example Configuration
 //!
