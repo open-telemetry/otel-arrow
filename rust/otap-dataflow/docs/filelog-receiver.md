@@ -204,7 +204,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-  subgraph coordination["Shared coordination"]
+  subgraph coordination["Shared Phase 3 responsibilities<br/>(deployment model undecided)"]
     direction LR
     S["Candidate discovery"] --> I["Shared identity registry"]
     I --> O["Ownership coordinator"]
@@ -243,10 +243,17 @@ flowchart TB
   classDef downstreamNode fill:#F3F4F6,stroke:#6B7280,color:#111827
 ```
 
-The diagram specifies the required fencing property, not a future service API. A
-receiver may resume from or modify partition progress only under current ownership, and
-every checkpoint write rejects stale fencing tokens. Whether receivers access the store
-directly or through a coordination service remains a Phase 3 decision.
+The shared grouping represents architectural responsibilities, not a process, service,
+thread, or engine-extension boundary. The diagram specifies the required fencing
+property, not a future service API. A receiver may resume from or modify partition
+progress only under current ownership, and every checkpoint write rejects stale fencing
+tokens. Whether receivers access the store directly or through a coordination service
+remains a Phase 3 decision.
+
+These responsibilities are separate from topic fanout. Ownership coordination controls
+which receiver may read a source and mutate its checkpoint. Topics carry already-emitted
+OTAP data downstream so processors and exporters can run in parallel; they do not
+resolve file identity, assign source ownership, or fence checkpoint writes.
 
 The target preserves receiver behavior below the ownership boundary -- file reading,
 framing, batching, Ack/Nack correlation, backpressure, and drain. It does not merely
