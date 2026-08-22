@@ -156,14 +156,14 @@ sequenceDiagram
     U->>TE: PData with Ack/Nack interest
     TE->>TP: publish(data)
     TP->>TT: publish_tracked(msg, timeout, permit)
-    TT->>TR: register(message_id, timeout, permit)
+    TT->>TR: register(message_id, timeout, permit, eligible subscribers)
     TT-->>TP: TrackedPublishReceipt
     TP-->>TE: receipt
     TT->>RR: deliver Envelope { id, tracked=true, payload }
     RR->>D: forward PData and subscribe_to(ACKS | NACKS, message_id)
     D-->>RR: Ack or Nack control
     RR->>TT: subscription.ack(id) / nack(id, reason)
-    TT->>TR: resolve(message_id, outcome)
+    TT->>TR: resolve first outcome or update all-subscriber consensus
     TR-->>TE: receipt resolves
     TE-->>U: upstream Ack or Nack
 ```
@@ -176,14 +176,55 @@ sequenceDiagram
 - `max_in_flight` is enforced before entering the topic runtime.
 - The timeout belongs to the tracked publish contract and is applied after the
   topic accepts the publish.
+- Broadcast `ack_mode: first` resolves on the first subscriber Ack/Nack.
+- Broadcast `ack_mode: all` snapshots eligible subscribers at publish time and
+  resolves Ack only after all of them Ack. Any required Nack, or a required
+  subscriber disappearing before Acking, resolves Nack.
+- An empty eligible-subscriber snapshot resolves immediately as Nack. This
+  prevents successful completion before receivers subscribe during startup or
+  live reconfiguration; recovery requires upstream retry or durable buffering.
+
+### Ack Boundary Options
+
+```mermaid
+flowchart LR
+    P[Producer]
+    T[Broadcast topic<br/>ack_mode: all]
+    R1[Topic receiver A]
+    R2[Topic receiver B]
+    Q1[Retry or durable buffer A]
+    Q2[Retry or durable buffer B]
+    E1[Exporter A]
+    E2[Exporter B]
+
+    P --> T
+    T --> R1 --> Q1 --> E1
+    T --> R2 --> Q2 --> E2
+```
+
+With retry processors, the aggregate topic Ack means every exporter branch
+eventually succeeded. With durable buffers, it means every branch durably
+persisted the message; export then proceeds independently. The topic timeout
+should exceed the relevant retry budget or durable write latency.
+
+All-subscriber consensus is not a distributed transaction. A successful
+destination is not rolled back when another destination ultimately Nacks; the
+upstream Nack reports that the overall replication requirement was not met.
 
 ## Notes and Current Limits
 
 - Topic wiring across pipelines must remain acyclic. Startup rejects both
   same-pipeline feedback through topics and multi-pipeline topic loops.
-- In broadcast mode, `ack_propagation.mode: auto` still uses
-  first-subscriber-wins semantics today; it does not wait for all broadcast
-  subscribers to Ack/Nack.
+- `ack_mode: all` is supported only for broadcast-only topics and requires
+  `ack_propagation.mode: auto` and `on_lag: disconnect`.
+- `ack_mode: all` Nacks publishes with no eligible subscribers instead of
+  treating an empty consensus as successful delivery.
+- `all + drop_oldest` is rejected because its Nack is not safely recoverable.
+  Lag cleanup advances the subscriber cursor and Nacks outstanding required
+  deliveries below the new cursor. Those deliveries may include messages that
+  were delivered but not yet Acked, while messages that were skipped never
+  reach branch-local retry or durable buffering. Retrying upstream republishes
+  to all subscribers and can duplicate destinations that already succeeded.
 - Topic-owned gauges for balanced group count and broadcast subscriber count
   are still future work. Current metrics live on the topic exporter and topic
   receiver nodes.
