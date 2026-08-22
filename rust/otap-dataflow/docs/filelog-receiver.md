@@ -127,7 +127,7 @@ the same processing functions.
 
 ## Relationship to #2844
 
-Laurent's proposal in #2844 remains the target: coordinated discovery and assignment,
+The proposal in #2844 remains the target: coordinated discovery and assignment,
 fixed virtual partitions, and multiple receiver instances whose ownership does not
 depend on the current CPU count. This document makes explicit that shared identity
 resolution must occur between candidate discovery and partition assignment.
@@ -412,10 +412,36 @@ Phase 1 uses two mechanisms with deliberately different scopes:
    POSIX targets and `LockFileEx` on Windows) prevents overlapping generations of the
    same logical receiver from concurrently loading or replacing its checkpoint state.
 2. A process-wide `RuntimeFileLease` registry keyed by the platform runtime locator prevents two
-   filelog receiver instances in the same engine process from reading the same open
-   file, even when their include patterns or checkpoint namespaces overlap. Assignment
+   filelog receiver instances in the same engine process from controlling the same live
+   file, even when their include patterns or checkpoint namespaces overlap. Admission
    waits for the current lease holder to drain or rejects the duplicate according to a
    bounded ownership timeout.
+
+The runtime-lease registry is an intentional, narrow exception to the engine's
+share-nothing model:
+
+- The filelog support module owns one registry per engine process. It contains only
+  runtime locators with active logical-reader lease guards; it contains no telemetry
+  payloads, checkpoint progress, or durable identity state.
+- Registry entries are bounded by the sum of `max_tracked_files` across active filelog
+  receiver nodes. Pending acquisitions remain in each receiver's bounded candidate and
+  command state; the registry has no internal wait queue.
+- Acquire, verify, and release are atomic under one short process-local mutex critical
+  section containing only bounded map operations. No filesystem I/O, retry, sleep, or
+  channel wait occurs while holding that mutex.
+- Only discovery or read/checkpoint OS threads access the mutex. Pipeline-core async
+  tasks request ownership through bounded channels and never block on the registry.
+  Contention retries occur outside the critical section and stop at
+  `ownership_timeout`.
+- A lease is represented by an RAII guard owned by the logical reader. Temporary FD
+  closure for descriptor rotation does not release it. Finalizing or revoking that
+  reader, normal drain, receiver failure, or panic unwinding drops the guard. Process
+  termination clears the process-local registry. A poisoned mutex or inconsistent
+  release fails the affected receiver closed rather than permitting a duplicate reader.
+
+This synchronization is accepted only to enforce process-local single-reader safety
+across independently configured receiver nodes. It is not a Phase 3 ownership or
+fencing mechanism and must not enter the per-record data path.
 
 - The receiver starts, reports itself alive to the engine, and enters a
   **waiting-for-ownership** state; it acquires the lock with bounded retries. Reads and
@@ -425,8 +451,9 @@ Phase 1 uses two mechanisms with deliberately different scopes:
 - The lock is released at drain completion (process exit releases it in all failure
   modes -- this is why an OS lock is preferred over a persisted lease, which would need
   staleness heuristics).
-- Runtime file leases are released when their FDs close and on receiver termination.
-  They are process-local guards, not durable identity or checkpoint records.
+- Runtime file leases are released when their logical readers are finalized or revoked
+  and on receiver termination. They survive temporary FD closure and reopening. They
+  are process-local guards, not durable identity or checkpoint records.
 - Advisory locks are unreliable on some network filesystems; a `state_dir` on NFS is
   documented as unsupported for concurrent-rollout safety.
 
@@ -619,6 +646,12 @@ Reader scheduling within the worker:
 - At most `max_open_files` FDs are held. When over the cap, the **least-recently-served**
   reader is closed (offset retained; reopen re-validates identity per INV-ID3) so FD
   ownership rotates and a hot subset cannot permanently starve cold files.
+- Only readers holding one of those open-file slots retain in-memory decoding, physical
+  line, or multiline buffers. Closing a reader discards any uncommitted framing buffers;
+  reopening starts at the durable committed offset and reconstructs them from source
+  bytes. If those bytes no longer survive, the ordinary recovery limitation applies.
+  Durable framing-resume state is changed only by Ack-gated progress, never by closing
+  an uncommitted reader.
 - **No read-ahead past the unacked frontier (Phase 1):** while a batch is in flight, no
   reader advances its file position beyond the offsets captured in that batch's delta
   set. The worker is idle during the in-flight window (journald's proven invariant).
@@ -689,11 +722,15 @@ Invariants and constraints:
   `max_log_size_behavior` exactly as it does for an oversized logical record. Under
   `split`, it emits bounded fragments while scanning to the newline and preserves every
   source byte. Under `truncate`, it emits the bounded prefix with
-  `log.record.truncated = true`, discards through the newline, and counts the discarded
-  bytes. The oversize physical line is a self-contained logical record; it does not
-  participate in start- or end-pattern matching because evaluating a regex over an
-  unbounded line would violate the memory contract. Re-reads reproduce the same result,
-  and unbounded line buffering is not permitted.
+  `otel_arrow.filelog.record.truncated = true`, discards through the newline, and counts the
+  discarded bytes. If a multiline record is already buffered, the receiver first emits
+  that earlier buffer with reason `oversize_line_boundary`, then emits the oversize
+  physical line or its fragments. The oversize line is therefore a self-contained
+  logical record in source order. It does not participate in start- or end-pattern
+  matching because evaluating a regex over an unbounded line would violate the memory
+  contract. After it is emitted, the multiline state machine returns to its initial
+  seeking or buffering state. Re-reads reproduce the same result, and unbounded line
+  buffering is not permitted.
 - A trailing partial line (no `\n` yet) is held in the reader's buffer until
   `max_line_bytes`; crossing that bound invokes the configured oversize policy. The
   configured `force_flush_period` may emit it after idle time,
@@ -765,14 +802,29 @@ operator-chain compatibility.
 - **Oversize policy.** `split` preserves all input by emitting bounded fragments;
   `truncate` emits the bounded prefix and discards through the logical record boundary.
   Both policies emit telemetry, and emitted records identify truncation or
-  fragmentation. Split fragments carry receiver-defined attributes
-  `log.record.fragment.id` (a stable opaque string derived from
-  `(file_id, file_epoch, record_start_offset)`), `log.record.fragment.index` (a
-  zero-based unsigned integer), and `log.record.fragment.last` (a boolean). These names
-  and value types are part of the Phase 1 output contract. Together they let processors
-  or destinations reconstruct the original record without exposing `file_id`. When a
-  split logical record crosses an Ack boundary, its next fragment index and original
-  record start are durable framing-resume state.
+  fragmentation. Until equivalent OpenTelemetry semantic conventions are accepted,
+  split fragments use experimental project attributes: `otel_arrow.filelog.fragment.id`
+  (string), `otel_arrow.filelog.fragment.index` (zero-based integer), and
+  `otel_arrow.filelog.fragment.last` (boolean). They are not registered semantic conventions.
+  A future convention must include an explicit migration rather than silently reusing a
+  `log.*` name.
+
+  `otel_arrow.filelog.fragment.id` is the lowercase 64-character hexadecimal encoding of the
+  full SHA-256 digest over the following byte sequence:
+
+  ```text
+  UTF-8("otel-arrow-filelog-fragment-v1\0") ||
+  file_id as 16-byte big-endian ||
+  file_epoch as u32 big-endian ||
+  record_start_offset as u64 big-endian
+  ```
+
+  The construction is unkeyed and domain-separated. It is stable across retry and
+  restart, has SHA-256 collision expectations, and does not expose the raw `file_id`.
+  It is an opaque correlation value, not authentication, authorization, or a secret.
+  Together with index and finality, it lets processors or destinations reconstruct the
+  original record. When a split logical record crosses an Ack boundary, its next
+  fragment index and original record start are durable framing-resume state.
   For decoded text, the byte limit is measured on the UTF-8 body emitted into OTAP; for
   `raw`, it is measured on source bytes.
 
@@ -859,18 +911,23 @@ sequenceDiagram
 
 ## Emitted data model
 
-Each framed line becomes one OTAP log record built with `LogsRecordBatchBuilder` +
+Each framed logical record, or each fragment of a split record, becomes one OTAP log
+record built with `LogsRecordBatchBuilder` +
 `StrKeysAttributesRecordBatchBuilder<u16>`:
 
-- `body`: the raw line. No timestamp parsing: `time_unix_nano` is unset;
+- `body`: decoded text or preserved raw bytes according to the encoding and decode-error
+  policy. Multiline text retains its specified newline separators. No timestamp parsing:
+  `time_unix_nano` is unset;
   `observed_time_unix_nano` is captured per record when the framed record becomes
   ready for emission. Severity is unset.
-- Attributes (semconv-aligned): `log.file.path` (as matched), `log.file.name`. Symlink
-  resolution (`log.file.path_resolved`) is optional config, off by default. Source byte
-  offset and record number are optional metadata, off by default, for investigation and
-  replay correlation. The offset is the first source byte represented by the record;
-  fragments additionally carry their source range. Opaque `file_id` remains checkpoint
-  state and is not exposed by default.
+- Registered semantic-convention attributes are `log.file.path` (as matched) and
+  `log.file.name`. Resolved symlink metadata uses the experimental project attribute
+  `otel_arrow.filelog.path_resolved` when enabled; it is off by default. Fragment
+  correlation and truncation use the experimental `otel_arrow.filelog.*` attributes defined in the
+  framing contract. Source byte offset and record number are optional metadata, off by
+  default, for investigation and replay correlation. The offset is the first source
+  byte represented by the record; fragments additionally carry their source range.
+  Opaque `file_id` remains checkpoint state and is not exposed by default.
 - The receiver does not derive or attach host identity as part of file framing. Host
   resource attributes come from standard OpenTelemetry resource detection or pipeline
   enrichment.
@@ -1095,13 +1152,16 @@ offset is not supported. The explicit per-file recovery operation is defined und
 
 Every buffer is bounded: candidate channel, pending-candidate queue
 (`max_pending_candidates`), worker->async handoff (capacity 1), command channel,
-per-reader line buffer (`max_line_bytes`), open batch (`batch.max_*`), and retained
-batch (shallow clone of the open-batch bound). When
+per-open-reader line buffer (`max_line_bytes`) and multiline record buffer
+(`max_record_bytes`), open batch (`batch.max_*`), and retained batch (shallow clone of
+the open-batch bound). When
 downstream is slow the handoff fills and the worker stops calling `read(2)` -- unread
 bytes stay in the files; the filesystem is the buffer. Memory ceiling per instance is
-approximately `batch.max_bytes + open readers x max_line_bytes + bounded candidate
-state + offset/checkpoint tables + Arrow overhead`; retained and outgoing batches share
-the same Arrow buffers.
+approximately `batch.max_bytes + max_open_files x (max_line_bytes + max_record_bytes) +
+bounded candidate state + offset/checkpoint tables + decoder and Arrow overhead`;
+retained and outgoing batches share the same Arrow buffers. This is a conservative
+logical bound, not an exact allocator-resident-byte formula; implementation tests must
+measure fixed and library overhead separately.
 The async half's control-priority obligations under backpressure are part of D13 (see
 Execution model).
 
@@ -1174,6 +1234,7 @@ original error.
 | Checkpoint append, sync, compaction, or corruption failure | Receiver | Progress durability is shared and cannot safely degrade per file |
 | Namespace ownership timeout | Receiver | The instance never obtained authority over its Phase 1 checkpoint namespace |
 | Runtime lease timeout | File | Do not start a duplicate local reader for that runtime identity |
+| Runtime-lease registry integrity failure | Receiver | Fail closed because process-local single-reader enforcement is no longer trustworthy |
 | Closed downstream route or worker failure | Receiver | The receiver cannot safely emit or track progress |
 
 Phase 2 may add a shard failure domain only if batches, progress transactions, retry
@@ -1186,7 +1247,8 @@ concurrency does not provide failure isolation.
 | --- | --- |
 | Snapshot corrupt / unknown version, or WAL corruption before its tail | Fail receiver start (fail-closed) |
 | Checkpoint-namespace lock unavailable | Wait up to `ownership_timeout` (normal during rollout overlap); terminal afterward |
-| Runtime inode lease unavailable | Wait for current local owner to drain up to `ownership_timeout`; do not start a duplicate reader |
+| Runtime file lease unavailable | Wait for current local owner to drain up to `ownership_timeout`; do not start a duplicate reader |
+| Runtime-lease registry poisoned or inconsistent | Terminal receiver error; never bypass the lease |
 | Checkpoint append/sync or compaction failure | Retry via async-half counting; terminal after `max_consecutive_failures` |
 | Per-file read/permission error | Quarantine file (backoff + re-probe), count `filelog.files.quarantined`; receiver keeps running |
 | Ambiguous identity match at load | Durably register a new `file_id`, count `filelog.identity.reset`, and apply `identity.on_recovery_mismatch` (default `beginning`) |
@@ -1212,11 +1274,11 @@ overflowing reconciliation passes, time since successful admission while overflo
 persists, files quarantined by reason, and explicit quarantine resets by action.
 
 The receiver emits bounded self-telemetry and health events. A distribution or product
-integration is responsible for exposing those signals through a customer-visible
+integration is responsible for exposing those signals through an operator-visible
 surface. That integration defines stable names, retention, and bounded dimensions at
 least by machine and data source. Per-file paths must not become unbounded metric
 dimensions; detailed file identity belongs in sampled/rate-limited health events.
-Required customer-visible conditions include pattern fallback, timeout/line/byte
+Required operator-visible conditions include pattern fallback, timeout/line/byte
 flushes, decode replacement, truncation, quarantine/unreadable files, identity resets,
 copytruncate detection, checkpoint failures, and tracked-file-limit saturation.
 Pending-candidate overflow is also a required health condition because it indicates
@@ -1242,12 +1304,16 @@ discovery, virtual-partition ownership, or live CPU-resize criteria.
   and duplicate fingerprints, ambiguous recovery, initial `start_at: end` anchor,
   namespace-lock serialization, overlapping-pattern leases, every supported encoding,
   malformed bytes, multiline limits and fallback, restart after an Acked partial flush,
-  restart between split fragments, truncation overlapping an unacknowledged range,
+  buffered multiline followed by an oversize physical line, fragment-ID stability and
+  uniqueness across retry/restart, restart between split fragments, truncation
+  overlapping an unacknowledged range,
   quarantine persistence across restart and configuration reload, same-locator and
   replacement-locator recovery, audited per-file reset from beginning and end,
   bounded incremental scans, pending-candidate overflow and rediscovery, removal during
-  pending admission, overflow fairness under stable traversal order, receiver-wide
-  head-of-line behavior, and hot-file fairness on all supported platforms.
+  pending admission, overflow fairness under stable traversal order, process-local lease
+  contention, survival across temporary FD rotation, cleanup and integrity failure,
+  worst-case line-plus-multiline buffer accounting, receiver-wide head-of-line behavior,
+  and hot-file fairness on all supported platforms.
   Separate processor/distribution conformance tests cover timestamp success, fallback,
   timezone edges, and exporter precision.
   **Resize honesty:** Phase 1 validates checkpoint-identity stability and
@@ -1304,15 +1370,7 @@ discovery, virtual-partition ownership, or live CPU-resize criteria.
 5. **Shared source-progress crate boundary with journald:** which pieces (envelope
    I/O, worker/async scaffolding, retained-batch resend, Ack correlation) get
    extracted, and when -- after Phase 1 filelog proves the shape.
-6. **Cross-process ownership with unrelated state directories:** Phase 1 coordinates
-   overlapping generations and receiver nodes inside one engine, plus cooperating
-   processes using the same checkpoint namespace. Independent engines with unrelated
-   state directories require an external coordinator and are unsupported.
-7. **Header-content skipping** (start reading at a configured offset past a file
-   header): deferred; cheap to add as `read_from_offset` if required.
-8. **Delete-after-read policies:** deferred by the issue; the `rotated_finalized`
-   state provides the hook for a future `delete_after_ack`. Needs its own issue.
-9. **Timestamp processor and integration contract:** exact layout-profile
+6. **Timestamp processor and integration contract:** exact layout-profile
    directives, ambiguous/nonexistent local-time handling, and destination precision
    reduction must be agreed with the processor and exporter owners before
    fractional-second and epoch timestamp outcomes are claimed end to end. This does not
@@ -1331,6 +1389,7 @@ they do not silently inherit the live local-file contract.
 | Windows files denying shared read | Require a driver, journal, snapshot, or other privileged capture mechanism |
 | Multi-instance ownership | Requires shared identity resolution, virtual partitions, fencing, readiness, and state migration |
 | Importing unrelated checkpoint formats | Depends on distribution-specific legacy identity evidence and requires an explicit, idempotent migration tool |
+| Header-content skipping | Requires an explicit identity, initial-offset, and restart contract |
 | Advanced I/O and parsing | eBPF, `io_uring`, `mmap`, built-in language parsers, structured-file ingestion, and full header parsing need separate contracts and evidence |
 | Product parity and semantic processing | Stanza/Go receiver or Fluent Bit parity and the OPL function inventory remain separately scoped processor/product work |
 | Phase 2 throughput work | Read-ahead, multiple in-flight batches or shards, optional source metadata, and background compaction retain their Phase 2 contracts |
@@ -1610,7 +1669,7 @@ processors:
           fallback_timezone: America/Los_Angeles
         on_error:
           use_observed_time: true
-          status_attribute: log.timestamp.parse_status
+          status_attribute: otel_arrow.filelog.timestamp.parse_status
 ```
 
 Common variants:
@@ -1674,6 +1733,9 @@ bounded channels, control messages and receiver-drained notification.
 - Extension system: `docs/extension-system-architecture.md`, `docs/extension-requirements.md`
 - quiver progress-file envelopes: `crates/quiver/ARCHITECTURE.md`
 - Topic fanout: `docs/topic-architecture.md`
+- OpenTelemetry semantic-convention naming guidance and registered general log
+  attributes: <https://opentelemetry.io/docs/specs/semconv/general/naming/> and
+  <https://opentelemetry.io/docs/specs/semconv/general/logs/>
 - Prior art (reference, not requirements): opentelemetry-collector-contrib
   `pkg/stanza/fileconsumer` (`design.md`, `fingerprint.go` raw-prefix matching,
   `reader.go`, checkpoint persistence); Vector `file` source (identity deferred below
