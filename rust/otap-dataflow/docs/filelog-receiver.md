@@ -30,6 +30,17 @@ them are Phase 3 work. Phase 1's local discovery interface is not presented as t
 distributed ownership protocol, and Phase 3 replaces the Phase 1 checkpoint storage
 architecture while preserving its logical Ack-gated progress contract.
 
+## Delivery phases at a glance
+
+This table is a navigation summary. The detailed **Phased implementation** section and
+its acceptance criteria remain authoritative.
+
+| Phase | Scope | Principal limitation or dependency |
+| --- | --- | --- |
+| Phase 1 | One receiver; periodic discovery; bounded reading and framing; one receiver-wide in-flight batch; Ack-gated checkpoints; durable identity and quarantine; move/create rotation | Receiver-wide head-of-line blocking; no distributed ownership, fencing, or lossless live-rollout readiness guarantee |
+| Phase 2 | Native discovery notifications; multiple in-flight batches or local shards; optional source metadata; optional background compaction | Ownership remains local and single-instance unless Phase 3 coordination is available |
+| Phase 3 | Shared identity resolution; virtual-partition assignment; fenced checkpoint persistence; revoke/assign protocol; readiness; migration from Phase 1 state | Requires engine- or group-scoped coordination and an explicit checkpoint-store migration |
+
 ## Decisions requested
 
 Reviewers are asked to agree on the following Phase 1 contracts and accepted
