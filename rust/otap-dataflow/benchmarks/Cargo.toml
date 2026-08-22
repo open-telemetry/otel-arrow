@@ -101,6 +101,10 @@ name = "payload_measurements"
 harness = false
 
 [[bench]]
+name = "batch_processor"
+harness = false
+
+[[bench]]
 name = "internal_metrics_bridge"
 harness = false
 

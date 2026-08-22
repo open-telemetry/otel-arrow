@@ -9,7 +9,9 @@ use crate::testing::equiv::assert_equivalent;
 use crate::testing::fixtures::{DataGenerator, MetricsConfig};
 use crate::testing::round_trip::otap_to_otlp;
 use crate::testing::round_trip::otlp_to_otap;
+use otap_df_config::SignalType;
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
 /// A test case for batching metrics with specific configurations
 #[derive(Debug, Clone)]
@@ -298,6 +300,37 @@ fn test_batching(
 
     // Check OTLP equivalence
     assert_equivalent(&inputs_otlp, &outputs_otlp);
+}
+
+/// Scenario: one non-empty OTAP payload is flushed without an output limit or
+/// with a limit larger than its item count.
+/// Guarantees: Batching returns the original Arrow arrays without copying or
+/// rebuilding an already-sized payload.
+#[test]
+fn test_single_sized_payload_is_zero_copy() {
+    let mut datagen = DataGenerator::new(1);
+    let input = otlp_to_otap(&datagen.generate_logs().into());
+    let root_column = Arc::clone(
+        input
+            .root_record_batch()
+            .expect("logs root batch")
+            .column(0),
+    );
+    let item_count = input.num_items();
+
+    for max_items in [None, NonZeroU64::new(item_count as u64 + 1)] {
+        let outputs = make_item_batches(SignalType::Logs, max_items, vec![input.clone()])
+            .expect("batching should succeed");
+
+        assert_eq!(outputs.len(), 1);
+        assert!(Arc::ptr_eq(
+            &root_column,
+            outputs[0]
+                .root_record_batch()
+                .expect("logs root batch")
+                .column(0)
+        ));
+    }
 }
 
 /// Count the total number of metrics in a MetricsData batch

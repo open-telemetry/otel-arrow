@@ -16,7 +16,7 @@ use crate::{
 use arrow::array::RecordBatch;
 use otel_arrow_dfe_config::SignalType;
 
-use super::transform::{concatenate::concatenate, split};
+use super::transform::split;
 
 /// Represents a sequence of OtapArrowRecords that all share exactly
 /// the same signal.  Invarients:
@@ -242,9 +242,13 @@ fn generic_concatenate<const N: usize>(
     batches: Vec<[Option<RecordBatch>; N]>,
     max_items: Option<NonZeroU64>,
 ) -> Result<Vec<[Option<RecordBatch>; N]>> {
-    let mut result = Vec::new();
+    let input_count = batches.len();
+    // With no limit, all inputs produce exactly one output. With a limit, one
+    // output per input is the conservative upper bound. Reserving both vectors
+    // avoids growth while fragments are collected and emitted.
+    let mut result = Vec::with_capacity(if max_items.is_none() { 1 } else { input_count });
 
-    let mut current = Vec::new();
+    let mut current = Vec::with_capacity(input_count);
     let mut current_num_items = 0;
 
     for input in batches {
@@ -269,8 +273,11 @@ fn concatenate_emitter<const N: usize>(
     current: &mut Vec<[Option<RecordBatch>; N]>,
     result: &mut Vec<[Option<RecordBatch>; N]>,
 ) -> Result<()> {
-    super::transform::reindex::reindex(current)?;
-    result.push(concatenate(current)?);
+    // Relationship reindexing and physical concatenation share one planner so
+    // offset-compatible inputs do not allocate intermediate ID columns. The
+    // function consumes every `Some(RecordBatch)` only after its selected path
+    // succeeds, which preserves the ownership contract checked below.
+    result.push(super::transform::reindex::reindex_and_concatenate(current)?);
     assert_all_empty(current);
     current.clear();
     Ok(())
