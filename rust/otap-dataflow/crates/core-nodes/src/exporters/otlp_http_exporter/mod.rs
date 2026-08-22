@@ -33,6 +33,7 @@ use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error as EngineError, ExporterErrorKind};
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider;
 use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
@@ -68,9 +69,11 @@ use otel_arrow_dfe_otap::otlp_http::client_settings::{HttpClientError, HttpClien
 use otel_arrow_dfe_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 
+mod agent_fed_auth;
 mod config;
 mod metrics;
 
+use self::agent_fed_auth::AgentFedAuth;
 use self::metrics::{OtlpHttpExporterErrorType, OtlpHttpExporterMetrics};
 
 /// The URN for the OTLP HTTP exporter
@@ -99,6 +102,37 @@ pub struct OtlpHttpExporter {
     /// `Authorization: Bearer <token>` is injected on every outgoing
     /// request; when absent, the exporter behaves exactly as before.
     token_provider: Option<Box<dyn BearerTokenProvider>>,
+    /// Optional atomic agent-fed credential provider. This is mutually
+    /// exclusive with `token_provider`; each export attempt reads a fresh
+    /// snapshot so host-side token rotation is immediately visible.
+    agent_fed_provider: Option<Box<dyn AgentFedCredentialProvider>>,
+}
+
+pub(crate) enum DynamicAuthProvider {
+    Bearer(Box<dyn BearerTokenProvider>),
+    AgentFed(Box<dyn AgentFedCredentialProvider>),
+}
+
+fn select_dynamic_auth(
+    token_provider: Option<Box<dyn BearerTokenProvider>>,
+    agent_fed_provider: Option<Box<dyn AgentFedCredentialProvider>>,
+) -> Result<Option<DynamicAuthProvider>, ConfigError> {
+    match (token_provider, agent_fed_provider) {
+        (None, None) => Ok(None),
+        (Some(provider), None) => Ok(Some(DynamicAuthProvider::Bearer(provider))),
+        (None, Some(provider)) => Ok(Some(DynamicAuthProvider::AgentFed(provider))),
+        (Some(_), Some(_)) => Err(ConfigError::InvalidUserConfig {
+            error: "otlp_http exporter cannot bind both 'bearer_token_provider' and \
+                'agent_fed_credential_provider'; bind exactly one dynamic authentication source"
+                .to_owned(),
+        }),
+    }
+}
+
+fn capability_config_error(error: EngineError) -> ConfigError {
+    ConfigError::InvalidUserConfig {
+        error: error.to_string(),
+    }
 }
 
 /// Declare the OTLP HTTP Exporter as a local exporter factory
@@ -142,11 +176,13 @@ fn factory_create(
     // extension) supplies refreshed OAuth tokens.
     let token_provider = capabilities
         .optional_local::<otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider>()
-        .map_err(|e| ConfigError::InvalidUserConfig {
-            error: e.to_string(),
-        })?;
+        .map_err(capability_config_error)?;
+    let agent_fed_provider = capabilities
+        .optional_local::<otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider>()
+        .map_err(capability_config_error)?;
+    let dynamic_auth = select_dynamic_auth(token_provider, agent_fed_provider)?;
     Ok(ExporterWrapper::local(
-        OtlpHttpExporter::from_config(pipeline, &node_config.config, token_provider)?,
+        OtlpHttpExporter::from_config(pipeline, &node_config.config, dynamic_auth)?,
         node,
         node_config,
         exporter_config,
@@ -155,10 +191,10 @@ fn factory_create(
 
 impl OtlpHttpExporter {
     /// create a new instance of the `[OtlpHttpExporter]` from json config value
-    pub fn from_config(
+    pub(crate) fn from_config(
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
-        token_provider: Option<Box<dyn BearerTokenProvider>>,
+        dynamic_auth: Option<DynamicAuthProvider>,
     ) -> Result<Self, ConfigError> {
         let metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
@@ -232,10 +268,17 @@ impl OtlpHttpExporter {
             }
         }
 
+        let (token_provider, agent_fed_provider) = match dynamic_auth {
+            Some(DynamicAuthProvider::Bearer(provider)) => (Some(provider), None),
+            Some(DynamicAuthProvider::AgentFed(provider)) => (None, Some(provider)),
+            None => (None, None),
+        };
+
         Ok(Self {
             config,
             metrics,
             token_provider,
+            agent_fed_provider,
         })
     }
 }
@@ -247,11 +290,31 @@ struct CompletedExport {
     saved_payload: OtapPayload,
     signal_type: SignalType,
     export_started_at: Instant,
-    /// Generation of the bearer token stamped on this request (`None` when no
-    /// provider is bound). Echoed back so a 401 invalidates exactly the token
-    /// that was used, not a newer one already cached (see
-    /// [`BearerAuth::invalidate`]).
-    token_generation: Option<u64>,
+    /// Authentication mode used by this request. Bearer-provider requests retain
+    /// the token generation so a 401 invalidates only the token that was sent;
+    /// agent-fed and unauthenticated requests retain their mode for response
+    /// handling.
+    request_auth: RequestAuth,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RequestAuth {
+    None,
+    BearerProvider { generation: u64 },
+    AgentFed,
+}
+
+impl RequestAuth {
+    fn is_dynamic(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    fn bearer_generation(self) -> Option<u64> {
+        match self {
+            Self::BearerProvider { generation } => Some(generation),
+            Self::None | Self::AgentFed => None,
+        }
+    }
 }
 
 #[async_trait(?Send)]
@@ -327,6 +390,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             .token_provider
             .take()
             .map(|provider| BearerAuth::new(provider, HTTP_BEARER_AUTH_EVENTS));
+        let mut agent_fed_auth = self.agent_fed_provider.take().map(AgentFedAuth::new);
 
         // Timer that fires when the cached token crosses its usability margin.
         // Hoisted out of the loop and re-armed only when the deadline actually
@@ -342,26 +406,32 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             // Admit pdata only when auth is ready (a usable token is cached, or no
             // provider is bound) and we are below the in-flight cap. While a bound
             // provider has no usable token we stop pulling pdata, so it
-            // back-pressures upstream instead of being accepted and NACK'd. A token
-            // is guaranteed to eventually arrive -- the extension's readiness probe
-            // holds data-path startup until the first publish, and its watch stream
-            // stays live while we hold the provider handle -- so waiting (not
-            // dropping) is always correct here.
+            // back-pressures upstream instead of being accepted and NACK'd. Control
+            // messages remain enabled while intake is gated, so waiting neither
+            // drops data nor prevents shutdown.
             let accepting_pdata = auth.as_ref().is_none_or(BearerAuth::is_ready)
+                && agent_fed_auth.as_ref().is_none_or(AgentFedAuth::is_ready)
                 && inflight_exports.len() < max_in_flight;
 
             // Instant at which a currently-usable token crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
-            if token_margin_deadline != armed_margin_deadline {
-                if let Some(deadline) = token_margin_deadline {
+            let auth_margin_deadline = auth
+                .as_ref()
+                .and_then(BearerAuth::refresh_deadline)
+                .or_else(|| {
+                    agent_fed_auth
+                        .as_ref()
+                        .and_then(AgentFedAuth::refresh_deadline)
+                });
+            if auth_margin_deadline != armed_margin_deadline {
+                if let Some(deadline) = auth_margin_deadline {
                     margin_sleep
                         .as_mut()
                         .reset(tokio::time::Instant::from_std(deadline));
                 }
-                armed_margin_deadline = token_margin_deadline;
+                armed_margin_deadline = auth_margin_deadline;
             }
 
             let msg = tokio::select! {
@@ -372,7 +442,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 // left elapsed whenever nothing is armed; once it fires,
                 // `refresh_deadline` returns `None`, which closes the guard and
                 // keeps the arm from busy-looping.
-                () = &mut margin_sleep, if token_margin_deadline.is_some() => {
+                () = &mut margin_sleep, if auth_margin_deadline.is_some() => {
                     continue;
                 }
 
@@ -390,6 +460,25 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 }, if auth.as_ref().is_some_and(BearerAuth::is_active) => {
                     // A refresh was drained (the adapter caches it and logs any
                     // anomaly); loop to re-evaluate intake readiness.
+                    continue;
+                }
+
+                // Agent-fed credentials have no refresh stream. Fetch one
+                // snapshot before admitting each batch, and drive the lookup as a
+                // select arm so control messages can cancel a slow provider call.
+                result = async {
+                    agent_fed_auth
+                        .as_mut()
+                        .expect("agent-fed auth must exist while its select guard is enabled")
+                        .poll_credential()
+                        .await
+                }, if agent_fed_auth.as_ref().is_some_and(|a| !a.is_ready()) => {
+                    if let Err(error) = result {
+                        otel_warn!(
+                            "otlp.exporter.http.agent_fed_credential_unavailable",
+                            error = %error
+                        );
+                    }
                     continue;
                 }
 
@@ -480,10 +569,31 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // precedence over any statically configured `authorization`; the
                     // generation is echoed back on completion so a 401 can be matched
                     // to the exact token used and a stale rejection ignored.
-                    let (auth_header, token_generation) =
+                    let (auth_header, request_auth) =
                         match auth.as_ref().and_then(BearerAuth::header) {
-                            Some((header, generation)) => (Some(header), Some(generation)),
-                            None => (None, None),
+                            Some((header, generation)) => {
+                                (Some(header), RequestAuth::BearerProvider { generation })
+                            }
+                            None => match agent_fed_auth.as_mut() {
+                                Some(agent_fed_auth) => match agent_fed_auth.take_header() {
+                                    Some(header) => (Some(header), RequestAuth::AgentFed),
+                                    None => {
+                                        let export_duration = export_started_at.elapsed();
+                                        let nack = NackMsg::new(
+                                            "agent-fed bearer token unavailable",
+                                            OtapPdata::new(context, payload),
+                                        );
+                                        _ = effect_handler.notify_nack(nack).await;
+                                        self.metrics.record_failure(
+                                            signal_type,
+                                            OtlpHttpExporterErrorType::Authentication,
+                                            export_duration,
+                                        );
+                                        continue;
+                                    }
+                                },
+                                None => (None, RequestAuth::None),
+                            },
                         };
 
                     // For the OtapArrowRecords path we keep the uncompressed bytes in
@@ -642,7 +752,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             saved_payload,
                             signal_type,
                             export_started_at,
-                            token_generation,
+                            request_auth,
                         }
                     })
                 }
@@ -791,14 +901,11 @@ impl ServiceRequestError {
         }
     }
 
-    /// Whether this is an HTTP 401 Unauthorized response. When a bearer token
-    /// provider is bound this is treated as retryable, because it usually means
-    /// the cached token lapsed or a refresh raced; the batch can succeed once the
-    /// provider publishes its next token. Recovery waits for that provider's own
-    /// refresh schedule - rejecting a token only drops the exporter's cached
-    /// copy, it does not make the provider refresh early. 403 Forbidden is
-    /// intentionally excluded: it signals a scope or permission problem that a
-    /// token refresh will not fix.
+    /// Whether this is an HTTP 401 Unauthorized response. With dynamic
+    /// authentication this is retryable: a bearer-token provider may publish a
+    /// refresh, while an agent-fed provider is read again on the next attempt.
+    /// 403 Forbidden is intentionally excluded because it indicates a scope or
+    /// permission problem that acquiring another token will not necessarily fix.
     fn is_auth_failure(&self) -> bool {
         matches!(
             self,
@@ -881,7 +988,7 @@ async fn finalize_completed_export(
         saved_payload,
         signal_type,
         export_started_at,
-        token_generation,
+        request_auth,
     } = completed;
     let export_duration = export_started_at.elapsed();
 
@@ -919,16 +1026,12 @@ async fn finalize_completed_export(
             }
         }),
         Err(e) => {
-            // With a bearer token provider bound, a 401 usually means the cached
-            // token lapsed or a refresh raced, so retry rather than drop; record
-            // the rejected generation so the caller invalidates exactly the token
-            // that was used before the retry. A stamped generation is what "a
-            // provider is bound" means for this request: the dispatch path only
-            // reaches a send with a usable token cached, so the generation is
-            // `Some` exactly when the request carried a refreshable credential.
-            let auth_failure = token_generation.is_some() && e.is_auth_failure();
+            // A 401 for either dynamic source is retryable. Only the stream-backed
+            // provider has a cached generation to invalidate; agent-fed auth reads
+            // a fresh snapshot on the next export attempt.
+            let auth_failure = request_auth.is_dynamic() && e.is_auth_failure();
             if auth_failure {
-                rejected_generation = token_generation;
+                rejected_generation = request_auth.bearer_generation();
             }
             let retryable = e.is_retryable() || auth_failure;
             let error_type = e.error_type();
@@ -1073,7 +1176,7 @@ impl HttpClientPool {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::time::{Duration, Instant};
 
     use arrow::array::Int32Array;
@@ -1086,6 +1189,9 @@ mod test {
     use hyper_util::rt::TokioIo;
     use otel_arrow_dfe_config::PortName;
     use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::capability::CapabilityError;
+    use otel_arrow_dfe_engine::capability::auth::BearerToken;
+    use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialSnapshot;
     use otel_arrow_dfe_engine::context::ControllerContext;
     use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, runtime_ctrl_msg_channel};
     use otel_arrow_dfe_engine::shared::message::SharedSender;
@@ -1129,6 +1235,75 @@ mod test {
     use otel_arrow_dfe_otap::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
     use otel_arrow_dfe_otap::otlp_metrics::OtlpReceiverMetrics;
     use otel_arrow_dfe_otap::testing::TestCallData;
+
+    struct StaticAgentFedProvider {
+        snapshot: Arc<AgentFedCredentialSnapshot>,
+        delay: Duration,
+    }
+
+    impl StaticAgentFedProvider {
+        fn new(token: &str) -> Self {
+            Self {
+                snapshot: Arc::new(AgentFedCredentialSnapshot::new(
+                    BearerToken::without_expiry(token.to_owned()),
+                    Arc::new(serde_json::Map::new()),
+                )),
+                delay: Duration::ZERO,
+            }
+        }
+
+        fn with_delay(token: &str, delay: Duration) -> Self {
+            Self {
+                delay,
+                ..Self::new(token)
+            }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl AgentFedCredentialProvider for StaticAgentFedProvider {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
+            Ok(Arc::clone(&self.snapshot))
+        }
+    }
+
+    struct RotatingAgentFedProvider {
+        snapshots: std::sync::Mutex<VecDeque<Arc<AgentFedCredentialSnapshot>>>,
+    }
+
+    impl RotatingAgentFedProvider {
+        fn new(tokens: impl IntoIterator<Item = BearerToken>) -> Self {
+            Self {
+                snapshots: std::sync::Mutex::new(
+                    tokens
+                        .into_iter()
+                        .map(|token| {
+                            Arc::new(AgentFedCredentialSnapshot::new(
+                                token,
+                                Arc::new(serde_json::Map::new()),
+                            ))
+                        })
+                        .collect(),
+                ),
+            }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl AgentFedCredentialProvider for RotatingAgentFedProvider {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            let mut snapshots = self.snapshots.lock().expect("rotating snapshots");
+            let snapshot = if snapshots.len() > 1 {
+                snapshots.pop_front()
+            } else {
+                snapshots.front().cloned()
+            };
+            Ok(snapshot.expect("rotating provider must contain a snapshot"))
+        }
+    }
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
@@ -1441,7 +1616,6 @@ mod test {
             ))],
             false,
         );
-
         test_runtime
             .set_exporter(exporter)
             .run_test(|ctx| {
@@ -1474,6 +1648,66 @@ mod test {
                             panic!("a 401 response must not Ack")
                         }
                     }
+                })
+            });
+
+        cancel.cancel();
+    }
+
+    /// Scenario: Agent-fed authentication is used and the backend returns HTTP 401.
+    /// Guarantees: The payload is NACK'd as retryable so a later snapshot can authenticate it.
+    #[test]
+    fn test_auth_failure_is_retryable_when_agent_fed_provider_bound() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let cancel = run_fixed_status_server(&tokio_rt, &endpoint_addr, 401);
+        wait_for_port_ready(&endpoint_addr);
+
+        let config = default_test_config(endpoint);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter = exporter_with_agent_fed_provider(
+            &test_runtime,
+            config,
+            StaticAgentFedProvider::new("agent-fed-token"),
+        );
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::from(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    let msg = pipeline_completion_rx
+                        .recv()
+                        .await
+                        .expect("expected a pipeline completion message");
+                    let message = format!("{msg:?}");
+                    assert!(message.starts_with("DeliverNack"));
+                    assert!(message.contains("permanent: false"));
                 })
             });
 
@@ -1629,11 +1863,341 @@ mod test {
                 config,
                 metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
                 token_provider: Some(Box::new(provider)),
+                agent_fed_provider: None,
             },
             node_id,
             node_config,
             test_runtime.config(),
         )
+    }
+
+    /// Build an `OtlpHttpExporter` wrapped for the test runtime with a bound
+    /// agent-fed credential provider.
+    fn exporter_with_agent_fed_provider(
+        test_runtime: &TestRuntime<OtapPdata>,
+        config: Config,
+        provider: impl AgentFedCredentialProvider + 'static,
+    ) -> ExporterWrapper<OtapPdata> {
+        exporter_with_boxed_agent_fed_provider(test_runtime, config, Box::new(provider))
+    }
+
+    fn exporter_with_boxed_agent_fed_provider(
+        test_runtime: &TestRuntime<OtapPdata>,
+        config: Config,
+        provider: Box<dyn AgentFedCredentialProvider>,
+    ) -> ExporterWrapper<OtapPdata> {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
+        let telemetry_registry_handle = test_runtime.metrics_registry();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx = controller_ctx.pipeline_context_with(
+            "test_group".into(),
+            "test_pipeline".into(),
+            0,
+            1,
+            0,
+        );
+        ExporterWrapper::local(
+            OtlpHttpExporter {
+                config,
+                metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
+                token_provider: None,
+                agent_fed_provider: Some(provider),
+            },
+            node_id,
+            node_config,
+            test_runtime.config(),
+        )
+    }
+
+    /// Scenario: Both supported dynamic authentication capabilities are bound.
+    /// Guarantees: Exporter creation rejects the ambiguous credential source.
+    #[test]
+    fn rejects_multiple_dynamic_auth_providers() {
+        let result = select_dynamic_auth(
+            Some(Box::new(MockTokenProvider::new("bearer"))),
+            Some(Box::new(StaticAgentFedProvider::new("agent-fed"))),
+        );
+
+        let error = result.err().expect("conflicting providers must fail");
+        assert!(error.to_string().contains("cannot bind both"));
+    }
+
+    /// Scenario: Zero or one dynamic authentication capability is available.
+    /// Guarantees: Each supported capability combination selects the corresponding auth mode.
+    #[test]
+    fn selects_each_supported_dynamic_auth_mode() {
+        assert!(select_dynamic_auth(None, None).unwrap().is_none());
+
+        let bearer =
+            select_dynamic_auth(Some(Box::new(MockTokenProvider::new("bearer"))), None).unwrap();
+        assert!(matches!(bearer, Some(DynamicAuthProvider::Bearer(_))));
+
+        let agent_fed = select_dynamic_auth(
+            None,
+            Some(Box::new(StaticAgentFedProvider::new("agent-fed"))),
+        )
+        .unwrap();
+        assert!(matches!(agent_fed, Some(DynamicAuthProvider::AgentFed(_))));
+    }
+
+    /// Scenario: A valid exporter configuration is built with each dynamic authentication mode.
+    /// Guarantees: `from_config` stores only the selected provider and preserves unauthenticated mode.
+    #[test]
+    fn from_config_assigns_each_dynamic_auth_mode() {
+        let config = serde_json::json!({
+            "endpoint": "http://127.0.0.1:4318",
+            "http": {},
+            "client_pool_size": 2
+        });
+        let make_pipeline = || {
+            let controller = ControllerContext::new(TelemetryRegistryHandle::new());
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)
+        };
+
+        let unauthenticated =
+            OtlpHttpExporter::from_config(make_pipeline(), &config, None).unwrap();
+        assert!(unauthenticated.token_provider.is_none());
+        assert!(unauthenticated.agent_fed_provider.is_none());
+
+        let bearer = OtlpHttpExporter::from_config(
+            make_pipeline(),
+            &config,
+            Some(DynamicAuthProvider::Bearer(Box::new(
+                MockTokenProvider::new("bearer"),
+            ))),
+        )
+        .unwrap();
+        assert!(bearer.token_provider.is_some());
+        assert!(bearer.agent_fed_provider.is_none());
+
+        let agent_fed = OtlpHttpExporter::from_config(
+            make_pipeline(),
+            &config,
+            Some(DynamicAuthProvider::AgentFed(Box::new(
+                StaticAgentFedProvider::new("agent-fed"),
+            ))),
+        )
+        .unwrap();
+        assert!(agent_fed.token_provider.is_none());
+        assert!(agent_fed.agent_fed_provider.is_some());
+    }
+
+    /// Scenario: The exporter factory is invoked without capability bindings.
+    /// Guarantees: Optional capability lookup preserves the unauthenticated configuration path.
+    #[test]
+    fn factory_create_preserves_unauthenticated_mode() {
+        let controller = ControllerContext::new(TelemetryRegistryHandle::new());
+        let pipeline = controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut node_config = NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN);
+        node_config.config = serde_json::json!({
+            "endpoint": "http://127.0.0.1:4318",
+            "http": {},
+            "client_pool_size": 2
+        });
+
+        let result = factory_create(
+            pipeline,
+            test_node("otlp-http-factory"),
+            Arc::new(node_config),
+            &ExporterConfig::new("otlp-http-factory"),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    /// Scenario: Response handling inspects each request authentication mode.
+    /// Guarantees: Dynamic detection and bearer generation extraction remain mode-specific.
+    #[test]
+    fn request_auth_helpers_cover_each_mode() {
+        assert!(!RequestAuth::None.is_dynamic());
+        assert_eq!(RequestAuth::None.bearer_generation(), None);
+
+        assert!(RequestAuth::AgentFed.is_dynamic());
+        assert_eq!(RequestAuth::AgentFed.bearer_generation(), None);
+
+        let bearer = RequestAuth::BearerProvider { generation: 42 };
+        assert!(bearer.is_dynamic());
+        assert_eq!(bearer.bearer_generation(), Some(42));
+    }
+
+    /// Scenario: Capability lookup fails while the exporter factory resolves authentication.
+    /// Guarantees: Capability failures are reported as invalid user configuration errors.
+    #[test]
+    fn capability_errors_become_configuration_errors() {
+        let error = capability_config_error(EngineError::CapabilityAlreadyConsumed {
+            capability: "agent_fed_credential_provider".to_owned(),
+        });
+
+        assert!(matches!(error, ConfigError::InvalidUserConfig { .. }));
+        assert!(error.to_string().contains("already been claimed"));
+    }
+
+    /// Scenario: Agent-fed credentials and a static Authorization header are configured.
+    /// Guarantees: The agent-fed bearer token overrides the static header on the wire.
+    #[test]
+    fn test_agent_fed_token_injected_on_wire() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        let mut headers = HashMap::new();
+        _ = headers.insert("authorization".to_string(), "Basic static".into());
+        let config = Config {
+            http: HttpClientSettings {
+                headers,
+                ..Default::default()
+            },
+            ..default_test_config(endpoint)
+        };
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter = exporter_with_agent_fed_provider(
+            &test_runtime,
+            config,
+            StaticAgentFedProvider::new("agent-fed-token"),
+        );
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::from(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| Box::pin(async move { result.unwrap() }));
+
+        cancel.cancel();
+        let headers = captured
+            .lock()
+            .clone()
+            .expect("server did not capture request headers");
+        assert_eq!(
+            headers.get(http::header::AUTHORIZATION).unwrap(),
+            "Bearer agent-fed-token"
+        );
+    }
+
+    /// Scenario: An agent-fed credential crosses its usability margin while the exporter is idle.
+    /// Guarantees: The next request uses a refreshed snapshot instead of the stale cached header.
+    #[test]
+    fn test_agent_fed_idle_credential_is_refreshed_before_export() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::from(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+
+        let expires_on = Instant::now()
+            + otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN
+            + Duration::from_secs(1);
+        let provider = RotatingAgentFedProvider::new([
+            BearerToken::with_expiry("idle-token".to_owned(), Some(expires_on)),
+            BearerToken::without_expiry("refreshed-token".to_owned()),
+        ]);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter = exporter_with_agent_fed_provider(
+            &test_runtime,
+            default_test_config(endpoint),
+            provider,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(1200)).await;
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| Box::pin(async move { result.unwrap() }));
+
+        cancel.cancel();
+        let headers = captured
+            .lock()
+            .clone()
+            .expect("server did not capture request headers");
+        assert_eq!(
+            headers.get(http::header::AUTHORIZATION).unwrap(),
+            "Bearer refreshed-token"
+        );
+    }
+
+    /// Scenario: An agent-fed credential lookup is still pending when shutdown arrives.
+    /// Guarantees: The exporter cancels the lookup and handles shutdown without waiting for it.
+    #[test]
+    fn test_agent_fed_lookup_does_not_block_shutdown() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let config = default_test_config("http://127.0.0.1:4318".to_owned());
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter = exporter_with_agent_fed_provider(
+            &test_runtime,
+            config,
+            StaticAgentFedProvider::with_delay("token", Duration::from_secs(5)),
+        );
+        let started = Instant::now();
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| Box::pin(async move { result.unwrap() }));
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "shutdown must not wait for the credential lookup timeout"
+        );
     }
 
     #[test]
@@ -2147,6 +2711,7 @@ mod test {
                 config,
                 metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
                 token_provider: None,
+                agent_fed_provider: None,
             },
             node_id.clone(),
             node_config,
@@ -2537,7 +3102,7 @@ mod test {
             saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
             signal_type: SignalType::Logs,
             export_started_at: Instant::now(),
-            token_generation: None,
+            request_auth: RequestAuth::None,
         };
 
         let _ = Runtime::new().unwrap().block_on(finalize_completed_export(
@@ -2619,7 +3184,7 @@ mod test {
             saved_payload,
             signal_type: SignalType::Logs,
             export_started_at: Instant::now(),
-            token_generation: None,
+            request_auth: RequestAuth::None,
         };
 
         let _ = Runtime::new().unwrap().block_on(finalize_completed_export(
