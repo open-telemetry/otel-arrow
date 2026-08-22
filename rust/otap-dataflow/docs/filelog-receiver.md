@@ -1038,8 +1038,9 @@ plus an append-only progress log:
 - compact atomically without rewriting every file on every Ack; and
 - expire inactive state only through the documented retention policy.
 
-The exact namespace, snapshot envelope, WAL transaction encoding, record fields, and
-framing-profile digest appear in **Appendix B: Checkpoint storage format**.
+The logical namespace, snapshot/WAL model, durable state transitions, recovery rules,
+and framing-profile compatibility contract appear in **Appendix B: Checkpoint storage
+and recovery model**. The exact byte encoding is a separate Phase 1 deliverable.
 
 - **Registration is durable before reading.** Creating a `file_id` appends and syncs a
   `register_file` update containing its initial offset. A reconciliation pass may place
@@ -1335,9 +1336,14 @@ Phase 1 requires the following evidence:
 | Discovery and identity | Growing and duplicate fingerprints; ambiguous recovery; initial `start_at: end`; bounded incremental scans; pending overflow, rediscovery, removal, and stable-order fairness |
 | Framing and encoding | Every supported encoding; malformed bytes; multiline limits and fallback; Acked partial-flush restart; oversize line after buffered multiline; stable and unique fragment IDs across retry and restart |
 | Delivery and checkpoints | Ack/Nack resend; retry exhaustion; torn WAL-tail recovery; restart between fragments; quarantine persistence across restart and reload; audited reset from beginning and end |
+| Checkpoint format | Approved `filelog-checkpoint-format.md`; encode/decode, round-trip, corruption, torn-write, cross-version, cross-platform, migration, and compatibility-vector conformance |
 | Rotation and recovery | Move/create and detectable copy-truncate; truncation over unacknowledged bytes; same-locator and replacement-locator recovery |
 | Ownership and lifecycle | Namespace serialization; overlapping-pattern lease contention; lease survival across temporary FD rotation; cleanup and registry-integrity failure; drain during backpressure; receiver-wide head-of-line behavior |
 | Resource bounds and platforms | Worst-case line-plus-multiline memory accounting; hot-file fairness; equivalent identity, rotation, and open-file lifecycle tests on Linux, macOS, and Windows |
+
+The checkpoint-format evidence is a release gate: the checkpoint implementation is not
+stable and Phase 1 cannot ship until the companion specification and its conformance
+vectors are approved.
 
 Timestamp parsing remains a processor and distribution-integration dependency. Separate
 conformance tests cover successful extraction, fallback behavior, fractional precision,
@@ -1559,7 +1565,16 @@ sequenceDiagram
 Recovery succeeds only while the checkpoint and source bytes still exist. The receiver
 does not persist the in-flight Arrow batch as a durable spool.
 
-## Appendix B: Checkpoint storage format
+## Appendix B: Checkpoint storage and recovery model
+
+This appendix defines the logical checkpoint model and its correctness requirements.
+The exact version-1 byte encoding -- including field ordering, widths, discriminants,
+length scopes, checksum coverage, platform-locator serialization, and compatibility
+vectors -- will be defined separately in `filelog-checkpoint-format.md`.
+
+Phase 1 cannot ship until that specification is approved and its encode/decode,
+round-trip, corruption, torn-write, cross-version, cross-platform, and migration
+conformance tests pass.
 
 ### Namespace layout
 
@@ -1606,69 +1621,31 @@ flowchart LR
 recovery base, the WAL records subsequent atomic changes, and `ownership.lock` prevents
 concurrent Phase 1 writers.
 
-### Snapshot envelope
+### Logical snapshot model
 
-All fixed-width integers in the snapshot and progress log use little-endian byte order.
-
-```text
-[ magic "OTAPFLSN" (8) ][ version u16 ][ header_size u16 ][ generation u64 ]
-[ record_count u32 ]
-[ body: records... ][ crc32c u32 over all preceding bytes ]
-```
-
-Snapshot fields are organized into five contract groups:
+Each snapshot is versioned, integrity-protected, associated with the generation selected
+by `CURRENT`, and contains a bounded set of complete logical records. Snapshot state is
+organized into five contract groups:
 
 | Field group | Contents | Purpose |
 | --- | --- | --- |
-| Identity | `file_id`, fingerprint, ignored-header count, runtime locator | Reconnect candidates without treating path or matching evidence as durable identity |
-| Progress | Committed offset and file epoch | Record downstream-acknowledged source progress |
-| Framing | Profile version and digest, resume state | Preserve deterministic framing across restart |
-| Lifecycle | Active, rotated-finalized, or quarantined state | Enforce durable file-state transitions |
+| Identity | Opaque `file_id`, fingerprint evidence, ignored-header count, runtime locator | Reconnect candidates without treating path or matching evidence as durable identity |
+| Progress | Committed source-byte offset and file epoch | Record downstream-acknowledged source progress |
+| Framing | Profile version and digest, `clean` or continuation resume state | Preserve deterministic framing across restart |
+| Lifecycle | Active, rotated-finalized, or quarantined state with bounded quarantine evidence | Enforce durable file-state transitions and operator recovery |
 | Advisory metadata | Last-seen time and path | Support matching, diagnostics, and retention without becoming identity |
 
-### Exact snapshot record layout
+The exact encoding specification defines record boundaries, maximum encoded lengths,
+persisted discriminants, and normalized POSIX and Windows locator representations. It
+must not serialize native Rust, C, or operating-system structures directly.
 
-```text
-record:
-  file_id u128,
-  fingerprint_len u16, fingerprint bytes (raw, mutable evidence),
-  ignored_header_bytes u32,
-  locator_kind u8,
-  locator_len u16, locator bytes (POSIX device/inode or Windows volume/file ID),
-  committed_offset u64, file_epoch u32,
-  framing_profile_version u16,
-  framing_profile_digest [u8; 32],
-  framing_resume_kind u8 (clean | continuation),
-  continuation_record_start_offset u64, continuation_next_fragment_index u32
-    (present only for continuation),
-  state:
-    active |
-    rotated_finalized |
-    quarantined {
-      reason_code u16,
-      runtime_locator,
-      observed_size u64,
-      file_epoch u32,
-      quarantined_at_unix_nano u64
-    },
-  last_seen_unix_nano u64 (wall clock),
-  last_path_len u16, last_path bytes (advisory)
-```
+### Logical progress log
 
-### WAL transaction envelope
-
-```text
-[ magic "OTAPFLTX" (8) ][ version u16 ][ generation u64 ][ transaction_len u32 ]
-[ sequence u64 ][ update_count u32 ][ updates... ][ crc32c u32 ]
-
-update:
-  [ tag u8 ][ payload_len u32 ][ file_id u128 ][ operation-specific payload ]
-```
-
-The operation tags and logical payloads are normative. Fixed-width integers use the
-envelope byte order; variable-width fields carry an explicit length and are bounded by
-the corresponding snapshot field. An implementation may add fields only under a new
-format version.
+The progress log contains versioned, integrity-protected, monotonically sequenced
+transactions associated with the snapshot/WAL generation. Each transaction contains a
+bounded set of operations and is atomic: recovery exposes all validated operations in a
+transaction or none of them. Every operation is keyed by `file_id` and carries the
+expected state needed to reject stale, conflicting, or impossible transitions.
 
 ### Durable state transitions
 
@@ -1703,65 +1680,80 @@ flowchart LR
 Every transition is conditional on the expected current state and epoch. A stale,
 conflicting, or impossible transition fails recovery closed.
 
-### WAL operations
+### Logical WAL operations
 
-| Tag | Operation | Payload summary | Effect |
-| --- | --- | --- | --- |
-| 1 | `register_file` | Initial identity, progress, framing profile, and metadata | Create an absent `file_id` |
-| 2 | `update_progress` | Expected and resulting offset, epoch, framing resume, and state | Advance progress or perform an explicit epoch/state transition |
-| 3 | `update_fingerprint` | Expected and replacement fingerprint evidence | Change matching evidence only |
-| 4 | `update_metadata` | Optional locator, last-seen time, and path | Change advisory metadata only |
-| 5 | `quarantine_file` | Expected epoch, reason, locator, observed size, and time | Transition active to quarantined |
-| 6 | `reset_quarantined_file` | Expected quarantine epoch, action, resulting epoch, and offset | Preserve quarantine or return it to active |
-| 7 | `remove_file` | Expected epoch and state, reason, and time | Remove the matching record |
+| Operation | Valid state transition | Primary effect |
+| --- | --- | --- |
+| `register_file` | Absent to active | Create durable identity and initial progress |
+| `update_progress` | Active to active or rotated-finalized | Advance Acked progress and framing state |
+| `update_fingerprint` | State unchanged | Replace guarded matching evidence |
+| `update_metadata` | State unchanged | Update locator and advisory metadata |
+| `quarantine_file` | Active to quarantined | Persist a fail-policy quarantine |
+| `reset_quarantined_file` | Quarantined to active or quarantined | Apply an explicit recovery action |
+| `remove_file` | Existing to absent | Remove a matching record |
 
 Detailed transition and replay rules:
 
-- **`register_file`:** the payload contains the initial fingerprint, ignored-header
+- **`register_file`:** the operation contains the initial fingerprint, ignored-header
   count, runtime locator, committed offset, file epoch, framing-profile version and
   digest, `clean` framing resume, active state, last-seen time, and advisory path. It
   creates an absent `file_id`. Encountering an existing `file_id` during replay is valid
   only when every persisted field is identical; otherwise recovery fails closed.
-- **`update_progress`:** the payload contains the expected committed offset and epoch;
+- **`update_progress`:** the operation contains the expected committed offset and epoch;
   new committed offset, epoch, framing resume, and last-seen time; and an optional
   rotated-finalized state. The stored offset and epoch must match the expected values.
   Progress advances monotonically within an epoch or through an explicitly encoded
   epoch transition. A mismatch, regression, or invalid framing continuation fails
   closed. Offset, epoch, and framing resume advance atomically.
-- **`update_fingerprint`:** the payload contains the expected and replacement
+- **`update_fingerprint`:** the operation contains the expected and replacement
   fingerprint lengths and bytes. The expected evidence must match. The operation never
   changes `file_id`, progress, epoch, or framing state.
-- **`update_metadata`:** the payload contains the runtime locator, last-seen time, and
+- **`update_metadata`:** the operation contains the runtime locator, last-seen time, and
   advisory path with presence discriminators. It replaces only supplied mutable locator
   and advisory metadata; it cannot change identity, progress, quarantine, or framing
   state.
-- **`quarantine_file`:** the payload contains the expected file epoch, reason code,
+- **`quarantine_file`:** the operation contains the expected file epoch, reason code,
   runtime locator, observed size, quarantine epoch, and quarantine time. It requires an
   active record at the expected epoch and transitions it to durable quarantine.
   Replaying an identical quarantine is idempotent; conflicting data fails closed.
-- **`reset_quarantined_file`:** the payload contains the expected quarantine epoch,
+- **`reset_quarantined_file`:** the operation contains the expected quarantine epoch,
   action (`reset_to_beginning`, `reset_to_end`, or `keep_failed`), resulting epoch and
   offset, `clean` framing resume, reset time, and audit reason. It requires the matching
   quarantined record. `keep_failed` preserves quarantine; either reset action increments
   the epoch and returns the record to active at the explicitly recorded offset. A stale
   or conflicting reset fails closed.
-- **`remove_file`:** the payload contains the expected file epoch and prior state,
+- **`remove_file`:** the operation contains the expected file epoch and prior state,
   removal reason, and removal time. It removes only a matching record. Replay against an
   already absent `file_id` is idempotent; a conflicting live record fails closed.
 
 ### Recovery algorithm
 
-1. Read `CURRENT`, then load and validate the selected snapshot envelope, version, and
-   CRC.
+1. Read `CURRENT`, then load and validate the selected snapshot generation, version,
+   bounds, and integrity check.
 2. Replay complete WAL transactions atomically in strictly increasing sequence order.
-3. Discard only a structurally incomplete final transaction whose declared bytes extend
-   beyond EOF.
-4. Fail recovery closed on every other format, length, CRC, ordering, unknown-tag, or
-   state-transition error. Unknown tags require a newer format version and are never
-   skipped.
+3. Discard only a structurally incomplete final transaction, as identified by the exact
+   encoding specification's transaction-boundary rules.
+4. Fail recovery closed on every other integrity, bounds, ordering, version, unknown-
+   operation, or state-transition error.
 
 No update from a transaction becomes visible unless its complete transaction validates.
-Trailing data before the final torn transaction also fails closed.
+Corruption before the structurally incomplete final transaction also fails closed.
+
+### Durability, compaction, and migration
+
+Registration is durable before the receiver reads a new file. Ack-triggered progress
+updates atomically persist the committed offset, file epoch, and framing-resume state.
+Quarantine is durable before it is reported, and release requires an explicit per-file
+reset operation. These requirements do not depend on the physical encoding.
+
+Compaction writes and syncs a complete new snapshot/WAL generation before atomically
+selecting it through `CURRENT`. The previously selected generation remains recoverable
+until the new generation and marker are durable. Cleanup never makes an incomplete
+generation authoritative.
+
+Every stored format carries an explicit version. An incompatible encoding or semantic
+change requires a new version, an explicit migration policy, and compatibility vectors.
+Recovery never guesses across unknown versions or silently resets durable progress.
 
 ### Framing-profile compatibility
 
