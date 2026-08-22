@@ -103,16 +103,6 @@ compromises:
 | Failure isolation | Most source errors quarantine one file; batch, checkpoint, and ownership failures may stop the receiver |
 | Live rollout | Serializes local ownership but cannot advertise lossless ready-before-ownership semantics without an engine readiness contract |
 
-## Objective
-
-Add an OTAP-native receiver that collects logs from local files reliably and fits the
-OTAP Dataflow architecture. It must keep reading while files grow, survive restart and
-rotation, stop under backpressure, and advance file positions only after downstream
-acknowledgement.
-
-This is not a port of the Go Collector filelog receiver. It keeps the useful customer
-behavior while separating collection from semantic processing.
-
 ## Responsibility split
 
 ```text
@@ -139,8 +129,6 @@ only the receiver controls logical checkpoint advancement. In Phase 3, discovery
 ownership assignment may move to the shared services shown in the target architecture
 diagram. The receiver continues to calculate source progress and decide when Ack permits
 advancement; a shared fenced store becomes responsible for durable persistence.
-
-## Why this design
 
 File collection combines several problems that must remain correct together: discovery,
 identity, framing, rotation, backpressure and restart recovery. Embedding timestamp,
@@ -180,43 +168,6 @@ envelope and recovery conventions for its snapshot, WAL and current-generation m
 It does not use Quiver's Arrow segment store or copy its single WAL cursor directly:
 filelog progress is a table of `(file_id, byte_offset)` entries whose offsets advance
 after downstream Ack.
-
-## What users get
-
-- Point the receiver at files or directories using include and exclude patterns.
-- Discover new matching files and start reading while they are still growing.
-- Keep stack traces and other multiline events together.
-- Read UTF-8, ASCII and UTF-16 without treating NUL bytes as end-of-record.
-- Resume from durable positions after restart.
-- Drain an old file and start its replacement during normal rotation.
-- Stop reading when downstream is slow instead of growing memory without bound.
-- See health signals for parsing fallback, invalid bytes, truncation, identity reset,
-  copy-truncate detection, unreadable files and checkpoint failures.
-
-The receiver emits ordinary OTel `LogRecord`s, so existing processors and exporters can
-handle the result like logs from other OTAP-native sources.
-
-## Design at a glance
-
-- **One source owner in Phase 1 (D1-D3).** One receiver owns all locally discovered files. Topic
-  fanout provides downstream parallelism. Fixed virtual partitions add multiple owners
-  in Phase 3.
-- **Stable file progress (D4-D6).** A persisted opaque `file_id` owns the checkpoint.
-  Platform file IDs and fingerprints reconnect discovered files; neither is a unique
-  checkpoint key by itself.
-- **Ack controls progress (D7, D13).** Phase 1 retains one receiver-wide in-flight Arrow
-  batch. Ack commits offsets; Nack never silently advances them. The resulting
-  receiver-wide head-of-line blocking is an accepted Phase 1 compromise.
-- **Blocking work stays off the runtime (D8).** One discovery thread and one
-  read/checkpoint thread communicate with the async receiver over bounded channels.
-- **Frame, do not interpret (D9-D10).** The receiver decodes text, forms records,
-  applies size limits and emits raw OTAP. Processors parse timestamps, JSON and severity.
-- **Everything is bounded (D11).** File turns, readers, descriptors, record
-  buffers, batches and channels have limits. Backpressure stops file reads.
-- **Rotation is explicit (D12).** Move/create drains the old handle while reading
-  the replacement. Copy-truncate detection is best-effort and reported.
-- **One live reader per file (D15-D16).** Local locks and leases prevent overlap. Corrupt
-  state fails closed; ambiguous recovery defaults to replay rather than silent loss.
 
 ## Architecture
 
@@ -680,21 +631,10 @@ control and downstream completion; any final thread join uses a non-blocking lif
 path and is bounded by the engine drain deadline. A blocked or failed worker produces a
 terminal receiver event rather than parking the pipeline runtime indefinitely.
 
-Phase 1 does **not** pin the discovery or read worker, does not assume they share the
-pipeline core's NUMA node, and makes no NUMA-local allocation or throughput claim. The
-operating system chooses placement. For ordinary file tailing, filesystem/page-cache,
-checkpoint, and downstream-Ack behavior must be measured before introducing affinity.
-
-A future NUMA-aware design may expose, without changing file identity or checkpoints:
-
-- the backing device's NUMA node when the platform can resolve it;
-- preferred worker and pipeline placement as scheduler metadata;
-- virtual-partition assignment constrained by NUMA or storage locality; and
-- per-NUMA throughput, remote-memory, and migration measurements.
-
-Unknown topology remains `unknown`, never silently NUMA node zero. CPU count, core ID,
-NUMA node, thread ID, and deployment generation remain absent from checkpoint keys, so
-placement changes cannot change source identity or resume position.
+Phase 1 does not pin workers or make NUMA-locality claims; the operating system controls
+placement. NUMA-aware scheduling may be considered later based on measured filesystem,
+page-cache, checkpoint, and downstream behavior. CPU count, core ID, NUMA node, thread
+ID, and deployment generation never enter file identity or checkpoint keys.
 
 ## Framing
 
@@ -836,54 +776,7 @@ explicit processor/exporter policies, never silent conversions. This preserves t
 receiver/processor boundary from #2844 while making the end-to-end filelog contract
 testable.
 
-## Representative behavioral scenarios
-
-These scenarios illustrate the contracts that cross discovery, framing, processing,
-delivery, and checkpointing. They are normative examples of the decisions above, not
-additional destination-specific behavior.
-
-### Multiline record with a timestamp in the middle
-
-Record boundaries and timestamp location are independent. For example:
-
-```text
-BEGIN request id=42
-user=alice operation=payment
-event_time=2026-08-21T10:15:02.331-07:00
-result=failed
-END request
-```
-
-An end-pattern matching `^END request$` groups all five physical lines into one OTAP
-record. After framing, the timestamp processor extracts `event_time` from the third
-line. If extraction or parsing fails, the five lines remain one record;
-`time_unix_nano` remains unset, `observed_time_unix_nano` remains available, and the
-processor adds the stable parse-status attribute.
-
-```mermaid
-flowchart LR
-  Bytes[Source bytes] --> Decode[Decode configured encoding]
-  Decode --> Frame[Frame one multiline record]
-  Frame --> Raw[Emit raw OTAP record plus observed time]
-  Raw --> Extract[Processor locates event_time]
-  Extract -->|parse succeeds| Event[Set time_unix_nano]
-  Extract -->|missing or invalid| Fallback[Keep observed time and mark failure]
-```
-
-The multiline state remains bounded and deterministic:
-
-```mermaid
-stateDiagram-v2
-  [*] --> Seeking
-  Seeking --> Buffering: start match or end-pattern mode
-  Seeking --> Seeking: complete non-matching line
-  Buffering --> Buffering: continuation line
-  Buffering --> Emitting: next start or end match
-  Buffering --> Emitting: line, byte, or idle bound
-  Emitting --> Seeking: reason-marked record emitted
-```
-
-### Ack-gated checkpoint progression
+## Ack-gated checkpoint progression
 
 The receiver does not commit source progress merely because it read or emitted a
 record. It commits only after the matching downstream Ack.
@@ -911,78 +804,6 @@ sequenceDiagram
   W->>C: Persist committed offset 200
   W->>W: Release retained batch
 ```
-
-### Move/create rotation
-
-Suppose `app.log` uses runtime locator A. Rotation renames it to `app.log.1` and creates
-a new `app.log` with runtime locator B.
-
-```mermaid
-sequenceDiagram
-  participant R as Rotation tool
-  participant D as Discovery
-  participant W as Read worker
-
-  R->>R: Rename app.log A to app.log.1
-  R->>R: Create app.log B
-  D->>W: Update path metadata for A
-  D->>W: Assign new file B
-  W->>W: Continue A through EOF plus rotate_wait
-  W->>W: Finalize A and release its descriptor
-  W->>W: Read B using its independent checkpoint
-```
-
-The path change does not create a second reader for A, and B never inherits A's offset.
-If the rotated path also matches an include, runtime-locator dedup still produces one
-reader for A.
-
-### Copy-truncate observation gap
-
-Copy-truncate cannot provide the same correctness as move/create:
-
-```mermaid
-sequenceDiagram
-  participant A as Application
-  participant R as Rotation tool
-  participant W as Receiver
-
-  R->>R: Copy app.log to app.log.1
-  A->>R: Append bytes after copy
-  Note over A,R: These bytes are not in the copy
-  R->>R: Truncate app.log
-  Note over R,W: Appended bytes may now be unrecoverable
-  W->>W: Detect size or fingerprint change if observable
-  W->>W: Apply on_truncate and emit health signal
-```
-
-If truncate and regrowth happen between observations, the receiver may not detect the
-transition. The README therefore recommends move/create and states that capture cannot
-be guaranteed for the copy-to-truncate window.
-
-### Crash and restart recovery
-
-Assume the durable checkpoint is byte 100 and an emitted but unacknowledged batch
-contains bytes 100 through 200.
-
-```mermaid
-sequenceDiagram
-  participant W1 as Receiver before crash
-  participant D as Downstream
-  participant C as Checkpoint store
-  participant W2 as Receiver after restart
-  participant F as File
-
-  C-->>W1: Committed offset 100
-  W1->>D: Emit records for bytes 100 through 200
-  Note over W1: Process crashes before matching Ack is committed
-  W2->>C: Load offset 100
-  W2->>F: Validate identity and read from 100
-  W2->>D: Re-emit reconstructed records
-  Note over W2,D: Duplicate delivery is possible, intentional skipping is avoided
-```
-
-Recovery succeeds only while the checkpoint and source bytes still exist. The receiver
-does not persist the in-flight Arrow batch as a durable spool.
 
 ## Emitted data model
 
@@ -1083,84 +904,8 @@ plus an append-only progress log:
 - compact atomically without rewriting every file on every Ack; and
 - expire inactive state only through the documented retention policy.
 
-<!-- markdownlint-disable MD033 -->
-
-<details>
-<summary>Checkpoint file format and recovery details</summary>
-
-The namespace is:
-
-```text
-${engine.state_dir}/filelog/<checkpoint.id>/
-  CURRENT
-  offsets-<generation>.snapshot
-  offsets-<generation>.wal
-  ownership.lock
-```
-
-The ID is percent-encoded using the journald path convention. Two active receiver
-configurations must not share a checkpoint ID; the namespace lock enforces that across
-overlapping generations and cooperating processes.
-
-The store uses a compact snapshot plus an append-only progress log. This avoids an
-`O(all tracked files)` rewrite on every Ack while keeping recovery bounded.
-
-Snapshot envelope (quiver conventions):
-
-```text
-[ magic "OTAPFLSN" (8) ][ version u16 ][ header_size u16 ][ generation u64 ]
-[ record_count u32 ]
-[ body: records... ][ crc32c u32 over all preceding bytes ]
-
-record:
-  file_id u128,
-  fingerprint_len u16, fingerprint bytes (raw, mutable evidence),
-  ignored_header_bytes u32,
-  locator_kind u8,
-  locator_len u16, locator bytes (POSIX device/inode or Windows volume/file ID),
-  committed_offset u64, file_epoch u32,
-  framing_profile_version u16,
-  framing_profile_digest [u8; 32],
-  framing_resume_kind u8 (clean | continuation),
-  continuation_record_start_offset u64, continuation_next_fragment_index u32
-    (present only for continuation),
-  state:
-    active |
-    rotated_finalized |
-    quarantined {
-      reason_code u16,
-      runtime_locator,
-      observed_size u64,
-      file_epoch u32,
-      quarantined_at_unix_nano u64
-    },
-  last_seen_unix_nano u64 (wall clock),
-  last_path_len u16, last_path bytes (advisory)
-```
-
-Progress log transaction:
-
-```text
-[ magic "OTAPFLTX" (8) ][ version u16 ][ generation u64 ][ transaction_len u32 ]
-[ sequence u64 ][ update_count u32 ][ updates... ][ crc32c u32 ]
-
-update:
-  register_file | update_progress | update_fingerprint | update_metadata |
-  quarantine_file | reset_quarantined_file | remove_file
-  keyed by file_id, with operation-specific fields
-```
-
-`update_progress` atomically advances `committed_offset`, `file_epoch`, and
-`framing_resume`. `framing_profile_version` identifies the canonical serialization
-format. `framing_profile_digest` is a SHA-256 digest of that canonical serialization of
-all framing-relevant configuration: encoding and decode policy, newline/raw mode,
-the exact configured multiline pattern bytes and regex profile, line/record/multiline
-limits, split/truncate policy, and partial-flush behavior. Canonical serialization uses
-field tags in fixed order, explicit option discriminants and lengths, duration
-nanoseconds, and no implementation-derived hashing. SHA-256 collision resistance is the
-durable compatibility assumption. A version or digest mismatch while resumable state
-exists fails closed and requires an explicit state migration or reset; it is not an
-ordinary live reload.
+The exact namespace, snapshot envelope, WAL transaction encoding, record fields, and
+framing-profile digest appear in **Appendix B: Checkpoint storage format**.
 
 - **Registration is durable before reading.** Creating a `file_id` appends and syncs a
   `register_file` update containing its initial offset. A reconciliation pass may place
@@ -1209,10 +954,6 @@ ordinary live reload.
   indefinite resume state. Quarantined records are exempt regardless of this setting and
   remain until an explicit per-file reset or administrative removal.
 
-</details>
-
-<!-- markdownlint-enable MD033 -->
-
 The Phase 1 namespace lock prevents stale whole-store writers. Phase 3 cannot obtain fencing
 merely by storing an epoch in these files; it requires a coordinator or storage API that
 atomically rejects writes from revoked owners. Moving to partition-owned logs is a
@@ -1260,12 +1001,9 @@ Incompatible Windows sharing permissions are reported as file-access or rotation
 Copy-truncate detection is best-effort. The receiver detects observable truncation when
 a poll finds `current_size < committed_offset` or fingerprint-prefix revalidation fails.
 
-A truncate-and-regrow operation can complete between observations, reach a size greater
-than or equal to the old offset, and reproduce the fingerprint window. That sequence is
-observationally identical to a normal append on POSIX: inotify reports truncation as
-`IN_MODIFY`, and a held descriptor reads EOF at the old offset until the file regrows
-past it. No portable mechanism closes this gap. Stanza, Fluent Bit, and Vector have the
-same blind spot and do not guarantee copy-truncate correctness.
+A truncate-and-regrow operation that completes between observations may be
+indistinguishable from a normal append. No portable filesystem mechanism guarantees
+detection of this transition.
 
 The receiver therefore detects and reports what is observable, increments
 `filelog.rotation.copytruncate_detected`, documents that bytes destroyed before capture
@@ -1284,17 +1022,8 @@ When truncation is detected:
 
 Changing configuration to `read_new` affects only later truncation detections; it does
 not release an already-quarantined `file_id`. Silent continuation from the previous
-offset is not supported.
-
-### Quarantine recovery operation
-
-Durable quarantine has no bulk configuration escape hatch. Recovery is an explicit
-state-management operation naming `checkpoint.id`, `file_id`, and exactly one action:
-resume from beginning, resume from current end, or remain quarantined. The receiver must
-be stopped, or the operation must otherwise acquire the same exclusive namespace lock,
-before it updates state. A successful resume increments the epoch, installs a clean
-framing boundary at the selected offset, syncs the WAL transaction, and emits an audit
-event and counter. Changing `on_truncate` during reload affects only later detections.
+offset is not supported. The explicit per-file recovery operation is defined under
+**Checkpoint storage**.
 
 ## Backpressure
 
@@ -1338,127 +1067,26 @@ advertise "alive but not collecting."
 
 ## Proposed Phase 1 configuration
 
-This is the proposed shape, not a compatibility promise. It keeps source behavior under
-the receiver and timestamp interpretation under a processor. Phase 1 implements the
-complete priority-P0 surface; optional priority-P1 metadata may follow in Phase 2.
+This representative configuration shows the primary responsibility boundary. The full
+proposed schema, variants, and validation rules appear in **Appendix C: Complete Phase 1
+configuration**. The schema is not yet a compatibility promise.
 
 ```yaml
 receivers:
   filelog:
     urn: "urn:otel:receiver:filelog"
     config:
-      include: ["/var/log/app/*.log"]          # required, non-empty
-      exclude: []
-      recursive: true
-      follow_symlinks: false
-      max_recursion_depth: 64
-      start_at: end                            # beginning | end (first discovery only;
-                                               # checkpoints always win on restart)
-      discovery:
-        poll_interval: 5s
-      ignore_older_than: 0s                    # 0 = disabled
-      identity:
-        fingerprint_bytes: 1000                # min 16
-        ignored_header_bytes: 0
-        on_recovery_mismatch: beginning        # beginning | skip_to_end | fail
-      encoding: utf-8                           # utf-8 | ascii | utf-16le | utf-16be | raw
-      on_decode_error: preserve_raw             # preserve_raw | replace | fail
+      include: ["/var/log/app/*.log"]
+      start_at: end
+      encoding: utf-8
       framing:
-        max_line_bytes: 1MiB
         max_record_bytes: 1MiB
-        max_log_size_behavior: split            # split | truncate
         force_flush_period: 500ms
-        multiline:
-          regex_profile: re2-v1
-          line_start_pattern: null              # exactly one start/end pattern when enabled
-          line_end_pattern: null
-        max_multiline_lines: 500
-      metadata:
-        include_file_record_offset: false
-        include_file_record_number: false
-      limits:
-        max_tracked_files: 10000
-        max_open_files: 512
-        max_read_bytes_per_turn: 128KiB
-      batch:
-        max_records: 1024                      # <= 65535
-        max_bytes: 8MiB
-        max_flush_period: 1s
       rotation:
-        rotate_wait: 5s
-        on_truncate: fail                      # fail | read_new (explicit loss window)
+        on_truncate: fail
       checkpoint:
-        id: app-logs                           # stable across receiver-node renames
-        sync_interval: 0s                      # 0 = sync every Ack transaction
-        compact_after_bytes: 64MiB
-        compact_after_transactions: 10000
-        retention: 7d                          # 0 = retain indefinitely
-        ownership_timeout: 30s
-        max_consecutive_failures: 5
-      retry:
-        max_attempts: 8                        # total sends, including the first
-        initial_backoff: 100ms
-        max_backoff: 5s
-      on_nack: fail                            # fail | drop_and_continue
-      drain_timeout: 10s
-
-processors:
-  filelog_timestamp:
-    urn: "urn:otel:processor:transform"
-    config:
-      timestamp:
-        extract:
-          from: body
-          regex: 'event_time=(?<event_time>\S+)'
-          capture: event_time
-        parse:
-          profile: strptime-v1
-          layout: '%Y-%m-%dT%H:%M:%S.%f%:z'
-          fallback_timezone: America/Los_Angeles
-        on_error:
-          use_observed_time: true
-          status_attribute: log.timestamp.parse_status
+        id: app-logs
 ```
-
-Common variants stay small:
-
-```yaml
-# UTF-16 Windows log
-encoding: utf-16le
-on_decode_error: preserve_raw
-
-# Raw bytes with byte newline framing
-encoding: raw
-
-# Epoch milliseconds in the first field
-timestamp:
-  extract: { from: body, regex: '^(?<ts>\d+)', capture: ts }
-  parse: { format: epoch_ms }
-
-# End-pattern multiline instead of start-pattern multiline
-multiline:
-  regex_profile: re2-v1
-  line_end_pattern: '^END request$'
-
-# Explicitly accept reset after a detectably truncated file
-rotation:
-  on_truncate: read_new
-```
-
-Validation at factory build time (`validate_config`, serde `deny_unknown_fields`,
-semantic checks returning `InvalidUserConfig`) follows the journald convention,
-including cross-field rules (`max_line_bytes` and
-`max_record_bytes` vs `batch.max_bytes`, `max_records <= 65535`, non-empty `include`, nonzero retry
-attempts/backoffs, `initial_backoff <= max_backoff`, exactly one multiline boundary
-pattern, supported regex profile, valid encoding/error policy, valid timezone names in
-processor config, bounded recursion, and nonzero compaction thresholds). Control-plane
-validation must use the same versioned profiles and conformance vectors as agent-side
-validation; the agent remains fail-closed if invalid configuration reaches it.
-
-Issue-thread requests map as: file metadata -> D10; ignore-older-than ->
-`ignore_older_than`; header exclusion from *identity* -> `identity.ignored_header_bytes`
-(skipping header *content* from ingestion is deferred); max FD / max bytes / line
-length -> `limits.*`, `framing.*`, `batch.*`.
 
 ## Failure-containment model
 
@@ -1615,41 +1243,21 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
    reduction must be agreed with the OPL and exporter owners before the stated priority-P0
    fractional-second and epoch timestamp outcomes are claimed end to end.
 
-## Separate follow-up source contracts
-
-Several requested capabilities are not ordinary variants of live local-file tailing and
-must not silently inherit its guarantees:
-
-- **Read once and delete:** requires an explicit completeness signal (for example,
-  atomic rename into the watched pattern or a stable-period policy), Ack of all emitted
-  records, a durable completion tombstone, and delete only after Ack. A failed delete
-  must not cause reread while durable state survives. Loss of the state directory is an
-  explicit limit unless an external durable coordinator owns tombstones.
-- **Compressed input:** gzip streaming and zip/tar archives are different source types.
-  Archives require member-level identity/path metadata, decompression and expansion
-  bounds, restart/checkpoint rules, and read-from-beginning semantics independent of
-  live-tail `start_at: end`. They need a separate design before implementation.
-- **Network shares:** SMB/NFS require a filesystem-specific identity and liveness model,
-  outage/cancellation behavior, and cross-agent ownership. Local inode and advisory-lock
-  guarantees do not automatically apply.
-- **Windows deny-share-read files:** ordinary user-mode file APIs cannot read a file
-  whose writer denies shared read access. Driver, journal, snapshot, or other privileged
-  capture mechanisms are separate platform/security work, not a filelog config flag.
-
-Each follow-up must state which capture, delivery, and recovery guarantees it provides.
-
 ## Deferred beyond Phase 1
 
-Per #2844's out-of-scope list and the issue discussion: Stanza compatibility and
-embedded operator chains; eBPF capture; `io_uring` / `mmap` I/O backends; remote files;
-compressed archives; delete-after-read; full header metadata parsing; full Go
-filelogreceiver parity; advanced multiline state machines and built-in language
-presets; read-ahead pipelining (Phase 2); virtual-partition assignment and
-enforced fencing/checkpoint migration (Phase 3); NUMA-aware placement; schema-aware ingestion for structured file
-types (CSV-with-headers columnar fast path); Fluent Bit feature-parity targeting; the
-OPL function inventory for filelog use cases (extraction/normalization/severity/
-routing) -- processor-side work tracked at the epic level, with the receiver contract
-here guaranteeing only raw records with file metadata.
+Deferred capabilities must define their own capture, delivery, and recovery guarantees;
+they do not silently inherit the live local-file contract.
+
+| Deferred capability | Why it needs separate work |
+| --- | --- |
+| Read once and delete | Requires completion proof, Ack of all records, durable tombstones, and delete retry semantics |
+| Compressed streams and archives | Require decompression bounds, member identity, and independent restart rules |
+| Network shares | Require filesystem-specific identity, outage behavior, and cross-agent ownership |
+| Windows files denying shared read | Require a driver, journal, snapshot, or other privileged capture mechanism |
+| Multi-instance ownership | Requires shared identity resolution, virtual partitions, fencing, readiness, and state migration |
+| Advanced I/O and parsing | eBPF, `io_uring`, `mmap`, built-in language parsers, structured-file ingestion, and full header parsing need separate contracts and evidence |
+| Product parity and semantic processing | Stanza/Go receiver or Fluent Bit parity and the OPL function inventory remain separately scoped processor/product work |
+| Phase 2 throughput work | Read-ahead, multiple in-flight batches or shards, optional source metadata, and background compaction retain their Phase 2 contracts |
 
 ## Acceptance-criteria coverage (traceability to #2844)
 
@@ -1674,7 +1282,291 @@ Phase 3 is still required for the epic's multi-instance and live-resize criteria
 | Tests: restart, resize, Ack/Nack, backpressure, rotation | Phase 1 scope (resize: key-stability portion only, remainder Phase 3) |
 | Documented delivery guarantees and limitations | Capture, delivery, and recovery guarantees; README requirement |
 
-## Implementation references
+## Appendix A: Normative behavioral examples
+
+These examples illustrate contracts that cross framing, processing, rotation, and
+recovery. They do not add destination-specific behavior.
+
+### Multiline record with a timestamp in the middle
+
+Record boundaries and timestamp location are independent:
+
+```text
+BEGIN request id=42
+user=alice operation=payment
+event_time=2026-08-21T10:15:02.331-07:00
+result=failed
+END request
+```
+
+An end-pattern matching `^END request$` groups all five physical lines into one OTAP
+record. The timestamp processor then extracts `event_time` from the third line. A parse
+failure does not change framing: observed time remains available and the processor adds
+the stable parse-status attribute.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Seeking
+  Seeking --> Buffering: start match or end-pattern mode
+  Seeking --> Seeking: complete non-matching line
+  Buffering --> Buffering: continuation line
+  Buffering --> Emitting: next start or end match
+  Buffering --> Emitting: line, byte, or idle bound
+  Emitting --> Seeking: reason-marked record emitted
+```
+
+### Move/create rotation
+
+Suppose `app.log` uses runtime locator A. Rotation renames it to `app.log.1` and creates
+a new `app.log` with runtime locator B.
+
+```mermaid
+sequenceDiagram
+  participant R as Rotation tool
+  participant D as Discovery
+  participant W as Read worker
+
+  R->>R: Rename app.log A to app.log.1
+  R->>R: Create app.log B
+  D->>W: Update path metadata for A
+  D->>W: Report candidate B
+  W->>W: Continue A through EOF plus rotate_wait
+  W->>W: Finalize A and release its descriptor
+  W->>W: Read B using its independent checkpoint
+```
+
+The path change does not create a second reader for A, and B never inherits A's offset.
+
+### Copy-truncate observation gap
+
+```mermaid
+sequenceDiagram
+  participant A as Application
+  participant R as Rotation tool
+  participant W as Receiver
+
+  R->>R: Copy app.log to app.log.1
+  A->>R: Append bytes after copy
+  Note over A,R: These bytes are not in the copy
+  R->>R: Truncate app.log
+  Note over R,W: Appended bytes may now be unrecoverable
+  W->>W: Detect size or fingerprint change if observable
+  W->>W: Apply on_truncate and emit health signal
+```
+
+If truncation and regrowth happen between observations, the receiver may not detect the
+transition. The README recommends move/create and states that capture is not guaranteed
+for the copy-to-truncate window.
+
+### Crash and restart recovery
+
+Assume the durable checkpoint is byte 100 and an emitted but unacknowledged batch
+contains bytes 100 through 200.
+
+```mermaid
+sequenceDiagram
+  participant W1 as Receiver before crash
+  participant D as Downstream
+  participant C as Checkpoint store
+  participant W2 as Receiver after restart
+  participant F as File
+
+  C-->>W1: Committed offset 100
+  W1->>D: Emit records for bytes 100 through 200
+  Note over W1: Process crashes before matching Ack is committed
+  W2->>C: Load offset 100
+  W2->>F: Validate identity and read from 100
+  W2->>D: Re-emit reconstructed records
+  Note over W2,D: Duplicate delivery is possible, intentional skipping is avoided
+```
+
+Recovery succeeds only while the checkpoint and source bytes still exist. The receiver
+does not persist the in-flight Arrow batch as a durable spool.
+
+## Appendix B: Checkpoint storage format
+
+The Phase 1 namespace is:
+
+```text
+${engine.state_dir}/filelog/<checkpoint.id>/
+  CURRENT
+  offsets-<generation>.snapshot
+  offsets-<generation>.wal
+  ownership.lock
+```
+
+The ID is percent-encoded using the journald path convention. The namespace lock
+prevents two active configurations sharing an ID from writing concurrently.
+
+Snapshot envelope:
+
+```text
+[ magic "OTAPFLSN" (8) ][ version u16 ][ header_size u16 ][ generation u64 ]
+[ record_count u32 ]
+[ body: records... ][ crc32c u32 over all preceding bytes ]
+
+record:
+  file_id u128,
+  fingerprint_len u16, fingerprint bytes (raw, mutable evidence),
+  ignored_header_bytes u32,
+  locator_kind u8,
+  locator_len u16, locator bytes (POSIX device/inode or Windows volume/file ID),
+  committed_offset u64, file_epoch u32,
+  framing_profile_version u16,
+  framing_profile_digest [u8; 32],
+  framing_resume_kind u8 (clean | continuation),
+  continuation_record_start_offset u64, continuation_next_fragment_index u32
+    (present only for continuation),
+  state:
+    active |
+    rotated_finalized |
+    quarantined {
+      reason_code u16,
+      runtime_locator,
+      observed_size u64,
+      file_epoch u32,
+      quarantined_at_unix_nano u64
+    },
+  last_seen_unix_nano u64 (wall clock),
+  last_path_len u16, last_path bytes (advisory)
+```
+
+Progress log transaction:
+
+```text
+[ magic "OTAPFLTX" (8) ][ version u16 ][ generation u64 ][ transaction_len u32 ]
+[ sequence u64 ][ update_count u32 ][ updates... ][ crc32c u32 ]
+
+update:
+  register_file | update_progress | update_fingerprint | update_metadata |
+  quarantine_file | reset_quarantined_file | remove_file
+  keyed by file_id, with operation-specific fields
+```
+
+`update_progress` atomically advances `committed_offset`, `file_epoch`, and
+`framing_resume`. `framing_profile_version` identifies the canonical serialization
+format. `framing_profile_digest` is a SHA-256 digest of all framing-relevant
+configuration: encoding and decode policy, newline/raw mode, exact multiline pattern
+bytes and regex profile, line/record/multiline limits, split/truncate policy, and
+partial-flush behavior. Canonical serialization uses fixed-order field tags, explicit
+option discriminants and lengths, duration nanoseconds, and no implementation-derived
+hashing. A version or digest mismatch with resumable state fails closed and requires an
+explicit migration or reset.
+
+## Appendix C: Complete Phase 1 configuration
+
+This is the complete proposed shape, not a compatibility promise. Source behavior stays
+under the receiver and timestamp interpretation stays under a processor.
+
+```yaml
+receivers:
+  filelog:
+    urn: "urn:otel:receiver:filelog"
+    config:
+      include: ["/var/log/app/*.log"]          # required, non-empty
+      exclude: []
+      recursive: true
+      follow_symlinks: false
+      max_recursion_depth: 64
+      start_at: end                            # beginning | end; checkpoint wins
+      discovery:
+        poll_interval: 5s
+      ignore_older_than: 0s                    # 0 = disabled
+      identity:
+        fingerprint_bytes: 1000                # min 16
+        ignored_header_bytes: 0
+        on_recovery_mismatch: beginning        # beginning | skip_to_end | fail
+      encoding: utf-8                           # utf-8 | ascii | utf-16le | utf-16be | raw
+      on_decode_error: preserve_raw             # preserve_raw | replace | fail
+      framing:
+        max_line_bytes: 1MiB
+        max_record_bytes: 1MiB
+        max_log_size_behavior: split            # split | truncate
+        force_flush_period: 500ms
+        multiline:
+          regex_profile: re2-v1
+          line_start_pattern: null              # exactly one start/end pattern
+          line_end_pattern: null
+        max_multiline_lines: 500
+      metadata:
+        include_file_record_offset: false
+        include_file_record_number: false
+      limits:
+        max_tracked_files: 10000
+        max_open_files: 512
+        max_read_bytes_per_turn: 128KiB
+      batch:
+        max_records: 1024                       # <= 65535
+        max_bytes: 8MiB
+        max_flush_period: 1s
+      rotation:
+        rotate_wait: 5s
+        on_truncate: fail                       # fail | read_new
+      checkpoint:
+        id: app-logs
+        sync_interval: 0s                       # 0 = sync every Ack transaction
+        compact_after_bytes: 64MiB
+        compact_after_transactions: 10000
+        retention: 7d                           # 0 = retain indefinitely
+        ownership_timeout: 30s
+        max_consecutive_failures: 5
+      retry:
+        max_attempts: 8                         # includes the first send
+        initial_backoff: 100ms
+        max_backoff: 5s
+      on_nack: fail                             # fail | drop_and_continue
+      drain_timeout: 10s
+
+processors:
+  filelog_timestamp:
+    urn: "urn:otel:processor:transform"
+    config:
+      timestamp:
+        extract:
+          from: body
+          regex: 'event_time=(?<event_time>\S+)'
+          capture: event_time
+        parse:
+          profile: strptime-v1
+          layout: '%Y-%m-%dT%H:%M:%S.%f%:z'
+          fallback_timezone: America/Los_Angeles
+        on_error:
+          use_observed_time: true
+          status_attribute: log.timestamp.parse_status
+```
+
+Common variants:
+
+```yaml
+# UTF-16 Windows log
+encoding: utf-16le
+on_decode_error: preserve_raw
+
+# Raw bytes with byte newline framing
+encoding: raw
+
+# Epoch milliseconds in the first field
+timestamp:
+  extract: { from: body, regex: '^(?<ts>\d+)', capture: ts }
+  parse: { format: epoch_ms }
+
+# End-pattern multiline
+multiline:
+  regex_profile: re2-v1
+  line_end_pattern: '^END request$'
+
+# Explicitly accept reset after detectable truncation
+rotation:
+  on_truncate: read_new
+```
+
+Factory validation uses serde `deny_unknown_fields`, semantic checks returning
+`InvalidUserConfig`, and the same versioned profiles and conformance vectors as the
+control plane. Cross-field checks cover non-empty includes, bounded recursion, supported
+encoding and regex profiles, exactly one multiline boundary pattern, batch/record size
+compatibility, retry bounds, valid processor timezones, and nonzero compaction limits.
+
+## Appendix D: Implementation references
 
 The main design above is independent of internal symbol names. These current engine
 facts explain why Phase 1 uses this shape:
@@ -1707,7 +1599,9 @@ bounded channels, control messages and receiver-drained notification.
   `pkg/stanza/fileconsumer` (`design.md`, `fingerprint.go` raw-prefix matching,
   `reader.go`, checkpoint persistence); Vector `file` source (identity deferred below
   the fingerprint window, end-to-end acknowledgements); Fluent Bit `tail` (inode DB,
-  `Rotate_Wait`); Microsoft `FILE_ID_INFO` documentation
+  `Rotate_Wait`). Stanza, Vector, and Fluent Bit share the portable copy-truncate
+  observation gap described under Rotation handling. Windows identity behavior follows
+  Microsoft `FILE_ID_INFO` documentation.
 - OpenTelemetry Collector filelog receiver configuration (generic precedent for
   multiline start/end patterns, 500 ms partial flush, character encodings, raw mode,
   split/truncate oversize behavior, and optional source-position metadata):
