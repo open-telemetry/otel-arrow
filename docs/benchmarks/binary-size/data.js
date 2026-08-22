@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787352490286,
+  "lastUpdate": 1787358030988,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -21122,6 +21122,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 114.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.98,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "72c2bb0e9492c1f69654989c0410dd0a10ca6f4f",
+          "message": "chore(metrics): Add shared `receiver.received` and `exporter.attempted` metric sets (#3852)\n\n# Change summary\n\nFirst part of #3822\n\nDefine shared receiver and exporter metric contracts for external\npipeline boundaries.\n\nThe contracts use:\n\n- `receiver.received.{messages,payload.size,duration}{signal,outcome}`\nfor incoming messages\n- `exporter.attempted.{messages,duration}{signal,outcome}` for each\nbackend, storage, or compatible exporter attempt\n- Optional `exporter.attempted.payload.size{signal,outcome}` when an\nencoded application payload exists and its size is naturally available\n- Optional `exporter.attempted.items{signal,outcome}` when cached item\ncounts are enabled\n\n`payload.size` follows OpenTelemetry naming guidance by keeping the `By`\nunit in metric metadata rather than the metric name. It describes\nencoded application payload bytes and excludes protocol headers,\nframing, TLS overhead, and storage amplification.\n\nExporter payload size and item counts are separately registered metric\nsets so components do not perform additional encoding or PData\ntraversal, and unknown values are omitted rather than reported as zero.\nThis lets exporters without an encoded payload still adopt the shared\nattempt contract.\n\nThe shared `outcome` values describe how an operation terminated at its\nmeasured boundary:\n\n- `success`: accepted and completed\n- `refused`: explicitly not accepted because of validation, policy,\nadmission, or capacity\n- `failure`: attempted but not completed because of a processing,\nencoding, transport, timeout, or backend error\n\n`exporter.attempted` owns per-attempt external behavior, including\ncomponent-internal retries. `node.consumer` remains the logical\nmessage's terminal pipeline outcome. The legacy `exporter.exports` set\nremains during migration and will be deprecated.\n\nFollow-up PRs will migrate exporters and receivers to use these metric\nsets.\n\n## Related issue\n\n* Part of #3822\n\n## Validation\n\nUnit tests\n\n## User-facing changes\n\nNone",
+          "timestamp": "2026-08-21T23:30:59Z",
+          "tree_id": "70e2b498006fa38e8cf538a17930c5d4450c63d3",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/72c2bb0e9492c1f69654989c0410dd0a10ca6f4f"
+        },
+        "date": 1787358016578,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.53,
             "unit": "MB"
           },
           {
