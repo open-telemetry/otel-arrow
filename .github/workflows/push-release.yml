@@ -17,12 +17,18 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: push-release
+  cancel-in-progress: false
+
 jobs:
   push-release:
     permissions:
       contents: read
+      id-token: write
       pull-requests: read
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: release
     steps:
       - name: Checkout (dry run)
@@ -94,6 +100,10 @@ jobs:
           git fetch --quiet origin main --tags
           git checkout --detach "${{ steps.release.outputs.sha }}"
 
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
       - name: Verify release preparation
         run: |
           # Check if the version is already in go/CHANGELOG.md.
@@ -120,7 +130,10 @@ jobs:
         id: last_version
         run: |
           # Get the latest tag
-          LAST_TAG=$(git tag --list 'v*' --sort=-version:refname | head -n1)
+          LAST_TAG=$(
+            git tag --list 'v*' --sort=-version:refname |
+              awk -v current="v${{ inputs.version }}" '$0 != current { print; exit }'
+          )
           if [ -z "$LAST_TAG" ]; then
             echo "No previous tags found"
             LAST_VERSION="0.0.0"
@@ -144,12 +157,25 @@ jobs:
             fi
           fi
 
-      - name: Check if tag already exists
+      - name: Validate existing tags
         run: |
-          if git tag --list | grep -q "^v${{ inputs.version }}$"; then
-            echo "Error: Tag v${{ inputs.version }} already exists"
-            exit 1
-          fi
+          for tag in \
+            "v${{ inputs.version }}" \
+            "go/v${{ inputs.version }}" \
+            "rust/otap-dataflow/v${{ inputs.version }}"; do
+            if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+              TAG_COMMIT=$(git rev-parse "${tag}^{commit}")
+              if [ "$TAG_COMMIT" != "${{ steps.release.outputs.sha }}" ]; then
+                echo "Error: Existing tag ${tag} points to ${TAG_COMMIT}"
+                exit 1
+              fi
+              echo "Existing tag ${tag} already points to the release commit"
+            fi
+          done
+
+      - name: Validate Rust crates.io publish pilot
+        run: cargo xtask crates-publish check
+        working-directory: rust/otap-dataflow
 
       - name: Extract changelog content for this release
         id: changelog
@@ -195,7 +221,10 @@ jobs:
             echo ""
             echo "### Rust Workspace"
             echo ""
-            echo "The Rust workspace at \`rust/otap-dataflow/\` is tagged as \`rust/otap-dataflow/v${{ inputs.version }}\`. Crates are not published to crates.io yet; consume this release via git."
+            echo "The Rust workspace at \`rust/otap-dataflow/\` is tagged as \`rust/otap-dataflow/v${{ inputs.version }}\`."
+            echo ""
+            echo "This release tests crates.io publishing with \`otel-arrow-dfe-pdata-views@${{ inputs.version }}\`."
+            echo "All other OTAP Dataflow crates remain unpublished and should be consumed using the Rust workspace git reference."
           } > /tmp/release_content.txt
 
       - name: Dry run - Show planned changes
@@ -217,7 +246,12 @@ jobs:
           ## Git Tags to Create
           - `v${{ inputs.version }}` - Main release tag
           - `go/v${{ inputs.version }}` - Go module tag
-          - `rust/otap-dataflow/v${{ inputs.version }}` - Rust workspace tag (git-tag only; no crates.io publish)
+          - `rust/otap-dataflow/v${{ inputs.version }}` - Rust workspace tag
+
+          ## crates.io
+          - **Package**: `otel-arrow-dfe-pdata-views@${{ inputs.version }}`
+          - **Authentication**: crates.io trusted publishing (OIDC)
+          - Existing matching versions are checksum-verified and skipped.
 
           ## GitHub Release
           - **Title**: Release v${{ inputs.version }}
@@ -247,6 +281,18 @@ jobs:
           **Note**: This is a dry run. To execute the actual release push, set `dry_run` to `false`.
           EOF
 
+      - name: Authenticate to crates.io with trusted publishing
+        if: "!inputs.dry_run"
+        id: crates-io-auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      - name: Publish views crate with trusted publishing
+        if: "!inputs.dry_run"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
+        run: cargo xtask crates-publish publish "${{ inputs.version }}"
+        working-directory: rust/otap-dataflow
+
       - name: Create git tags
         if: "!inputs.dry_run"
         run: |
@@ -254,14 +300,18 @@ jobs:
           git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
           git config user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
 
-          # Create main release tag
-          git tag -a "v${{ inputs.version }}" "${{ steps.release.outputs.sha }}" -m "Release v${{ inputs.version }}"
+          create_tag() {
+            local tag="$1"
+            if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+              echo "Tag ${tag} already exists at the release commit"
+            else
+              git tag -a "$tag" "${{ steps.release.outputs.sha }}" -m "Release ${tag}"
+            fi
+          }
 
-          # Create Go module tags
-          git tag -a "go/v${{ inputs.version }}" "${{ steps.release.outputs.sha }}" -m "Release go/v${{ inputs.version }}"
-
-          # Create Rust workspace tag (git-tag only; no crates.io publish yet)
-          git tag -a "rust/otap-dataflow/v${{ inputs.version }}" "${{ steps.release.outputs.sha }}" -m "Release rust/otap-dataflow/v${{ inputs.version }}"
+          create_tag "v${{ inputs.version }}"
+          create_tag "go/v${{ inputs.version }}"
+          create_tag "rust/otap-dataflow/v${{ inputs.version }}"
 
           echo "Created tags:"
           git tag --list "v${{ inputs.version }}"
@@ -295,12 +345,15 @@ jobs:
           **Full Changelog**: https://github.com/open-telemetry/otel-arrow/compare/v${{ steps.last_version.outputs.last_version }}...v${{ inputs.version }}
           EOF
 
-          # Create the GitHub release using GitHub CLI
-          gh release create "v${{ inputs.version }}" \
-            --title "Release v${{ inputs.version }}" \
-            --notes-file /tmp/release_body.md \
-            --draft \
-            --latest
+          if gh release view "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "GitHub release v${{ inputs.version }} already exists; skipping"
+          else
+            gh release create "v${{ inputs.version }}" \
+              --title "Release v${{ inputs.version }}" \
+              --notes-file /tmp/release_body.md \
+              --draft \
+              --latest
+          fi
 
       - name: Summary
         run: |
