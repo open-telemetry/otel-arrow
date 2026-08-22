@@ -28,6 +28,11 @@ pub mod auth {
     }
 }
 
+/// Local (!Send) trait variant of the secrets capability.
+pub mod secrets {
+    pub use crate::capability::secret_provider::local::SecretProvider;
+}
+
 /// Local (!Send) trait variant of the vendor-bundle capability.
 pub mod vendor_bundle {
     pub use crate::capability::vendor_bundle::local::VendorBundle;
