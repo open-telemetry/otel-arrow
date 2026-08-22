@@ -4,34 +4,34 @@
 //! End-to-end topic flow tests for OTAP topic nodes.
 
 use bytes::Bytes;
-use otap_df_config::TopicName;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_core_nodes::exporters::topic_exporter::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN};
-use otap_df_core_nodes::receivers::topic_receiver::{TOPIC_RECEIVER, TOPIC_RECEIVER_URN};
-use otap_df_engine::Interests;
-use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::TopicName;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_core_nodes::exporters::topic_exporter::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN};
+use otel_arrow_dfe_core_nodes::receivers::topic_receiver::{TOPIC_RECEIVER, TOPIC_RECEIVER_URN};
+use otel_arrow_dfe_engine::Interests;
+use otel_arrow_dfe_engine::config::{ExporterConfig, ReceiverConfig};
+use otel_arrow_dfe_engine::control::{
     Controllable, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
-use otap_df_engine::effect_handler::SourceTagging;
-use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-use otap_df_engine::message::{Receiver as PDataReceiver, Sender as PDataSender};
-use otap_df_engine::node::{NodeWithPDataReceiver, NodeWithPDataSender};
-use otap_df_engine::testing::exporter::create_test_pipeline_context;
-use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
-use otap_df_engine::topic::{
+use otel_arrow_dfe_engine::effect_handler::SourceTagging;
+use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+use otel_arrow_dfe_engine::message::{Receiver as PDataReceiver, Sender as PDataSender};
+use otel_arrow_dfe_engine::node::{NodeWithPDataReceiver, NodeWithPDataSender};
+use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
+use otel_arrow_dfe_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
+use otel_arrow_dfe_engine::topic::{
     TopicBroadcastAckMode, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
 };
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use prost::Message as _;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn make_test_pdata() -> OtapPdata {
-    let logs = otap_df_pdata::testing::fixtures::log_with_no_scope();
+    let logs = otel_arrow_dfe_pdata::testing::fixtures::log_with_no_scope();
     let mut bytes = Vec::new();
     logs.encode(&mut bytes).expect("log payload should encode");
     OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)).into())
@@ -87,7 +87,7 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
             exporter_node.clone(),
             Arc::new(exporter_user_cfg),
             &ExporterConfig::new("topic_exporter"),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("topic exporter should be created");
 
@@ -96,7 +96,7 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
             receiver_node.clone(),
             Arc::new(receiver_user_cfg),
             &ReceiverConfig::new("topic_receiver"),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("topic receiver should be created");
 
@@ -237,7 +237,7 @@ fn topic_receiver_applies_source_tag_when_enabled() {
             exporter_node.clone(),
             Arc::new(exporter_user_cfg),
             &ExporterConfig::new("topic_exporter"),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("topic exporter should be created");
 
@@ -246,7 +246,7 @@ fn topic_receiver_applies_source_tag_when_enabled() {
             receiver_node.clone(),
             Arc::new(receiver_user_cfg),
             &ReceiverConfig::new("topic_receiver"),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("topic receiver should be created");
 

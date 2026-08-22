@@ -197,7 +197,7 @@ pub(crate) struct RebalanceState {
 }
 
 /// A batch of rebalance counter deltas drained by the receive loop and folded
-/// into the receiver's [`MetricSet`](otap_df_telemetry::metrics::MetricSet).
+/// into the receiver's [`MetricSet`](otel_arrow_dfe_telemetry::metrics::MetricSet).
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct RebalanceMetricsDelta {
     /// Rebalance (assign) events since the last drain.

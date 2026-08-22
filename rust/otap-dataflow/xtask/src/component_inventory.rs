@@ -10,7 +10,7 @@
 //! record. This scanner therefore parses each source file into a real Rust AST
 //! with [`syn::parse_file`] and reads the `#[component_inventory(...)]`
 //! attribute with the **same** parser the proc-macro uses
-//! ([`otap_df_component_inventory_syntax::ComponentInventoryArgs`]), so the tool
+//! ([`otel_arrow_dfe_component_inventory_syntax::ComponentInventoryArgs`]), so the tool
 //! and the macro can never disagree about the annotation grammar.
 //!
 //! # Completeness vs. reliability
@@ -31,13 +31,13 @@
 //! string value we build a **workspace-wide** table of `const NAME: &str =
 //! "..."` (and `static`) definitions in a first pass, indexed by the const's
 //! identifier. This resolves same-file, same-crate, and cross-crate `use`
-//! re-exports (e.g. `pub use otap_df_config::engine::INTERNAL_TELEMETRY_RECEIVER_URN;`),
+//! re-exports (e.g. `pub use otel_arrow_dfe_config::engine::INTERNAL_TELEMETRY_RECEIVER_URN;`),
 //! because we key on the constant's *definition* name, which the `use` merely
 //! re-exports. A URN that cannot be resolved is recorded with a loud,
 //! greppable `urn:UNRESOLVED:<const>` marker (never a silent value), and the
 //! check fails so it cannot be frozen into the baseline unnoticed.
 
-use otap_df_component_inventory_syntax::{Auth, ComponentInventoryArgs, Protocol};
+use otel_arrow_dfe_component_inventory_syntax::{Auth, ComponentInventoryArgs, Protocol};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -544,12 +544,12 @@ fn item_parts(item: &Item) -> Option<(&[Attribute], Option<Expr>)> {
 }
 
 /// Whether an attribute path is `component_inventory` or
-/// `otap_df_engine::component_inventory` (with or without leading `::`).
+/// `otel_arrow_dfe_engine::component_inventory` (with or without leading `::`).
 fn is_component_inventory_path(path: &syn::Path) -> bool {
     let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
     match segs.as_slice() {
         [last] => last == "component_inventory",
-        [.., a, b] => a == "otap_df_engine" && b == "component_inventory",
+        [.., a, b] => a == "otel_arrow_dfe_engine" && b == "component_inventory",
         _ => false,
     }
 }
@@ -625,7 +625,7 @@ fn distributed_slice_otap(attrs: &[Attribute]) -> Option<String> {
         }
         if let Meta::List(list) = &attr.meta {
             // The single argument is the slice path, e.g. `OTAP_RECEIVER_FACTORIES`
-            // or `otap_df_otap::OTAP_RECEIVER_FACTORIES`.
+            // or `otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES`.
             if let Ok(path) = syn::parse2::<syn::Path>(list.tokens.clone()) {
                 if let Some(last) = path.segments.last() {
                     let name = last.ident.to_string();
@@ -1040,7 +1040,7 @@ mod tests {
     fn recognizes_component_inventory_paths() {
         let bare: Attribute = syn::parse_quote!(#[component_inventory(category = Receiver)]);
         let qualified: Attribute =
-            syn::parse_quote!(#[otap_df_engine::component_inventory(category = Receiver)]);
+            syn::parse_quote!(#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]);
         let other: Attribute = syn::parse_quote!(#[distributed_slice(OTAP_RECEIVER_FACTORIES)]);
         assert!(is_component_inventory_path(bare.path()));
         assert!(is_component_inventory_path(qualified.path()));
@@ -1056,7 +1056,7 @@ mod tests {
             r#"
             pub const ETW_RECEIVER_URN: &str = "urn:otel:receiver:etw";
             #[cfg(target_os = "windows")]
-            #[otap_df_engine::component_inventory(category = Receiver)]
+            #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
             #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
             pub static ETW_RECEIVER: ReceiverFactory = ReceiverFactory { name: ETW_RECEIVER_URN };
             "#,
@@ -1118,7 +1118,7 @@ mod tests {
     fn annotated_struct_captures_metadata() {
         let file: syn::File = syn::parse_str(
             r#"
-            #[otap_df_engine::component_inventory(
+            #[otel_arrow_dfe_engine::component_inventory(
                 id = "urn:otel:admin:http_server",
                 category = Admin,
                 description = "Admin server",
@@ -1160,7 +1160,7 @@ mod tests {
     fn malformed_annotation_is_recorded_as_parse_error() {
         let file: syn::File = syn::parse_str(
             r#"
-            #[otap_df_engine::component_inventory(
+            #[otel_arrow_dfe_engine::component_inventory(
                 id = "urn:otel:admin:broken",
                 description = "no category",
             )]

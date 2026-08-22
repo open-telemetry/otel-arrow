@@ -3,11 +3,11 @@
 
 use std::collections::HashMap;
 
-use otap_df_config::SignalType;
-use otap_df_pdata::OtapPayload;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::OtapPayload;
 #[cfg(test)]
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use prost::EncodeError;
 use weaver_forge::registry::ResolvedRegistry;
 
@@ -720,7 +720,7 @@ mod tests {
 
         let shape = create_shape(&cfg);
         let mut generator = synthetic_generator();
-        let payloads =
+        let mut payloads =
             create_fresh_payloads(&mut generator, &shape).expect("pre-generation should succeed");
         let expected_count = payloads.len();
 
@@ -736,7 +736,7 @@ mod tests {
             produced_count: 0,
         };
 
-        let results: Vec<GenerateResult> = producer
+        let mut results: Vec<GenerateResult> = producer
             .next_run()
             .expect("generation should succeed")
             .expect("should get a run")
@@ -744,8 +744,8 @@ mod tests {
         assert_eq!(results.len(), expected_count);
 
         // Each replayed payload should match the original pre-generated payload.
-        for (i, (result, original)) in results.iter().zip(payloads.iter()).enumerate() {
-            let payload = result.as_ref().expect("replay should always succeed");
+        for (i, (result, original)) in results.iter_mut().zip(payloads.iter_mut()).enumerate() {
+            let payload = result.as_mut().expect("replay should always succeed");
             assert_eq!(
                 payload.num_bytes(),
                 original.num_bytes(),
@@ -757,8 +757,8 @@ mod tests {
     #[test]
     fn test_resource_attribute_rotation_across_batches() {
         use super::super::config::{ResourceAttributeSet, build_rotation_table};
-        use otap_df_pdata::OtlpProtoBytes;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
         use prost::Message;
         use std::num::NonZeroU32;
 
@@ -799,7 +799,7 @@ mod tests {
                 .find(|kv| kv.key == "tenant.id")
                 .and_then(|kv| kv.value.as_ref())
                 .and_then(|v| {
-                    use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;
+                    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value;
                     match v.value.as_ref()? {
                         Value::StringValue(s) => Some(s.clone()),
                         _ => None,
@@ -844,17 +844,17 @@ mod tests {
 
     #[test]
     fn test_resource_attribute_rotation_empty_attrs() {
-        use otap_df_pdata::OtlpProtoBytes;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
         use prost::Message;
 
         // synthetic_generator() has empty entries and rotation -- no custom resource attrs.
         let mut generator = synthetic_generator();
 
-        let batch_1 = generator
+        let mut batch_1 = generator
             .generate_logs(1)
             .expect("batch 1 with empty attrs");
-        let batch_2 = generator
+        let mut batch_2 = generator
             .generate_logs(1)
             .expect("batch 2 with empty attrs");
 

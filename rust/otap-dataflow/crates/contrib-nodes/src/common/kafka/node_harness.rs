@@ -15,11 +15,11 @@
 //! (and its `rdkafka`) is present.
 
 #[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
-use otap_df_engine::context::ControllerContext;
+use otel_arrow_dfe_engine::context::ControllerContext;
 #[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
-use otap_df_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context::PipelineContext;
 #[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
 /// Builds a deterministic single-core pipeline context for the wrappers.
 #[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
@@ -32,7 +32,7 @@ fn test_pipeline_context() -> PipelineContext {
 /// Metric-observation helpers shared by the exporter and receiver harnesses.
 ///
 /// Both harnesses read a node's final counters from the
-/// [`otap_df_engine::terminal_state::TerminalState`] it returns at graceful
+/// [`otel_arrow_dfe_engine::terminal_state::TerminalState`] it returns at graceful
 /// shutdown (via `await_terminal_state`). These helpers read individual counter
 /// values out of the resulting [`MetricSetSnapshot`]s.
 ///
@@ -47,7 +47,7 @@ fn test_pipeline_context() -> PipelineContext {
 pub(crate) mod node_metrics {
     use std::collections::HashMap;
 
-    use otap_df_telemetry::metrics::MetricSetSnapshot;
+    use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 
     /// Normalizes a metric field name to the runtime dotted form so callers may
     /// pass either the Rust identifier (`offset_commit_errors`) or the emitted
@@ -75,7 +75,7 @@ pub(crate) mod node_metrics {
 
     /// Accumulates per-field metric values folded across several snapshots.
     ///
-    /// A [`otap_df_engine::terminal_state::TerminalState`] can carry more than
+    /// A [`otel_arrow_dfe_engine::terminal_state::TerminalState`] can carry more than
     /// one [`MetricSetSnapshot`]; fold them together to read a single
     /// cumulative value per field.
     #[derive(Debug, Default, Clone)]
@@ -131,7 +131,7 @@ pub(crate) mod node_metrics {
         /// attribute-keyed measurement metrics use [`measurement_value`] /
         /// [`kafka_exports`], which select a specific bucket by its attributes.
         ///
-        /// [`MeasurementMetricSet`]: otap_df_telemetry::metrics::MeasurementMetricSet
+        /// [`MeasurementMetricSet`]: otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet
         #[must_use]
         pub(crate) fn contains(&self, name: &str) -> bool {
             self.totals.contains_key(name) || self.totals.contains_key(&normalize(name))
@@ -140,7 +140,7 @@ pub(crate) mod node_metrics {
 
     /// Reads a single measurement-metric field for the bucket that matches all
     /// of `attributes`, across every snapshot produced by a
-    /// [`otap_df_engine::terminal_state::TerminalState`].
+    /// [`otel_arrow_dfe_engine::terminal_state::TerminalState`].
     ///
     /// A [`MeasurementMetricSet`] emits one [`MetricSetSnapshot`] per
     /// attribute-value combination (bucket); each snapshot exposes its decoded
@@ -151,7 +151,7 @@ pub(crate) mod node_metrics {
     /// (or `0` if no such bucket was emitted -- an untouched bucket is not
     /// snapshotted). Field names accept the identifier or dotted form.
     ///
-    /// [`MeasurementMetricSet`]: otap_df_telemetry::metrics::MeasurementMetricSet
+    /// [`MeasurementMetricSet`]: otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet
     #[must_use]
     pub(crate) fn measurement_value(
         snapshots: &[MetricSetSnapshot],
@@ -219,23 +219,23 @@ mod exporter_harness {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::Interests;
-    use otap_df_engine::config::ExporterConfig;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::config::ExporterConfig;
+    use otel_arrow_dfe_engine::control::{
         AckMsg, Controllable, NackMsg, NodeControlMsg, PipelineCompletionMsg,
         PipelineCompletionMsgReceiver, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::error::Error as EngineError;
-    use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::message::{Receiver, Sender};
-    use otap_df_engine::node::NodeWithPDataReceiver;
-    use otap_df_engine::terminal_state::TerminalState;
-    use otap_df_engine::testing::{create_not_send_channel, test_node};
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::next_nack;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_engine::error::Error as EngineError;
+    use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+    use otel_arrow_dfe_engine::message::{Receiver, Sender};
+    use otel_arrow_dfe_engine::node::NodeWithPDataReceiver;
+    use otel_arrow_dfe_engine::terminal_state::TerminalState;
+    use otel_arrow_dfe_engine::testing::{create_not_send_channel, test_node};
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::next_nack;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use tokio::task::JoinHandle;
 
     /// Opaque holder for channel read-ends kept alive for the harness lifetime.
@@ -475,23 +475,23 @@ mod receiver_harness {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use otap_df_channel::mpsc;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
-    use otap_df_engine::control::NackMsg;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_channel::mpsc;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+    use otel_arrow_dfe_engine::control::NackMsg;
+    use otel_arrow_dfe_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::error::Error as EngineError;
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::local::receiver as local;
-    use otap_df_engine::local::receiver::Receiver as _;
-    use otap_df_engine::message::{Receiver, Sender};
-    use otap_df_engine::terminal_state::TerminalState;
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_engine::error::Error as EngineError;
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+    use otel_arrow_dfe_engine::local::receiver as local;
+    use otel_arrow_dfe_engine::local::receiver::Receiver as _;
+    use otel_arrow_dfe_engine::message::{Receiver, Sender};
+    use otel_arrow_dfe_engine::terminal_state::TerminalState;
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use tokio::task::JoinHandle;
 
     /// Default timeout for [`KafkaReceiverHarness::recv_pdata`].

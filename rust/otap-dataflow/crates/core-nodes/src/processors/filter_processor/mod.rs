@@ -8,7 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Collect telemetry like number of filtered data is removed datapoints
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = FILTER_PROCESSOR_URN,
     target = "otel.processor.filter",
 );
@@ -17,25 +17,29 @@ use self::config::Config;
 use self::metrics::FilterPdataMetrics;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::process_duration::ComputeDuration;
-use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::otap::filter::IdBitmapPool;
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error, ProcessorErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::process_duration::ComputeDuration;
+use otel_arrow_dfe_engine::processor::{
+    FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper,
+};
+use otel_arrow_dfe_engine::{
+    ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension,
+};
+use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -75,21 +79,21 @@ pub fn create_filter_processor(
 
 /// Register FilterProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static FILTER_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
+pub static FILTER_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
+    otel_arrow_dfe_engine::ProcessorFactory {
         name: FILTER_PROCESSOR_URN,
         create:
             |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_filter_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+        wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };
 
 impl FilterProcessor {
@@ -220,12 +224,14 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 // `dropped_items` is the dropped count.
                 effect_handler.record_flow_dropped_items(signal, dropped_items);
 
-                effect_handler
-                    .send_message_with_source_node(OtapPdata::new(
-                        context,
-                        filtered_arrow_records.into(),
-                    ))
-                    .await?;
+                let kept_items = filtered_arrow_records.num_items();
+                let mut pdata = OtapPdata::new(context, filtered_arrow_records.into());
+                if kept_items == 0 {
+                    pdata.complete_processor_without_output(effect_handler);
+                    effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+                } else {
+                    effect_handler.send_message_with_source_node(pdata).await?;
+                }
                 Ok(())
             }
         }
@@ -237,23 +243,28 @@ mod tests {
     use crate::processors::filter_processor::{
         FILTER_PROCESSOR_URN, FilterProcessor, config::Config,
     };
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::processor::ProcessorWrapper;
-    use otap_df_engine::testing::processor::TestRuntime;
-    use otap_df_engine::testing::processor::{TestContext, ValidateContext};
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::TryIntoWithOptions;
-    use otap_df_pdata::otap::filter::{
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{
+        CallData, PipelineCompletionMsg, pipeline_completion_msg_channel,
+    };
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+    use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+    use otel_arrow_dfe_engine::testing::processor::{TestContext, ValidateContext};
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::TryIntoWithOptions;
+    use otel_arrow_dfe_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
         logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
         metrics::{MetricFilter, MetricMatchProperties},
         traces::{TraceFilter, TraceMatchProperties},
     };
-    use otap_df_pdata::proto::opentelemetry::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
         metrics::v1::{
@@ -267,12 +278,14 @@ mod tests {
             status::StatusCode,
         },
     };
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::time::timeout;
 
     // build logs data for testing version 1
     fn build_logs_1() -> LogsData {
@@ -718,6 +731,36 @@ mod tests {
         |mut _ctx| Box::pin(async move {})
     }
 
+    async fn assert_fully_filtered(
+        ctx: &mut TestContext<OtapPdata>,
+        pdata: OtapPdata,
+        expected_signal: SignalType,
+    ) {
+        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+        ctx.set_pipeline_completion_sender(completion_tx);
+        let pdata = pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 1);
+
+        ctx.process(Message::PData(pdata))
+            .await
+            .expect("failed to process");
+        assert!(
+            ctx.drain_pdata().await.is_empty(),
+            "fully filtered pdata must not be forwarded"
+        );
+
+        let completion = timeout(Duration::from_secs(1), completion_rx.recv())
+            .await
+            .expect("ack completion should arrive before timeout")
+            .expect("completion channel should contain an ack");
+        match completion {
+            PipelineCompletionMsg::DeliverAck { mut ack } => {
+                assert_eq!(ack.accepted.num_items(), 0);
+                assert_eq!(ack.accepted.signal_type(), expected_signal);
+            }
+            other => panic!("expected DeliverAck, got {other:?}"),
+        }
+    }
+
     /// Test closure that simulates a typical processor scenario.
     fn scenario_logs(
         sent: LogsData,
@@ -748,6 +791,21 @@ mod tests {
                 };
 
                 assert_eq!(received_logs_data, expected);
+            })
+        }
+    }
+
+    fn scenario_logs_dropped(
+        sent: LogsData,
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |mut ctx| {
+            Box::pin(async move {
+                let mut bytes = vec![];
+                sent.encode(&mut bytes)
+                    .expect("failed to encode log data into bytes");
+                let otlp_logs_bytes =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.into()).into());
+                assert_fully_filtered(&mut ctx, otlp_logs_bytes, SignalType::Logs).await;
             })
         }
     }
@@ -788,6 +846,22 @@ mod tests {
         }
     }
 
+    fn scenario_metrics_dropped(
+        sent: MetricsData,
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |mut ctx| {
+            Box::pin(async move {
+                let mut bytes = vec![];
+                sent.encode(&mut bytes)
+                    .expect("failed to encode metrics data into bytes");
+                let otlp_metrics_bytes = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportMetricsRequest(bytes.into()).into(),
+                );
+                assert_fully_filtered(&mut ctx, otlp_metrics_bytes, SignalType::Metrics).await;
+            })
+        }
+    }
+
     /// Test closure that simulates a typical processor scenario.
     fn scenario_traces(
         expected: TracesData,
@@ -822,6 +896,22 @@ mod tests {
                 };
 
                 assert_eq!(received_traces_data, expected);
+            })
+        }
+    }
+
+    fn scenario_traces_dropped()
+    -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |mut ctx| {
+            Box::pin(async move {
+                let mut bytes = vec![];
+                build_traces()
+                    .encode(&mut bytes)
+                    .expect("failed to encode trace data into bytes");
+                let otlp_traces_bytes = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportTracesRequest(bytes.into()).into(),
+                );
+                assert_fully_filtered(&mut ctx, otlp_traces_bytes, SignalType::Traces).await;
             })
         }
     }
@@ -955,6 +1045,44 @@ mod tests {
             .validate(validation_procedure());
     }
 
+    /// Scenario: No log resource matches the configured `service.name` include rule.
+    /// Guarantees: A fully filtered log batch is acknowledged without emitting downstream pdata.
+    #[test]
+    fn test_filter_processor_suppresses_fully_filtered_logs() {
+        let test_runtime = TestRuntime::new();
+        let include_props = LogMatchProperties::new(
+            MatchType::Strict,
+            vec![KeyValueFilter::new(
+                "service.name".to_string(),
+                AnyValueFilter::String("amcs".to_string()),
+            )],
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+        );
+        let config = Config::new(
+            LogFilter::new(Some(include_props), None, Vec::new()),
+            TraceFilter::new(None, None),
+        );
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario_logs_dropped(build_logs_1()))
+            .validate(validation_procedure());
+    }
+
     #[test]
     fn test_filter_processor_metrics_strict_include_only() {
         let test_runtime = TestRuntime::new();
@@ -986,6 +1114,41 @@ mod tests {
         test_runtime
             .set_processor(processor)
             .run_test(scenario_metrics(sent, expected))
+            .validate(validation_procedure());
+    }
+
+    /// Scenario: No metric name matches the configured strict include rule.
+    /// Guarantees: A fully filtered metric batch is acknowledged without emitting downstream pdata.
+    #[test]
+    fn test_filter_processor_suppresses_fully_filtered_metrics() {
+        let test_runtime = TestRuntime::new();
+        let metric_filter = MetricFilter::new(
+            Some(MetricMatchProperties::new(
+                MatchType::Strict,
+                vec!["not.present".into()],
+            )),
+            None,
+        );
+        let config = Config::new_with_metrics(
+            metric_filter,
+            LogFilter::new(None, None, Vec::new()),
+            TraceFilter::new(None, None),
+        );
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario_metrics_dropped(build_metrics(&["test.counter1"])))
             .validate(validation_procedure());
     }
 
@@ -1710,6 +1873,45 @@ mod tests {
         test_runtime
             .set_processor(processor)
             .run_test(scenario_traces(expected_data))
+            .validate(validation_procedure());
+    }
+
+    /// Scenario: No trace resource matches the configured `service.name` include rule.
+    /// Guarantees: A fully filtered trace batch is acknowledged without emitting downstream pdata.
+    #[test]
+    fn test_filter_processor_suppresses_fully_filtered_traces() {
+        let test_runtime = TestRuntime::new();
+        let include_only = TraceMatchProperties::new(
+            MatchType::Strict,
+            vec![KeyValueFilter::new(
+                "service.name".to_string(),
+                AnyValueFilter::String("not-present".to_string()),
+            )],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let config = Config::new(
+            LogFilter::new(None, None, Vec::new()),
+            TraceFilter::new(Some(include_only), None),
+        );
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario_traces_dropped())
             .validate(validation_procedure());
     }
 

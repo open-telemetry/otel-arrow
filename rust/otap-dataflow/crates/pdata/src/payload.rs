@@ -17,15 +17,15 @@
 //! # use std::sync::Arc;
 //! # use arrow::array::{RecordBatch, UInt16Array};
 //! # use arrow::datatypes::{DataType, Field, Schema};
-//! # use otap_df_pdata::otap::{OtapArrowRecords, Logs};
-//! # use otap_df_pdata::proto::opentelemetry::{
+//! # use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, Logs};
+//! # use otel_arrow_dfe_pdata::proto::opentelemetry::{
 //!     arrow::v1::ArrowPayloadType,
 //!     collector::logs::v1::ExportLogsServiceRequest,
 //!     common::v1::{AnyValue, InstrumentationScope, KeyValue},
 //!     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
 //!     resource::v1::Resource
 //! };
-//! # use otap_df_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+//! # use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
 //! # use prost::Message;
 //! # use bytes::Bytes;
 //! let otlp_service_req = ExportLogsServiceRequest::new(vec![
@@ -67,7 +67,7 @@
 //!                                          |                 |
 //!                                          |                 |
 //!                                          v                 |
-//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otap_df_pdata::otlp::<signal>::<signal_>_from()
+//!    otel_arrow_dfe_otap::encoder::encode_<signal>_otap_batch    otel_arrow_dfe_pdata::otlp::<signal>::<signal_>_from()
 //!                                          |                 ^
 //!                                          |                 |
 //!                                          |                 |
@@ -95,7 +95,7 @@ use crate::views::otlp::bytes::metrics::RawMetricsData;
 use crate::views::otlp::bytes::traces::RawTraceData;
 use crate::{TryFromWithOptions, TryIntoWithOptions};
 use bytes::BytesMut;
-use otap_df_config::{ConversionOptions, SignalFormat, SignalType};
+use otel_arrow_dfe_config::{ConversionOptions, SignalFormat, SignalType};
 use prost::{EncodeError, Message};
 
 /// Concrete storage representation backing an [`OtapPayload`].
@@ -170,9 +170,9 @@ impl PayloadData {
 /// Container for the various representations of the telemetry data.
 ///
 /// `OtapPayload` owns both the concrete [`PayloadData`] and cached expensive
-/// measurements. The only cached measurement currently implemented is the
-/// OTLP item count. The cache is scoped to the exact logical payload version
-/// it was created for:
+/// measurements. OTLP item counts and OTAP logical byte sizes are cached when
+/// first requested. The cache is scoped to the exact logical payload version it
+/// was created for:
 ///
 /// - Constructing a new `OtapPayload` (via `From`, [`Self::empty`], or
 ///   [`Self::take_payload`]'s emptied remainder) always starts with a fresh,
@@ -188,6 +188,7 @@ impl PayloadData {
 pub struct OtapPayload {
     data: PayloadData,
     item_count: Option<usize>,
+    size: Option<usize>,
 }
 
 impl OtapPayload {
@@ -197,6 +198,7 @@ impl OtapPayload {
         Self {
             data,
             item_count: None,
+            size: None,
         }
     }
 
@@ -263,6 +265,7 @@ impl OtapPayload {
         Self {
             data: old_data,
             item_count: self.item_count.take(),
+            size: self.size.take(),
         }
     }
 
@@ -285,10 +288,26 @@ impl OtapPayload {
         }
     }
 
-    /// Returns the number of encoded bytes, if known.
+    /// Returns the logical byte size of the current payload representation.
+    ///
+    /// OTLP reports its protobuf service-request byte length. OTAP reports
+    /// Arrow's logical slice-memory estimate. Returns `None` if the current
+    /// representation cannot be measured.
     #[must_use]
-    pub fn num_bytes(&self) -> Option<usize> {
-        self.data.num_bytes()
+    pub fn num_bytes(&mut self) -> Option<usize> {
+        match &self.data {
+            // OTLP already stores the exact encoded length in Bytes metadata.
+            PayloadData::OtlpBytes(_) => self.data.num_bytes(),
+            // Cache OTAP sizing because it walks every Arrow array and buffer.
+            PayloadData::OtapArrowRecords(_) => {
+                if let Some(size) = self.size {
+                    return Some(size);
+                }
+                let size = self.data.num_bytes()?;
+                self.size = Some(size);
+                Some(size)
+            }
+        }
     }
 
     /// Returns the best available retained-memory byte estimate.
@@ -308,6 +327,7 @@ impl OtapPayload {
         Self {
             data: PayloadData::OtlpBytes(OtlpProtoBytes::empty(signal)),
             item_count: None,
+            size: None,
         }
     }
 
@@ -317,6 +337,13 @@ impl OtapPayload {
     #[must_use]
     pub fn test_has_cached_item_count(&self) -> bool {
         self.item_count.is_some()
+    }
+
+    /// Test-only introspection: true if the OTAP size cache has been computed.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn test_has_cached_size(&self) -> bool {
+        self.size.is_some()
     }
 }
 
@@ -330,7 +357,7 @@ pub trait OtapPayloadHelpers: Into<OtapPayload> {
     /// Number of items.
     fn num_items(&self) -> usize;
 
-    /// Number of bytes, if known.
+    /// Logical byte size of the current representation, if measurable.
     fn num_bytes(&self) -> Option<usize>;
 
     /// Best available retained-memory byte estimate.
@@ -353,7 +380,7 @@ impl OtapPayloadHelpers for OtapArrowRecords {
     }
 
     fn num_bytes(&self) -> Option<usize> {
-        None
+        self.logical_arrow_bytes().ok()
     }
 
     fn retained_memory_bytes(&self) -> usize {
@@ -430,7 +457,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes.as_ref());
-                use otap_df_pdata_views::views::logs::{
+                use otel_arrow_dfe_pdata_views::views::logs::{
                     LogsDataView, ResourceLogsView, ScopeLogsView,
                 };
                 logs_data_view
@@ -444,7 +471,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportTracesRequest(bytes) => {
                 let traces_data_view = RawTraceData::new(bytes.as_ref());
-                use otap_df_pdata_views::views::trace::{
+                use otel_arrow_dfe_pdata_views::views::trace::{
                     ResourceSpansView, ScopeSpansView, TracesView,
                 };
                 traces_data_view
@@ -454,7 +481,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportMetricsRequest(bytes) => {
                 let metrics_data_view = RawMetricsData::new(bytes.as_ref());
-                use otap_df_pdata_views::views::metrics::{
+                use otel_arrow_dfe_pdata_views::views::metrics::{
                     DataView, ExponentialHistogramView, GaugeView, HistogramView, MetricView,
                     MetricsView, ResourceMetricsView, ScopeMetricsView, SumView, SummaryView,
                 };

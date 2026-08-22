@@ -3,9 +3,9 @@
 
 //! Metrics specific to the Clickhouse lifecycle.
 
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
 /// Clickhouse exporter metrics.
 /// Grouped under `otap.exporter.clickhouse`.

@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-contrib-nodes"
+name = "otel-arrow-dfe-contrib-nodes"
 description = "OTAP Contrib nodes"
 version.workspace = true
 authors.workspace = true
@@ -14,14 +14,14 @@ workspace = true
 
 [dependencies]
 # Workspace crates (likely used by most/all features)
-otap-df-channel = { workspace = true }
-otap-df-config = { workspace = true }
-otap-df-engine = { workspace = true }
-otap-df-otap = { workspace = true }
-otap-df-pdata = { workspace = true }
-otap-df-pdata-views = { workspace = true }
-otap-df-telemetry = { workspace = true }
-otap-df-telemetry-macros = { workspace = true }
+otel-arrow-dfe-channel = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-otap = { workspace = true }
+otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-pdata-views = { workspace = true }
+otel-arrow-dfe-telemetry = { workspace = true }
+otel-arrow-dfe-telemetry-macros = { workspace = true }
 
 arrow.workspace = true
 async-trait.workspace = true
@@ -196,11 +196,11 @@ data_engine_expressions.workspace = true
 data_engine_recordset.workspace = true
 humantime.workspace = true
 core_affinity.workspace = true
-otap-df-channel = { workspace = true }
+otel-arrow-dfe-channel = { workspace = true }
 opentelemetry-proto.workspace = true
-otap-df-engine = { workspace = true, features = ["test-utils"] }
-otap-df-otap = { workspace = true, features = ["test-utils"] }
-otap-df-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true

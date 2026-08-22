@@ -1,6 +1,6 @@
 [package]
-name = "otap-df-telemetry-macros"
-description = "Proc-macros for otap-df-telemetry"
+name = "otel-arrow-dfe-telemetry-macros"
+description = "Proc-macros for otel-arrow-dfe-telemetry"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

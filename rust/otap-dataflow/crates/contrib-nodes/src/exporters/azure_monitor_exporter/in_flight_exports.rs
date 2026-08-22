@@ -151,8 +151,8 @@ mod tests {
         AzureMonitorExporterMetricsRc, AzureMonitorExporterMetricsTracker,
     };
     use super::*;
-    use otap_df_engine::context::{ControllerContext, PipelineContext};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use reqwest::Client;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -173,7 +173,7 @@ mod tests {
     }
 
     fn create_test_client() -> LogsIngestionClient {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         // Use a client that will fail fast if actually used
         let http_client = Client::builder()
             .timeout(StdDuration::from_millis(1))
@@ -412,7 +412,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let client = LogsIngestionClient::from_parts(
             Client::new(),
             mock_server.uri(),

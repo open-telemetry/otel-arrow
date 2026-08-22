@@ -10,8 +10,8 @@ use std::time::Instant;
 use futures::StreamExt;
 use futures::future::LocalBoxFuture;
 use futures::stream::FuturesUnordered;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use super::error::ClickhouseExporterError;
 
@@ -110,7 +110,7 @@ impl InFlightWrites {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
 
     fn logs_pdata() -> OtapPdata {
         OtapPdata::new_todo_context(OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(

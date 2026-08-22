@@ -28,7 +28,9 @@ groups:
                 max_signal_count: 10000
                 max_batch_size: 10
                 signals_per_second: 10
-                log_weight: 100
+                log_weight: 50
+                metric_weight: 50
+                trace_weight: 0
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           batch:
             type: processor:batch
@@ -40,7 +42,8 @@ groups:
               max_batch_duration: 3s
           console:
             type: exporter:console
-            config: {}
+            config:
+              format: pretty
 
         connections:
           - from: generator

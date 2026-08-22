@@ -337,8 +337,8 @@ DDL snapshot coverage currently lives in `table_snapshots/` and covers:
 The recommended validation loop for intentional DDL changes is:
 
 ```bash
-cargo test -p otap-df-contrib-nodes --features clickhouse-exporter
-INSTA_UPDATE=always cargo test -p otap-df-contrib-nodes --features clickhouse-exporter
+cargo test -p otel-arrow-dfe-contrib-nodes --features clickhouse-exporter
+INSTA_UPDATE=always cargo test -p otel-arrow-dfe-contrib-nodes --features clickhouse-exporter
 ```
 
 ## Important Files

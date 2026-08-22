@@ -3,8 +3,8 @@
 
 //! Metrics for the traffic generator receiver node.
 
-use otap_df_telemetry::instrument::{Counter, Gauge, HistogramNormal, Mmsc};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, HistogramNormal, Mmsc};
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the traffic generator receiver.
 #[metric_set(name = "receiver.traffic_generator")]

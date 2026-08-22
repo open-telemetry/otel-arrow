@@ -5,27 +5,27 @@
 
 use cfg_if::cfg_if;
 use clap::Parser;
-use otap_df_config::config_provider::{ConfigFormat, resolve_config};
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_config::policy::{CoreAllocation, CoreRange};
+use otel_arrow_dfe_config::config_provider::{ConfigFormat, resolve_config};
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_config::policy::{CoreAllocation, CoreRange};
 // Keep these side-effect imports so the crates are linked and their `linkme`
 // distributed-slice registrations (contrib nodes and extensions) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
-use otap_df_contrib_extensions as _;
-use otap_df_contrib_nodes as _;
-use otap_df_controller::startup;
-use otap_df_controller::{BuildInfo, Controller, ControllerRunOptions};
+use otel_arrow_dfe_contrib_extensions as _;
+use otel_arrow_dfe_contrib_nodes as _;
+use otel_arrow_dfe_controller::startup;
+use otel_arrow_dfe_controller::{BuildInfo, Controller, ControllerRunOptions};
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
-use otap_df_core_nodes as _;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_core_nodes as _;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 // Keep this side-effect import so the experimental wasm-host crate is linked
 // and its `linkme` distributed-slice registration (the `wasm_processor`
 // factory) is visible in `OTAP_PIPELINE_FACTORY` at runtime. Off by default;
 // only present when the `wasm` cargo feature is enabled.
 #[cfg(feature = "wasm")]
-use otap_df_wasm_host as _;
+use otel_arrow_dfe_wasm_host as _;
 /// Project license text (Apache-2.0), embedded at compile time.
 const LICENSE_TEXT: &str = include_str!("../LICENSE");
 
@@ -258,7 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Install the rustls crypto provider selected by the crypto-* feature flag.
     // This must happen before any TLS connections (reqwest, tonic, etc.).
-    otap_df_otap::crypto::install_crypto_provider()
+    otel_arrow_dfe_otap::crypto::install_crypto_provider()
         .map_err(|e| format!("Failed to install rustls crypto provider: {e}"))?;
 
     let Args {
@@ -294,6 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             service_name: Some(env!("CARGO_BIN_NAME").to_string()),
             service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         },
+        handle_os_signals: true,
         ..Default::default()
     };
     validate_engine_config_for_startup(&engine_cfg, &run_options)?;
@@ -415,7 +416,7 @@ engine:
           interval: "0s"
 groups: {{}}
 "#,
-            otap_df_controller::CONTROLLER_MONITOR_EXTENSION_URN
+            otel_arrow_dfe_controller::CONTROLLER_MONITOR_EXTENSION_URN
         ))
         .expect("config should parse");
         let run_options = ControllerRunOptions::default();
@@ -438,8 +439,8 @@ groups: {{}}
     /// Guarantees: semantic startup validation rejects the pipeline before runtime construction.
     #[test]
     fn validate_unknown_component_rejected() {
-        use otap_df_config::pipeline::PipelineConfig;
-        use otap_df_config::{PipelineGroupId, PipelineId};
+        use otel_arrow_dfe_config::pipeline::PipelineConfig;
+        use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
 
         let pipeline_group_id: PipelineGroupId = "test_group".into();
         let pipeline_id: PipelineId = "test_pipeline".into();

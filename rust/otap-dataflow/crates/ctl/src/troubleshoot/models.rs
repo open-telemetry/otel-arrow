@@ -9,7 +9,7 @@
 //! command-facing contracts and lets describe, filter, diagnose, render, and
 //! TUI code share the same vocabulary.
 
-use otap_df_admin_api::{groups, pipelines, telemetry};
+use otel_arrow_dfe_admin_api::{groups, pipelines, telemetry};
 use serde::Serialize;
 use serde_json::Value;
 

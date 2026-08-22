@@ -34,29 +34,31 @@ use datafusion::execution::TaskContext;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::ByteArrayAccessor;
-use otap_df_pdata::encode::record::array::dictionary::DictionaryOptions;
-use otap_df_pdata::encode::record::array::{
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::arrays::ByteArrayAccessor;
+use otel_arrow_dfe_pdata::encode::record::array::dictionary::DictionaryOptions;
+use otel_arrow_dfe_pdata::encode::record::array::{
     ArrayAppendNulls, ArrayAppendSlice, ArrayOptions, BinaryArrayBuilder,
 };
-use otap_df_pdata::error::Error as PdataError;
-use otap_df_pdata::otap::Logs;
-use otap_df_pdata::otap::filter::IdBitmapPool;
-use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
-use otap_df_pdata::otap::transform::upsert_attributes::{
+use otel_arrow_dfe_pdata::error::Error as PdataError;
+use otel_arrow_dfe_pdata::otap::Logs;
+use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_pdata::otap::transform::concatenate::{
+    Cardinality, FieldInfo, estimate_cardinality,
+};
+use otel_arrow_dfe_pdata::otap::transform::upsert_attributes::{
     AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, upsert_attributes,
 };
-use otap_df_pdata::otlp::attributes::{
+use otel_arrow_dfe_pdata::otlp::attributes::{
     AttributeValueType,
     cbor::{
         SerializedAttributeScalarValue, SerializedValueMutation, SerializedValuePathElement,
         SerializedValuePathMutation, mutate_cbor_bytes_many,
     },
 };
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts::metadata;
-use otap_df_pdata::schema::{consts, get_field_metadata, update_field_metadata};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts::metadata;
+use otel_arrow_dfe_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
@@ -2455,7 +2457,7 @@ mod test {
         datatypes::DataType,
     };
     use data_engine_kql_parser::{KqlParser, Parser};
-    use otap_df_pdata::{
+    use otel_arrow_dfe_pdata::{
         OtapArrowRecords,
         otap::Logs,
         otlp::attributes::AttributeValueType,
@@ -2475,7 +2477,7 @@ mod test {
             otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_traces_data,
         },
     };
-    use otap_df_query_engine_languages::{opl::parser::OplParser, ottl::OttlParser};
+    use otel_arrow_dfe_query_engine_languages::{opl::parser::OplParser, ottl::OttlParser};
 
     use crate::{
         parser::default_parser_options,

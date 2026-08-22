@@ -169,8 +169,8 @@ mod test {
     // Helper to create a test context with subscribers
     fn create_context_with_subscribers() -> Context {
         let pdata = create_test_pdata().test_subscribe_to(
-            otap_df_engine::Interests::ACKS,
-            smallvec::smallvec![otap_df_engine::control::Context8u8::from(1u64)],
+            otel_arrow_dfe_engine::Interests::ACKS,
+            smallvec::smallvec![otel_arrow_dfe_engine::control::Context8u8::from(1u64)],
             1,
         );
         let (ctx, _payload) = pdata.into_parts();
@@ -364,7 +364,7 @@ mod test {
     fn test_with_metrics_only_context() {
         let mut contexts = new_contexts();
         let pdata = create_test_pdata().test_subscribe_to(
-            otap_df_engine::Interests::PRODUCER_METRICS,
+            otel_arrow_dfe_engine::Interests::PRODUCER_METRICS,
             smallvec::smallvec![],
             1,
         );

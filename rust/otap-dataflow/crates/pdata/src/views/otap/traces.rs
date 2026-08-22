@@ -32,9 +32,9 @@ use crate::otlp::traces::{
 };
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::{SpanId, TraceId};
-use otap_df_pdata_views::views::common::{InstrumentationScopeView, Str};
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_pdata_views::views::trace::{
+use otel_arrow_dfe_pdata_views::views::common::{InstrumentationScopeView, Str};
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::trace::{
     EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
 };
 

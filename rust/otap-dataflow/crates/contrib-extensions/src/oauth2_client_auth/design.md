@@ -86,7 +86,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 
 | Decision | Choice |
 | --- | --- |
-| Component shape | Standalone extension in the `otap-df-contrib-extensions` crate; the `oauth2`/HTTP client dependency is isolated behind a feature flag. |
+| Component shape | Standalone extension in the `otel-arrow-dfe-contrib-extensions` crate; the `oauth2`/HTTP client dependency is isolated behind a feature flag. |
 | Capability surface | Implements the existing `BearerTokenProvider` (`get_token()` cached fast path / single coalesced slow path, `token_stream()` refresh subscription). No new capability. |
 | Execution model | `Active + Shared`. Shared serves both `require_shared()` and `require_local()` consumers via the macro's local fallback; Active drives the background refresh loop. |
 | Startup gating | Opt into the engine readiness probe; `signal_ready()` after the first token publish so the engine holds data-path node startup until a token exists (bounded by the probe timeout). |
@@ -261,7 +261,7 @@ groups:
 | `default_token_lifetime` | duration | `24h` | Lifetime assumed when the token response omits `expires_in`. Must be non-zero and greater than `expiry_buffer`. See [Expiry handling](#expiry-handling). |
 | `timeout` | duration | `30s` | Per-request timeout on the token client. Must be non-zero. |
 | `connect_timeout` | duration | `10s` | Connection-establishment timeout on the token client. Must be non-zero. |
-| `tls` | object? | *none* | Client TLS for the token endpoint. The engine's shared `otap_df_config::tls::TlsClientConfig` (not extension-specific knobs). See [Token-endpoint TLS](#token-endpoint-tls). |
+| `tls` | object? | *none* | Client TLS for the token endpoint. The engine's shared `otel_arrow_dfe_config::tls::TlsClientConfig` (not extension-specific knobs). See [Token-endpoint TLS](#token-endpoint-tls). |
 | `startup_timeout` | duration | `30s` | How long the engine holds data-path startup waiting for the first token publish before aborting (see [Lifecycle](#lifecycle)). Must be non-zero. |
 
 For `grant_type: jwt-bearer` (RFC 7523 section 2.1), the extension uses the JWT
@@ -302,7 +302,7 @@ parse-then-validate pattern the Azure extension uses.
 
 The token endpoint carries the client secret (or signed assertion) and returns
 bearer tokens, so it must be reached over TLS (RFC 6749 section 3.2). The `tls`
-field is the engine's shared `otap_df_config::tls::TlsClientConfig` - the same
+field is the engine's shared `otel_arrow_dfe_config::tls::TlsClientConfig` - the same
 type the OTLP/HTTP exporters use - so the extension invents no TLS knobs and its
 behavior and validation match the rest of the collector.
 
@@ -538,7 +538,7 @@ crypto-openssl = ["dep:openssl"]
 
 **Crypto provider prerequisite.** The `reqwest`/`rustls` HTTP client requires a
 process-wide `rustls` crypto provider. `Auth::new()` calls
-`otap_df_otap::crypto::ensure_crypto_provider()` before constructing the client,
+`otel_arrow_dfe_otap::crypto::ensure_crypto_provider()` before constructing the client,
 and the deployed binary **must** enable exactly one `crypto-*` feature; otherwise
 token requests panic at runtime with "No provider set".
 

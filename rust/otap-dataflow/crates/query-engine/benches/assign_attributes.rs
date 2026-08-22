@@ -7,11 +7,11 @@ use std::time::Instant;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use data_engine_kql_parser::{KqlParser, Parser};
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
-use otap_df_pdata::testing::round_trip::otlp_to_otap;
-use otap_df_query_engine::pipeline::Pipeline;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
+use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
+use otel_arrow_dfe_query_engine::pipeline::Pipeline;
 use tokio::runtime::Runtime;
 
 #[cfg(not(windows))]
