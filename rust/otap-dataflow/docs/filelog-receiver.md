@@ -11,35 +11,34 @@ receiver [#2858](https://github.com/open-telemetry/otel-arrow/issues/2858).
 ## Executive summary
 
 This document proposes an OTAP-native receiver for continuously collecting logs from
-local files. Phase 1 uses one receiver instance, a dedicated discovery thread, and a
-dedicated read/checkpoint thread. It bounds all queues and buffers, assigns opaque
-durable file identities, retains one OTAP batch until downstream completion, and advances
-source offsets only after a matching Ack.
+local files. The receiver discovers eligible files, decodes and frames their contents,
+handles rotation and restart, and advances durable source offsets only after downstream
+acknowledgement. All queues, buffers, readers, and batches are bounded.
 
-Phase 1 preserves ordering within each file and supports move/create rotation. It
-provides at-least-once delivery while the process remains live and reconstructs
-uncommitted records after restart only while the checkpoint state and corresponding
-source bytes survive. It does not spool emitted OTAP batches to disk. Copy-truncate
-capture remains best-effort, and a detected truncation that overlaps unacknowledged data
-fails the affected file by default rather than silently continuing.
+The proposal is delivered in three phases. Phase 1 establishes the single-instance
+correctness model: durable file identity, bounded reading and framing, one retained OTAP
+batch, Ack-gated checkpoints, restart recovery, and move/create rotation. Phase 2
+improves throughput and discovery efficiency without changing ownership. Phase 3
+introduces shared identity resolution, virtual-partition ownership, distributed
+fencing, readiness coordination, and checkpoint-state migration.
 
-Timestamp extraction, structured parsing, severity mapping, enrichment, filtering, and
-routing remain processor responsibilities. Multi-instance ownership, distributed
-fencing, virtual partitions, and the shared identity and checkpoint services required by
-them are Phase 3 work. Phase 1's local discovery interface is not presented as the future
-distributed ownership protocol, and Phase 3 replaces the Phase 1 checkpoint storage
-architecture while preserving its logical Ack-gated progress contract.
+Phase 1 preserves ordering within each file and provides at-least-once delivery for
+emitted batches. Reconstructing uncommitted records after restart requires both durable
+checkpoint state and the corresponding source bytes to survive. Phase 1 does not spool
+emitted OTAP batches to disk, and copy-truncate capture remains best-effort. Timestamp
+extraction, structured parsing, severity mapping, enrichment, filtering, and routing
+remain processor responsibilities.
 
 ## Delivery phases at a glance
 
-This table is a navigation summary. The detailed **Phased implementation** section and
-its acceptance criteria remain authoritative.
+This table summarizes the proposed delivery sequence. The detailed
+**Phased implementation** section and its acceptance criteria remain authoritative.
 
 | Phase | Scope | Principal limitation or dependency |
 | --- | --- | --- |
 | Phase 1 | One receiver; periodic discovery; bounded reading and framing; one receiver-wide in-flight batch; Ack-gated checkpoints; durable identity and quarantine; move/create rotation | Receiver-wide head-of-line blocking; no distributed ownership, fencing, or lossless live-rollout readiness guarantee |
-| Phase 2 | Native discovery notifications; multiple in-flight batches or local shards; optional source metadata; optional background compaction | Ownership remains local and single-instance unless Phase 3 coordination is available |
-| Phase 3 | Shared identity resolution; virtual-partition assignment; fenced checkpoint persistence; revoke/assign protocol; readiness; migration from Phase 1 state | Requires engine- or group-scoped coordination and an explicit checkpoint-store migration |
+| Phase 2 | Native discovery notifications; multiple in-flight batches or local shards; optional source metadata and background compaction | Ownership remains local and single-instance |
+| Phase 3 | Shared identity resolution; virtual-partition assignment; fenced checkpoint persistence; revoke/assign protocol; readiness; migration from Phase 1 state | Requires shared coordination and an explicit checkpoint-store migration |
 
 ## Decisions requested
 
