@@ -10,7 +10,9 @@ use otel_arrow_dfe_config::transport_headers_policy::{
     CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy, PropagationDefault,
     PropagationSelector, PropagationSelectorType,
 };
-use tonic::metadata::{KeyAndValueRef, MetadataKey, MetadataMap, MetadataValue};
+#[cfg(not(packed_pdata_context))]
+use tonic::metadata::KeyAndValueRef;
+use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 
 const HEADER_COUNTS: [usize; 4] = [1, 4, 16, 32];
 
@@ -50,8 +52,7 @@ fn bench_receive(c: &mut Criterion) {
             &header_count,
             |b, _| {
                 b.iter(|| {
-                    let pairs = decode_metadata(black_box(&metadata));
-                    implementation::capture_decoded(black_box(&capture), black_box(&pairs))
+                    implementation::receive_metadata(black_box(&capture), black_box(&metadata))
                 });
             },
         );
@@ -105,9 +106,8 @@ fn bench_end_to_end(c: &mut Criterion) {
             &header_count,
             |b, _| {
                 b.iter(|| {
-                    let pairs = decode_metadata(black_box(&metadata));
                     let context =
-                        implementation::capture_decoded(black_box(&capture), black_box(&pairs));
+                        implementation::receive_metadata(black_box(&capture), black_box(&metadata));
                     let hop1 = context.clone();
                     let hop2 = hop1.clone();
                     implementation::propagate_metadata(black_box(&hop2), black_box(&propagation))
@@ -172,6 +172,7 @@ fn inbound_metadata(header_count: usize) -> MetadataMap {
     metadata
 }
 
+#[cfg(not(packed_pdata_context))]
 fn decode_metadata(metadata: &MetadataMap) -> Vec<(&str, Vec<u8>)> {
     metadata
         .iter()
@@ -222,7 +223,8 @@ mod implementation {
         context
     }
 
-    pub(super) fn capture_decoded(policy: &CapturePolicy, pairs: &[(&str, Vec<u8>)]) -> Context {
+    pub(super) fn receive_metadata(policy: &CapturePolicy, metadata: &MetadataMap) -> Context {
+        let pairs = decode_metadata(metadata);
         let mut context = TransportHeaders::new();
         let _ = policy.capture_from_pairs(
             pairs.iter().map(|(name, value)| (*name, value.as_slice())),
@@ -274,14 +276,11 @@ mod implementation {
         .expect("benchmark captures matching headers")
     }
 
-    pub(super) fn capture_decoded(policy: &CapturePolicy, pairs: &[(&str, Vec<u8>)]) -> Context {
-        PdataContextBytes::capture(
-            policy,
-            pairs.iter().map(|(name, value)| (*name, value.as_slice())),
-        )
-        .expect("benchmark context capture")
-        .0
-        .expect("benchmark captures matching headers")
+    pub(super) fn receive_metadata(policy: &CapturePolicy, metadata: &MetadataMap) -> Context {
+        PdataContextBytes::capture_grpc_metadata(policy, metadata)
+            .expect("benchmark context capture")
+            .0
+            .expect("benchmark captures matching headers")
     }
 
     pub(super) fn propagate_metadata(context: &Context, policy: &PropagationPolicy) -> MetadataMap {
