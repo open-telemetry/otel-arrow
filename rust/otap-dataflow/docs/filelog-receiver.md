@@ -2,9 +2,95 @@
 
 # Filelog Receiver Design
 
+Status: Proposed
+
 Tracks [#2844](https://github.com/open-telemetry/otel-arrow/issues/2844). Related work:
 [#2321](https://github.com/open-telemetry/otel-arrow/issues/2321) and the journald
 receiver [#2858](https://github.com/open-telemetry/otel-arrow/issues/2858).
+
+## Executive summary
+
+This document proposes an OTAP-native receiver for continuously collecting logs from
+local files. Phase 1 uses one receiver instance, a dedicated discovery thread, and a
+dedicated read/checkpoint thread. It bounds all queues and buffers, assigns opaque
+durable file identities, retains one OTAP batch until downstream completion, and advances
+source offsets only after a matching Ack.
+
+Phase 1 preserves ordering within each file and supports move/create rotation. It
+provides at-least-once delivery while the process remains live and reconstructs
+uncommitted records after restart only while the checkpoint state and corresponding
+source bytes survive. It does not spool emitted OTAP batches to disk. Copy-truncate
+capture remains best-effort, and a detected truncation that overlaps unacknowledged data
+fails the affected file by default rather than silently continuing.
+
+Timestamp extraction, structured parsing, severity mapping, enrichment, filtering, and
+routing remain processor responsibilities. Multi-instance ownership, distributed
+fencing, virtual partitions, and the shared identity and checkpoint services required by
+them are Phase 3 work. Phase 1's local discovery interface is not presented as the future
+distributed ownership protocol, and Phase 3 replaces the Phase 1 checkpoint storage
+architecture while preserving its logical Ack-gated progress contract.
+
+## Decisions requested
+
+Reviewers are asked to agree on the following Phase 1 contracts and accepted
+compromises:
+
+| ID | Decision | Rationale or consequence |
+| --- | --- | --- |
+| D1 | Run one filelog receiver instance | Engine-scoped ownership and fencing do not exist yet |
+| D2 | Isolate local discovery behind `DiscoverySource`, but do not claim it is the Phase 3 ownership protocol | Distributed ownership requires revisions, fencing tokens, reconciliation, and revoke completion |
+| D3 | Keep CPU count and deployment generation out of identity and checkpoint keys | Deployment changes must not change source progress; Phase 3 still needs a shared identity resolver before partition assignment |
+| D4 | Key durable progress by an opaque persisted `file_id` | Paths, fingerprints, and native locators are matching evidence, not permanent identity |
+| D5 | Use a stable checkpoint namespace independent of a pipeline generation | Restart and receiver-node rename must reconnect to the same state |
+| D6 | Use runtime locators and fingerprints only for guarded recovery matching | Both can be reused or collide |
+| D7 | Advance offsets only after a matching downstream Ack | Nack, shutdown, and failed delivery must not silently lose source progress |
+| D8 | Run filesystem and checkpoint operations on fixed dedicated threads | Blocking work must not stall the current-thread async runtime or create an unbounded blocking pool |
+| D9 | Keep byte decoding and record framing in the receiver and semantic interpretation in processors | Framing controls offsets; interpretation should remain reusable and destination-independent |
+| D10 | Emit raw OTAP logs with bounded source metadata | The receiver does not embed Stanza-style operator chains |
+| D11 | Bound readers, descriptors, buffers, batches, channels, retries, and scheduling turns | Memory and overload behavior must remain predictable |
+| D12 | Support move/create rotation and describe copy-truncate as best-effort | Portable filesystem observation cannot guarantee copy-truncate capture |
+| D13 | Retain one receiver-wide in-flight batch in Phase 1 | This simplifies progress correctness but intentionally couples all files for Ack latency, failure, and drain |
+| D14 | Use periodic reconciliation as the Phase 1 discovery mechanism | Native notifications are a Phase 2 latency optimization, not a correctness source |
+| D15 | Use a namespace lock and process-local runtime leases for Phase 1 ownership | This prevents overlapping local readers but does not provide distributed fencing or lossless live-rollout readiness |
+| D16 | Fail closed on corrupt durable state and prefer replay over silent loss | Failure containment is explicit; ambiguous recovery never silently inherits an offset |
+
+## Goals and non-goals
+
+### Goals
+
+- Tail eligible local files while they continue to grow.
+- Preserve deterministic per-file framing, ordering, identity, and Ack-gated progress.
+- Bound memory, file descriptors, scheduling work, retries, and channels.
+- Recover after restart when durable state and uncommitted source bytes survive.
+- Handle ordinary move/create rotation and report weaker copy-truncate behavior honestly.
+- Leave a logical progress model that Phase 3 can preserve behind new identity,
+  ownership, and checkpoint services.
+
+### Non-goals
+
+- Compatibility with the Go filelog receiver or Stanza operator chains.
+- Embedded timestamp, JSON, severity, enrichment, filtering, or routing semantics.
+- Durable telemetry spooling or guaranteed recovery after source bytes disappear.
+- Guaranteed copy-truncate capture.
+- Multi-instance or multi-process ownership, virtual partitions, or fenced handoff in
+  Phase 1.
+- Lossless live-rollout readiness semantics in Phase 1.
+- Network filesystem support, compressed archives, or delete-after-read behavior.
+
+## Phase 1 guarantees and limitations
+
+| Area | Contract |
+| --- | --- |
+| Capture | Reads eligible complete records while their source bytes remain available |
+| Delivery | Retains and retries one emitted receiver-wide batch until Ack or terminal policy |
+| Checkpointing | Commits source offsets and required framing-resume state only after matching Ack |
+| Crash recovery | Reconstructs uncommitted records only if checkpoint state and source bytes survive |
+| Ordering | Preserves ordering within each file, not across files |
+| Rotation | Supports move/create; copy-truncate remains best-effort |
+| Delivery semantics | At least once, with possible duplicates after retry or crash |
+| Durability | Does not spool emitted OTAP batches to disk |
+| Failure isolation | Most source errors quarantine one file; batch, checkpoint, and ownership failures may stop the receiver |
+| Live rollout | Serializes local ownership but cannot advertise lossless ready-before-ownership semantics without an engine readiness contract |
 
 ## Objective
 
@@ -53,15 +139,18 @@ the same processing functions.
 
 ## Relationship to #2844
 
-Laurent's proposal in #2844 remains the target: one discovery/assignment coordinator,
+Laurent's proposal in #2844 remains the target: coordinated discovery and assignment,
 fixed virtual partitions, and multiple receiver instances whose ownership does not
-depend on the current CPU count.
+depend on the current CPU count. This document makes explicit that shared identity
+resolution must occur between candidate discovery and partition assignment.
 
 Phase 1 uses one receiver and an in-process discovery source because the required
-engine-level coordinator and fencing mechanism do not exist yet. The reader consumes a
-small assignment interface from the start, so external discovery can replace the local
-producer later without changing framing, rotation, or checkpoints. Phase 1 delivers the
-complete product P0, but the epic's live multi-instance resize criteria remain Phase 3.
+engine-level identity, ownership, and fencing services do not exist yet. The reader is
+kept independent of glob traversal, but the local candidate-event interface is not the
+future distributed ownership protocol. Phase 3 preserves the reading, framing, rotation,
+and Ack-gated progress semantics while replacing identity resolution, ownership
+assignment, and checkpoint storage. Phase 1 delivers the complete priority-P0 product
+surface, but the epic's live multi-instance resize criteria remain Phase 3.
 
 ## Reuse from journald and Quiver
 
@@ -97,28 +186,29 @@ handle the result like logs from other OTAP-native sources.
 
 ## Design at a glance
 
-- **One source owner in Phase 1 (D1-D3).** One receiver owns all assigned files. Topic
+- **One source owner in Phase 1 (D1-D3).** One receiver owns all locally discovered files. Topic
   fanout provides downstream parallelism. Fixed virtual partitions add multiple owners
   in Phase 3.
 - **Stable file progress (D4-D6).** A persisted opaque `file_id` owns the checkpoint.
   Platform file IDs and fingerprints reconnect discovered files; neither is a unique
   checkpoint key by itself.
-- **Ack controls progress (D7).** Phase 1 retains one in-flight Arrow batch. Ack commits
-  offsets; Nack never silently advances them.
+- **Ack controls progress (D7, D13).** Phase 1 retains one receiver-wide in-flight Arrow
+  batch. Ack commits offsets; Nack never silently advances them. The resulting
+  receiver-wide head-of-line blocking is an accepted Phase 1 compromise.
 - **Blocking work stays off the runtime (D8).** One discovery thread and one
   read/checkpoint thread communicate with the async receiver over bounded channels.
 - **Frame, do not interpret (D9-D10).** The receiver decodes text, forms records,
   applies size limits and emits raw OTAP. Processors parse timestamps, JSON and severity.
-- **Everything is bounded (D11, D13).** File turns, readers, descriptors, record
+- **Everything is bounded (D11).** File turns, readers, descriptors, record
   buffers, batches and channels have limits. Backpressure stops file reads.
 - **Rotation is explicit (D12, D14).** Move/create drains the old handle while reading
   the replacement. Copy-truncate detection is best-effort and reported.
-- **One live reader per file (D15-D16).** Locks and leases prevent overlap. Corrupt
+- **One live reader per file (D15-D16).** Local locks and leases prevent overlap. Corrupt
   state fails closed; ambiguous recovery defaults to replay rather than silent loss.
 
 ## Architecture
 
-### Initial architecture
+### Phase 1 architecture
 
 ```mermaid
 flowchart LR
@@ -126,7 +216,7 @@ flowchart LR
     subgraph discovery["Discovery thread"]
       D["Watch and reconcile<br/>identify new files"]
     end
-    D -->|"bounded assignments"| W
+    D -->|"bounded candidates"| W
     subgraph worker["Read and checkpoint thread"]
       W["Read, decode, frame<br/>build OTAP batches"]
       W --> CK[("Checkpoint snapshot and WAL")]
@@ -143,25 +233,29 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  D["Discovery and assignment"] -->|"virtual partitions"| R1["Receiver 1"]
-  D -->|"virtual partitions"| R2["Receiver 2"]
+  S["Candidate discovery"] --> I["Shared identity registry"]
+  I --> D["Ownership coordinator"]
+  D -->|"file_id + partition + fencing token"| R1["Receiver 1"]
+  D -->|"file_id + partition + fencing token"| R2["Receiver 2"]
   R1 -->|"raw OTAP logs"| P["Processors and OPL"]
   R2 -->|"raw OTAP logs"| P
   P --> E["Routing and exporters"]
   E -.->|"Ack or Nack"| R1
   E -.->|"Ack or Nack"| R2
-  C[("Partition checkpoints<br/>with fencing")] --- D
+  C[("Partition checkpoints<br/>with fencing")] --- I
+  C --- D
   C --- R1
   C --- R2
 ```
 
-The target replaces only assignment ownership and checkpoint coordination. Receiver
-behavior below the assignment boundary -- file reading, framing, batching, Ack/Nack
-correlation, backpressure, and drain -- remains the same.
+The target preserves receiver behavior below the ownership boundary -- file reading,
+framing, batching, Ack/Nack correlation, backpressure, and drain. It does not merely
+replace a producer. It introduces shared identity resolution, a distributed ownership
+protocol, fenced checkpoint storage, and an explicit migration from the Phase 1 store.
 
 For each batch:
 
-1. Discovery assigns new or changed files.
+1. Discovery reports new or changed candidates; Phase 1 resolves identity and local ownership.
 2. The worker reads bounded turns, frames records and builds an OTAP batch.
 3. The receiver emits the batch and retains it while waiting for completion.
 4. Ack persists the new file positions; retryable Nack resends the retained batch.
@@ -178,42 +272,68 @@ The factory rejects `pipeline.num_cores() > 1`, exactly as journald does. One re
 instance owns all matched files. Parallel semantic processing is achieved downstream via
 the topic exporter/receiver fanout (`docs/topic-architecture.md`).
 
-Rationale: #2844's discovery/assignment extension requires an engine- or group-scoped
-coordinator, and the extension system has no such scope today. v1
-therefore isolates discovery behind a small internal boundary:
+Rationale: #2844's discovery/assignment extension requires engine- or group-scoped
+identity and ownership services, and the extension system has no such scope today.
+Phase 1 therefore isolates filesystem discovery behind a small internal boundary:
 
 ```text
-AssignmentSource (v1: discovery thread in-process)
-  -> stream of AssignmentEvent
-       Assign { runtime_locator + path + fingerprint_evidence }
-       Update { path changes, metadata refresh }
-       Revoke { file or all, deadline }
+DiscoverySource (Phase 1: discovery thread in-process)
+  -> stream of CandidateEvent
+       Observed { runtime_locator + path + fingerprint_evidence }
+       Updated { runtime_locator + path + metadata refresh }
+       Removed { runtime_locator, reason }
+
+LocalOwnershipResolver (Phase 1: read worker)
+  -> resolve or create file_id
+  -> acquire process-local runtime lease
+  -> start, update, or stop reader
 ```
 
-`AssignmentSource` is a required architectural boundary, not a temporary helper. The
-read worker must depend only on its ordered event contract; it must not inspect glob
-configuration, assume assignments are produced locally, or derive ownership from core
-id, CPU count, deployment generation, or receiver instance. The future extension must
-be able to replace the in-process producer without changing file reading, framing,
-batching, or Ack-gated progress semantics.
+`DiscoverySource` is a required local architectural boundary: the read worker must not
+inspect glob configuration or perform directory traversal. It is deliberately only a
+candidate-discovery abstraction. It does not grant distributed ownership and is not
+claimed as the Phase 3 wire or extension protocol.
 
-The v1 implementation is a dedicated **discovery thread** running glob reconciliation
+Phase 3 adds a separate ownership contract. At minimum, that contract needs an
+assignment revision, an idempotency key, a fencing token, ordered snapshot/incremental
+semantics, reconciliation after missed events or reconnect, an enforceable revoke
+deadline, and receiver confirmation that reading has stopped. Its conceptual shape is:
+
+```text
+IdentityRegistry
+  Candidate { runtime_locator + path + fingerprint_evidence }
+    -> ResolvedIdentity { file_id + identity_revision }
+
+OwnershipCoordinator
+  -> Assign { file_id, ownership_token, locator, assignment_revision }
+  -> Revoke { file_id, ownership_token, deadline, assignment_revision }
+
+Reader
+  -> Revoked { file_id, ownership_token, committed_offset }
+```
+
+The Phase 3 protocol may replace the Phase 1 candidate-to-reader adapter without
+changing byte reading, framing, or the logical Ack-gated progress model. It will change
+the reader-facing ownership messages and checkpoint implementation.
+
+The Phase 1 implementation is a dedicated **discovery thread** running glob reconciliation
 (include minus exclude, `ignore_older_than` filter) on `poll_interval`. Running
 discovery on its own thread keeps three stall classes off the read path: slow directory
 scans (large or network-mounted directories), fingerprint computation bursts (startup,
 rotation storms), and `stat` storms. Discovery output invariants:
 
-- **One event stream, ordered.** Assignment events are delivered over a single bounded
-  channel, so a `Revoke` cannot be overtaken by a re-`Assign` of the same file.
+- **One event stream, ordered.** Candidate events are delivered over a single bounded
+  channel, so a `Removed` event cannot be overtaken by a later `Observed` event for the
+  same runtime locator.
 - **Runtime-locator dedup.** Candidates are deduped by POSIX `(st_dev, st_ino)` or
   Windows `(volume_serial, FILE_ID_INFO)` before emission. Hardlinks, a file matched by
-  two globs, or a file transiently visible at two paths produce **one** assignment with
+  two globs, or a file transiently visible at two paths produce **one** candidate with
   path as metadata. One reader per live runtime locator, always.
-- A new runtime locator always produces a distinct assignment while the previous
+- A new runtime locator always produces a distinct candidate while the previous
   locator is live, even if their fingerprints are identical. Equal prefixes are common
   for unrelated logs and are not proof of identity. Same-filesystem rename continuity
   comes from the unchanged locator. Cross-device or cross-volume copy/unlink is treated as a new file in
-  v1; duplicate ingestion is safer than merging two independent streams.
+  Phase 1; duplicate ingestion is safer than merging two independent streams.
 
 ### Growing-file tailing
 
@@ -224,22 +344,22 @@ registering the initial checkpoint anchor, the worker reads currently available 
 in bounded turns and emits complete records incrementally as new bytes are appended.
 It never loads or waits for the complete file.
 
-The target discovery implementation combines filesystem notifications with periodic
-glob reconciliation. Notifications provide prompt discovery of create, move, and
-relevant modification events; reconciliation remains the source of correctness after
-missed or coalesced events, watcher overflow, directory replacement, startup races, or
-platform-specific notification gaps. A notification is only a hint to reconcile and
-`stat`; it is not file identity or proof that a write is complete.
+Phase 1 uses periodic glob reconciliation. Phase 2 may add filesystem notifications for
+prompt create, move, and relevant modification hints, while reconciliation remains the
+source of correctness after missed or coalesced events, watcher overflow, directory
+replacement, startup races, or platform-specific notification gaps. A future
+notification is only a hint to reconcile and `stat`; it is not file identity or proof
+that a write is complete.
 
 Rapid file growth remains bounded by `max_read_bytes_per_turn`, batch byte/record bounds,
 and downstream backpressure. When downstream is blocked, the receiver stops reading and
 leaves unread bytes in the file rather than buffering the growing file in memory. The
-observable discovery-delay bound is the notification latency when notifications work,
-and normally one configured `poll_interval` plus scan and assignment latency when
-reconciliation is the fallback. Discovery scan duration and assignment-channel delay
-are measured so operators can detect when that expectation is not met.
+Phase 1 observable discovery-delay bound is normally one configured `poll_interval`
+plus scan and candidate-channel latency. Discovery scan duration and candidate-channel
+delay are measured so operators can detect when that expectation is not met. Phase 2
+notifications may improve latency but do not change this correctness bound.
 
-Target discovery supports recursive include globs with exclude-wins precedence and an
+Phase 1 discovery supports recursive include globs with exclude-wins precedence and an
 explicit symlink policy. `follow_symlinks` defaults to false; when enabled, directory
 cycles are detected by runtime identity and traversal remains bounded by configured
 depth and tracked-file limits. Excludes are evaluated against both the matched path and
@@ -270,25 +390,25 @@ removed, so a full tracked table can remain saturated until the limit is raised 
 operator explicitly removes state. This interaction is validated with a configuration
 warning and documented as an availability tradeoff.
 
-When engine-scope extensions exist, the same event stream is delivered by an external
-discovery extension and the reader/checkpoint machinery below the boundary is
-unchanged. The event protocol above is deliberately minimal; richer handoff mechanics
-are **not** specified now (see Multi-instance requirements).
+When engine-scope extensions exist, discovery may also move outside the receiver, but
+candidate discovery and ownership assignment remain separate concepts. The Phase 3
+ownership protocol and fenced checkpoint API are intentionally not frozen by the local
+Phase 1 event shape (see Multi-instance requirements).
 
 ### Ownership across generations
 
-Live reconfiguration and resize overlap deployment generations: the new instance starts
-and must become ready **before** the old one drains. Both generations
+Live reconfiguration and resize overlap deployment generations: the new instance may
+start **before** the old one drains. Both generations
 resolve the same checkpoint path (keys exclude generation by design, D5). Without an
 ownership mechanism, the old generation can rewrite checkpoint state **after** the
-new generation has advanced it -- a lost-update race that exists in v1, not just in the
+new generation has advanced it -- a lost-update race that exists in Phase 1, not just in the
 multi-instance future.
 
-v1 uses two mechanisms with deliberately different scopes:
+Phase 1 uses two mechanisms with deliberately different scopes:
 
-1. An exclusive advisory lock (`flock`) on the stable checkpoint namespace prevents
-   overlapping generations of the same logical receiver from concurrently loading or
-   replacing its checkpoint state.
+1. An exclusive advisory lock on the stable checkpoint namespace (`flock` on supported
+   POSIX targets and `LockFileEx` on Windows) prevents overlapping generations of the
+   same logical receiver from concurrently loading or replacing its checkpoint state.
 2. A process-wide `RuntimeFileLease` registry keyed by the platform runtime locator prevents two
    filelog receiver instances in the same engine process from reading the same open
    file, even when their include patterns or checkpoint namespaces overlap. Assignment
@@ -311,16 +431,19 @@ v1 uses two mechanisms with deliberately different scopes:
 This prevents duplicate readers during normal live reconfiguration inside one engine,
 including receiver-node renames and overlapping patterns. It does not coordinate two
 independent engine processes that use different state directories; that deployment is
-outside the v1 ownership guarantee and must be documented. "Ready" here remains a
-lifecycle description, not an engine primitive -- receiver readiness signalling does
-not exist in the engine today.
+outside the Phase 1 ownership guarantee and must be documented. Receiver readiness
+signalling does not exist in the engine today. A new generation waiting for the lock is
+alive but must not be represented as collecting or ready. Consequently, Phase 1 can
+serialize local ownership, but it cannot claim lossless ready-before-ownership rollout
+semantics. Deployment orchestration must treat an `ownership_timeout` as terminal; an
+engine-level readiness contract is a prerequisite for making a stronger claim.
 
 ### Multi-instance requirements (Phase 3)
 
-When a discovery/assignment extension and engine-scope coordination exist, ownership
-moves from "one instance owns everything" to assigned subsets. This document fixes only
-the **requirements** that Phase 3 must satisfy, because the checkpoint format and
-identity scheme must not preclude them:
+When shared identity, assignment, and engine-scope coordination exist, ownership moves
+from "one instance owns everything" to assigned subsets. This document fixes only the
+**requirements** that Phase 3 must satisfy; it does not claim that the Phase 1 candidate
+events or checkpoint files implement them:
 
 1. **Single-writer-per-identity:** at most one instance reads a given logical `file_id`
    and
@@ -330,19 +453,26 @@ identity scheme must not preclude them:
    insufficient because a stale writer can overwrite that file. The Phase-3 storage or
    coordinator must compare and reject stale epochs atomically (for example, under a
    coordinator-owned lease or compare-and-swap store). Epoch allocation, verification,
-   and transport are.
+   transport, expiration, and recovery after coordinator restart remain Phase 3 design
+   decisions.
 3. **Ready-before-ownership:** an instance can run without owning anything and acquire
-   ownership later (already the v1 startup shape under D15).
-4. **Stable partition input:** partition mapping uses the persisted opaque `file_id`,
-   never a fingerprint. It is therefore stable for short, empty, and growing files.
-   The mapping function and partition count remain Phase-3 decisions.
+   ownership later. Claiming rollout readiness requires the engine-level readiness
+   contract that Phase 1 lacks; merely waiting for a local lock is not sufficient.
+4. **Identity before partitioning:** a shared identity registry resolves or creates the
+   persisted opaque `file_id` before ownership is assigned by `file_id`. Discovery
+   candidates cannot be partitioned by an ID that only the eventual receiver creates.
+   The registry's concurrency, idempotency, and recovery contracts remain Phase 3 work.
+5. **Stable partition input:** after shared identity resolution, partition mapping uses
+   `file_id`, never a fingerprint. It is therefore stable for short, empty, and growing
+   files. The mapping function and partition count remain Phase 3 decisions.
 
-Checkpoint records carry stable `file_id`s and no current owner, which makes a future
-split deterministic. Moving from the v1 instance-local snapshot/log to partition-owned
-storage still requires a coordinated format and ownership migration; this document does
-not claim otherwise. Virtual partitions, partition counts, and revoke/assign mechanics
-do not appear in v1 config because freezing them now would encode an unproven protocol
-into a durable format.
+Checkpoint records carry stable `file_id`s and no current owner, which preserves useful
+logical progress input for a future split. It does not by itself solve pre-assignment
+identity resolution. Moving from the Phase 1 instance-local snapshot/log to
+partition-owned fenced storage is a checkpoint-storage replacement with a coordinated
+format and ownership migration, not an in-place extension. Virtual partitions,
+partition counts, and revoke/assign mechanics do not appear in Phase 1 config because
+freezing them now would encode an unproven protocol into a durable format.
 
 That migration must be explicit and versioned. It must preserve each committed
 `file_id` offset without re-ingestion or skipping, reject mixed old/new ownership during
@@ -397,7 +527,7 @@ Identity invariants:
 
 Fingerprint growth updates matching evidence under the same `file_id`; it never rekeys
 a checkpoint record. Cross-device copy/unlink is not inferred from fingerprint equality
-in v1 because a copied file and an unrelated file with the same prefix are
+in Phase 1 because a copied file and an unrelated file with the same prefix are
 indistinguishable without stronger source-specific evidence.
 
 No local-filesystem locator is a permanent identity across deletion and identifier
@@ -405,7 +535,7 @@ reuse. A reused locator whose replacement reproduces the same fingerprint window
 mistaken for the previous file after restart. Increasing the fingerprint window and
 skipping constant headers reduces that risk but cannot eliminate it; the README must
 state this limitation. Network filesystems with weak inode semantics are unsupported in
-v1 unless a later fallback identity policy is added.
+Phase 1 unless a later fallback identity policy is added.
 
 Changing identity configuration after checkpoints exist is a state migration, not an
 ordinary config reload. Changing `fingerprint_bytes`, `ignored_header_bytes`, or the
@@ -424,18 +554,18 @@ runtime locator described above. Windows uses
 `GetFileInformationByHandleEx` + 128-bit `FILE_ID_INFO`, which is required for ReFS
 correctness. Equivalent restart and rotation tests are Phase-1 acceptance criteria on
 all three platforms. Reading a Windows file whose writer denies shared-read access
-remains a separate P1 source contract and is not implied by Windows identity support.
+remains a separate priority-P1 source contract and is not implied by Windows identity support.
 
 ## Execution model
 
 Three components keep blocking work isolated from the engine runtime:
 
 - **Discovery thread** (blocking): glob reconcile, `stat`, fingerprint computation for
-  new files. Emits `AssignmentEvent`s over a bounded channel. Slow scans delay
+  new files. Emits `CandidateEvent`s over a bounded channel. Slow scans delay
   discovery of *new* files but never stall tailing of already-assigned files.
-- **Read worker thread** (blocking): consumes assignment events; owns FDs, framing,
+- **Read worker thread** (blocking): consumes candidate events; owns FDs, framing,
   Arrow batch building, the in-memory offset table, the retained in-flight batch, and
-  all checkpoint I/O including fsync. Checkpoint writes stay on this thread in v1
+  all checkpoint I/O including fsync. Checkpoint writes stay on this thread in Phase 1
   because the worker is idle during the in-flight window anyway (see Ack model): commit
   I/O fills dead time rather than competing with reads.
 - **Async engine task**: owns the control channel, Ack/Nack correlation, emission, and
@@ -448,10 +578,32 @@ Three components keep blocking work isolated from the engine runtime:
     only fire from an already-known deadline would be unreachable while parked on a
     full channel.
 
-Channels: discovery->worker (bounded, assignment events), worker->async (bounded,
+Channels: discovery->worker (bounded, candidate events), worker->async (bounded,
 capacity 1, batches + delta sets), async->worker (bounded, commands: Commit, Resend,
 Drain, Shutdown). The worker never blocks indefinitely on a full channel: it polls the
 command channel with a short timeout while the handoff is full (journald's discipline).
+
+Phase 1 co-locates several logical components on the read/checkpoint thread, but their
+contracts remain distinct:
+
+```text
+DiscoverySource
+  -> IdentityAndLocalOwnership
+  -> ReaderAndFramer
+  -> BatchAndAckCoordinator
+  -> CheckpointStore
+```
+
+- Discovery produces candidates and never grants distributed ownership.
+- Identity and local ownership resolve `file_id` and enforce one local reader.
+- Reading and framing produce deterministic records plus progress deltas.
+- Batch/Ack coordination owns the receiver-wide delivery frontier.
+- The checkpoint store atomically persists progress and framing-resume state.
+
+This is a contract decomposition, not a requirement for five threads. Phase 1 accepts
+that synchronous WAL, `fsync`, and compaction latency pauses every reader. Moving a
+component to another thread in Phase 2 must preserve bounded queues, cancellation,
+ordering, and the single-writer progress contract.
 
 Reader scheduling within the worker:
 
@@ -461,7 +613,7 @@ Reader scheduling within the worker:
 - At most `max_open_files` FDs are held. When over the cap, the **least-recently-served**
   reader is closed (offset retained; reopen re-validates identity per INV-ID3) so FD
   ownership rotates and a hot subset cannot permanently starve cold files.
-- **No read-ahead past the unacked frontier (v1):** while a batch is in flight, no
+- **No read-ahead past the unacked frontier (Phase 1):** while a batch is in flight, no
   reader advances its file position beyond the offsets captured in that batch's delta
   set. The worker is idle during the in-flight window (journald's proven invariant).
   This deliberately caps throughput at one batch per downstream round trip; lifting it
@@ -469,6 +621,16 @@ Reader scheduling within the worker:
   offset tracking. Independently, one read worker is the Phase-1 aggregate file-I/O and
   checkpoint-I/O throughput ceiling even when downstream latency is negligible; Phase-1
   performance claims and benchmarks must name both ceilings.
+
+The one-batch rule is receiver-wide, not per file. It deliberately accepts
+head-of-line blocking in Phase 1: one slow Ack pauses all file reads, a permanent batch
+failure can stop unrelated files, and every file's checkpoint latency is coupled to the
+same downstream round trip and progress sync. Round-robin read turns limit domination
+while constructing a batch, but they do not provide failure isolation after emission.
+Phase 1 acceptance therefore includes aggregate throughput, Ack-latency sensitivity,
+hot-file fairness, and permanent-Nack behavior with many active files. Phase 2 may
+introduce local shards or multiple in-flight batches only with independently specified
+ordering, contiguous commit, memory, and failure-containment rules.
 
 ### Threading and NUMA placement
 
@@ -527,13 +689,14 @@ the default when no multiline boundary is configured. Framing operates on decode
 characters for configured text encodings; raw mode deliberately operates on bytes.
 Invariants and constraints:
 
-- **INV-FR1 (record-boundary commits):** without partial flush, for a non-terminal file
-  identity, `committed_offset` always points immediately past a `\n`. When partial flush
-  is enabled, a reason-marked partial boundary may also be committed; the checkpoint
-  persists the boundary and sufficient framing state so restart cannot merge, split,
-  or duplicate the record differently. A reader must be able to resume framing at
-  `committed_offset`, and a re-read from it deterministically reproduces the same
-  records (including deterministic `max_line_bytes` truncation).
+- **INV-FR1 (restartable commits):** every committed offset is paired with explicit
+  framing-resume state. The common `clean` state means the next complete source unit
+  starts a new logical record. A timeout-flushed partial record commits its ending byte
+  offset with `clean`, so later bytes begin a new record both live and after restart.
+  Split records that continue across batches commit `continuation { record_start_offset,
+  next_fragment_index }`. Incomplete encoded characters are never committed. A reader
+  must be able to resume from `(committed_offset, framing_resume)` and deterministically
+  reproduce the same subsequent records.
 - `max_line_bytes` (default 1 MiB): a longer line is truncated at the limit, emitted
   with attribute `log.record.truncated = true`, and the remainder up to the next
   newline is discarded with a counter. The emitted record's `new_offset` is immediately
@@ -551,14 +714,16 @@ Invariants and constraints:
   so restart can resume if the source still exists.
 - Idle flush is the only sanctioned way to commit a mid-line offset on a non-terminal
   file. It trades latency for a documented slow-writer split risk and is included in
-  Phase 1 because the P0 requirements require the final record to be released without
-  waiting indefinitely.
+  Phase 1 because the priority-P0 requirements require the final record to be released
+  without waiting indefinitely. The flush terminates that logical record and commits a
+  `clean` resume state; it does not require the next append to be merged with the
+  timeout-flushed record.
 - Phase 1 encoding supports UTF-8, ASCII, UTF-16LE, UTF-16BE, and raw mode using the
   decode-before-framing contract below. Raw byte preservation is not a substitute for
   selecting UTF-16.
 
 Multiline aggregation lives in the receiver's framing layer because it changes record
-boundaries and therefore offset accounting. It is part of the Phase-1 P0 release.
+boundaries and therefore offset accounting. It is part of the Phase 1 priority-P0 release.
 
 ### Phase-1 framing and encoding contract
 
@@ -600,12 +765,15 @@ operator-chain compatibility.
   record at the next physical line; no source bytes are discarded. A timeout is an
   explicit heuristic and can split a record written slowly. Byte overflow follows the
   oversize policy below. Rotation and drain use the same reason-marked flush contract
-  when partial flush is enabled; otherwise they retain the documented v1 behavior.
+  when partial flush is enabled; otherwise they retain the documented Phase 1 behavior.
 - **Oversize policy.** `split` preserves all input by emitting bounded fragments;
   `truncate` emits the bounded prefix and discards through the logical record boundary.
   Both policies emit telemetry, and emitted records identify truncation or
-  fragmentation. Split fragments carry a stable record identifier, zero-based fragment
-  index, and final-fragment marker so processors or destinations can reconstruct them.
+  fragmentation. Split fragments carry a stable record identifier derived from
+  `(file_id, file_epoch, record_start_offset)`, a zero-based fragment index, and a
+  final-fragment marker so processors or destinations can reconstruct them. When a
+  split logical record crosses an Ack boundary, its next fragment index and original
+  record start are durable framing-resume state.
   For decoded text, the byte limit is measured on the UTF-8 body emitted into OTAP; for
   `raw`, it is measured on source bytes.
 
@@ -856,10 +1024,9 @@ source bytes disappear before capture/recovery.
 ### In-flight tracking and Nack recovery
 
 Each emitted batch carries a delta set `{ (file_id, file_epoch, prev_offset,
-new_offset) }` plus rotation-finalization markers. The async half subscribes the batch
-to `ACKS | NACKS` with `(batch_id, attempt)` in `CallData`.
-v1 enforces `max_in_flight_batches = 1` -- the proven Ack-gating pattern
-.
+new_offset, framing_resume) }` plus rotation-finalization markers. The async half
+subscribes the batch to `ACKS | NACKS` with `(batch_id, attempt)` in `CallData`.
+Phase 1 enforces `max_in_flight_batches = 1`, the proven Ack-gating pattern.
 
 - **Retention:** the worker retains a shallow clone of the in-flight batch. This is
   bounded by the declared in-flight memory budget; cloning does not duplicate Arrow
@@ -935,6 +1102,10 @@ record:
   locator_kind u8,
   locator_len u16, locator bytes (POSIX device/inode or Windows volume/file ID),
   committed_offset u64, file_epoch u32,
+  framing_profile u64,
+  framing_resume_kind u8 (clean | continuation),
+  continuation_record_start_offset u64, continuation_next_fragment_index u32
+    (present only for continuation),
   state u8 (active | rotated_finalized),
   last_seen_unix_nano u64 (wall clock),
   last_path_len u16, last_path bytes (advisory)
@@ -947,9 +1118,15 @@ Progress log transaction:
 [ sequence u64 ][ update_count u32 ][ updates... ][ crc32c u32 ]
 
 update:
-  register_file | update_offset | update_fingerprint | update_metadata | remove_file
+  register_file | update_progress | update_fingerprint | update_metadata | remove_file
   keyed by file_id, with operation-specific fields
 ```
+
+`update_progress` atomically advances `committed_offset`, `file_epoch`, and
+`framing_resume`. `framing_profile` identifies the versioned encoding, multiline, and
+oversize behavior needed to interpret that state. A configuration change that alters
+the profile while resumable state exists requires an explicit state migration or reset;
+it is not treated as an ordinary live reload.
 
 - **Registration is durable before reading.** Creating a `file_id` appends and syncs a
   `register_file` update containing its initial offset. A reconciliation pass may place
@@ -974,20 +1151,20 @@ update:
   and verifies that both files carry that generation. If the marker is missing during
   first-store creation, it selects the highest complete pair; an invalid selected pair
   otherwise fails closed rather than guessing from modification time. Compaction
-  duration is measured because a large tracked-file table can delay the next v1 batch.
+  duration is measured because a large tracked-file table can delay the next Phase 1 batch.
 - **Retention is applied during compaction.** A record may be removed only when it has
   been absent from discovery and all open/in-flight state longer than
   `checkpoint.retention`. Wall-clock time is required across restart, so a large forward
   clock jump can expire state early; that can cause duplicate ingestion or intentional
   `start_at: end` skipping if the file later returns. This is an explicit retention
   tradeoff, not harmless behavior. Retention can be disabled for operators that require
-indefinite resume state.
+  indefinite resume state.
 
 </details>
 
 <!-- markdownlint-enable MD033 -->
 
-The v1 namespace lock prevents stale whole-store writers. Phase 3 cannot obtain fencing
+The Phase 1 namespace lock prevents stale whole-store writers. Phase 3 cannot obtain fencing
 merely by storing an epoch in these files; it requires a coordinator or storage API that
 atomically rejects writes from revoked owners. Moving to partition-owned logs is a
 coordinated migration and remains Phase-3 work.
@@ -1026,16 +1203,19 @@ in Phased implementation.
   detectable, counts `filelog.rotation.copytruncate_detected`, documents that bytes
   written between copy and truncate are unrecoverable, and **recommends move/create
   rotation** in its README.
-- On detection, policy `on_truncate`, default **`read_new`**: increment the file's
-  `file_epoch` (invalidating any in-flight deltas for it, which are skipped at Ack
-  apply time), reset the offset to 0, and read the file as new content. The retained
-  in-flight batch is unaffected -- its redelivery does not depend on the file
-  (D7). `on_truncate: fail` is offered for operators who prefer loud failure. Silent
-  `ignore` (stanza's default) is rejected.
+- On detection, policy `on_truncate`, default **`fail`**. If the retained batch contains
+  an unacknowledged range for that file, the receiver stops reading the file and reports
+  a high-severity file error and quarantines it: the old bytes may already be destroyed, so a later process
+  crash could make that emitted batch impossible to reconstruct. The live retained
+  batch can still complete, but that does not restore crash recovery.
+- Explicit `on_truncate: read_new` accepts this loss window. It increments `file_epoch`,
+  resets offset and framing state to the start of the new stream, and emits a
+  high-severity health event before reading new content. An Ack for a prior epoch never
+  advances the new epoch. Silent `ignore` (stanza's default) is rejected.
 
 ## Backpressure
 
-Every buffer is bounded: assignment channel, worker->async handoff (capacity 1),
+Every buffer is bounded: candidate channel, worker->async handoff (capacity 1),
 command channel, per-reader line buffer (`max_line_bytes`), open batch
 (`batch.max_*`), retained batch (shallow clone of the open-batch bound). When
 downstream is slow the handoff fills and the worker stops calling `read(2)` -- unread
@@ -1069,13 +1249,15 @@ The sequence below follows the engine's actual orchestration
 Live reconfiguration is teardown + rebuild with generation overlap;
 correctness reduces to the drain path, restart recovery, and the D15 lock serializing
 checkpoint access between the outgoing and incoming generations, plus runtime inode
-leases preventing overlapping readers.
+leases preventing overlapping readers. This is an ownership-safety statement, not a
+readiness guarantee: Phase 1 has no engine signal by which the waiting generation can
+advertise "alive but not collecting."
 
 ## Proposed Phase 1 configuration
 
 This is the proposed shape, not a compatibility promise. It keeps source behavior under
 the receiver and timestamp interpretation under a processor. Phase 1 implements the
-complete P0 surface; optional P1 metadata may follow in Phase 2.
+complete priority-P0 surface; optional priority-P1 metadata may follow in Phase 2.
 
 ```yaml
 receivers:
@@ -1090,9 +1272,7 @@ receivers:
       start_at: end                            # beginning | end (first discovery only;
                                                # checkpoints always win on restart)
       discovery:
-        watch_mode: auto                       # auto | native | poll
-        debounce_interval: 200ms
-        poll_interval: 5s                      # correctness fallback
+        poll_interval: 5s
       ignore_older_than: 0s                    # 0 = disabled
       identity:
         fingerprint_bytes: 1000                # min 16
@@ -1123,7 +1303,7 @@ receivers:
         max_flush_period: 1s
       rotation:
         rotate_wait: 5s
-        on_truncate: read_new                  # read_new | fail
+        on_truncate: fail                      # fail | read_new (explicit loss window)
       checkpoint:
         id: app-logs                           # stable across receiver-node renames
         sync_interval: 0s                      # 0 = sync every Ack transaction
@@ -1177,14 +1357,14 @@ multiline:
   regex_profile: re2-v1
   line_end_pattern: '^END request$'
 
-# Fail loudly rather than reset a detectably truncated file
+# Explicitly accept reset after a detectably truncated file
 rotation:
-  on_truncate: fail
+  on_truncate: read_new
 ```
 
 Validation at factory build time (`validate_config`, serde `deny_unknown_fields`,
-semantic checks returning `InvalidUserConfig`) follows the journald convention
-, including cross-field rules (`max_line_bytes` and
+semantic checks returning `InvalidUserConfig`) follows the journald convention,
+including cross-field rules (`max_line_bytes` and
 `max_record_bytes` vs `batch.max_bytes`, `max_records <= 65535`, non-empty `include`, nonzero retry
 attempts/backoffs, `initial_backoff <= max_backoff`, exactly one multiline boundary
 pattern, supported regex profile, valid encoding/error policy, valid timezone names in
@@ -1196,6 +1376,29 @@ Issue-thread requests map as: file metadata -> D10; ignore-older-than ->
 `ignore_older_than`; header exclusion from *identity* -> `identity.ignored_header_bytes`
 (skipping header *content* from ingestion is deferred); max FD / max bytes / line
 length -> `limits.*`, `framing.*`, `batch.*`.
+
+## Failure-containment model
+
+Phase 1 distinguishes record, file, and receiver failures. It has no virtual-shard
+failure domain. Because the in-flight batch and checkpoint writer are receiver-wide,
+delivery or durable-progress failures can affect files unrelated to the source of the
+original error.
+
+| Failure class | Phase 1 containment | Rule |
+| --- | --- | --- |
+| Oversize or malformed record under a non-failing policy | Record | Mark, split, truncate, or preserve according to explicit configuration |
+| Read, permission, decode-`fail`, or detected-truncation error | File | Quarantine or fail the affected file while other files continue |
+| Ambiguous recovery match | File | Create a new identity or fail that file according to explicit recovery policy |
+| Retryable downstream Nack | Receiver-wide batch | Pause all reads and retry the retained batch within bounds |
+| Permanent Nack or retry exhaustion | Receiver | Default terminal policy prevents progress ambiguity across a mixed-file batch |
+| Checkpoint append, sync, compaction, or corruption failure | Receiver | Progress durability is shared and cannot safely degrade per file |
+| Namespace ownership timeout | Receiver | The instance never obtained authority over its Phase 1 checkpoint namespace |
+| Runtime lease timeout | File | Do not start a duplicate local reader for that runtime identity |
+| Closed downstream route or worker failure | Receiver | The receiver cannot safely emit or track progress |
+
+Phase 2 may add a shard failure domain only if batches, progress transactions, retry
+state, and ownership are independently bounded and recoverable per shard. Merely adding
+concurrency does not provide failure isolation.
 
 ## Failure policy
 
@@ -1209,7 +1412,7 @@ length -> `limits.*`, `framing.*`, `batch.*`.
 | Ambiguous identity match at load | Durably register a new `file_id`, count `filelog.identity.reset`, and apply `identity.on_recovery_mismatch` (default `beginning`) |
 | Retryable Nack | Resend retained batch after bounded exponential backoff |
 | Non-retryable Nack / retries exhausted | `on_nack`: terminal (default) or drop-and-continue with counter |
-| Truncation detected with batch in flight | `file_epoch` bump invalidates that file's deltas at Ack-apply; retained batch redelivery unaffected |
+| Truncation detected with an unacknowledged range | Fail the affected file by default; `read_new` explicitly accepts unrecoverable loss if the process crashes after source destruction |
 | Rotation finalizes with an unterminated line | Do not emit it; count partial bytes left uncommitted and document possible capture loss |
 | Downstream channel closed | Terminal error |
 
@@ -1237,10 +1440,10 @@ checkpoint failures, and tracked-file-limit saturation.
 ## Phased implementation
 
 These phases are delivery stages toward the architecture in #2844. Phase 1 is the
-complete requirements-P0 release, not completion of the epic's
+complete priority-P0 release, not completion of the epic's
 multi-instance discovery, virtual-partition ownership, or live CPU-resize criteria.
 
-- **Phase 1 (P0 release):** single instance; discovery thread; newline and configurable
+- **Phase 1 (priority-P0 release):** single instance; discovery thread; newline and configurable
   start- or end-pattern multiline framing; bounded idle, line, and byte flushes;
   UTF-8, ASCII, UTF-16LE, UTF-16BE, and raw decoding; BOM and decode-error policies;
   split/truncate oversize handling with fragment correlation; timestamp-processor
@@ -1252,35 +1455,56 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
   exhaustion, backpressure with drain-during-backpressure, both rotation modes, growing
   and duplicate fingerprints, ambiguous recovery, initial `start_at: end` anchor,
   namespace-lock serialization, overlapping-pattern leases, every supported encoding,
-  malformed bytes, multiline limits and fallback, partial flush, oversize fragments,
-  and timestamp success/fallback behavior on all supported platforms.
+  malformed bytes, multiline limits and fallback, restart after an Acked partial flush,
+  restart between split fragments, truncation overlapping an unacknowledged range,
+  receiver-wide head-of-line behavior, hot-file fairness, and timestamp
+  success/fallback behavior on all supported platforms.
   **Resize honesty:** Phase 1 validates checkpoint-identity stability and
   single-instance restart continuity under a changed ambient core count; it cannot
   validate or claim multi-instance partition reassignment under CPU scale up/down -- that
   requires Phase 3 and is deferred, not claimed.
-- **Phase 2 (P1 scale and discovery improvements):** read-ahead / multi-batch in-flight window with contiguous-Ack
-  cumulative commit (lifts the one-batch-per-round-trip throughput cap that v1
+- **Phase 2 (priority-P1 scale and discovery improvements):** read-ahead / multi-batch in-flight window with contiguous-Ack
+  cumulative commit (lifts the one-batch-per-round-trip throughput cap that Phase 1
   accepts deliberately); filesystem-notification discovery backend with periodic
-  reconciliation retained as the correctness fallback; recursive discovery refinements
-  and optional source-offset metadata; optional background compaction if synchronous
+  reconciliation retained as the correctness fallback; optional source-offset metadata;
+  optional background compaction if synchronous
   compaction is measured to stall ingestion; full-path benchmark with allocation and
   checkpoint-I/O accounting.
-- **Phase 3:** external discovery/assignment extension at engine or group scope
-  (blocked on extension-scope work); virtual-partition assignment
-  satisfying the Multi-instance requirements, enforced fencing and checkpoint-store
-  migration.
+- **Phase 3:** shared identity registry plus discovery/ownership coordination at engine
+  or group scope (blocked on extension-scope work); virtual-partition assignment
+  satisfying the Multi-instance requirements, enforced fencing, receiver readiness, and
+  checkpoint-store migration.
+
+## Alternatives considered
+
+| Alternative | Why it is not selected for Phase 1 |
+| --- | --- |
+| Port the Go/Stanza receiver | It mixes semantic operators with source framing and progress, contrary to the OTAP receiver/processor boundary |
+| Use path as checkpoint identity | Rename and path reuse detach progress from the underlying file |
+| Use fingerprint as identity | Empty, short, and common-prefix files collide; fingerprints are only matching evidence |
+| Use a native inode or file ID permanently | Native locators can be reused and do not provide durable logical identity |
+| Perform blocking file work on Tokio | A slow filesystem could stall the current-thread runtime or consume a shared blocking pool |
+| Commit progress after emission rather than Ack | Downstream rejection or failure could silently lose data |
+| Rewrite a complete checkpoint snapshot after every Ack | Ack cost would grow with every tracked file rather than the changed files |
+| Claim copy-truncate correctness | The destructive transition can be unobservable on portable filesystem APIs |
+| Treat `DiscoverySource` as the Phase 3 ownership protocol | Candidate discovery lacks fencing, assignment revisions, reconciliation, and revoke completion |
+| Pre-partition the Phase 1 store | Partition count, mapping, identity authority, and fencing are unresolved; freezing them now could make migration harder |
+| Add per-file or per-shard in-flight batches immediately | It improves isolation but requires new ordering, retry, memory, and contiguous-commit contracts; Phase 1 accepts receiver-wide head-of-line blocking |
 
 ## Open questions
 
 1. **Epic agreement on staging:** is a single-instance receiver with an internal
-   `AssignmentSource` an acceptable first implementation while the extension-based,
-   virtual-partition architecture remains the target?
-2. **Extension scope for the discovery coordinator** (engine-level vs group-level vs a
-   controller-level service, OpAMP precedent) -- blocked on extension-scope work.
-3. **Phase-3 fencing and storage mechanics:** which coordinator or storage API
-   allocates ownership epochs and atomically rejects stale writes, how revoke/assign is
-   transported, and how the v1 snapshot/WAL is migrated, explicitly and version-by-version,
-   to partition-owned state without duplicate ingestion or skipped data.
+   `DiscoverySource` and local identity/ownership resolver an acceptable first
+   implementation while the extension-based, virtual-partition architecture remains the
+   target?
+2. **Extension scope for shared identity and ownership coordination** (engine-level vs
+   group-level vs a controller-level service, OpAMP precedent) -- blocked on
+   extension-scope work.
+3. **Phase 3 identity, fencing, and storage mechanics:** which shared service resolves or
+   creates `file_id` before partition assignment; which coordinator or storage API
+   allocates ownership epochs and atomically rejects stale writes; how revoke/assign is
+   transported; and how the Phase 1 snapshot/WAL is migrated, explicitly and
+   version-by-version, to partition-owned state without duplicate ingestion or skipped data.
    `deployment_generation` cannot be the fencing epoch because it resets across
    controller restarts.
 4. **Phase-2 multi-in-flight commit semantics:** cumulative contiguous-Ack offsets and
@@ -1288,8 +1512,8 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
    offset tracking.
 5. **Shared source-progress crate boundary with journald:** which pieces (envelope
    I/O, worker/async scaffolding, retained-batch resend, Ack correlation) get
-   extracted, and when -- after filelog v1 proves the shape.
-6. **Cross-process ownership with unrelated state directories:** v1 coordinates
+   extracted, and when -- after Phase 1 filelog proves the shape.
+6. **Cross-process ownership with unrelated state directories:** Phase 1 coordinates
    overlapping generations and receiver nodes inside one engine, plus cooperating
    processes using the same checkpoint namespace. Independent engines with unrelated
    state directories require an external coordinator and are unsupported.
@@ -1297,9 +1521,9 @@ multi-instance discovery, virtual-partition ownership, or live CPU-resize criter
    header): deferred; cheap to add as `read_from_offset` if required.
 8. **Delete-after-read policies:** deferred by the issue; the `rotated_finalized`
    state provides the hook for a future `delete_after_ack`. Needs its own issue.
-9. **Timestamp edge policies (Phase-1 P0 exit criterion):** exact layout-profile
+9. **Timestamp edge policies (Phase 1 priority-P0 exit criterion):** exact layout-profile
    directives, ambiguous/nonexistent local-time handling, and destination precision
-   reduction must be agreed with the OPL and exporter owners before the stated P0
+   reduction must be agreed with the OPL and exporter owners before the stated priority-P0
    fractional-second and epoch timestamp outcomes are claimed end to end.
 
 ## Separate follow-up source contracts
@@ -1325,7 +1549,7 @@ must not silently inherit its guarantees:
 
 Each follow-up must state which capture, delivery, and recovery guarantees it provides.
 
-## Deferred beyond the initial implementation
+## Deferred beyond Phase 1
 
 Per #2844's out-of-scope list and the issue discussion: Stanza compatibility and
 embedded operator chains; eBPF capture; `io_uring` / `mmap` I/O backends; remote files;
@@ -1340,22 +1564,22 @@ here guaranteeing only raw records with file metadata.
 
 ## Acceptance-criteria coverage (traceability to #2844)
 
-This table traces the target architecture as well as the initial implementation. Rows
+This table traces the target architecture as well as Phase 1. Rows
 that require Phase 3 remain open epic acceptance criteria; Phase 1 must not be presented
-as satisfying them. Phase 1 is the complete P0 release on Linux, macOS, and Windows;
+as satisfying them. Phase 1 is the complete priority-P0 release on Linux, macOS, and Windows;
 Phase 3 is still required for the epic's multi-instance and live-resize criteria.
 
 | Epic criterion | Where addressed |
 | --- | --- |
-| Discovery separate from reading; extension or compatible abstraction | Discovery thread behind `AssignmentSource` boundary (D2); extension is Phase 3 |
-| New matching files are tailed while still growing | Growing-file tailing; bounded read turns and batches; filesystem notifications plus periodic reconciliation (D14) |
-| Instances read only assigned files | Trivial in v1 (sole instance); single-writer + fencing named as Phase-3 requirements |
-| Ownership via fixed virtual partitions, not CPU count | Stable `file_id` makes progress CPU-independent in v1; partition mapping and storage migration are Phase 3 (D3) |
+| Discovery separate from reading; extension or compatible abstraction | Discovery thread behind `DiscoverySource` candidate boundary (D2); Phase 3 adds a separate ownership protocol |
+| New matching files are tailed while still growing | Growing-file tailing; bounded read turns and batches; Phase 1 periodic reconciliation, with notifications deferred to Phase 2 (D14) |
+| Instances read only assigned files | Trivial in Phase 1 (sole instance); single-writer and fencing named as Phase 3 requirements |
+| Ownership via fixed virtual partitions, not CPU count | CPU-independent `file_id` is the intended partition input, but Phase 3 must resolve identity before assignment and migrate storage (D3-D4) |
 | Resize/restart checkpoint continuity; file-centric keys | D5; Restart and resize recovery; Phase-1 scope states honestly what is and is not validated |
 | Offsets commit only after Ack; Nack never advances | D7; delta application on Ack only; epoch-guarded |
-| Backpressure pauses reading | D13 |
+| Backpressure pauses reading | D11 and D13 |
 | Raw OTAP records with file metadata | D10 |
-| Semantic processing outside receiver (OPL) | Non-goal boundary; OPL inventory deferred to epic |
+| Semantic processing outside receiver (OPL) | Goals and non-goals; OPL inventory deferred to epic |
 | Live reconfig without dual readers of one identity | Namespace lock serializes checkpoint writers; runtime inode leases prevent duplicate local readers (D15) |
 | Move/create handled; copytruncate detected | D12, with copytruncate detection explicitly best-effort |
 | Tests: restart, resize, Ack/Nack, backpressure, rotation | Phase 1 scope (resize: key-stability portion only, remainder Phase 3) |
