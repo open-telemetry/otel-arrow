@@ -17,6 +17,13 @@ use std::io::{self, Write};
 
 type MetricsWriter<'a> = PrettyWriter<'a, dyn Write + 'a>;
 
+const PERCENTILE_NUMERATORS: [u64; 3] = [50, 90, 99];
+const PERCENTILE_LABELS: [&str; 3] = ["p50", "p90", "p99"];
+const PERCENTILE_DENOMINATOR: u64 = 100;
+
+#[derive(Default)]
+struct PercentileEstimates([Option<f64>; PERCENTILE_NUMERATORS.len()]);
+
 impl HierarchicalFormatter {
     /// Format metrics from a generic metrics view.
     pub(super) fn format_metrics_data_to<M: MetricsView, W: Write>(
@@ -183,8 +190,8 @@ impl HierarchicalFormatter {
             write!(w, " count={count}")?;
             write_optional_f64(w, "sum", sum)?;
             if self.histogram_mode == PrettyHistogramMode::Compact {
-                // TODO: Add percentile estimates to compact histogram output.
                 write_average(w, sum, count)?;
+                write_percentiles(w, &estimate_explicit_percentiles(point))?;
             }
             write_optional_f64(w, "min", point.min())?;
             write_optional_f64(w, "max", point.max())?;
@@ -243,8 +250,8 @@ impl HierarchicalFormatter {
             }
             write_optional_f64(w, "sum", sum)?;
             if self.histogram_mode == PrettyHistogramMode::Compact {
-                // TODO: Add percentile estimates to compact histogram output.
                 write_average(w, sum, count)?;
+                write_percentiles(w, &estimate_exponential_percentiles(point))?;
             }
             write_optional_f64(w, "min", point.min())?;
             write_optional_f64(w, "max", point.max())?;
@@ -453,6 +460,209 @@ fn write_average(writer: &mut MetricsWriter<'_>, sum: Option<f64>, count: u64) -
         }
     }
     Ok(())
+}
+
+fn write_percentiles(
+    writer: &mut MetricsWriter<'_>,
+    estimates: &PercentileEstimates,
+) -> io::Result<()> {
+    for (label, estimate) in PERCENTILE_LABELS.iter().zip(estimates.0) {
+        if let Some(estimate) = estimate {
+            write!(writer, " {label}~={estimate}")?;
+        }
+    }
+    Ok(())
+}
+
+fn estimate_explicit_percentiles<P: HistogramDataPointView>(point: &P) -> PercentileEstimates {
+    let count = point.count();
+    let Some((min, max)) = valid_range(point.min(), point.max()) else {
+        return PercentileEstimates::default();
+    };
+    if count == 0 {
+        return PercentileEstimates::default();
+    }
+
+    let ranks = percentile_ranks(count);
+    let mut estimates = PercentileEstimates::default();
+    let mut bounds = point.explicit_bounds();
+    let mut bucket_counts = point.bucket_counts();
+    let mut previous_bound = None;
+    let mut lower = min;
+    let mut cumulative = 0_u64;
+    let mut selected = 0_usize;
+    let mut saw_bound = false;
+    let mut saw_overflow_bucket = false;
+
+    for bucket_count in bucket_counts.by_ref() {
+        if saw_overflow_bucket {
+            return PercentileEstimates::default();
+        }
+
+        let upper = match bounds.next() {
+            Some(bound) => {
+                if !bound.is_finite() || previous_bound.is_some_and(|previous| bound <= previous) {
+                    return PercentileEstimates::default();
+                }
+                previous_bound = Some(bound);
+                saw_bound = true;
+                Some(bound)
+            }
+            None => {
+                saw_overflow_bucket = true;
+                max
+            }
+        };
+
+        cumulative = match cumulative.checked_add(bucket_count) {
+            Some(value) => value,
+            None => return PercentileEstimates::default(),
+        };
+
+        while selected < ranks.len() && ranks[selected] <= cumulative {
+            estimates.0[selected] =
+                midpoint(lower, upper).and_then(|value| clamp_estimate(value, min, max));
+            selected += 1;
+        }
+
+        lower = upper;
+    }
+
+    if !saw_bound
+        || !saw_overflow_bucket
+        || bounds.next().is_some()
+        || cumulative != count
+        || selected != ranks.len()
+    {
+        return PercentileEstimates::default();
+    }
+
+    estimates
+}
+
+fn estimate_exponential_percentiles<P: ExponentialHistogramDataPointView>(
+    point: &P,
+) -> PercentileEstimates {
+    let count = point.count();
+    let Some((min, max)) = valid_range(point.min(), point.max()) else {
+        return PercentileEstimates::default();
+    };
+    if count == 0 {
+        return PercentileEstimates::default();
+    }
+
+    let negative_total = match point
+        .negative()
+        .map(|buckets| checked_bucket_sum(buckets.bucket_counts()))
+        .transpose()
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => 0,
+        Err(()) => return PercentileEstimates::default(),
+    };
+    let positive_total = match point
+        .positive()
+        .map(|buckets| checked_bucket_sum(buckets.bucket_counts()))
+        .transpose()
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => 0,
+        Err(()) => return PercentileEstimates::default(),
+    };
+    let zero_count = point.zero_count();
+    let Some(bucket_total) = negative_total
+        .checked_add(zero_count)
+        .and_then(|value| value.checked_add(positive_total))
+    else {
+        return PercentileEstimates::default();
+    };
+    if bucket_total == 0 || bucket_total != count {
+        return PercentileEstimates::default();
+    }
+
+    let scale = point.scale();
+    let mut estimates = PercentileEstimates::default();
+    for (slot, rank) in estimates.0.iter_mut().zip(percentile_ranks(count)) {
+        let estimate = if rank <= negative_total {
+            let forward_rank = negative_total - rank + 1;
+            point.negative().and_then(|buckets| {
+                bucket_at_rank(&buckets, forward_rank)
+                    .and_then(|index| exponential_bucket_midpoint(scale, index, true))
+            })
+        } else if rank <= negative_total + zero_count {
+            Some(0.0)
+        } else {
+            let forward_rank = rank - negative_total - zero_count;
+            point.positive().and_then(|buckets| {
+                bucket_at_rank(&buckets, forward_rank)
+                    .and_then(|index| exponential_bucket_midpoint(scale, index, false))
+            })
+        };
+        *slot = estimate.and_then(|value| clamp_estimate(value, min, max));
+    }
+
+    estimates
+}
+
+fn valid_range(min: Option<f64>, max: Option<f64>) -> Option<(Option<f64>, Option<f64>)> {
+    if min.is_some_and(|value| !value.is_finite())
+        || max.is_some_and(|value| !value.is_finite())
+        || min.zip(max).is_some_and(|(min, max)| min > max)
+    {
+        return None;
+    }
+    Some((min, max))
+}
+
+fn percentile_ranks(count: u64) -> [u64; PERCENTILE_NUMERATORS.len()] {
+    PERCENTILE_NUMERATORS.map(|numerator| {
+        let whole = count / PERCENTILE_DENOMINATOR * numerator;
+        let remainder = count % PERCENTILE_DENOMINATOR * numerator;
+        whole + remainder.div_ceil(PERCENTILE_DENOMINATOR)
+    })
+}
+
+fn midpoint(lower: Option<f64>, upper: Option<f64>) -> Option<f64> {
+    let (lower, upper) = lower.zip(upper)?;
+    if lower > upper {
+        return None;
+    }
+    let value = lower * 0.5 + upper * 0.5;
+    value.is_finite().then_some(value)
+}
+
+fn clamp_estimate(value: f64, min: Option<f64>, max: Option<f64>) -> Option<f64> {
+    if !value.is_finite() {
+        return None;
+    }
+    let value = min.map_or(value, |min| value.max(min));
+    Some(max.map_or(value, |max| value.min(max)))
+}
+
+fn checked_bucket_sum(mut counts: impl Iterator<Item = u64>) -> Result<u64, ()> {
+    counts.try_fold(0_u64, |total, count| total.checked_add(count).ok_or(()))
+}
+
+fn bucket_at_rank<B: BucketsView>(buckets: &B, rank: u64) -> Option<i32> {
+    let mut cumulative = 0_u64;
+    for (position, count) in buckets.bucket_counts().enumerate() {
+        cumulative = cumulative.checked_add(count)?;
+        if cumulative >= rank {
+            let position = i32::try_from(position).ok()?;
+            return buckets.offset().checked_add(position);
+        }
+    }
+    None
+}
+
+fn exponential_bucket_midpoint(scale: i32, index: i32, negative: bool) -> Option<f64> {
+    let bucket_width = 2.0_f64.powf(-f64::from(scale));
+    let exponent = (f64::from(index) + 0.5) * bucket_width;
+    let magnitude = 2.0_f64.powf(exponent);
+    if !magnitude.is_finite() || magnitude == 0.0 {
+        return None;
+    }
+    Some(if negative { -magnitude } else { magnitude })
 }
 
 fn write_temporality(
