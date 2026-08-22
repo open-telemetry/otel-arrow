@@ -292,77 +292,110 @@ rotation storms), and `stat` storms. Discovery output invariants:
 - **One event stream, ordered.** Candidate events are delivered over a single bounded
   channel, so a `Removed` event cannot be overtaken by a later `Observed` event for the
   same runtime locator.
-- **Runtime-locator dedup.** Candidates are deduped by POSIX `(st_dev, st_ino)` or
-  Windows `(volume_serial, FILE_ID_INFO)` before emission. Hardlinks, a file matched by
-  two globs, or a file transiently visible at two paths produce **one** candidate with
-  path as metadata. One reader per live runtime locator, always.
+- **Runtime-locator dedup.** POSIX `(st_dev, st_ino)` or Windows
+  `(volume_serial, FILE_ID_INFO)` deduplicates bounded tracked, pending, and in-flight
+  candidate state. Hardlinks, overlapping globs, and files transiently visible at two
+  paths therefore cannot create two readers; path remains metadata. Matches that
+  overflow all bounded candidate state are not remembered merely for deduplication and
+  may be rediscovered, but the worker's runtime lease still enforces one reader per live
+  runtime locator.
 - A new runtime locator always produces a distinct candidate while the previous
   locator is live, even if their fingerprints are identical. Equal prefixes are common
   for unrelated logs and are not proof of identity. Same-filesystem rename continuity
   comes from the unchanged locator. Cross-device or cross-volume copy/unlink is treated as a new file in
   Phase 1; duplicate ingestion is safer than merging two independent streams.
 
-### Growing-file tailing
+### Discovery and growing-file collection
 
-When a new file matching an include pattern is created or moved into a watched
-directory, the receiver discovers and assigns it without waiting for the file to close,
-stop growing, or reach a size threshold. After applying `start_at` and durably
-registering the initial checkpoint anchor, the worker reads currently available bytes
-in bounded turns and emits complete records incrementally as new bytes are appended.
-It never loads or waits for the complete file.
+#### Incremental tailing and discovery latency
+
+When a new file matching an include pattern is created or moved into a configured
+directory, the receiver discovers and admits it for local reading without waiting for
+the file to close, stop growing, or reach a size threshold. After applying `start_at`
+and durably registering the initial checkpoint anchor, the worker reads currently
+available bytes in bounded turns and emits complete records incrementally as new bytes
+are appended. It never loads or waits for the complete file.
 
 Phase 1 uses periodic glob reconciliation. Phase 2 may add filesystem notifications for
 prompt create, move, and relevant modification hints, while reconciliation remains the
 source of correctness after missed or coalesced events, watcher overflow, directory
-replacement, startup races, or platform-specific notification gaps. A future
-notification is only a hint to reconcile and `stat`; it is not file identity or proof
-that a write is complete.
+replacement, startup races, or platform-specific notification gaps. A notification is
+only a hint to reconcile and `stat`; it is not file identity or proof that a write is
+complete.
 
-Rapid file growth remains bounded by `max_read_bytes_per_turn`, batch byte/record bounds,
+Rapid file growth remains bounded by `max_read_bytes_per_turn`, record and batch bounds,
 and downstream backpressure. When downstream is blocked, the receiver stops reading and
 leaves unread bytes in the file rather than buffering the growing file in memory. The
-Phase 1 observable discovery-delay bound is normally one configured `poll_interval`
-plus scan and candidate-channel latency. Discovery scan duration and candidate-channel
-delay are measured so operators can detect when that expectation is not met. Phase 2
-notifications may improve latency but do not change this correctness bound.
+expected Phase 1 discovery latency, while admission capacity is available and no earlier
+candidate overflow is pending, is one configured `poll_interval` plus scan and
+candidate-handoff time. Discovery scan duration and candidate-channel delay are
+measured so operators can detect when that expectation is not met. Phase 2 notifications
+may improve latency but do not change the correctness mechanism.
 
-Phase 1 discovery supports recursive include globs with exclude-wins precedence and an
-explicit symlink policy. `follow_symlinks` defaults to false; when enabled, directory
-cycles are detected by runtime identity and traversal remains bounded by configured
-depth and tracked-file limits. Excludes are evaluated against both the matched path and
-resolved target so a symlink cannot bypass a sensitive-path exclusion. Files already
-assigned when a dynamic exclude begins to match are revoked at the next record boundary.
-`ignore_older_than` uses modification time at discovery; it does not evict an already
-tailed file merely because the writer becomes quiet. `recursive` controls whether the
-scanner may descend below the directory named by an include; `**` controls which paths
-match within that permitted traversal. A recursive glob does not override
-`recursive: false`.
+#### Discovery rules and safety
 
-The receiver's resolved checkpoint namespace under `${engine.state_dir}` is always
-excluded from discovery. Configuration is rejected when an include resolves directly
-to that namespace, and a warning is emitted when include patterns appear to cover the
-engine's own log output. The state exclusion is mandatory even when an exclude pattern
-would otherwise be required, preventing checkpoint WAL or snapshot files from feeding
-back into the receiver.
+Phase 1 applies these discovery rules:
 
-The design distinguishes matched files, durable tracked identities, active readers, and
-open file descriptors. `max_tracked_files` bounds the first two durable populations;
-`max_open_files` bounds FDs. When the active/open limit is reached, fair batching and
-least-recently-served FD rotation prevent starvation. When the durable tracked limit is
-reached, new candidates wait and a health event/counter reports the condition; they are
-never silently ignored. Waiting candidates are admitted oldest-discovered first. A
-candidate's wait age and the queue depth are observable without using paths as metric
-dimensions. With `checkpoint.retention: 0`, durable records are never automatically
-removed, so a full tracked table can remain saturated until the limit is raised or an
-operator explicitly removes state. This interaction is validated with a configuration
-warning and documented as an availability tradeoff. Durable quarantines are also exempt
-from ordinary retention, so they consume tracked-file capacity until an operator resets
-or administratively removes the exact `file_id`.
+- Excludes take precedence over includes.
+- `follow_symlinks` defaults to false. When enabled, directory cycles are detected by
+  runtime identity; the traversal stack and ancestor-locator state remain bounded by
+  `max_recursion_depth`.
+- Excludes apply to both the matched path and resolved target, so a symlink cannot
+  bypass a sensitive-path exclusion.
+- A newly matching exclude revokes an active file at the next record boundary.
+- `ignore_older_than` applies when a candidate is considered for admission. It does not
+  evict an already tracked file merely because its writer becomes quiet.
+- `recursive` controls whether the scanner may descend below the directory named by an
+  include. `**` controls matching within that permitted traversal and does not override
+  `recursive: false`.
 
-When engine-scope extensions exist, discovery may also move outside the receiver, but
-candidate discovery and ownership assignment remain separate concepts. The Phase 3
-ownership protocol and fenced checkpoint API are intentionally not frozen by the local
-Phase 1 event shape (see Multi-instance requirements).
+The receiver always excludes its resolved checkpoint namespace under
+`${engine.state_dir}`. Configuration is rejected when an include resolves directly to
+that namespace, and a warning is emitted when include patterns appear to cover the
+engine's own log output. This protection is unconditional and does not depend on a
+user-supplied exclude, preventing checkpoint WAL or snapshot files from feeding back
+into the receiver.
+
+#### Capacity and admission
+
+Discovery and admission use distinct bounded populations:
+
+| Population | Meaning | Bound |
+| --- | --- | --- |
+| Scan working state | Traversal stack, current directory entry and match evaluation | Incremental processing plus `max_recursion_depth`; the complete match set is never materialized |
+| Candidate events | Matches waiting for worker handoff | Bounded discovery channel |
+| Pending candidates | Matches retained while tracked-identity capacity is unavailable | `max_pending_candidates` |
+| Tracked identities | Durable `file_id` checkpoint records | `max_tracked_files` |
+| Open descriptors | Files with an open operating-system handle | `max_open_files` |
+
+Reconciliation processes directory entries and glob matches incrementally. It retains
+scan-generation markers only for bounded tracked identities and retained pending
+candidates, not a snapshot of every untracked match. Each scan marks those locators that
+are still eligible. After the scan, an unmarked tracked locator produces `Removed`; an
+unmarked pending candidate is removed from the pending queue. This detects disappearance
+without materializing an unbounded filesystem snapshot.
+
+When `max_tracked_files` is reached, candidates are retained in the bounded pending
+queue. Retained candidates are admitted oldest-discovered first. When that queue is
+full, additional matches are counted and reported but are not retained in memory;
+periodic reconciliation makes them eligible again. Reconciliation rotates or otherwise
+fairly varies admission opportunity so stable traversal order cannot permanently starve
+candidates that previously overflowed. Strict oldest-first ordering applies only among
+retained candidates.
+
+Admission pressure is observable through pending depth, oldest retained wait age,
+overflow count, reconciliation passes with overflow, and time since the last successful
+admission while overflow persists. The receiver does not claim a per-candidate or global
+maximum wait for candidates whose arrival state was not retained. When
+`max_open_files` is reached, fair batching and least-recently-served descriptor rotation
+prevent an admitted file from starving.
+
+With `checkpoint.retention: 0`, durable records are never automatically removed, so a
+full tracked table can remain saturated until the limit is raised or an operator
+explicitly removes state. This interaction produces a configuration warning and is
+documented as an availability tradeoff. Durable quarantines are also exempt from
+ordinary retention, so they consume tracked-file capacity until an operator resets or
+administratively removes the exact `file_id`.
 
 ### Ownership across generations
 
@@ -1060,13 +1093,15 @@ offset is not supported. The explicit per-file recovery operation is defined und
 
 ## Backpressure
 
-Every buffer is bounded: candidate channel, worker->async handoff (capacity 1),
-command channel, per-reader line buffer (`max_line_bytes`), open batch
-(`batch.max_*`), retained batch (shallow clone of the open-batch bound). When
+Every buffer is bounded: candidate channel, pending-candidate queue
+(`max_pending_candidates`), worker->async handoff (capacity 1), command channel,
+per-reader line buffer (`max_line_bytes`), open batch (`batch.max_*`), and retained
+batch (shallow clone of the open-batch bound). When
 downstream is slow the handoff fills and the worker stops calling `read(2)` -- unread
 bytes stay in the files; the filesystem is the buffer. Memory ceiling per instance is
-approximately `batch.max_bytes + open readers x max_line_bytes + offset/checkpoint
-tables + Arrow overhead`; retained and outgoing batches share the same Arrow buffers.
+approximately `batch.max_bytes + open readers x max_line_bytes + bounded candidate
+state + offset/checkpoint tables + Arrow overhead`; retained and outgoing batches share
+the same Arrow buffers.
 The async half's control-priority obligations under backpressure are part of D13 (see
 Execution model).
 
@@ -1172,8 +1207,9 @@ retry attempts/exhaustion, stale completions, WAL bytes/transactions, compaction
 read-paused time (backpressure), discovery scan duration, namespace-lock wait, and
 runtime-file-lease wait. The inventory also includes named counters for
 `pattern_not_matched`, decode failures by policy/result, pending partial bytes at drain,
-tracked-file candidate queue depth/wait age, files quarantined by reason, and explicit
-quarantine resets by action.
+pending-candidate queue depth and oldest-retained age, candidate overflow and
+overflowing reconciliation passes, time since successful admission while overflow
+persists, files quarantined by reason, and explicit quarantine resets by action.
 
 The receiver emits bounded self-telemetry and health events. A distribution or product
 integration is responsible for exposing those signals through a customer-visible
@@ -1183,6 +1219,8 @@ dimensions; detailed file identity belongs in sampled/rate-limited health events
 Required customer-visible conditions include pattern fallback, timeout/line/byte
 flushes, decode replacement, truncation, quarantine/unreadable files, identity resets,
 copytruncate detection, checkpoint failures, and tracked-file-limit saturation.
+Pending-candidate overflow is also a required health condition because it indicates
+delayed admission even though reconciliation continues retrying eligibility.
 
 ## Phased implementation
 
@@ -1207,7 +1245,9 @@ discovery, virtual-partition ownership, or live CPU-resize criteria.
   restart between split fragments, truncation overlapping an unacknowledged range,
   quarantine persistence across restart and configuration reload, same-locator and
   replacement-locator recovery, audited per-file reset from beginning and end,
-  receiver-wide head-of-line behavior, and hot-file fairness on all supported platforms.
+  bounded incremental scans, pending-candidate overflow and rediscovery, removal during
+  pending admission, overflow fairness under stable traversal order, receiver-wide
+  head-of-line behavior, and hot-file fairness on all supported platforms.
   Separate processor/distribution conformance tests cover timestamp success, fallback,
   timezone edges, and exporter precision.
   **Resize honesty:** Phase 1 validates checkpoint-identity stability and
@@ -1306,7 +1346,7 @@ criteria.
 | Epic criterion | Where addressed |
 | --- | --- |
 | Discovery separate from reading; extension or compatible abstraction | Discovery thread behind `DiscoverySource` candidate boundary (D2); Phase 3 adds a separate ownership protocol |
-| New matching files are tailed while still growing | Growing-file tailing; bounded read turns and batches; Phase 1 periodic reconciliation, with notifications deferred to Phase 2 (D14) |
+| New matching files are tailed while still growing | Discovery and growing-file collection; bounded read turns and batches; Phase 1 periodic reconciliation, with notifications deferred to Phase 2 (D14) |
 | Instances read only assigned files | Trivial in Phase 1 (sole instance); single-writer and fencing named as Phase 3 requirements |
 | Ownership via fixed virtual partitions, not CPU count | CPU-independent `file_id` is the intended partition input, but Phase 3 must resolve identity before assignment and migrate storage (D3-D4) |
 | Resize/restart checkpoint continuity; file-centric keys | D5; Restart and resize recovery; Phase-1 scope states honestly what is and is not validated |
@@ -1530,6 +1570,7 @@ receivers:
         include_file_record_number: false
       limits:
         max_tracked_files: 10000
+        max_pending_candidates: 10000
         max_open_files: 512
         max_read_bytes_per_turn: 128KiB
       batch:
@@ -1601,8 +1642,8 @@ Factory validation uses serde `deny_unknown_fields`, semantic checks returning
 `InvalidUserConfig`, and the same versioned profiles and conformance vectors as the
 control plane. Cross-field checks cover non-empty includes, bounded recursion, supported
 encoding and regex profiles, exactly one multiline boundary pattern, batch/line/record
-size compatibility, retry bounds, valid processor timezones, and nonzero compaction
-limits.
+size compatibility, nonzero resource and pending-candidate limits, retry bounds, valid
+processor timezones, and nonzero compaction limits.
 
 ## Appendix D: Implementation references
 
