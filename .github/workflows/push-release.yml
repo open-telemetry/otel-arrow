@@ -29,7 +29,7 @@ jobs:
       pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: ${{ inputs.dry_run && '' || 'release' }}
+    environment: ${{ !inputs.dry_run && 'release' || '' }}
     steps:
       - name: Checkout (dry run)
         if: inputs.dry_run
