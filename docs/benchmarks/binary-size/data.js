@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787597469240,
+  "lastUpdate": 1787598809482,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -22417,6 +22417,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 101.98,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "58bc42c0f621fd7f38ac4a5cb4ad0fad1a023aed",
+          "message": "fix(OTAP query-engine): issue where left-side of or is non-root scoped missing attribute (#3858)\n\nI noticed this when working on\nhttps://github.com/open-telemetry/otel-arrow/pull/3827\n\n# Change summary\n\nFix issue where in a query like `logs | where attributes[\"x\"] == \"hello\"\nor severity_text == \"INFO\"` If some log that doesn't have this attribute\nhas severity_text == \"INFO\" (e.g. if LHS of or is false, but RHS is\n`true), it can actually be excluded from the result incorrectly.\n\nThis happens b/c the LHS gets evaluated on rows having the given\nattribute key, and then:\n- 1 if it evaluated to something we INNER join those rows to whatever\nwas on the right hand side. The join should effectively be an outer\njoin.\n- 2 if it didn't evaluate (missing data), we just return `None` instead\nof evaluating the other side.\n\n**Fix case 1**: Since we don't have a data scope that describes like,\n\"whatever the result of that outer join would be\" the best thing to do\nis just to align to root when/before doing the join.\n\n**Fix case 2**: When the expression is an \"or\", instead of missing data\nevaluating to `None`, we have it evaluate to `false` which can be OR'd\nwith the other sides (in the case we have something like `x or y or z`).\n\nBut we also do a shortcut here in the common case where it's really only\ntwo children (e.g. `x or y`), we can simply take the result of one side\nwithout having to actually compute (`false or <other side>`), so we also\nimplement this shortcut. Interestingly, this short cut also works when\nwe end up with children like `<LHS> or false` (we can just take the\nresult of the LHS).\n\n<!--Replace with a brief summary of the change in this PR-->\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #3855\n\n## Validation\n\nUnit tests\n\n<!--How did you confirm your change has the intended effect?-->\n\n## User-facing changes\n\nNone\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->",
+          "timestamp": "2026-08-24T17:52:21Z",
+          "tree_id": "a760f670f625458e6a388960bce4f0870ba09d21",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/58bc42c0f621fd7f38ac4a5cb4ad0fad1a023aed"
+        },
+        "date": 1787598775395,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.84,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.25,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.04,
             "unit": "MB"
           }
         ]
