@@ -1242,9 +1242,10 @@ fn spawn_etw_session(
                             }
                             Err(e) => {
                                 let _ = telemetry.decode_failed.fetch_add(1, Ordering::Relaxed);
-                                // Per-event diagnostic, off by default. `NotFound`
-                                // is expected for unregistered-manifest, EventSource
-                                // in-band, and opaque events (e.g. EventWriteString);
+                                // Per-event diagnostic at DEBUG (suppressed at the
+                                // default `info` log level). `NotFound` is expected
+                                // for unregistered-manifest, EventSource in-band, and
+                                // opaque events (e.g. EventWriteString);
                                 // `Malformed`/`Win32` signal a truncated payload or a
                                 // real TDH failure.
                                 otel_debug!(
