@@ -29,7 +29,7 @@ fn bench_receive(c: &mut Criterion) {
             BenchmarkId::from_parameter(header_count),
             &header_count,
             |b, _| {
-                b.iter(|| receive_metadata(black_box(&capture), black_box(&metadata)));
+                b.iter(|| black_box(receive_metadata(black_box(&capture), black_box(&metadata))));
             },
         );
     }
@@ -50,7 +50,10 @@ fn bench_end_to_end(c: &mut Criterion) {
                     let context = receive_metadata(black_box(&capture), black_box(&metadata));
                     let hop1 = context.clone();
                     let hop2 = hop1.clone();
-                    propagate_metadata(black_box(&hop2), black_box(&propagation))
+                    black_box(propagate_metadata(
+                        black_box(&hop2),
+                        black_box(&propagation),
+                    ))
                 });
             },
         );
